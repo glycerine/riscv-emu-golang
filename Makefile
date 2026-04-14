@@ -1,7 +1,7 @@
 # Makefile — RISC-V emulator benchmark harness
 #
 # Manages:
-#   - libriscv source acquisition and static library build
+#   - libriscv source acquisition, patching, and static library build
 #   - RISC-V guest ELF cross-compilation
 #   - Go benchmark execution (GuestMemory vs libriscv)
 #
@@ -13,21 +13,14 @@
 #   make bench-ours     # our GuestMemory benchmarks only (no libriscv needed)
 #   make bench-libriscv # libriscv calibration benchmarks only
 #   make bench-mem      # head-to-head memory pair benchmark only
-#   make bench-smoke    # quick smoke test
-#   make test           # unit tests
+#   make bench-smoke    # quick smoke test (~3s)
+#   make test           # unit tests only
 #   make clean          # remove vendor/ and generated ELF
 #   make help           # this message
-#
-# Overrideable variables:
-#   BENCH_COUNT   repetitions per benchmark (default 5)
-#   BENCH_TIME    minimum time per benchmark (default 2s)
-#   RISCV_CC      RISC-V cross compiler (auto-detected)
-#   LIBRISCV_REPO libriscv git URL
-#   LIBRISCV_REF  git branch/tag/commit
 
 .PHONY: all help bench-setup bench bench-ours bench-libriscv bench-mem \
         bench-smoke bench-summary test clean check-tools \
-        libriscv-clone libriscv-build guest-elf
+        libriscv-clone libriscv-patch libriscv-build guest-elf
 
 # ── platform detection ─────────────────────────────────────────────────────
 
@@ -35,14 +28,12 @@ UNAME_S := $(shell uname -s)
 
 ifeq ($(UNAME_S),Darwin)
   PLATFORM  := macos
-  # Homebrew core formula — pre-built bottle, installs in seconds:
-  #   brew install riscv64-elf-gcc
-  # Produces: riscv64-elf-gcc (bare-metal ELF target, no Linux ABI)
+  # brew install riscv64-elf-gcc  (Homebrew core, pre-built bottle)
   RISCV_CC      ?= riscv64-elf-gcc
   RISCV_INSTALL := brew install cmake riscv64-elf-gcc
   NPROC         := $(shell sysctl -n hw.logicalcpu)
   CPU_INFO      := $(shell sysctl -n machdep.cpu.brand_string 2>/dev/null || echo unknown)
-  # pthreads is in libc on macOS — no -lpthread needed
+  # pthreads is in libc on macOS
   EXTRA_LDFLAGS :=
 else
   PLATFORM  := linux
@@ -55,25 +46,17 @@ else
 endif
 
 # ── guest ELF compiler flags ───────────────────────────────────────────────
-#
-# Both builds use -nostartfiles so our _start in bench_guest.c is the sole
-# entry point — no conflict with crt1.o on Linux, no assumption about
-# libc on macOS bare-metal.
-#
-# macOS (riscv64-elf-gcc, bare-metal newlib):
-#   -march=rv64imac -mabi=lp64  (no D extension in default newlib multilib)
-#   -nostdlib  (no newlib, no libgcc startup)
-#
-# Linux (riscv64-linux-gnu-gcc, glibc cross):
-#   -march=rv64imafd -mabi=lp64d  (double-float, matches libriscv pre-built ELFs)
-#   -static  (self-contained binary)
 
 ifeq ($(PLATFORM),macos)
+  # riscv64-elf-gcc is a bare-metal newlib toolchain — no glibc, no Linux ABI.
+  # rv64imac/lp64: conservative baseline matching the newlib multilib default.
   GUEST_MARCH  := rv64imac
   GUEST_ABI    := lp64
   GUEST_CFLAGS := -O2 -march=$(GUEST_MARCH) -mabi=$(GUEST_ABI) \
                   -nostdlib -nostartfiles -Wl,--gc-sections
 else
+  # riscv64-linux-gnu-gcc: Linux cross-compiler with glibc sysroot.
+  # rv64imafd/lp64d: double-float ABI matching libriscv's pre-built ELFs.
   GUEST_MARCH  := rv64imafd
   GUEST_ABI    := lp64d
   GUEST_CFLAGS := -O2 -march=$(GUEST_MARCH) -mabi=$(GUEST_ABI) \
@@ -91,6 +74,7 @@ GUEST_DIR   := $(ROOT)bench/libriscv_guest
 GUEST_SRC   := $(GUEST_DIR)/bench_guest.c
 GUEST_ELF   := $(GUEST_DIR)/bench_guest.elf
 RESULTS_DIR := /tmp/riscv-bench
+PATCH_STAMP := $(VENDOR)/.patched
 
 # ── tools ──────────────────────────────────────────────────────────────────
 
@@ -101,8 +85,6 @@ LIBRISCV_REPO ?= https://github.com/libriscv/libriscv.git
 LIBRISCV_REF  ?= master
 
 # ── cgo environment ────────────────────────────────────────────────────────
-# Go's security policy forbids ${SRCDIR}-relative paths in #cgo LDFLAGS,
-# so library paths are supplied exclusively via CGO_LDFLAGS env var.
 
 CGO_CFLAGS_VAL  := -I$(VENDOR)/c
 CGO_LDFLAGS_VAL := -L$(BUILD) -L$(BUILD)/libriscv \
@@ -134,12 +116,12 @@ help:
 	@echo "  Prerequisites:"
 ifeq ($(PLATFORM),macos)
 	@echo "    brew install cmake riscv64-elf-gcc"
-	@echo "    # go from https://go.dev/dl/ if not already installed"
+	@echo "    # go: https://go.dev/dl/"
 else
 	@echo "    apt install cmake g++ gcc-riscv64-linux-gnu libc6-dev-riscv64-cross"
 endif
 	@echo ""
-	@echo "  Setup (run once after installing prerequisites):"
+	@echo "  Setup (run once):"
 	@echo "    make bench-setup"
 	@echo ""
 	@echo "  Benchmarks:"
@@ -159,26 +141,25 @@ endif
 
 # ── setup pipeline ─────────────────────────────────────────────────────────
 
-bench-setup: check-tools libriscv-clone libriscv-build guest-elf
+bench-setup: check-tools libriscv-clone libriscv-patch libriscv-build guest-elf
 	@echo ""
 	@echo "  ✓ bench-setup complete — run 'make bench' to start"
 	@echo ""
 
 check-tools:
 	@echo "── checking prerequisites  [$(PLATFORM)] ───────────────────────"
-	@command -v $(GIT)       >/dev/null 2>&1 \
+	@command -v $(GIT)      >/dev/null 2>&1 \
 	    || { echo "  ✗ git not found"; exit 1; }
-	@command -v $(CMAKE)     >/dev/null 2>&1 \
+	@command -v $(CMAKE)    >/dev/null 2>&1 \
 	    || { echo "  ✗ cmake not found  →  $(RISCV_INSTALL)"; exit 1; }
-	@command -v $(GO)        >/dev/null 2>&1 \
+	@command -v $(GO)       >/dev/null 2>&1 \
 	    || { echo "  ✗ go not found  →  https://go.dev/dl/"; exit 1; }
-	@# C++ compiler: clang++ ships with Xcode CLT on macOS; g++ on Linux
 	@command -v clang++ >/dev/null 2>&1 \
 	  || command -v g++  >/dev/null 2>&1 \
-	  || { echo "  ✗ no C++ compiler"; \
+	  || { echo "  ✗ no C++ compiler found"; \
 	       echo "    macOS: xcode-select --install"; \
 	       echo "    Linux: apt install g++"; exit 1; }
-	@command -v $(RISCV_CC)  >/dev/null 2>&1 \
+	@command -v $(RISCV_CC) >/dev/null 2>&1 \
 	    || { echo "  ✗ $(RISCV_CC) not found"; \
 	         echo "    Install: $(RISCV_INSTALL)"; exit 1; }
 	@echo "  ✓ git:      $$(git --version | cut -d' ' -f3)"
@@ -188,7 +169,7 @@ check-tools:
 	@echo "  ✓ riscv-cc: $$($(RISCV_CC) --version | head -1)"
 	@echo "  ✓ go:       $$($(GO) version | awk '{print $$3, $$4}')"
 
-# ── libriscv ───────────────────────────────────────────────────────────────
+# ── libriscv clone ─────────────────────────────────────────────────────────
 
 libriscv-clone: $(VENDOR)/.git
 $(VENDOR)/.git:
@@ -197,8 +178,43 @@ $(VENDOR)/.git:
 	$(GIT) clone --depth=1 $(LIBRISCV_REPO) $(VENDOR) 2>&1 | sed 's/^/  /'
 	@echo "  ✓ cloned into $(VENDOR)"
 
+# ── libriscv patch ─────────────────────────────────────────────────────────
+# macOS SDK defines stdout as a macro (__stdoutp) in <stdio.h>.
+# libriscv's RISCVOptions struct has a field named 'stdout' which clashes.
+# We rename the field to 'output' in both the header and implementation.
+# This is safe: the rename is entirely internal to the C API layer.
+# The stamp file prevents re-patching on subsequent make runs.
+
+libriscv-patch: $(PATCH_STAMP)
+$(PATCH_STAMP): $(VENDOR)/.git
+	@echo "── patching libriscv (stdout→output field rename) ──────────────"
+	@# libriscv.h: rename the stdout field in RISCVOptions
+	sed -i.bak \
+	    's/riscv_stdout_func_t stdout;/riscv_stdout_func_t output; \/\* renamed from stdout: macro on macOS \*\//' \
+	    $(VENDOR)/c/libriscv.h
+	@# libriscv.cpp: rename stdout in the UserData struct definition
+	sed -i.bak \
+	    's/riscv_stdout_func_t stdout = nullptr;/riscv_stdout_func_t output = nullptr;/' \
+	    $(VENDOR)/c/libriscv.cpp
+	@# libriscv.cpp: rename in the UserData initializer
+	sed -i.bak \
+	    's/\.stdout = options->stdout,/.output = options->output,/' \
+	    $(VENDOR)/c/libriscv.cpp
+	@# libriscv.cpp: rename in the printer lambda usage
+	sed -i.bak \
+	    's/userdata\.stdout/userdata.output/g' \
+	    $(VENDOR)/c/libriscv.cpp
+	@# Verify no field references to stdout remain
+	@if grep -q '\.stdout\b' $(VENDOR)/c/libriscv.h $(VENDOR)/c/libriscv.cpp; then \
+	    echo "  ✗ patch incomplete — .stdout references remain"; exit 1; \
+	fi
+	@touch $(PATCH_STAMP)
+	@echo "  ✓ patch applied"
+
+# ── libriscv build ─────────────────────────────────────────────────────────
+
 libriscv-build: $(LIB_CAPI)
-$(LIB_CAPI): $(VENDOR)/.git
+$(LIB_CAPI): $(PATCH_STAMP)
 	@echo "── building libriscv C API ─────────────────────────────────────"
 	@mkdir -p $(BUILD)
 	cd $(BUILD) && $(CMAKE) $(VENDOR)/c \
