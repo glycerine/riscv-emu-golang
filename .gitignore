@@ -1,1 +1,3 @@
 *~
+bench/libriscv_guest/bench_guest.elf
+vendor/
