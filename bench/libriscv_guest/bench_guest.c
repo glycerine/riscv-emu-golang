@@ -1,46 +1,31 @@
 /*
  * bench_guest.c — RISC-V guest program for emulator benchmarking.
  *
- * Compiled to a static RV64 ELF and loaded by both our Go emulator
- * (future) and libriscv for comparison benchmarks.
+ * Compiled to a static RV64 ELF with musl libc.
+ * On macOS: zig cc -target riscv64-linux-musl (brew install zig)
+ * On Linux: zig cc -target riscv64-linux-musl  (same command)
+ *           or riscv64-linux-gnu-gcc -static
  *
- * Designed to be freestanding: no libc dependency. Uses only inline
- * syscalls for exit so it runs under any minimal Linux-personality
- * emulator (syscall 93 = exit).
+ * Three workloads exercising different emulator subsystems:
  *
- * Provides three workloads exercising different emulator subsystems:
- *
- *   fib(n)       — iterative Fibonacci: integer ALU + branch-heavy loop.
- *                  Zero memory traffic beyond the stack frame.
- *
- *   memstress()  — sequential 64-bit store then load over a 32KB buffer.
- *                  Tests emulator Load64/Store64 throughput directly.
- *
- *   sieve()      — Sieve of Eratosthenes to 1M: branchy byte-level access.
- *                  Tests ICache warmup on a non-sequential access pattern.
- *
- * Build (Linux, riscv64-linux-gnu-gcc):
- *   riscv64-linux-gnu-gcc -O2 -march=rv64imafd -mabi=lp64d -static \
- *       -o bench_guest.elf bench_guest.c
- *
- * Build (macOS, riscv64-unknown-elf-gcc from brew riscv-gnu-toolchain):
- *   riscv64-unknown-elf-gcc -O2 -march=rv64imac -mabi=lp64 \
- *       -nostdlib -nostartfiles -Wl,--gc-sections \
- *       -o bench_guest.elf bench_guest.c
+ *   fib(500M)        integer ALU + branch loop, zero memory traffic
+ *   memstress(32KB)  sequential 64-bit store+load, tests memory throughput
+ *   sieve(1M)        branchy byte-level access, tests ICache warmup
  */
 
 #include <stdint.h>
+#include <stdlib.h>
 
-/* ── syscall ───────────────────────────────────────────────────────────── */
+/* ── syscall exit (used directly so we don't need stdio) ─────────────────── */
 
 static inline void do_exit(int code) {
     register long a0 asm("a0") = code;
-    register long a7 asm("a7") = 93; /* SYS_exit */
-    asm volatile("ecall" :: "r"(a0), "r"(a7));
+    register long a7 asm("a7") = 93;
+    asm volatile ("ecall" :: "r"(a0), "r"(a7));
     __builtin_unreachable();
 }
 
-/* ── workloads ─────────────────────────────────────────────────────────── */
+/* ── workloads ───────────────────────────────────────────────────────────── */
 
 static uint64_t fib(uint64_t n) {
     uint64_t a = 0, b = 1;
@@ -52,8 +37,8 @@ static uint64_t fib(uint64_t n) {
     return a;
 }
 
-#define MEMSTRESS_ELEMS 4096   /* 32 KB of uint64_t */
-#define MEMSTRESS_ITERS 256
+#define MEMSTRESS_ELEMS  4096
+#define MEMSTRESS_ITERS  256
 
 static uint64_t memstress(volatile uint64_t *buf, uint64_t n, uint64_t iters) {
     uint64_t sum = 0;
@@ -66,7 +51,7 @@ static uint64_t memstress(volatile uint64_t *buf, uint64_t n, uint64_t iters) {
     return sum;
 }
 
-#define SIEVE_LIMIT 1000000
+#define SIEVE_LIMIT  1000000
 
 static uint32_t sieve(uint8_t *buf, uint32_t limit) {
     for (uint32_t i = 0; i <= limit; i++)
@@ -81,25 +66,14 @@ static uint32_t sieve(uint8_t *buf, uint32_t limit) {
     return count;
 }
 
-/* ── static storage (avoids needing a heap / brk syscall) ─────────────── */
+/* ── static buffers ─────────────────────────────────────────────────────── */
 
 static volatile uint64_t membuf[MEMSTRESS_ELEMS];
 static uint8_t           sievebuf[SIEVE_LIMIT + 1];
 
-/* ── entry point ───────────────────────────────────────────────────────── */
-/*
- * _start is used instead of main() so this compiles identically with:
- *   - riscv64-linux-gnu-gcc  (Linux cross, with glibc _start wrapper)
- *   - riscv64-unknown-elf-gcc (macOS brew, bare-metal, no glibc)
- *
- * libriscv's Linux personality sets up the stack and calls _start,
- * so this entry point works correctly in both cases.
- *
- * __attribute__((used)) prevents the linker from GC-ing _start when
- * -Wl,--gc-sections is passed (macOS bare-metal build).
- */
-__attribute__((used))
-void _start(void) {
+/* ── main ───────────────────────────────────────────────────────────────── */
+
+int main(void) {
     volatile uint64_t f = fib(500000000ULL);
     (void)f;
 

@@ -1,12 +1,16 @@
 # Makefile — RISC-V emulator benchmark harness
 #
-# Manages:
-#   - libriscv source acquisition, patching, and static library build
-#   - RISC-V guest ELF cross-compilation
-#   - Go benchmark execution (GuestMemory vs libriscv)
+# Guest ELF compilation uses `zig cc` as the cross-compiler on both
+# macOS and Linux. Zig bundles musl libc for all targets — no separate
+# toolchain, sysroot, or build step required.
+#
+# Prerequisites:
+#   macOS:  brew install cmake zig
+#   Linux:  apt install cmake  &&  snap install zig --classic --edge
+#           (or download from https://ziglang.org/download/)
 #
 # Quick start:
-#   make bench-setup    # one-time setup
+#   make bench-setup    # one-time: clone+patch+build libriscv, compile guest
 #   make bench          # run full comparison
 #
 # Other targets:
@@ -14,7 +18,7 @@
 #   make bench-libriscv # libriscv calibration benchmarks only
 #   make bench-mem      # head-to-head memory pair benchmark only
 #   make bench-smoke    # quick smoke test (~3s)
-#   make test           # unit tests only
+#   make test           # unit tests
 #   make clean          # remove vendor/ and generated ELF
 #   make help           # this message
 
@@ -27,41 +31,35 @@
 UNAME_S := $(shell uname -s)
 
 ifeq ($(UNAME_S),Darwin)
-  PLATFORM  := macos
-  # brew install riscv64-elf-gcc  (Homebrew core, pre-built bottle)
-  RISCV_CC      ?= riscv64-elf-gcc
-  RISCV_INSTALL := brew install cmake riscv64-elf-gcc
+  PLATFORM      := macos
   NPROC         := $(shell sysctl -n hw.logicalcpu)
   CPU_INFO      := $(shell sysctl -n machdep.cpu.brand_string 2>/dev/null || echo unknown)
-  # pthreads is in libc on macOS
   EXTRA_LDFLAGS :=
 else
-  PLATFORM  := linux
-  RISCV_CC      ?= riscv64-linux-gnu-gcc
-  RISCV_INSTALL := apt install cmake g++ gcc-riscv64-linux-gnu libc6-dev-riscv64-cross
+  PLATFORM      := linux
   NPROC         := $(shell nproc)
   CPU_INFO      := $(shell grep 'model name' /proc/cpuinfo 2>/dev/null \
                        | head -1 | cut -d: -f2 | xargs || echo unknown)
   EXTRA_LDFLAGS := -lpthread
 endif
 
-# ── guest ELF compiler flags ───────────────────────────────────────────────
+# ── guest ELF: zig cc -target riscv64-linux-musl ──────────────────────────
+#
+# zig cc bundles musl libc for every target. The same command works on
+# macOS and Linux without any sysroot installation.
+#
+# Target: riscv64-linux-musl
+#   - rv64gc baseline (Zig's default for riscv64, includes IMAFDC+Zicsr+Zifencei)
+#   - musl libc, statically linked
+#   - libriscv's Linux personality handles the musl syscall ABI identically
+#     to glibc for our purposes (exit, write, brk, mmap)
+#
+# Override ZIG_CC if zig is not on PATH:
+#   make bench-setup ZIG_CC=/path/to/zig
 
-ifeq ($(PLATFORM),macos)
-  # riscv64-elf-gcc is a bare-metal newlib toolchain — no glibc, no Linux ABI.
-  # rv64imac/lp64: conservative baseline matching the newlib multilib default.
-  GUEST_MARCH  := rv64imac
-  GUEST_ABI    := lp64
-  GUEST_CFLAGS := -O2 -march=$(GUEST_MARCH) -mabi=$(GUEST_ABI) \
-                  -nostdlib -nostartfiles -Wl,--gc-sections
-else
-  # riscv64-linux-gnu-gcc: Linux cross-compiler with glibc sysroot.
-  # rv64imafd/lp64d: double-float ABI matching libriscv's pre-built ELFs.
-  GUEST_MARCH  := rv64imafd
-  GUEST_ABI    := lp64d
-  GUEST_CFLAGS := -O2 -march=$(GUEST_MARCH) -mabi=$(GUEST_ABI) \
-                  -static -nostartfiles
-endif
+ZIG_CC     ?= zig
+ZIG_TARGET := riscv64-linux-musl
+GUEST_CFLAGS := -O2 -target $(ZIG_TARGET) -static
 
 # ── paths ──────────────────────────────────────────────────────────────────
 
@@ -115,10 +113,11 @@ help:
 	@echo ""
 	@echo "  Prerequisites:"
 ifeq ($(PLATFORM),macos)
-	@echo "    brew install cmake riscv64-elf-gcc"
-	@echo "    # go: https://go.dev/dl/"
+	@echo "    brew install cmake zig"
 else
-	@echo "    apt install cmake g++ gcc-riscv64-linux-gnu libc6-dev-riscv64-cross"
+	@echo "    apt install cmake"
+	@echo "    snap install zig --classic --edge"
+	@echo "    # or: https://ziglang.org/download/"
 endif
 	@echo ""
 	@echo "  Setup (run once):"
@@ -136,7 +135,7 @@ endif
 	@echo "    make clean            remove vendor/ and generated ELF"
 	@echo ""
 	@echo "  Overrides:"
-	@echo "    BENCH_COUNT=$(BENCH_COUNT)  BENCH_TIME=$(BENCH_TIME)  RISCV_CC=$(RISCV_CC)"
+	@echo "    ZIG_CC=$(ZIG_CC)  BENCH_COUNT=$(BENCH_COUNT)  BENCH_TIME=$(BENCH_TIME)"
 	@echo ""
 
 # ── setup pipeline ─────────────────────────────────────────────────────────
@@ -148,26 +147,31 @@ bench-setup: check-tools libriscv-clone libriscv-patch libriscv-build guest-elf
 
 check-tools:
 	@echo "── checking prerequisites  [$(PLATFORM)] ───────────────────────"
-	@command -v $(GIT)      >/dev/null 2>&1 \
+	@command -v $(GIT)    >/dev/null 2>&1 \
 	    || { echo "  ✗ git not found"; exit 1; }
-	@command -v $(CMAKE)    >/dev/null 2>&1 \
-	    || { echo "  ✗ cmake not found  →  $(RISCV_INSTALL)"; exit 1; }
-	@command -v $(GO)       >/dev/null 2>&1 \
+	@command -v $(CMAKE)  >/dev/null 2>&1 \
+	    || { echo "  ✗ cmake not found"; \
+	         echo "    macOS: brew install cmake"; \
+	         echo "    Linux: apt install cmake"; exit 1; }
+	@command -v $(GO)     >/dev/null 2>&1 \
 	    || { echo "  ✗ go not found  →  https://go.dev/dl/"; exit 1; }
+	@# C++ compiler for libriscv build (clang++ on macOS, g++ on Linux)
 	@command -v clang++ >/dev/null 2>&1 \
 	  || command -v g++  >/dev/null 2>&1 \
-	  || { echo "  ✗ no C++ compiler found"; \
+	  || { echo "  ✗ no C++ compiler"; \
 	       echo "    macOS: xcode-select --install"; \
 	       echo "    Linux: apt install g++"; exit 1; }
-	@command -v $(RISCV_CC) >/dev/null 2>&1 \
-	    || { echo "  ✗ $(RISCV_CC) not found"; \
-	         echo "    Install: $(RISCV_INSTALL)"; exit 1; }
-	@echo "  ✓ git:      $$(git --version | cut -d' ' -f3)"
-	@echo "  ✓ cmake:    $$(cmake --version | head -1 | cut -d' ' -f3)"
-	@echo "  ✓ c++:      $$(clang++ --version 2>/dev/null | head -1 \
-	                   || g++ --version | head -1)"
-	@echo "  ✓ riscv-cc: $$($(RISCV_CC) --version | head -1)"
-	@echo "  ✓ go:       $$($(GO) version | awk '{print $$3, $$4}')"
+	@command -v $(ZIG_CC) >/dev/null 2>&1 \
+	    || { echo "  ✗ zig not found"; \
+	         echo "    macOS: brew install zig"; \
+	         echo "    Linux: snap install zig --classic --edge"; \
+	         echo "           or https://ziglang.org/download/"; exit 1; }
+	@echo "  ✓ git:    $$(git --version | cut -d' ' -f3)"
+	@echo "  ✓ cmake:  $$(cmake --version | head -1 | cut -d' ' -f3)"
+	@echo "  ✓ c++:    $$(clang++ --version 2>/dev/null | head -1 \
+	                 || g++ --version | head -1)"
+	@echo "  ✓ zig:    $$($(ZIG_CC) version)"
+	@echo "  ✓ go:     $$($(GO) version | awk '{print $$3, $$4}')"
 
 # ── libriscv clone ─────────────────────────────────────────────────────────
 
@@ -181,33 +185,25 @@ $(VENDOR)/.git:
 # ── libriscv patch ─────────────────────────────────────────────────────────
 # macOS SDK defines stdout as a macro (__stdoutp) in <stdio.h>.
 # libriscv's RISCVOptions struct has a field named 'stdout' which clashes.
-# We rename the field to 'output' in both the header and implementation.
-# This is safe: the rename is entirely internal to the C API layer.
-# The stamp file prevents re-patching on subsequent make runs.
+# We rename it to 'output' in both the header and implementation.
 
 libriscv-patch: $(PATCH_STAMP)
 $(PATCH_STAMP): $(VENDOR)/.git
 	@echo "── patching libriscv (stdout→output field rename) ──────────────"
-	@# libriscv.h: rename the stdout field in RISCVOptions
 	sed -i.bak \
-	    's/riscv_stdout_func_t stdout;/riscv_stdout_func_t output; \/\* renamed from stdout: macro on macOS \*\//' \
+	    's/riscv_stdout_func_t stdout;/riscv_stdout_func_t output; \/\* renamed: stdout is a macro on macOS \*\//' \
 	    $(VENDOR)/c/libriscv.h
-	@# libriscv.cpp: rename stdout in the UserData struct definition
 	sed -i.bak \
 	    's/riscv_stdout_func_t stdout = nullptr;/riscv_stdout_func_t output = nullptr;/' \
 	    $(VENDOR)/c/libriscv.cpp
-	@# libriscv.cpp: rename in the UserData initializer
 	sed -i.bak \
 	    's/\.stdout = options->stdout,/.output = options->output,/' \
 	    $(VENDOR)/c/libriscv.cpp
-	@# libriscv.cpp: rename in the printer lambda usage
 	sed -i.bak \
 	    's/userdata\.stdout/userdata.output/g' \
 	    $(VENDOR)/c/libriscv.cpp
-	@# Verify no field references to stdout remain
-	@if grep -q '\.stdout\b' $(VENDOR)/c/libriscv.h $(VENDOR)/c/libriscv.cpp; then \
-	    echo "  ✗ patch incomplete — .stdout references remain"; exit 1; \
-	fi
+	@grep -q '\.stdout\b' $(VENDOR)/c/libriscv.h $(VENDOR)/c/libriscv.cpp \
+	    && { echo "  ✗ patch incomplete"; exit 1; } || true
 	@touch $(PATCH_STAMP)
 	@echo "  ✓ patch applied"
 
@@ -225,10 +221,8 @@ $(LIB_CAPI): $(PATCH_STAMP)
 	    2>&1 | grep -E "^(--|Configuring|Generating|Build)" | sed 's/^/  /'
 	cd $(BUILD) && $(MAKE) -j$(NPROC) 2>&1 \
 	    | grep -v "^make\[" | grep -v "^--" | sed 's/^/  /'
-	@test -f $(LIB_CAPI) \
-	    || { echo "  ✗ libriscv_capi.a not built"; exit 1; }
-	@test -f $(LIB_CORE) \
-	    || { echo "  ✗ libriscv.a not built"; exit 1; }
+	@test -f $(LIB_CAPI) || { echo "  ✗ libriscv_capi.a not built"; exit 1; }
+	@test -f $(LIB_CORE) || { echo "  ✗ libriscv.a not built"; exit 1; }
 	@echo "  ✓ libriscv_capi.a: $$(du -h $(LIB_CAPI) | cut -f1)"
 	@echo "  ✓ libriscv.a:      $$(du -h $(LIB_CORE) | cut -f1)"
 
@@ -237,10 +231,9 @@ $(LIB_CAPI): $(PATCH_STAMP)
 guest-elf: $(GUEST_ELF)
 $(GUEST_ELF): $(GUEST_SRC)
 	@echo "── compiling RISC-V guest ELF ──────────────────────────────────"
-	@echo "  arch=$(GUEST_MARCH)  abi=$(GUEST_ABI)"
-	$(RISCV_CC) $(GUEST_CFLAGS) -o $(GUEST_ELF) $(GUEST_SRC)
-	@test -f $(GUEST_ELF) \
-	    || { echo "  ✗ guest ELF not produced"; exit 1; }
+	@echo "  target=$(ZIG_TARGET)"
+	$(ZIG_CC) cc $(GUEST_CFLAGS) -o $(GUEST_ELF) $(GUEST_SRC)
+	@test -f $(GUEST_ELF) || { echo "  ✗ guest ELF not produced"; exit 1; }
 	@echo "  ✓ $$(file $(GUEST_ELF) | cut -d: -f2 | xargs)"
 	@echo "  ✓ size: $$(du -h $(GUEST_ELF) | cut -f1)"
 
