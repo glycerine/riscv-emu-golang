@@ -16,10 +16,11 @@ type CPU struct {
 	mem   GuestMemory
 	pc    uint64
 	x     [32]uint64  // x[0] is hardwired zero
-	f     [32]uint64  // f0-f31: uint64 holds NaN-boxed float32 or raw float64 bits
-	fcsr  uint32      // floating-point control and status register (fflags + frm)
+	f     [32]uint64  // f0-f31: NaN-boxed float32 or raw float64 bits
+	fcsr  uint32      // FP control/status: fflags[4:0] + frm[7:5]
+	cycle uint64      // instruction-retired counter (read via cycle/instret CSRs)
 	Notes NoteChain   // exception delivery chain; handlers installed by OS layer
-	// LR/SC reservation — single address, invalidated by any SC or context switch.
+	// LR/SC reservation
 	resvAddr  uint64
 	resvValid bool
 }
@@ -129,41 +130,63 @@ func (c *CPU) step() error {
 		}
 
 	// ── OP-IMM (I-type) ──────────────────────────────────────────────────
-	case 0x13:
-		shamt := uint8(insn >> 20) & 0x3F // for shifts
+	case 0x13: // ── OP-IMM ─────────────────────────────────────────────────
+		funct7i := insn >> 25
+		shamt   := uint8(insn >> 20) & 0x3F
+		a       := c.Reg(rs1)
 		var v uint64
 		switch funct3 {
-		case 0x0: // ADDI
-			v = c.Reg(rs1) + uint64(iimm)
-		case 0x1: // SLLI
-			v = c.Reg(rs1) << shamt
-		case 0x2: // SLTI
-			if int64(c.Reg(rs1)) < iimm { v = 1 }
-		case 0x3: // SLTIU
-			if c.Reg(rs1) < uint64(iimm) { v = 1 }
-		case 0x4: // XORI
-			v = c.Reg(rs1) ^ uint64(iimm)
-		case 0x5:
-			if (insn>>30)&1 == 1 { // SRAI
-				v = uint64(int64(c.Reg(rs1)) >> shamt)
-			} else { // SRLI
-				v = c.Reg(rs1) >> shamt
+		case 0x0: v = a + uint64(iimm)                                 // ADDI
+		case 0x1: // SLLI / Zbs BSETI/BCLRI/BINVI / Zbb CLZ/CTZ/CPOP/SEXT
+			// Use bits[31:26] (mask out bit25=shamt[5]) to identify the operation.
+			switch funct7i &^ 1 {
+			case 0x00: v = a << shamt                                  // SLLI (shamt[5] may be 0 or 1)
+			case 0x14: v = a | (1 << uint(shamt))                     // BSETI
+			case 0x24: v = a &^ (1 << uint(shamt))                    // BCLRI
+			case 0x34: v = a ^ (1 << uint(shamt))                     // BINVI
+			case 0x60: // CLZ/CTZ/CPOP/SEXT.B/SEXT.H — rs2 in shamt
+				switch shamt {
+				case 0:  v = uint64(bits.LeadingZeros64(a))            // CLZ
+				case 1:  v = uint64(bits.TrailingZeros64(a))           // CTZ
+				case 2:  v = uint64(bits.OnesCount64(a))               // CPOP
+				case 0x22: v = uint64(int64(int8(a)))                  // SEXT.B
+				case 0x23: v = uint64(int64(int16(a)))                 // SEXT.H
+				default: return ErrIllegalInstruction
+				}
+			default: return ErrIllegalInstruction
 			}
-		case 0x6: // ORI
-			v = c.Reg(rs1) | uint64(iimm)
-		case 0x7: // ANDI
-			v = c.Reg(rs1) & uint64(iimm)
+		case 0x2: if int64(a) < iimm { v = 1 }                        // SLTI
+		case 0x3: if a < uint64(iimm) { v = 1 }                       // SLTIU
+		case 0x4: v = a ^ uint64(iimm)                                 // XORI
+		case 0x5: // SRLI/SRAI / Zbs BEXTI / Zbb RORI/ORC.B/REV8/ZEXT.H
+			switch funct7i &^ 1 {
+			case 0x00: v = a >> shamt                                  // SRLI
+			case 0x20: v = uint64(int64(a) >> shamt)                  // SRAI
+			case 0x24: v = (a >> uint(shamt)) & 1                     // BEXTI
+			case 0x30: sh := uint(shamt & 63); v = (a>>sh)|(a<<(64-sh)) // RORI
+			case 0x14: v = orcB(a)                                    // ORC.B
+			case 0x34: v = rev8(a)                                    // REV8
+			case 0x04: v = a & 0xFFFF                                 // ZEXT.H
+			default: return ErrIllegalInstruction
+			}
+		case 0x6: v = a | uint64(iimm)                                 // ORI
+		case 0x7: v = a & uint64(iimm)                                 // ANDI
 		}
 		c.SetReg(rd, v)
 
 	// ── OP-IMM-32 (I-type, 32-bit ops, sign-extend result) ───────────────
-	case 0x1B:
+	case 0x1B: // ── OP-IMM-32 ───────────────────────────────────────────────
+		funct7i32 := insn >> 25
 		shamt := uint8(insn >> 20) & 0x1F
 		var v int32
 		switch funct3 {
 		case 0x0: // ADDIW
 			v = int32(c.Reg(rs1)) + int32(iimm)
-		case 0x1: // SLLIW
+		case 0x1: // SLLIW / Zba SLLI.UW
+			if funct7i32 == 0x04 { // SLLI.UW: rd = uint64(uint32(rs1)) << shamt
+				c.SetReg(rd, uint64(uint32(c.Reg(rs1)))<<uint(shamt))
+				c.pc = nextPC; return nil
+			}
 			v = int32(c.Reg(rs1)) << shamt
 		case 0x5:
 			if (insn>>30)&1 == 1 { // SRAIW
@@ -181,44 +204,76 @@ func (c *CPU) step() error {
 		funct7 := insn >> 25
 		a, b := c.Reg(rs1), c.Reg(rs2)
 		var v uint64
-		if funct7 == 0x01 { // ── RV64M ──────────────────────────────────
+		switch funct7 {
+		case 0x01: // ── RV64M ───────────────────────────────────────────────
 			switch funct3 {
-			case 0x0: v = a * b                                          // MUL
-			case 0x1: // MULH: signed × signed, upper 64 bits
-				hi, _ := bits.Mul64(a, b)
-				// Adjust for signed: if rs1<0 subtract rs2; if rs2<0 subtract rs1
-				if int64(a) < 0 { hi -= b }
-				if int64(b) < 0 { hi -= a }
-				v = hi
-			case 0x2: // MULHSU: signed rs1 × unsigned rs2, upper 64 bits
-				hi, _ := bits.Mul64(a, b)
-				if int64(a) < 0 { hi -= b }
-				v = hi
-			case 0x3: // MULHU: unsigned × unsigned, upper 64 bits
-				hi, _ := bits.Mul64(a, b)
-				v = hi
-			case 0x4: // DIV: signed division
-				if b == 0 {
-					v = ^uint64(0) // -1
-				} else if a == 0x8000000000000000 && b == ^uint64(0) {
-					v = a // overflow: INT_MIN / -1 = INT_MIN
-				} else {
-					v = uint64(int64(a) / int64(b))
-				}
-			case 0x5: // DIVU: unsigned division
-				if b == 0 { v = ^uint64(0) } else { v = a / b }
-			case 0x6: // REM: signed remainder
-				if b == 0 {
-					v = a
-				} else if a == 0x8000000000000000 && b == ^uint64(0) {
-					v = 0
-				} else {
-					v = uint64(int64(a) % int64(b))
-				}
-			case 0x7: // REMU: unsigned remainder
-				if b == 0 { v = a } else { v = a % b }
+			case 0x0: v = a * b
+			case 0x1: hi, _ := bits.Mul64(a, b); if int64(a)<0 { hi-=b }; if int64(b)<0 { hi-=a }; v=hi
+			case 0x2: hi, _ := bits.Mul64(a, b); if int64(a)<0 { hi-=b }; v=hi
+			case 0x3: hi, _ := bits.Mul64(a, b); v=hi
+			case 0x4: if b==0 { v=^uint64(0) } else if a==0x8000000000000000&&b==^uint64(0) { v=a } else { v=uint64(int64(a)/int64(b)) }
+			case 0x5: if b==0 { v=^uint64(0) } else { v=a/b }
+			case 0x6: if b==0 { v=a } else if a==0x8000000000000000&&b==^uint64(0) { v=0 } else { v=uint64(int64(a)%int64(b)) }
+			case 0x7: if b==0 { v=a } else { v=a%b }
 			}
-		} else { // ── RV64I ──────────────────────────────────────────────
+		// ── Zbb/Zbs/Zba (OP) ────────────────────────────────────────────────
+		case 0x04: // Zbb: ZEXT.H
+			v = a & 0xFFFF
+		case 0x05: // Zbb: MIN/MAX/MINU/MAXU
+			switch funct3 {
+			case 4: if int64(a)<int64(b) { v=a } else { v=b }  // MIN
+			case 5: if a<b { v=a } else { v=b }                 // MINU
+			case 6: if int64(a)>int64(b) { v=a } else { v=b }  // MAX
+			case 7: if a>b { v=a } else { v=b }                 // MAXU
+			}
+		case 0x10: // Zba: SH1ADD/SH2ADD/SH3ADD
+			switch funct3 {
+			case 2: v = b + (a << 1)
+			case 4: v = b + (a << 2)
+			case 6: v = b + (a << 3)
+			}
+		case 0x14: // Zbs: BSET / Zbb: ORC.B
+			switch funct3 {
+			case 1: v = a | (1 << (b & 63))            // BSET
+			case 5: v = orcB(a)                         // ORC.B (rs2=7, but we check funct3)
+			}
+		case 0x20: // RV64I SUB/SRA + Zbb ANDN/ORN/XNOR
+			switch funct3 {
+			case 0: v = a - b                              // SUB
+			case 4: v = a ^ ^b                             // XNOR
+			case 5: v = uint64(int64(a) >> (b & 0x3F))    // SRA
+			case 6: v = a | ^b                             // ORN
+			case 7: v = a & ^b                             // ANDN
+			}
+		case 0x24: // Zbs: BCLR/BEXT
+			switch funct3 {
+			case 1: v = a &^ (1 << (b & 63))           // BCLR
+			case 5: v = (a >> (b & 63)) & 1            // BEXT
+			}
+		case 0x30: // Zbb: ROL/ROR/SEXT.B/SEXT.H  (funct7=0x30, rs2 disambiguates)
+			switch funct3 {
+			case 1: // ROL
+				sh := b & 63
+				v = (a << sh) | (a >> (64 - sh))
+			case 5: // ROR
+				sh := b & 63
+				v = (a >> sh) | (a << (64 - sh))
+			}
+		case 0x34: // Zbs: BINV
+			v = a ^ (1 << (b & 63))
+		case 0x35: // Zbb: REV8 (funct3=5, rs2=24 for RV64)
+			v = rev8(a)
+		case 0x60: // Zbb: CLZ/CTZ/CPOP/SEXT.B/SEXT.H (funct3=1, rs2 selects)
+			switch rs2 {
+			case 0: v = uint64(bits.LeadingZeros64(a))   // CLZ
+			case 1: v = uint64(bits.TrailingZeros64(a))  // CTZ
+			case 2: v = uint64(bits.OnesCount64(a))      // CPOP
+			case 2+0x20: // SEXT.B (rs2=0x22, funct7=0x30 handled above — but gcc may emit differently)
+				v = uint64(int64(int8(a)))
+			case 3+0x20:
+				v = uint64(int64(int16(a)))
+			}
+		default: // ── RV64I ─────────────────────────────────────────────────
 			switch funct3 {
 			case 0x0:
 				if funct7 == 0x20 { v = a - b } else { v = a + b } // SUB / ADD
@@ -235,48 +290,61 @@ func (c *CPU) step() error {
 		c.SetReg(rd, v)
 
 	// ── OP-32 (R-type, 32-bit, sign-extend) ─────────────────────────────
-	case 0x3B:
+	case 0x3B: // ── OP-32 ────────────────────────────────────────────────────
 		funct7 := insn >> 25
 		a32, b32 := uint32(c.Reg(rs1)), uint32(c.Reg(rs2))
 		var v int32
-		if funct7 == 0x01 { // ── RV64M word ops ─────────────────────────
+		switch funct7 {
+		case 0x01: // ── RV64M word ops ─────────────────────────────────
 			switch funct3 {
-			case 0x0: v = int32(a32 * b32)                          // MULW
-			case 0x4: // DIVW: signed 32-bit division
-				if b32 == 0 {
-					v = -1
-				} else if a32 == 0x80000000 && b32 == 0xFFFFFFFF {
-					v = int32(a32) // overflow: INT32_MIN / -1 = INT32_MIN
-				} else {
-					v = int32(a32) / int32(b32)
-				}
-			case 0x5: // DIVUW: unsigned 32-bit division
-				if b32 == 0 { v = -1 } else { v = int32(a32 / b32) }
-			case 0x6: // REMW: signed 32-bit remainder
-				if b32 == 0 {
-					v = int32(a32)
-				} else if a32 == 0x80000000 && b32 == 0xFFFFFFFF {
-					v = 0
-				} else {
-					v = int32(a32) % int32(b32)
-				}
-			case 0x7: // REMUW: unsigned 32-bit remainder
-				if b32 == 0 { v = int32(a32) } else { v = int32(a32 % b32) }
-			default:
-				return ErrIllegalInstruction
+			case 0x0: v = int32(a32 * b32)
+			case 0x4:
+				if b32 == 0 { v = -1 } else if a32==0x80000000&&b32==0xFFFFFFFF { v=int32(a32) } else { v=int32(a32)/int32(b32) }
+			case 0x5: if b32==0 { v=-1 } else { v=int32(a32/b32) }
+			case 0x6:
+				if b32==0 { v=int32(a32) } else if a32==0x80000000&&b32==0xFFFFFFFF { v=0 } else { v=int32(a32)%int32(b32) }
+			case 0x7: if b32==0 { v=int32(a32) } else { v=int32(a32%b32) }
+			default: return ErrIllegalInstruction
 			}
-		} else { // ── RV64I word ops ─────────────────────────────────────
+		case 0x04: // Zba: ADD.UW  rd = x3 + uint64(uint32(x2))
+			c.SetReg(rd, c.Reg(rs2)+uint64(uint32(c.Reg(rs1))))
+			c.pc = nextPC; return nil
+		case 0x10: // Zba: SH1ADD.UW / SH2ADD.UW / SH3ADD.UW
+			zext := uint64(uint32(c.Reg(rs1)))
+			base := c.Reg(rs2)
+			switch funct3 {
+			case 2: c.SetReg(rd, base+(zext<<1))
+			case 4: c.SetReg(rd, base+(zext<<2))
+			case 6: c.SetReg(rd, base+(zext<<3))
+			default: return ErrIllegalInstruction
+			}
+			c.pc = nextPC; return nil
+		case 0x30: // Zbb: ROLW / RORW
+			sh := b32 & 0x1F
+			switch funct3 {
+			case 1: v = int32(a32<<sh | a32>>(32-sh))
+			case 5: v = int32(a32>>sh | a32<<(32-sh))
+			default: return ErrIllegalInstruction
+			}
+		case 0x60: // Zbb: CLZW / CTZW / CPOPW
+			switch rs2 {
+			case 0: v = int32(bits.LeadingZeros32(a32))
+			case 1: v = int32(bits.TrailingZeros32(a32))
+			case 2: v = int32(bits.OnesCount32(a32))
+			default: return ErrIllegalInstruction
+			}
+		default: // ── RV64I word ops ─────────────────────────────────────
 			switch funct3 {
 			case 0x0:
-				if funct7 == 0x20 { v = int32(a32 - b32) } else { v = int32(a32 + b32) } // SUBW/ADDW
-			case 0x1: v = int32(a32 << (b32 & 0x1F))                                  // SLLW
+				if funct7==0x20 { v=int32(a32-b32) } else { v=int32(a32+b32) }
+			case 0x1: v = int32(a32 << (b32 & 0x1F))
 			case 0x5:
-				if funct7 == 0x20 { v = int32(a32) >> (b32 & 0x1F) } else { v = int32(a32 >> (b32 & 0x1F)) } // SRAW/SRLW
-			default:
-				return ErrIllegalInstruction
+				if funct7==0x20 { v=int32(a32)>>(b32&0x1F) } else { v=int32(a32>>(b32&0x1F)) }
+			default: return ErrIllegalInstruction
 			}
 		}
 		c.SetReg(rd, uint64(int64(v)))
+
 
 	// ── AMO — RV64A atomic memory operations ─────────────────────────────
 	case 0x2F:
@@ -396,14 +464,36 @@ func (c *CPU) step() error {
 		}
 
 	// ── SYSTEM ───────────────────────────────────────────────────────────
-	case 0x73:
-		switch insn >> 20 {
-		case 0x001: // EBREAK
-			c.pc = nextPC
-			return ErrEbreak
-		case 0x000: // ECALL
-			c.pc = nextPC
-			return ErrEcall
+	case 0x73: // ── SYSTEM ───────────────────────────────────────────────────
+		csrAddr := insn >> 20
+		switch {
+		case insn == 0x00100073: // EBREAK
+			c.pc = nextPC; return ErrEbreak
+		case insn == 0x00000073: // ECALL
+			c.pc = nextPC; return ErrEcall
+		case insn == 0x30200073: // MRET
+			c.pc = nextPC; return nil
+		case funct3 >= 1 && funct3 <= 7 && funct3 != 4: // Zicsr
+			// Read old CSR value
+			old := c.readCSR(csrAddr)
+			c.SetReg(rd, old)
+			// Compute new value and write if applicable
+			var src uint64
+			if funct3 >= 5 { // immediate forms (funct3=5/6/7)
+				src = uint64(rs1) // rs1 field is the uimm5
+			} else {
+				src = c.Reg(rs1)
+			}
+			var newVal uint64
+			switch funct3 {
+			case 1, 5: newVal = src                // CSRRW/CSRRWI: write src
+			case 2, 6: newVal = old | src           // CSRRS/CSRRSI: set bits
+			case 3, 7: newVal = old &^ src          // CSRRC/CSRRCI: clear bits
+			}
+			// Only write if rs1 != x0 (or uimm5 != 0 for immediate forms)
+			if src != 0 || funct3 == 1 || funct3 == 5 {
+				c.writeCSR(csrAddr, newVal)
+			}
 		default:
 			return ErrIllegalInstruction
 		}
@@ -789,6 +879,29 @@ func (c *CPU) stepRVC(insn uint16) error {
 	return nil
 }
 
+// readCSR reads a CSR value. Returns 0 for unknown CSRs.
+func (c *CPU) readCSR(addr uint32) uint64 {
+	switch addr {
+	case 0x001: return uint64(c.fcsr & 0x1F)          // fflags
+	case 0x002: return uint64((c.fcsr >> 5) & 0x7)    // frm
+	case 0x003: return uint64(c.fcsr & 0xFF)           // fcsr
+	case 0xC00, 0xC02: return c.cycle                  // cycle / instret
+	case 0xC01: return c.cycle                         // time (approx)
+	case 0xF14: return 0                               // mhartid = 0
+	}
+	return 0
+}
+
+// writeCSR writes a CSR value. Ignores writes to unknown or read-only CSRs.
+func (c *CPU) writeCSR(addr uint32, val uint64) {
+	switch addr {
+	case 0x001: c.fcsr = (c.fcsr &^ 0x1F) | uint32(val&0x1F)  // fflags
+	case 0x002: c.fcsr = (c.fcsr &^ 0xE0) | uint32((val&0x7)<<5) // frm
+	case 0x003: c.fcsr = uint32(val & 0xFF)                    // fcsr
+	// cycle/time/instret are read-only — silently ignore writes
+	}
+}
+
 // amoOpW applies the AMO operation to a 32-bit word value.
 func amoOpW(funct5 uint32, mem, rs2 uint32) uint32 {
 	switch funct5 {
@@ -836,4 +949,21 @@ func cbOffset(insn uint16) int64 {
 	off := ((o>>12)&1)<<8 | ((o>>10)&3)<<3 | ((o>>5)&3)<<6 | ((o>>3)&3)<<1 | ((o>>2)&1)<<5
 	if off&(1<<8) != 0 { off |= -1 << 9 }
 	return off
+}
+
+// orcB: for each byte, if any bit set -> 0xFF, else 0x00 (Zbb ORC.B)
+func orcB(x uint64) uint64 {
+	const mask = uint64(0x0101010101010101)
+	// For each byte: set 0x80 if non-zero, then spread to all bits of that byte.
+	x |= x >> 4; x |= x >> 2; x |= x >> 1
+	// Now bit 0 of each byte is 1 iff the original byte was non-zero.
+	x &= mask
+	// Spread bit 0 of each byte to all 8 bits of that byte.
+	x *= 0xFF
+	return x
+}
+
+// rev8: reverse byte order (Zbb REV8)
+func rev8(x uint64) uint64 {
+	return bits.ReverseBytes64(x)
 }
