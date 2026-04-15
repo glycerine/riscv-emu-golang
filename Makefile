@@ -34,7 +34,8 @@ ifeq ($(UNAME_S),Darwin)
   PLATFORM      := macos
   NPROC         := $(shell sysctl -n hw.logicalcpu)
   CPU_INFO      := $(shell sysctl -n machdep.cpu.brand_string 2>/dev/null || echo unknown)
-  EXTRA_LDFLAGS :=
+  # Security framework: libriscv uses SecRandomCopyBytes for getrandom syscall on macOS
+  EXTRA_LDFLAGS := -framework Security
 else
   PLATFORM      := linux
   NPROC         := $(shell nproc)
