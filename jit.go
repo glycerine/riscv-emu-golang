@@ -19,6 +19,8 @@ type JIT struct {
 	blocks     map[uint64]*compiledBlock
 	noJIT      map[uint64]bool // PCs where translation failed — don't retry
 	InterpOnly bool            // debug: force all-interpreter mode
+	lastPC     uint64          // last-block cache: skip map lookup for tight loops
+	lastBlk    *compiledBlock
 }
 
 // NewJIT creates a new JIT translation cache.
@@ -36,8 +38,17 @@ func (j *JIT) RunJIT(cpu *CPU) error {
 	for {
 		pc := cpu.pc
 
-		// Try the JIT cache first.
-		if blk, ok := j.blocks[pc]; ok {
+		// Fast path: check last-block cache before map lookup.
+		var blk *compiledBlock
+		if pc == j.lastPC && j.lastBlk != nil {
+			blk = j.lastBlk
+		} else if b, ok := j.blocks[pc]; ok {
+			blk = b
+			j.lastPC = pc
+			j.lastBlk = blk
+		}
+
+		if blk != nil {
 			res := jitcall.Call(blk.fn, &cpu.x, &cpu.f, &cpu.fcsr,
 				cpu.mem.Base(), cpu.mem.Mask())
 			cpu.pc = res.PC
@@ -113,7 +124,7 @@ func (j *JIT) RunJIT(cpu *CPU) error {
 				}
 				// Compilation failed.
 			}
-			// Remember this PC can't be JIT'd (RVC, FP, CSR, etc.)
+			// Remember this PC can't be JIT'd (FCLASS, CSR, etc.)
 			j.noJIT[pc] = true
 		}
 

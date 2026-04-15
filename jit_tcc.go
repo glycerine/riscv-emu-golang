@@ -10,6 +10,7 @@ package riscv
 #include <libtcc.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <math.h>
 
 // compile_block compiles C source to native code in memory.
 // Returns the function pointer for "block_entry", or NULL on error.
@@ -26,6 +27,10 @@ static void* compile_block(const char *csrc, TCCState **out_state) {
         tcc_delete(s);
         return NULL;
     }
+    // Inject math symbols for FP JIT blocks (sqrtf/sqrt from libm).
+    tcc_add_symbol(s, "jit_sqrtf", sqrtf);
+    tcc_add_symbol(s, "jit_sqrt", sqrt);
+
     if (tcc_relocate(s) < 0) {
         tcc_delete(s);
         return NULL;

@@ -65,6 +65,9 @@ type emitter struct {
 	terminated bool
 	// Branch targets within this block (for internal gotos)
 	labels map[uint64]bool
+	// FP / extension flags — control conditional header emission
+	usesFP         bool // any FP instruction emitted
+	usesZbbHelpers bool // CLZ/CTZ/CPOP emitted (need inline helpers)
 }
 
 // ── C source generation helpers ─────────────────────────────────────────
@@ -207,6 +210,39 @@ func (e *emitter) emit32(insn uint32) {
 		e.emitOp32(rd, rs1, rs2, funct3, funct7)
 		e.advancePC(4)
 
+	// ── FP LOAD ──────────────────────────────────────────────────────
+	case 0x07:
+		e.emitFPLoad(rd, rs1, iimm, funct3)
+		if !e.terminated {
+			e.advancePC(4)
+		}
+
+	// ── FP STORE ─────────────────────────────────────────────────────
+	case 0x27:
+		simm := sImm(insn)
+		e.emitFPStore(rs1, rs2, simm, funct3)
+		if !e.terminated {
+			e.advancePC(4)
+		}
+
+	// ── FMADD / FMSUB / FNMSUB / FNMADD ─────────────────────────────
+	case 0x43, 0x47, 0x4B, 0x4F:
+		rs3 := insn >> 27
+		fpfmt := (insn >> 25) & 0x3
+		e.emitFMA(opcode, rd, rs1, rs2, rs3, fpfmt)
+		if !e.terminated {
+			e.advancePC(4)
+		}
+
+	// ── FP-OP ────────────────────────────────────────────────────────
+	case 0x53:
+		funct5 := insn >> 27
+		fpfmt := (insn >> 25) & 0x3
+		e.emitFPOp(rd, rs1, rs2, funct3, funct5, fpfmt)
+		if !e.terminated {
+			e.advancePC(4)
+		}
+
 	// ── FENCE (no-op) ────────────────────────────────────────────────
 	case 0x0F:
 		e.advancePC(4)
@@ -247,20 +283,77 @@ func (e *emitter) emitOpImm(rd, rs1 uint32, imm int64, funct3, funct7 uint32) {
 
 	switch funct3 {
 	case 0: // ADDI
-		e.emit("    %s = %s + %dLL;\n", d, s, imm)
-	case 1: // SLLI
-		e.emit("    %s = %s << %d;\n", d, s, shamt)
+		if imm == 0 {
+			if rs1 == 0 {
+				e.emit("    %s = 0;\n", d) // LI rd, 0
+			} else {
+				e.emit("    %s = %s;\n", d, s) // MV rd, rs1
+			}
+		} else if rs1 == 0 {
+			e.emit("    %s = %dLL;\n", d, imm) // LI rd, imm
+		} else {
+			e.emit("    %s = %s + %dLL;\n", d, s, imm) // ADDI
+		}
+	case 1: // SLLI / BSETI / BCLRI / BINVI / CLZ/CTZ/CPOP/SEXT.B/SEXT.H
+		funct6 := funct7 >> 1 // bits[31:26], mask out shamt[5]
+		switch funct6 {
+		case 0x00: // SLLI
+			e.emit("    %s = %s << %d;\n", d, s, shamt)
+		case 0x0A: // BSETI
+			e.emit("    %s = %s | (1ULL << %d);\n", d, s, shamt)
+		case 0x12: // BCLRI
+			e.emit("    %s = %s & ~(1ULL << %d);\n", d, s, shamt)
+		case 0x1A: // BINVI
+			e.emit("    %s = %s ^ (1ULL << %d);\n", d, s, shamt)
+		case 0x30: // CLZ/CTZ/CPOP/SEXT.B/SEXT.H
+			e.usesZbbHelpers = true
+			switch shamt {
+			case 0:
+				e.emit("    %s = jit_clz64(%s);\n", d, s)
+			case 1:
+				e.emit("    %s = jit_ctz64(%s);\n", d, s)
+			case 2:
+				e.emit("    %s = jit_cpop64(%s);\n", d, s)
+			case 0x22: // SEXT.B (rs2 field = 0x22)
+				e.emit("    %s = (int64_t)(int8_t)%s;\n", d, s)
+			case 0x23: // SEXT.H (rs2 field = 0x23)
+				e.emit("    %s = (int64_t)(int16_t)%s;\n", d, s)
+			default:
+				e.terminated = true
+			}
+		default:
+			e.terminated = true
+		}
 	case 2: // SLTI
 		e.emit("    %s = ((int64_t)%s < %dLL) ? 1 : 0;\n", d, s, imm)
 	case 3: // SLTIU
 		e.emit("    %s = ((uint64_t)%s < (uint64_t)%dLL) ? 1 : 0;\n", d, s, imm)
 	case 4: // XORI
 		e.emit("    %s = %s ^ %dLL;\n", d, s, imm)
-	case 5: // SRLI / SRAI
-		if funct7&0x20 != 0 {
-			e.emit("    %s = (uint64_t)((int64_t)%s >> %d);\n", d, s, shamt) // SRAI
-		} else {
-			e.emit("    %s = (uint64_t)%s >> %d;\n", d, s, shamt) // SRLI
+	case 5: // SRLI/SRAI / BEXTI / RORI / ORC.B / REV8 / ZEXT.H
+		funct6 := funct7 >> 1
+		switch funct6 {
+		case 0x00: // SRLI
+			e.emit("    %s = (uint64_t)%s >> %d;\n", d, s, shamt)
+		case 0x10: // SRAI
+			e.emit("    %s = (uint64_t)((int64_t)%s >> %d);\n", d, s, shamt)
+		case 0x12: // BEXTI
+			e.emit("    %s = (%s >> %d) & 1;\n", d, s, shamt)
+		case 0x18: // RORI
+			e.emit("    %s = (%s >> %d) | (%s << %d);\n", d, s, shamt, s, 64-shamt)
+		case 0x0A: // ORC.B
+			e.emit("    { uint64_t v_ = %s;\n", s)
+			e.emit("      v_ |= v_ << 1; v_ |= v_ << 2; v_ |= v_ << 4;\n")
+			e.emit("      %s = v_ & 0x0101010101010101ULL; %s *= 0xFF; }\n", d, d)
+		case 0x1A: // REV8
+			e.emit("    { uint64_t v_ = %s;\n", s)
+			e.emit("      v_ = ((v_ & 0x00FF00FF00FF00FFULL) << 8) | ((v_ & 0xFF00FF00FF00FF00ULL) >> 8);\n")
+			e.emit("      v_ = ((v_ & 0x0000FFFF0000FFFFULL) << 16) | ((v_ & 0xFFFF0000FFFF0000ULL) >> 16);\n")
+			e.emit("      %s = (v_ << 32) | (v_ >> 32); }\n", d)
+		case 0x02: // ZEXT.H
+			e.emit("    %s = %s & 0xFFFFULL;\n", d, s)
+		default:
+			e.terminated = true
 		}
 	case 6: // ORI
 		e.emit("    %s = %s | %dLL;\n", d, s, imm)
@@ -281,15 +374,35 @@ func (e *emitter) emitOpImm32(rd, rs1 uint32, imm int64, funct3, funct7 uint32) 
 
 	switch funct3 {
 	case 0: // ADDIW
-		e.emit("    %s = (int64_t)(int32_t)((int32_t)%s + %d);\n", d, s, int32(imm))
-	case 1: // SLLIW
-		e.emit("    %s = (int64_t)(int32_t)((uint32_t)%s << %d);\n", d, s, shamt)
-	case 5: // SRLIW / SRAIW
-		if funct7&0x20 != 0 {
-			e.emit("    %s = (int64_t)((int32_t)%s >> %d);\n", d, s, shamt) // SRAIW
+		if imm == 0 {
+			if rs1 == 0 {
+				e.emit("    %s = 0;\n", d)
+			} else {
+				e.emit("    %s = (int64_t)(int32_t)%s;\n", d, s) // SEXT.W
+			}
 		} else {
-			e.emit("    %s = (int64_t)(int32_t)((uint32_t)%s >> %d);\n", d, s, shamt) // SRLIW
+			e.emit("    %s = (int64_t)(int32_t)((int32_t)%s + %d);\n", d, s, int32(imm))
 		}
+	case 1: // SLLIW / SLLI.UW
+		if funct7 == 0x04 { // SLLI.UW
+			e.emit("    %s = (uint64_t)(uint32_t)%s << %d;\n", d, s, shamt)
+		} else {
+			e.emit("    %s = (int64_t)(int32_t)((uint32_t)%s << %d);\n", d, s, shamt) // SLLIW
+		}
+	case 5: // SRLIW / SRAIW / RORIW
+		switch funct7 >> 1 {
+		case 0x00: // SRLIW
+			e.emit("    %s = (int64_t)(int32_t)((uint32_t)%s >> %d);\n", d, s, shamt)
+		case 0x10: // SRAIW
+			e.emit("    %s = (int64_t)((int32_t)%s >> %d);\n", d, s, shamt)
+		case 0x30: // RORIW
+			e.emit("    { uint32_t a_ = (uint32_t)%s; %s = (int64_t)(int32_t)((a_ >> %d) | (a_ << %d)); }\n",
+				s, d, shamt, 32-shamt)
+		default:
+			e.terminated = true
+		}
+	default:
+		e.terminated = true
 	}
 }
 
@@ -357,6 +470,8 @@ func (e *emitter) emitOp(rd, rs1, rs2, funct3, funct7 uint32) {
 		case 7: // REMU
 			e.emit("    %s = (%s == 0) ? %s : %s %% %s;\n", d, b, a, a, b)
 		}
+	case 0x04: // Zbb: ZEXT.H
+		e.emit("    %s = %s & 0xFFFFULL;\n", d, a)
 	case 0x05: // MIN/MAX (Zbb) + CLMUL (Zbc)
 		switch funct3 {
 		case 4:
@@ -369,7 +484,6 @@ func (e *emitter) emitOp(rd, rs1, rs2, funct3, funct7 uint32) {
 			e.emit("    %s = (%s > %s) ? %s : %s;\n", d, a, b, a, b) // MAXU
 		default:
 			// CLMUL etc. — bail to interpreter
-			e.emitReturn(e.pc, jitOK)
 			e.terminated = true
 		}
 	case 0x07: // Zicond
@@ -378,6 +492,63 @@ func (e *emitter) emitOp(rd, rs1, rs2, funct3, funct7 uint32) {
 			e.emit("    %s = (%s == 0) ? 0 : %s;\n", d, b, a) // CZERO.EQZ
 		case 7:
 			e.emit("    %s = (%s != 0) ? 0 : %s;\n", d, b, a) // CZERO.NEZ
+		default:
+			e.terminated = true
+		}
+	case 0x10: // Zba: SH1ADD/SH2ADD/SH3ADD
+		switch funct3 {
+		case 2:
+			e.emit("    %s = %s + (%s << 1);\n", d, b, a) // SH1ADD
+		case 4:
+			e.emit("    %s = %s + (%s << 2);\n", d, b, a) // SH2ADD
+		case 6:
+			e.emit("    %s = %s + (%s << 3);\n", d, b, a) // SH3ADD
+		default:
+			e.terminated = true
+		}
+	case 0x14: // Zbs: BSET
+		switch funct3 {
+		case 1:
+			e.emit("    %s = %s | (1ULL << (%s & 63));\n", d, a, b)
+		default:
+			e.terminated = true
+		}
+	case 0x24: // Zbs: BCLR/BEXT
+		switch funct3 {
+		case 1:
+			e.emit("    %s = %s & ~(1ULL << (%s & 63));\n", d, a, b) // BCLR
+		case 5:
+			e.emit("    %s = (%s >> (%s & 63)) & 1;\n", d, a, b) // BEXT
+		default:
+			e.terminated = true
+		}
+	case 0x30: // Zbb: ROL/ROR
+		switch funct3 {
+		case 1: // ROL
+			e.emit("    { uint64_t s_ = %s & 63; %s = (%s << s_) | (%s >> (64-s_)); }\n", b, d, a, a)
+		case 5: // ROR
+			e.emit("    { uint64_t s_ = %s & 63; %s = (%s >> s_) | (%s << (64-s_)); }\n", b, d, a, a)
+		default:
+			e.terminated = true
+		}
+	case 0x34: // Zbs: BINV
+		e.emit("    %s = %s ^ (1ULL << (%s & 63));\n", d, a, b)
+	case 0x35: // Zbb: REV8
+		e.emit("    { uint64_t v_ = %s;\n", a)
+		e.emit("      v_ = ((v_ & 0x00FF00FF00FF00FFULL) << 8) | ((v_ & 0xFF00FF00FF00FF00ULL) >> 8);\n")
+		e.emit("      v_ = ((v_ & 0x0000FFFF0000FFFFULL) << 16) | ((v_ & 0xFFFF0000FFFF0000ULL) >> 16);\n")
+		e.emit("      %s = (v_ << 32) | (v_ >> 32); }\n", d)
+	case 0x60: // Zbb: CLZ/CTZ/CPOP
+		e.usesZbbHelpers = true
+		switch rs2 {
+		case 0:
+			e.emit("    %s = jit_clz64(%s);\n", d, a) // CLZ
+		case 1:
+			e.emit("    %s = jit_ctz64(%s);\n", d, a) // CTZ
+		case 2:
+			e.emit("    %s = jit_cpop64(%s);\n", d, a) // CPOP
+		default:
+			e.terminated = true
 		}
 	default:
 		// Unknown funct7 — bail
@@ -426,6 +597,42 @@ func (e *emitter) emitOp32(rd, rs1, rs2, funct3, funct7 uint32) {
 				d, b, a, a, b, a, b)
 		case 7: // REMUW
 			e.emit("    %s = ((uint32_t)%s == 0) ? (int64_t)(int32_t)%s : (int64_t)(int32_t)((uint32_t)%s %% (uint32_t)%s);\n", d, b, a, a, b)
+		}
+	case 0x04: // Zba: ADD.UW
+		e.emit("    %s = %s + (uint64_t)(uint32_t)%s;\n", d, b, a)
+	case 0x10: // Zba: SH1ADD.UW / SH2ADD.UW / SH3ADD.UW
+		switch funct3 {
+		case 2:
+			e.emit("    %s = %s + ((uint64_t)(uint32_t)%s << 1);\n", d, b, a)
+		case 4:
+			e.emit("    %s = %s + ((uint64_t)(uint32_t)%s << 2);\n", d, b, a)
+		case 6:
+			e.emit("    %s = %s + ((uint64_t)(uint32_t)%s << 3);\n", d, b, a)
+		default:
+			e.terminated = true
+		}
+	case 0x30: // Zbb: ROLW/RORW
+		switch funct3 {
+		case 1: // ROLW
+			e.emit("    { uint32_t s_ = (uint32_t)%s & 31; %s = (int64_t)(int32_t)(((uint32_t)%s << s_) | ((uint32_t)%s >> (32-s_))); }\n",
+				b, d, a, a)
+		case 5: // RORW
+			e.emit("    { uint32_t s_ = (uint32_t)%s & 31; %s = (int64_t)(int32_t)(((uint32_t)%s >> s_) | ((uint32_t)%s << (32-s_))); }\n",
+				b, d, a, a)
+		default:
+			e.terminated = true
+		}
+	case 0x60: // Zbb: CLZW/CTZW/CPOPW
+		e.usesZbbHelpers = true
+		switch rs2 {
+		case 0:
+			e.emit("    %s = jit_clz32((uint32_t)%s);\n", d, a)
+		case 1:
+			e.emit("    %s = jit_ctz32((uint32_t)%s);\n", d, a)
+		case 2:
+			e.emit("    %s = jit_cpop32((uint32_t)%s);\n", d, a)
+		default:
+			e.terminated = true
 		}
 	default:
 		e.terminated = true
@@ -509,6 +716,337 @@ func storeInfo(funct3 uint32) (width uint64, ctype string) {
 		return 8, "uint64_t"
 	}
 	return 0, ""
+}
+
+// ── FP LOAD (opcode 0x07) ───────────────────────────────────────────────
+
+func (e *emitter) emitFPLoad(rd, rs1 uint32, imm int64, funct3 uint32) {
+	e.usesFP = true
+	var width uint64
+	switch funct3 {
+	case 2: // FLW
+		width = 4
+	case 3: // FLD
+		width = 8
+	default:
+		e.terminated = true
+		return
+	}
+	e.emit("    { uint64_t addr = %s + %dLL;\n", e.rs(rs1), imm)
+	e.emit("      if (__builtin_expect((addr & %d) | ((addr | (addr+%d)) & ~mem_mask), 0)) {\n",
+		width-1, width-1)
+	e.emitWriteBackAll()
+	e.emit("        return (JITResult){0x%xULL, ic, %d, addr}; }\n", e.pc, jitLoadFault)
+	if funct3 == 2 { // FLW: NaN-box
+		e.emit("      f[%d] = box_f32(*(uint32_t*)(mem_base + (addr & mem_mask))); }\n", rd)
+	} else { // FLD
+		e.emit("      f[%d] = *(uint64_t*)(mem_base + (addr & mem_mask)); }\n", rd)
+	}
+}
+
+// ── FP STORE (opcode 0x27) ──────────────────────────────────────────────
+
+func (e *emitter) emitFPStore(rs1, rs2 uint32, imm int64, funct3 uint32) {
+	e.usesFP = true
+	var width uint64
+	switch funct3 {
+	case 2: // FSW
+		width = 4
+	case 3: // FSD
+		width = 8
+	default:
+		e.terminated = true
+		return
+	}
+	e.emit("    { uint64_t addr = %s + %dLL;\n", e.rs(rs1), imm)
+	e.emit("      if (__builtin_expect((addr & %d) | ((addr | (addr+%d)) & ~mem_mask), 0)) {\n",
+		width-1, width-1)
+	e.emitWriteBackAll()
+	e.emit("        return (JITResult){0x%xULL, ic, %d, addr}; }\n", e.pc, jitStoreFault)
+	if funct3 == 2 { // FSW
+		e.emit("      *(uint32_t*)(mem_base + (addr & mem_mask)) = (uint32_t)f[%d]; }\n", rs2)
+	} else { // FSD
+		e.emit("      *(uint64_t*)(mem_base + (addr & mem_mask)) = f[%d]; }\n", rs2)
+	}
+}
+
+// ── FMADD family (opcodes 0x43, 0x47, 0x4B, 0x4F) ─────────────────────
+
+func (e *emitter) emitFMA(opcode, rd, rs1, rs2, rs3, fpfmt uint32) {
+	e.usesFP = true
+	if fpfmt > 1 {
+		e.terminated = true
+		return
+	}
+
+	// Build the expression: ±(a * b) ± c
+	var neg, sub string
+	switch opcode {
+	case 0x43: // FMADD:  a*b + c
+	case 0x47: // FMSUB:  a*b - c
+		sub = "-"
+	case 0x4B: // FNMSUB: -(a*b) + c
+		neg = "-"
+	case 0x4F: // FNMADD: -(a*b) - c
+		neg = "-"
+		sub = "-"
+	}
+	if sub == "" {
+		sub = "+"
+	}
+
+	if fpfmt == 0 { // single
+		e.emit("    wr_f32(f, %d, %s(rd_f32(f,%d) * rd_f32(f,%d)) %s rd_f32(f,%d));\n",
+			rd, neg, rs1, rs2, sub, rs3)
+	} else { // double
+		e.emit("    wr_f64(f, %d, %s(rd_f64(f,%d) * rd_f64(f,%d)) %s rd_f64(f,%d));\n",
+			rd, neg, rs1, rs2, sub, rs3)
+	}
+}
+
+// ── FP-OP (opcode 0x53) ────────────────────────────────────────────────
+
+func (e *emitter) emitFPOp(rd, rs1, rs2, funct3, funct5, fpfmt uint32) {
+	e.usesFP = true
+	if fpfmt == 0 {
+		e.emitFPOpS(rd, rs1, rs2, funct3, funct5)
+	} else if fpfmt == 1 {
+		e.emitFPOpD(rd, rs1, rs2, funct3, funct5)
+	} else {
+		e.terminated = true
+	}
+}
+
+func (e *emitter) emitFPOpS(rd, rs1, rs2, funct3, funct5 uint32) {
+	switch funct5 {
+	case 0x00: // FADD.S
+		e.emit("    wr_f32(f, %d, rd_f32(f,%d) + rd_f32(f,%d));\n", rd, rs1, rs2)
+	case 0x01: // FSUB.S
+		e.emit("    wr_f32(f, %d, rd_f32(f,%d) - rd_f32(f,%d));\n", rd, rs1, rs2)
+	case 0x02: // FMUL.S
+		e.emit("    wr_f32(f, %d, rd_f32(f,%d) * rd_f32(f,%d));\n", rd, rs1, rs2)
+	case 0x03: // FDIV.S
+		e.emit("    wr_f32(f, %d, rd_f32(f,%d) / rd_f32(f,%d));\n", rd, rs1, rs2)
+	case 0x0B: // FSQRT.S
+		e.emit("    wr_f32(f, %d, jit_sqrtf(rd_f32(f,%d)));\n", rd, rs1)
+	case 0x04: // FSGNJ.S / FSGNJN.S / FSGNJX.S
+		e.emitFsgnjS(rd, rs1, rs2, funct3)
+	case 0x05: // FMIN.S / FMAX.S
+		switch funct3 {
+		case 0:
+			e.emit("    wr_f32(f, %d, jit_fminf(rd_f32(f,%d), rd_f32(f,%d)));\n", rd, rs1, rs2)
+		case 1:
+			e.emit("    wr_f32(f, %d, jit_fmaxf(rd_f32(f,%d), rd_f32(f,%d)));\n", rd, rs1, rs2)
+		default:
+			e.terminated = true
+		}
+	case 0x08: // FCVT.S.D (from double to single, fpfmt=0, rs2=1)
+		e.emit("    wr_f32(f, %d, (float)rd_f64(f,%d));\n", rd, rs1)
+	case 0x14: // FEQ.S / FLT.S / FLE.S — writes to integer rd
+		e.emitFcmpS(rd, rs1, rs2, funct3)
+	case 0x18: // FCVT.{W,WU,L,LU}.S — float→int
+		e.emitFcvtToIntS(rd, rs1, rs2)
+	case 0x1A: // FCVT.S.{W,WU,L,LU} — int→float
+		e.emitFcvtFromIntS(rd, rs1, rs2)
+	case 0x1C: // FMV.X.W / FCLASS.S
+		switch funct3 {
+		case 0: // FMV.X.W
+			if rd != 0 {
+				e.emit("    %s = (int64_t)(int32_t)(uint32_t)f[%d];\n", e.rd(rd), rs1)
+			}
+		default: // FCLASS.S — bail
+			e.terminated = true
+		}
+	case 0x1E: // FMV.W.X
+		e.emit("    f[%d] = box_f32((uint32_t)%s);\n", rd, e.rs(rs1))
+	default:
+		e.terminated = true
+	}
+}
+
+func (e *emitter) emitFPOpD(rd, rs1, rs2, funct3, funct5 uint32) {
+	switch funct5 {
+	case 0x00: // FADD.D
+		e.emit("    wr_f64(f, %d, rd_f64(f,%d) + rd_f64(f,%d));\n", rd, rs1, rs2)
+	case 0x01: // FSUB.D
+		e.emit("    wr_f64(f, %d, rd_f64(f,%d) - rd_f64(f,%d));\n", rd, rs1, rs2)
+	case 0x02: // FMUL.D
+		e.emit("    wr_f64(f, %d, rd_f64(f,%d) * rd_f64(f,%d));\n", rd, rs1, rs2)
+	case 0x03: // FDIV.D
+		e.emit("    wr_f64(f, %d, rd_f64(f,%d) / rd_f64(f,%d));\n", rd, rs1, rs2)
+	case 0x0B: // FSQRT.D
+		e.emit("    wr_f64(f, %d, jit_sqrt(rd_f64(f,%d)));\n", rd, rs1)
+	case 0x04: // FSGNJ.D / FSGNJN.D / FSGNJX.D
+		e.emitFsgnjD(rd, rs1, rs2, funct3)
+	case 0x05: // FMIN.D / FMAX.D
+		switch funct3 {
+		case 0:
+			e.emit("    wr_f64(f, %d, jit_fmin(rd_f64(f,%d), rd_f64(f,%d)));\n", rd, rs1, rs2)
+		case 1:
+			e.emit("    wr_f64(f, %d, jit_fmax(rd_f64(f,%d), rd_f64(f,%d)));\n", rd, rs1, rs2)
+		default:
+			e.terminated = true
+		}
+	case 0x08: // FCVT.D.S (from single to double, fpfmt=1, rs2=0)
+		e.emit("    wr_f64(f, %d, (double)rd_f32(f,%d));\n", rd, rs1)
+	case 0x14: // FEQ.D / FLT.D / FLE.D
+		e.emitFcmpD(rd, rs1, rs2, funct3)
+	case 0x18: // FCVT.{W,WU,L,LU}.D — double→int
+		e.emitFcvtToIntD(rd, rs1, rs2)
+	case 0x1A: // FCVT.D.{W,WU,L,LU} — int→double
+		e.emitFcvtFromIntD(rd, rs1, rs2)
+	case 0x1C: // FMV.X.D / FCLASS.D
+		switch funct3 {
+		case 0: // FMV.X.D
+			if rd != 0 {
+				e.emit("    %s = f[%d];\n", e.rd(rd), rs1)
+			}
+		default: // FCLASS.D — bail
+			e.terminated = true
+		}
+	case 0x1E: // FMV.D.X
+		e.emit("    f[%d] = %s;\n", rd, e.rs(rs1))
+	default:
+		e.terminated = true
+	}
+}
+
+// ── FP sign injection helpers ───────────────────────────────────────────
+
+func (e *emitter) emitFsgnjS(rd, rs1, rs2, funct3 uint32) {
+	s1 := fmt.Sprintf("unbox_f32(f[%d])", rs1)
+	s2 := fmt.Sprintf("unbox_f32(f[%d])", rs2)
+	switch funct3 {
+	case 0: // FSGNJ.S — copy sign of rs2
+		e.emit("    f[%d] = box_f32((%s & 0x7FFFFFFFu) | (%s & 0x80000000u));\n", rd, s1, s2)
+	case 1: // FSGNJN.S — negate sign of rs2
+		e.emit("    f[%d] = box_f32((%s & 0x7FFFFFFFu) | (~%s & 0x80000000u));\n", rd, s1, s2)
+	case 2: // FSGNJX.S — XOR signs
+		e.emit("    f[%d] = box_f32(%s ^ (%s & 0x80000000u));\n", rd, s1, s2)
+	default:
+		e.terminated = true
+	}
+}
+
+func (e *emitter) emitFsgnjD(rd, rs1, rs2, funct3 uint32) {
+	switch funct3 {
+	case 0: // FSGNJ.D
+		e.emit("    f[%d] = (f[%d] & 0x7FFFFFFFFFFFFFFFULL) | (f[%d] & 0x8000000000000000ULL);\n", rd, rs1, rs2)
+	case 1: // FSGNJN.D
+		e.emit("    f[%d] = (f[%d] & 0x7FFFFFFFFFFFFFFFULL) | (~f[%d] & 0x8000000000000000ULL);\n", rd, rs1, rs2)
+	case 2: // FSGNJX.D
+		e.emit("    f[%d] = f[%d] ^ (f[%d] & 0x8000000000000000ULL);\n", rd, rs1, rs2)
+	default:
+		e.terminated = true
+	}
+}
+
+// ── FP comparison helpers ───────────────────────────────────────────────
+
+func (e *emitter) emitFcmpS(rd, rs1, rs2, funct3 uint32) {
+	if rd == 0 {
+		return // write to x0 discarded
+	}
+	d := e.rd(rd) // mark integer register as used
+	switch funct3 {
+	case 0: // FLE.S
+		e.emit("    %s = (rd_f32(f,%d) <= rd_f32(f,%d)) ? 1 : 0;\n", d, rs1, rs2)
+	case 1: // FLT.S
+		e.emit("    %s = (rd_f32(f,%d) < rd_f32(f,%d)) ? 1 : 0;\n", d, rs1, rs2)
+	case 2: // FEQ.S
+		e.emit("    %s = (rd_f32(f,%d) == rd_f32(f,%d)) ? 1 : 0;\n", d, rs1, rs2)
+	default:
+		e.terminated = true
+	}
+}
+
+func (e *emitter) emitFcmpD(rd, rs1, rs2, funct3 uint32) {
+	if rd == 0 {
+		return
+	}
+	d := e.rd(rd)
+	switch funct3 {
+	case 0: // FLE.D
+		e.emit("    %s = (rd_f64(f,%d) <= rd_f64(f,%d)) ? 1 : 0;\n", d, rs1, rs2)
+	case 1: // FLT.D
+		e.emit("    %s = (rd_f64(f,%d) < rd_f64(f,%d)) ? 1 : 0;\n", d, rs1, rs2)
+	case 2: // FEQ.D
+		e.emit("    %s = (rd_f64(f,%d) == rd_f64(f,%d)) ? 1 : 0;\n", d, rs1, rs2)
+	default:
+		e.terminated = true
+	}
+}
+
+// ── FP conversion helpers ───────────────────────────────────────────────
+
+func (e *emitter) emitFcvtToIntS(rd, rs1, rs2 uint32) {
+	if rd == 0 {
+		return
+	}
+	d := e.rd(rd)
+	switch rs2 {
+	case 0: // FCVT.W.S
+		e.emit("    %s = (int64_t)(int32_t)rd_f32(f,%d);\n", d, rs1)
+	case 1: // FCVT.WU.S
+		e.emit("    %s = (int64_t)(int32_t)(uint32_t)rd_f32(f,%d);\n", d, rs1)
+	case 2: // FCVT.L.S
+		e.emit("    %s = (int64_t)rd_f32(f,%d);\n", d, rs1)
+	case 3: // FCVT.LU.S
+		e.emit("    %s = (uint64_t)rd_f32(f,%d);\n", d, rs1)
+	default:
+		e.terminated = true
+	}
+}
+
+func (e *emitter) emitFcvtToIntD(rd, rs1, rs2 uint32) {
+	if rd == 0 {
+		return
+	}
+	d := e.rd(rd)
+	switch rs2 {
+	case 0: // FCVT.W.D
+		e.emit("    %s = (int64_t)(int32_t)rd_f64(f,%d);\n", d, rs1)
+	case 1: // FCVT.WU.D
+		e.emit("    %s = (int64_t)(int32_t)(uint32_t)rd_f64(f,%d);\n", d, rs1)
+	case 2: // FCVT.L.D
+		e.emit("    %s = (int64_t)rd_f64(f,%d);\n", d, rs1)
+	case 3: // FCVT.LU.D
+		e.emit("    %s = (uint64_t)rd_f64(f,%d);\n", d, rs1)
+	default:
+		e.terminated = true
+	}
+}
+
+func (e *emitter) emitFcvtFromIntS(rd, rs1, rs2 uint32) {
+	s := e.rs(rs1) // integer register
+	switch rs2 {
+	case 0: // FCVT.S.W
+		e.emit("    wr_f32(f, %d, (float)(int32_t)%s);\n", rd, s)
+	case 1: // FCVT.S.WU
+		e.emit("    wr_f32(f, %d, (float)(uint32_t)%s);\n", rd, s)
+	case 2: // FCVT.S.L
+		e.emit("    wr_f32(f, %d, (float)(int64_t)%s);\n", rd, s)
+	case 3: // FCVT.S.LU
+		e.emit("    wr_f32(f, %d, (float)%s);\n", rd, s)
+	default:
+		e.terminated = true
+	}
+}
+
+func (e *emitter) emitFcvtFromIntD(rd, rs1, rs2 uint32) {
+	s := e.rs(rs1)
+	switch rs2 {
+	case 0: // FCVT.D.W
+		e.emit("    wr_f64(f, %d, (double)(int32_t)%s);\n", rd, s)
+	case 1: // FCVT.D.WU
+		e.emit("    wr_f64(f, %d, (double)(uint32_t)%s);\n", rd, s)
+	case 2: // FCVT.D.L
+		e.emit("    wr_f64(f, %d, (double)(int64_t)%s);\n", rd, s)
+	case 3: // FCVT.D.LU
+		e.emit("    wr_f64(f, %d, (double)%s);\n", rd, s)
+	default:
+		e.terminated = true
+	}
 }
 
 // ── Shared helpers for JAL, JALR, BRANCH ────────────────────────────────
@@ -606,16 +1144,19 @@ func (e *emitter) emitRVC_Q0(insn uint16, funct3 uint16) {
 			return
 		}
 		e.emitOpImm(rd, 2, nzuimm, 0, 0) // ADDI rd, sp, nzuimm
-	case 0b001: // C.FLD — bail for now (Phase 2b)
-		e.terminated = true
+	case 0b001: // C.FLD
+		uimm := int64(((insn>>10)&7)<<3 | ((insn>>5)&3)<<6)
+		e.emitFPLoad(rd, rs1, uimm, 3) // FLD rd', uimm(rs1')
 	case 0b010: // C.LW
 		uimm := int64(((insn>>10)&7)<<3 | ((insn>>6)&1)<<2 | ((insn>>5)&1)<<6)
 		e.emitLoad(rd, rs1, uimm, 2) // LW rd, uimm(rs1)
 	case 0b011: // C.LD
 		uimm := int64(((insn>>10)&7)<<3 | ((insn>>5)&3)<<6)
 		e.emitLoad(rd, rs1, uimm, 3) // LD rd, uimm(rs1)
-	case 0b101: // C.FSD — bail for now (Phase 2b)
-		e.terminated = true
+	case 0b101: // C.FSD
+		rs2 := uint32(8 + ((insn >> 2) & 7))
+		uimm := int64(((insn>>10)&7)<<3 | ((insn>>5)&3)<<6)
+		e.emitFPStore(rs1, rs2, uimm, 3) // FSD rs2', uimm(rs1')
 	case 0b110: // C.SW
 		rs2 := uint32(8 + ((insn >> 2) & 7))
 		uimm := int64(((insn>>10)&7)<<3 | ((insn>>6)&1)<<2 | ((insn>>5)&1)<<6)
@@ -742,8 +1283,9 @@ func (e *emitter) emitRVC_Q2(insn uint16, funct3 uint16) {
 		shamt := int64(((insn>>12)&1)<<5 | (insn>>2)&0x1F)
 		e.emitOpImm(rd, rd, shamt, 1, 0) // SLLI rd, rd, shamt
 
-	case 0b001: // C.FLDSP — bail for now (Phase 2b)
-		e.terminated = true
+	case 0b001: // C.FLDSP
+		uimm := int64(((insn>>12)&1)<<5 | ((insn>>5)&3)<<3 | ((insn>>2)&7)<<6)
+		e.emitFPLoad(rd, 2, uimm, 3) // FLD rd, uimm(sp)
 
 	case 0b010: // C.LWSP
 		uimm := int64(((insn>>12)&1)<<5 | ((insn>>4)&7)<<2 | ((insn>>2)&3)<<6)
@@ -777,8 +1319,9 @@ func (e *emitter) emitRVC_Q2(insn uint16, funct3 uint16) {
 			}
 		}
 
-	case 0b101: // C.FSDSP — bail for now (Phase 2b)
-		e.terminated = true
+	case 0b101: // C.FSDSP
+		uimm := int64(((insn>>10)&7)<<3 | ((insn>>7)&7)<<6)
+		e.emitFPStore(2, rs2, uimm, 3) // FSD rs2, uimm(sp)
 
 	case 0b110: // C.SWSP
 		uimm := int64(((insn>>9)&0xF)<<2 | ((insn>>7)&3)<<6)
@@ -910,6 +1453,34 @@ func (e *emitter) finalize() *emitResult {
 	out.WriteString("typedef signed char int8_t;\n")
 	out.WriteString("void *memset(void *s, int c, unsigned long n) { char *p=s; while(n--) *p++=c; return s; }\n")
 	out.WriteString("typedef struct { uint64_t pc; uint64_t ic; uint64_t status; uint64_t fault_addr; } JITResult;\n\n")
+
+	// Conditional FP header
+	if e.usesFP {
+		out.WriteString("typedef union { int32_t i32[2]; float f32[2]; int64_t i64; double f64; uint64_t u64; } fp64reg;\n")
+		out.WriteString("static uint64_t box_f32(uint32_t bits) { return 0xFFFFFFFF00000000ULL | (uint64_t)bits; }\n")
+		out.WriteString("static uint32_t unbox_f32(uint64_t r) { return (r>>32)==0xFFFFFFFF ? (uint32_t)r : 0x7FC00000u; }\n")
+		out.WriteString("static float rd_f32(uint64_t *f, int r) { fp64reg t; t.i32[0]=(int32_t)unbox_f32(f[r]); return t.f32[0]; }\n")
+		out.WriteString("static double rd_f64(uint64_t *f, int r) { fp64reg t; t.u64=f[r]; return t.f64; }\n")
+		out.WriteString("static void wr_f32(uint64_t *f, int r, float v) { fp64reg t; t.f32[0]=v; f[r]=box_f32((uint32_t)t.i32[0]); }\n")
+		out.WriteString("static void wr_f64(uint64_t *f, int r, double v) { fp64reg t; t.f64=v; f[r]=t.u64; }\n")
+		out.WriteString("static float jit_fminf(float a,float b) { if(a!=a)return b; if(b!=b)return a; if(a<b)return a; if(b<a)return b; fp64reg u,v; u.f32[0]=a; v.f32[0]=b; return (u.i32[0]&(int32_t)0x80000000)?a:b; }\n")
+		out.WriteString("static float jit_fmaxf(float a,float b) { if(a!=a)return b; if(b!=b)return a; if(a>b)return a; if(b>a)return b; fp64reg u,v; u.f32[0]=a; v.f32[0]=b; return (v.i32[0]&(int32_t)0x80000000)?a:b; }\n")
+		out.WriteString("static double jit_fmin(double a,double b) { if(a!=a)return b; if(b!=b)return a; if(a<b)return a; if(b<a)return b; fp64reg u,v; u.f64=a; v.f64=b; return (u.u64>>63)?a:b; }\n")
+		out.WriteString("static double jit_fmax(double a,double b) { if(a!=a)return b; if(b!=b)return a; if(a>b)return a; if(b>a)return b; fp64reg u,v; u.f64=a; v.f64=b; return (v.u64>>63)?a:b; }\n")
+		out.WriteString("extern float jit_sqrtf(float);\n")
+		out.WriteString("extern double jit_sqrt(double);\n\n")
+	}
+
+	// Conditional Zbb helper functions
+	if e.usesZbbHelpers {
+		out.WriteString("static int jit_clz64(uint64_t x){if(!x)return 64;int n=0;if(!(x&0xFFFFFFFF00000000ULL)){n+=32;x<<=32;}if(!(x&0xFFFF000000000000ULL)){n+=16;x<<=16;}if(!(x&0xFF00000000000000ULL)){n+=8;x<<=8;}if(!(x&0xF000000000000000ULL)){n+=4;x<<=4;}if(!(x&0xC000000000000000ULL)){n+=2;x<<=2;}if(!(x&0x8000000000000000ULL))n+=1;return n;}\n")
+		out.WriteString("static int jit_ctz64(uint64_t x){if(!x)return 64;int n=0;if(!(x&0xFFFFFFFF)){n+=32;x>>=32;}if(!(x&0xFFFF)){n+=16;x>>=16;}if(!(x&0xFF)){n+=8;x>>=8;}if(!(x&0xF)){n+=4;x>>=4;}if(!(x&0x3)){n+=2;x>>=2;}if(!(x&0x1))n+=1;return n;}\n")
+		out.WriteString("static int jit_cpop64(uint64_t x){x=x-((x>>1)&0x5555555555555555ULL);x=(x&0x3333333333333333ULL)+((x>>2)&0x3333333333333333ULL);x=(x+(x>>4))&0x0F0F0F0F0F0F0F0FULL;return(int)((x*0x0101010101010101ULL)>>56);}\n")
+		out.WriteString("static int jit_clz32(uint32_t x){if(!x)return 32;int n=0;if(!(x&0xFFFF0000u)){n+=16;x<<=16;}if(!(x&0xFF000000u)){n+=8;x<<=8;}if(!(x&0xF0000000u)){n+=4;x<<=4;}if(!(x&0xC0000000u)){n+=2;x<<=2;}if(!(x&0x80000000u))n+=1;return n;}\n")
+		out.WriteString("static int jit_ctz32(uint32_t x){if(!x)return 32;int n=0;if(!(x&0xFFFF)){n+=16;x>>=16;}if(!(x&0xFF)){n+=8;x>>=8;}if(!(x&0xF)){n+=4;x>>=4;}if(!(x&0x3)){n+=2;x>>=2;}if(!(x&0x1))n+=1;return n;}\n")
+		out.WriteString("static int jit_cpop32(uint32_t x){x=x-((x>>1)&0x55555555u);x=(x&0x33333333u)+((x>>2)&0x33333333u);x=(x+(x>>4))&0x0F0F0F0Fu;return(int)((x*0x01010101u)>>24);}\n\n")
+	}
+
 	out.WriteString("JITResult block_entry(uint64_t *x, uint64_t *f, uint32_t *fcsr,\n")
 	out.WriteString("                      char *mem_base, uint64_t mem_mask) {\n")
 
