@@ -158,53 +158,23 @@ func (e *emitter) emit32(insn uint32) {
 	// ── JAL ──────────────────────────────────────────────────────────
 	case 0x6F:
 		jimm := jImm(insn)
-		target := e.pc + uint64(jimm)
-		if rd != 0 {
-			e.emit("    %s = 0x%xULL;\n", e.rd(rd), e.pc+4) // link
-		}
-		e.advancePC(4)
-		e.emitReturn(target, jitOK)
-		e.terminated = true
+		e.emitJAL(rd, jimm, 4)
 
 	// ── JALR ─────────────────────────────────────────────────────────
 	case 0x67:
-		// Compute target BEFORE writing link (rd may alias rs1).
-		e.emit("    { uint64_t t = (%s + %dLL) & ~(uint64_t)1;\n", e.rs(rs1), iimm)
-		if rd != 0 {
-			e.emit("    %s = 0x%xULL;\n", e.rd(rd), e.pc+4) // link
-		}
-		e.advancePC(4)
-		e.emitWriteBackAll()
-		e.emit("      return (JITResult){t, ic, 0, 0}; }\n")
-		e.terminated = true
+		e.emitJALR(rd, rs1, iimm, 4)
 
 	// ── BRANCH ───────────────────────────────────────────────────────
 	case 0x63:
 		bimm := bImm(insn)
-		target := e.pc + uint64(bimm)
-		_ = e.pc + 4 // nextPC (used implicitly by fall-through)
 		cmp := branchCmp(funct3)
 		if cmp == "" {
 			e.terminated = true
 			e.advancePC(4)
 			break
 		}
-
-		// Check if target is within this block (backward branch = loop)
-		if target >= e.startPC && target < e.pc {
-			// Internal backward branch — emit goto
-			e.emit("    if (%s %s %s) goto b_%x;\n",
-				e.rsC(rs1, funct3), cmp, e.rsC(rs2, funct3), target)
-			e.advancePC(4)
-		} else {
-			// External branch — exit block
-			e.emit("    if (%s %s %s) {\n",
-				e.rsC(rs1, funct3), cmp, e.rsC(rs2, funct3))
-			e.advancePC(4)
-			e.emitWriteBackAll()
-			e.emit("      return (JITResult){0x%xULL, ic, 0, 0};\n    }\n", target)
-			// Fall through continues to next instruction
-		}
+		e.emitBranch(rs1, rs2, funct3, bimm)
+		e.advancePC(4)
 
 	// ── LOAD ─────────────────────────────────────────────────────────
 	case 0x03:
@@ -541,14 +511,323 @@ func storeInfo(funct3 uint32) (width uint64, ctype string) {
 	return 0, ""
 }
 
+// ── Shared helpers for JAL, JALR, BRANCH ────────────────────────────────
+// These are used by both 32-bit and RVC emitters.
+
+// emitJAL emits a JAL (rd = link, exit block to target).
+// insnSize is 4 for 32-bit or 2 for RVC.
+func (e *emitter) emitJAL(rd uint32, offset int64, insnSize uint64) {
+	target := e.pc + uint64(offset)
+	if rd != 0 {
+		e.emit("    %s = 0x%xULL;\n", e.rd(rd), e.pc+insnSize) // link
+	}
+	e.advancePC(insnSize)
+	e.emitReturn(target, jitOK)
+	e.terminated = true
+}
+
+// emitJALR emits a JALR (rd = link, exit block to rs1+imm).
+// insnSize is 4 for 32-bit or 2 for RVC.
+func (e *emitter) emitJALR(rd, rs1 uint32, imm int64, insnSize uint64) {
+	// Compute target BEFORE writing link (rd may alias rs1).
+	e.emit("    { uint64_t t = (%s + %dLL) & ~(uint64_t)1;\n", e.rs(rs1), imm)
+	if rd != 0 {
+		e.emit("    %s = 0x%xULL;\n", e.rd(rd), e.pc+insnSize) // link
+	}
+	e.advancePC(insnSize)
+	e.emitWriteBackAll()
+	e.emit("      return (JITResult){t, ic, 0, 0}; }\n")
+	e.terminated = true
+}
+
+// emitBranch emits a conditional branch (internal goto or external exit).
+// Does NOT call advancePC — the caller must do that.
+func (e *emitter) emitBranch(rs1, rs2, funct3 uint32, offset int64) {
+	target := e.pc + uint64(offset)
+	cmp := branchCmp(funct3)
+
+	// Check if target is within this block (backward branch = loop)
+	if target >= e.startPC && target < e.pc {
+		// Internal backward branch — emit goto
+		e.emit("    if (%s %s %s) goto b_%x;\n",
+			e.rsC(rs1, funct3), cmp, e.rsC(rs2, funct3), target)
+	} else {
+		// External branch — exit block.
+		// The fall-through return address is computed from e.pc AFTER the
+		// caller calls advancePC, which happens before finalize's
+		// fall-through return. For the taken path, we compute the target
+		// return address now (before advancePC).
+		e.emit("    if (%s %s %s) {\n",
+			e.rsC(rs1, funct3), cmp, e.rsC(rs2, funct3))
+		e.emitWriteBackAll()
+		e.emit("      return (JITResult){0x%xULL, ic, 0, 0};\n    }\n", target)
+		// Fall through continues to next instruction
+	}
+}
+
 // ── RVC (compressed instructions) ───────────────────────────────────────
+// Strategy: decode 16-bit instruction, expand to equivalent 32-bit fields,
+// then call existing emitters. Same approach as libriscv's tr_emit_rvc.cpp.
 
 func (e *emitter) emitRVC(insn uint16) {
-	// For now, bail on all compressed instructions — let interpreter handle.
-	// Phase 2 will add RVC emission.
 	e.emitLabel()
-	e.emitReturn(e.pc, jitOK)
-	e.terminated = true
+	e.emitIC()
+
+	quad := insn & 0x3
+	funct3 := insn >> 13
+
+	switch quad {
+	case 0x0:
+		e.emitRVC_Q0(insn, funct3)
+	case 0x1:
+		e.emitRVC_Q1(insn, funct3)
+	case 0x2:
+		e.emitRVC_Q2(insn, funct3)
+	default:
+		e.terminated = true
+	}
+
+	if !e.terminated {
+		e.advancePC(2)
+	}
+}
+
+// emitRVC_Q0 handles Quadrant 0: loads/stores with compressed registers.
+func (e *emitter) emitRVC_Q0(insn uint16, funct3 uint16) {
+	rd := uint32(8 + ((insn >> 2) & 7))
+	rs1 := uint32(8 + ((insn >> 7) & 7))
+
+	switch funct3 {
+	case 0b000: // C.ADDI4SPN: rd' = sp + nzuimm
+		nzuimm := int64(((insn>>11)&3)<<4 | ((insn>>7)&0xF)<<6 |
+			((insn>>6)&1)<<2 | ((insn>>5)&1)<<3)
+		if nzuimm == 0 {
+			e.terminated = true
+			return
+		}
+		e.emitOpImm(rd, 2, nzuimm, 0, 0) // ADDI rd, sp, nzuimm
+	case 0b001: // C.FLD — bail for now (Phase 2b)
+		e.terminated = true
+	case 0b010: // C.LW
+		uimm := int64(((insn>>10)&7)<<3 | ((insn>>6)&1)<<2 | ((insn>>5)&1)<<6)
+		e.emitLoad(rd, rs1, uimm, 2) // LW rd, uimm(rs1)
+	case 0b011: // C.LD
+		uimm := int64(((insn>>10)&7)<<3 | ((insn>>5)&3)<<6)
+		e.emitLoad(rd, rs1, uimm, 3) // LD rd, uimm(rs1)
+	case 0b101: // C.FSD — bail for now (Phase 2b)
+		e.terminated = true
+	case 0b110: // C.SW
+		rs2 := uint32(8 + ((insn >> 2) & 7))
+		uimm := int64(((insn>>10)&7)<<3 | ((insn>>6)&1)<<2 | ((insn>>5)&1)<<6)
+		e.emitStore(rs1, rs2, uimm, 2) // SW rs2, uimm(rs1)
+	case 0b111: // C.SD
+		rs2 := uint32(8 + ((insn >> 2) & 7))
+		uimm := int64(((insn>>10)&7)<<3 | ((insn>>5)&3)<<6)
+		e.emitStore(rs1, rs2, uimm, 3) // SD rs2, uimm(rs1)
+	default:
+		e.terminated = true
+	}
+}
+
+// emitRVC_Q1 handles Quadrant 1: arithmetic, branches, jumps.
+func (e *emitter) emitRVC_Q1(insn uint16, funct3 uint16) {
+	switch funct3 {
+	case 0b000: // C.NOP / C.ADDI
+		rd := uint32((insn >> 7) & 0x1F)
+		imm := rvcSignedImm6(insn)
+		e.emitOpImm(rd, rd, imm, 0, 0) // ADDI rd, rd, imm
+
+	case 0b001: // C.ADDIW
+		rd := uint32((insn >> 7) & 0x1F)
+		imm := rvcSignedImm6(insn)
+		e.emitOpImm32(rd, rd, imm, 0, 0) // ADDIW rd, rd, imm
+
+	case 0b010: // C.LI
+		rd := uint32((insn >> 7) & 0x1F)
+		imm := rvcSignedImm6(insn)
+		e.emitOpImm(rd, 0, imm, 0, 0) // ADDI rd, x0, imm
+
+	case 0b011: // C.ADDI16SP / C.LUI
+		rd := uint32((insn >> 7) & 0x1F)
+		if rd == 2 { // C.ADDI16SP
+			nzimm := int64(((insn>>12)&1)<<9 | ((insn>>6)&1)<<4 |
+				((insn>>5)&1)<<6 | ((insn>>3)&3)<<7 | ((insn>>2)&1)<<5)
+			if (insn>>12)&1 != 0 {
+				nzimm |= -512
+			}
+			if nzimm == 0 {
+				e.terminated = true
+				return
+			}
+			e.emitOpImm(2, 2, nzimm, 0, 0) // ADDI sp, sp, nzimm
+		} else if rd != 0 { // C.LUI
+			nzimm := int64(((insn>>12)&1)<<5 | (insn>>2)&0x1F)
+			if (insn>>12)&1 != 0 {
+				nzimm |= -32
+			}
+			if nzimm == 0 {
+				e.terminated = true
+				return
+			}
+			uimm := nzimm << 12
+			e.emit("    %s = %dLL;\n", e.rd(rd), uimm) // LUI rd, nzimm
+		}
+
+	case 0b100: // C.MISC-ALU
+		rs1 := uint32(8 + ((insn >> 7) & 7))
+		rs2 := uint32(8 + ((insn >> 2) & 7))
+		funct2 := (insn >> 10) & 3
+		switch funct2 {
+		case 0b00: // C.SRLI
+			shamt := int64(((insn>>12)&1)<<5 | (insn>>2)&0x1F)
+			e.emitOpImm(rs1, rs1, shamt, 5, 0) // SRLI
+		case 0b01: // C.SRAI
+			shamt := int64(((insn>>12)&1)<<5 | (insn>>2)&0x1F)
+			e.emitOpImm(rs1, rs1, shamt, 5, 0x20) // SRAI
+		case 0b10: // C.ANDI
+			imm := rvcSignedImm6(insn)
+			e.emitOpImm(rs1, rs1, imm, 7, 0) // ANDI
+		case 0b11: // C.SUB/XOR/OR/AND/SUBW/ADDW
+			bit12 := (insn >> 12) & 1
+			op := (insn >> 5) & 3
+			if bit12 == 0 {
+				switch op {
+				case 0b00:
+					e.emitOp(rs1, rs1, rs2, 0, 0x20) // SUB
+				case 0b01:
+					e.emitOp(rs1, rs1, rs2, 4, 0) // XOR
+				case 0b10:
+					e.emitOp(rs1, rs1, rs2, 6, 0) // OR
+				case 0b11:
+					e.emitOp(rs1, rs1, rs2, 7, 0) // AND
+				}
+			} else {
+				switch op {
+				case 0b00:
+					e.emitOp32(rs1, rs1, rs2, 0, 0x20) // SUBW
+				case 0b01:
+					e.emitOp32(rs1, rs1, rs2, 0, 0) // ADDW
+				default:
+					e.terminated = true
+				}
+			}
+		}
+
+	case 0b101: // C.J — unconditional jump
+		off := rvcJOffset(insn)
+		e.emitJAL(0, off, 2) // JAL x0, offset
+
+	case 0b110: // C.BEQZ
+		rs1 := uint32(8 + ((insn >> 7) & 7))
+		off := rvcBOffset(insn)
+		e.emitBranch(rs1, 0, 0, off) // BEQ rs1, x0, offset
+
+	case 0b111: // C.BNEZ
+		rs1 := uint32(8 + ((insn >> 7) & 7))
+		off := rvcBOffset(insn)
+		e.emitBranch(rs1, 0, 1, off) // BNE rs1, x0, offset
+
+	default:
+		e.terminated = true
+	}
+}
+
+// emitRVC_Q2 handles Quadrant 2: stack-pointer relative, register ops.
+func (e *emitter) emitRVC_Q2(insn uint16, funct3 uint16) {
+	rd := uint32((insn >> 7) & 0x1F)
+	rs2 := uint32((insn >> 2) & 0x1F)
+
+	switch funct3 {
+	case 0b000: // C.SLLI
+		shamt := int64(((insn>>12)&1)<<5 | (insn>>2)&0x1F)
+		e.emitOpImm(rd, rd, shamt, 1, 0) // SLLI rd, rd, shamt
+
+	case 0b001: // C.FLDSP — bail for now (Phase 2b)
+		e.terminated = true
+
+	case 0b010: // C.LWSP
+		uimm := int64(((insn>>12)&1)<<5 | ((insn>>4)&7)<<2 | ((insn>>2)&3)<<6)
+		e.emitLoad(rd, 2, uimm, 2) // LW rd, uimm(sp)
+
+	case 0b011: // C.LDSP
+		uimm := int64(((insn>>12)&1)<<5 | ((insn>>5)&3)<<3 | ((insn>>2)&7)<<6)
+		e.emitLoad(rd, 2, uimm, 3) // LD rd, uimm(sp)
+
+	case 0b100:
+		bit12 := (insn >> 12) & 1
+		if bit12 == 0 {
+			if rs2 == 0 { // C.JR
+				if rd == 0 {
+					e.terminated = true
+					return
+				}
+				e.emitJALR(0, rd, 0, 2) // JALR x0, rd, 0
+			} else { // C.MV
+				e.emitOpImm(rd, rs2, 0, 0, 0) // ADDI rd, rs2, 0
+			}
+		} else {
+			if rd == 0 && rs2 == 0 { // C.EBREAK
+				e.advancePC(2)
+				e.emitReturn(e.pc, jitEbreak)
+				e.terminated = true
+			} else if rs2 == 0 { // C.JALR
+				e.emitJALR(1, rd, 0, 2) // JALR ra, rd, 0
+			} else { // C.ADD
+				e.emitOp(rd, rd, rs2, 0, 0) // ADD rd, rd, rs2
+			}
+		}
+
+	case 0b101: // C.FSDSP — bail for now (Phase 2b)
+		e.terminated = true
+
+	case 0b110: // C.SWSP
+		uimm := int64(((insn>>9)&0xF)<<2 | ((insn>>7)&3)<<6)
+		e.emitStore(2, rs2, uimm, 2) // SW rs2, uimm(sp)
+
+	case 0b111: // C.SDSP
+		uimm := int64(((insn>>10)&7)<<3 | ((insn>>7)&7)<<6)
+		e.emitStore(2, rs2, uimm, 3) // SD rs2, uimm(sp)
+
+	default:
+		e.terminated = true
+	}
+}
+
+// ── RVC immediate extraction helpers ────────────────────────────────────
+
+// rvcSignedImm6 extracts 6-bit sign-extended immediate from CI-type.
+// imm[5] = insn[12], imm[4:0] = insn[6:2]
+func rvcSignedImm6(insn uint16) int64 {
+	imm := int64(insn>>2) & 0x1F
+	if (insn>>12)&1 != 0 {
+		imm |= -32
+	}
+	return imm
+}
+
+// rvcJOffset extracts the CJ-type signed offset for C.J/C.JAL.
+// Same as cjOffset in cpu.go.
+func rvcJOffset(insn uint16) int64 {
+	o := int64(insn)
+	off := ((o >> 12) & 1) << 11 | ((o >> 11) & 1) << 4 | ((o >> 9) & 3) << 8 |
+		((o >> 8) & 1) << 10 | ((o >> 7) & 1) << 6 | ((o >> 6) & 1) << 7 |
+		((o >> 3) & 7) << 1 | ((o >> 2) & 1) << 5
+	if off&(1<<11) != 0 {
+		off |= -1 << 12
+	}
+	return off
+}
+
+// rvcBOffset extracts the CB-type signed offset for C.BEQZ/C.BNEZ.
+// Same as cbOffset in cpu.go.
+func rvcBOffset(insn uint16) int64 {
+	o := int64(insn)
+	off := ((o >> 12) & 1) << 8 | ((o >> 10) & 3) << 3 | ((o >> 5) & 3) << 6 |
+		((o >> 3) & 3) << 1 | ((o >> 2) & 1) << 5
+	if off&(1<<8) != 0 {
+		off |= -1 << 9
+	}
+	return off
 }
 
 // ── Immediate extraction helpers ────────────────────────────────────────
