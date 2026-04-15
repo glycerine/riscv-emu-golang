@@ -408,7 +408,7 @@ FUZZ_ORACLE_CGO_LDFLAGS := -L$(BUILD) -L$(BUILD)/libriscv \
 fuzz-oracle: bench-setup
 	@echo "── fuzz ALU vs libriscv oracle ($(FUZZ_TIME)) ──────────────"
 	cd $(ROOT) && FUZZ_TIMEOUT=1 \
-	    $(GO) test -tags libriscv \
+	    $(GO) test \
 	        -run FuzzALUVsLibriscv -fuzz=FuzzALUVsLibriscv \
 	        -fuzztime=$(FUZZ_TIME) \
 	        ./fuzzoracle/ 2>&1
@@ -416,7 +416,7 @@ fuzz-oracle: bench-setup
 fuzz-stores: bench-setup
 	@echo "── fuzz loads/stores vs libriscv oracle ($(FUZZ_TIME)) ─────"
 	cd $(ROOT) && FUZZ_TIMEOUT=1 \
-	    $(GO) test -tags libriscv \
+	    $(GO) test \
 	        -run FuzzStoresVsLibriscv -fuzz=FuzzStoresVsLibriscv \
 	        -fuzztime=$(FUZZ_TIME) \
 	        ./fuzzoracle/ 2>&1

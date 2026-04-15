@@ -7,9 +7,7 @@ func ienc(opcode, funct3, rd, rs1 uint8, imm int32) uint32 {
 }
 func senc(opcode, funct3, rd, rs1, shamt uint8, srai bool) uint32 {
 	var f7 uint32
-	if srai {
-		f7 = 0x20
-	}
+	if srai { f7 = 0x20 }
 	return f7<<25 | uint32(shamt)<<20 | uint32(rs1)<<15 | uint32(funct3)<<12 | uint32(rd)<<7 | uint32(opcode)
 }
 func renc(opcode, funct3, funct7, rd, rs1, rs2 uint8) uint32 {

@@ -131,3 +131,6 @@ func (m *Machine) WriteGuest(gva uint64, src []byte) bool {
 	}
 	return C.write_guest(m.m, C.uint64_t(gva), unsafe.Pointer(&src[0]), C.uint(len(src))) == 0
 }
+
+
+
