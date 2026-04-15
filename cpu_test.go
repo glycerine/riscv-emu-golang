@@ -1,6 +1,8 @@
 package riscv
 
 import (
+	"math"
+	"riscv/internal/fenv"
 	"testing"
 )
 
@@ -248,75 +250,97 @@ func TestRORW_Spec(t *testing.T) {
 	defer mem.Free()
 	// RORW x1, x2, x3: x2=0x10, x3=4 → rorw(16,4) = (16>>4)|(16<<28)&0xFFFFFFFF = 1
 	cpu := setupM(t, mem, brtD(0x30, 5, 1, 2, 3, 0x3B), 0x10, 4)
-	if cpu.Reg(1) != 1 { t.Errorf("RORW: got 0x%X want 1", cpu.Reg(1)) }
+	if cpu.Reg(1) != 1 {
+		t.Errorf("RORW: got 0x%X want 1", cpu.Reg(1))
+	}
 }
 func TestCLZ_Spec(t *testing.T) {
 	mem, _ := NewGuestMemory(Size64MB)
 	defer mem.Free()
 	cpu := setupM(t, mem, brtD(0x60, 1, 1, 2, 0, 0x33), 0x0001000000000000, 0)
-	if cpu.Reg(1) != 15 { t.Errorf("CLZ: got %d want 15", cpu.Reg(1)) }
+	if cpu.Reg(1) != 15 {
+		t.Errorf("CLZ: got %d want 15", cpu.Reg(1))
+	}
 }
 func TestCLZ_Zero_Spec(t *testing.T) {
 	mem, _ := NewGuestMemory(Size64MB)
 	defer mem.Free()
 	cpu := setupM(t, mem, brtD(0x60, 1, 1, 2, 0, 0x33), 0, 0)
-	if cpu.Reg(1) != 64 { t.Errorf("CLZ(0): got %d want 64", cpu.Reg(1)) }
+	if cpu.Reg(1) != 64 {
+		t.Errorf("CLZ(0): got %d want 64", cpu.Reg(1))
+	}
 }
 func TestCTZ_Spec(t *testing.T) {
 	mem, _ := NewGuestMemory(Size64MB)
 	defer mem.Free()
 	cpu := setupM(t, mem, brtD(0x60, 1, 1, 2, 1, 0x33), 0x100, 0)
-	if cpu.Reg(1) != 8 { t.Errorf("CTZ: got %d want 8", cpu.Reg(1)) }
+	if cpu.Reg(1) != 8 {
+		t.Errorf("CTZ: got %d want 8", cpu.Reg(1))
+	}
 }
 func TestCTZ_Zero_Spec(t *testing.T) {
 	mem, _ := NewGuestMemory(Size64MB)
 	defer mem.Free()
 	cpu := setupM(t, mem, brtD(0x60, 1, 1, 2, 1, 0x33), 0, 0)
-	if cpu.Reg(1) != 64 { t.Errorf("CTZ(0): got %d want 64", cpu.Reg(1)) }
+	if cpu.Reg(1) != 64 {
+		t.Errorf("CTZ(0): got %d want 64", cpu.Reg(1))
+	}
 }
 func TestCPOP_Spec(t *testing.T) {
 	mem, _ := NewGuestMemory(Size64MB)
 	defer mem.Free()
 	cpu := setupM(t, mem, brtD(0x60, 1, 1, 2, 2, 0x33), 0xFF00FF00FF00FF00, 0)
-	if cpu.Reg(1) != 32 { t.Errorf("CPOP: got %d want 32", cpu.Reg(1)) }
+	if cpu.Reg(1) != 32 {
+		t.Errorf("CPOP: got %d want 32", cpu.Reg(1))
+	}
 }
 func TestCLZW_Spec(t *testing.T) {
 	mem, _ := NewGuestMemory(Size64MB)
 	defer mem.Free()
 	cpu := setupM(t, mem, brtD(0x60, 1, 1, 2, 0, 0x3B), 0x00010000, 0)
-	if cpu.Reg(1) != 15 { t.Errorf("CLZW: got %d want 15", cpu.Reg(1)) }
+	if cpu.Reg(1) != 15 {
+		t.Errorf("CLZW: got %d want 15", cpu.Reg(1))
+	}
 }
 func TestCTZW_Spec(t *testing.T) {
 	mem, _ := NewGuestMemory(Size64MB)
 	defer mem.Free()
 	cpu := setupM(t, mem, brtD(0x60, 1, 1, 2, 1, 0x3B), 0x100, 0)
-	if cpu.Reg(1) != 8 { t.Errorf("CTZW: got %d want 8", cpu.Reg(1)) }
+	if cpu.Reg(1) != 8 {
+		t.Errorf("CTZW: got %d want 8", cpu.Reg(1))
+	}
 }
 func TestCPOPW_Spec(t *testing.T) {
 	mem, _ := NewGuestMemory(Size64MB)
 	defer mem.Free()
 	cpu := setupM(t, mem, brtD(0x60, 1, 1, 2, 2, 0x3B), 0xFFFF0000, 0)
-	if cpu.Reg(1) != 16 { t.Errorf("CPOPW: got %d want 16", cpu.Reg(1)) }
+	if cpu.Reg(1) != 16 {
+		t.Errorf("CPOPW: got %d want 16", cpu.Reg(1))
+	}
 }
 func TestORC_B_Spec(t *testing.T) {
 	mem, _ := NewGuestMemory(Size64MB)
 	defer mem.Free()
 	cpu := setupM(t, mem, brtD(0x14, 5, 1, 2, 7, 0x33), 0x00FF0100000000AB, 0)
 	want := uint64(0x00FFFF00000000FF)
-	if cpu.Reg(1) != want { t.Errorf("ORC.B: got 0x%016X want 0x%016X", cpu.Reg(1), want) }
+	if cpu.Reg(1) != want {
+		t.Errorf("ORC.B: got 0x%016X want 0x%016X", cpu.Reg(1), want)
+	}
 }
 func TestREV8_Spec(t *testing.T) {
 	mem, _ := NewGuestMemory(Size64MB)
 	defer mem.Free()
 	cpu := setupM(t, mem, brtD(0x35, 5, 1, 2, 24, 0x33), 0x0102030405060708, 0)
 	want := uint64(0x0807060504030201)
-	if cpu.Reg(1) != want { t.Errorf("REV8: got 0x%016X want 0x%016X", cpu.Reg(1), want) }
+	if cpu.Reg(1) != want {
+		t.Errorf("REV8: got 0x%016X want 0x%016X", cpu.Reg(1), want)
+	}
 }
 
 // ── RORIW (Zbb) — not supported by libriscv oracle ────────────────────────
 
 func roriw_enc(rd, rs1, shamt int) uint32 {
-	return uint32(0x60<<25|shamt<<20|rs1<<15|5<<12|rd<<7|0x1B)
+	return uint32(0x60<<25 | shamt<<20 | rs1<<15 | 5<<12 | rd<<7 | 0x1B)
 }
 
 func TestRORIW_Basic(t *testing.T) {
@@ -324,7 +348,9 @@ func TestRORIW_Basic(t *testing.T) {
 	defer mem.Free()
 	// ror32(1, 4) = 0x10000000; sign-extend (bit31=0) = 0x10000000
 	cpu := setupM(t, mem, roriw_enc(1, 2, 4), 1, 0)
-	if cpu.Reg(1) != 0x10000000 { t.Errorf("RORIW(1,4): got 0x%X want 0x10000000", cpu.Reg(1)) }
+	if cpu.Reg(1) != 0x10000000 {
+		t.Errorf("RORIW(1,4): got 0x%X want 0x10000000", cpu.Reg(1))
+	}
 }
 
 func TestRORIW_SignExtend(t *testing.T) {
@@ -332,7 +358,9 @@ func TestRORIW_SignExtend(t *testing.T) {
 	defer mem.Free()
 	// ror32(1, 1) = 0x80000000; sign-extend = 0xFFFFFFFF80000000
 	cpu := setupM(t, mem, roriw_enc(1, 2, 1), 1, 0)
-	if cpu.Reg(1) != 0xFFFFFFFF80000000 { t.Errorf("RORIW(1,1): got 0x%X", cpu.Reg(1)) }
+	if cpu.Reg(1) != 0xFFFFFFFF80000000 {
+		t.Errorf("RORIW(1,1): got 0x%X", cpu.Reg(1))
+	}
 }
 
 func TestRORIW_Zero(t *testing.T) {
@@ -340,5 +368,16 @@ func TestRORIW_Zero(t *testing.T) {
 	defer mem.Free()
 	// ror32(0xFF, 0) = 0xFF; sign-extend = 0xFF
 	cpu := setupM(t, mem, roriw_enc(1, 2, 0), 0xFF, 0)
-	if cpu.Reg(1) != 0xFF { t.Errorf("RORIW(0xFF,0): got 0x%X want 0xFF", cpu.Reg(1)) }
+	if cpu.Reg(1) != 0xFF {
+		t.Errorf("RORIW(0xFF,0): got 0x%X want 0xFF", cpu.Reg(1))
+	}
+}
+
+func TestFflags_NV(t *testing.T) {
+	inf := math.Float32frombits(0x7F800000)
+	r, fl := fenv.SubF32(inf, inf) // Inf - Inf = NaN, should set NV
+	t.Logf("SubF32(Inf,Inf) = 0x%08X flags=0x%02X", math.Float32bits(r), fl)
+	if fl&0x10 == 0 {
+		t.Errorf("NV not set: flags=0x%02X", fl)
+	}
 }
