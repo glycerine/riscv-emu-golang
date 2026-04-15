@@ -6,7 +6,7 @@ import "testing"
 
 func newCPUAt(t *testing.T, mem *GuestMemory, codeAddr, dataAddr uint64) *CPU {
 	t.Helper()
-	cpu := NewCPU(mem)
+	cpu := NewCPU(*mem)
 	cpu.SetPC(codeAddr)
 	cpu.SetReg(11, dataAddr) // a1 = base address
 	return cpu
@@ -49,7 +49,7 @@ func TestCPU_BEQ_Taken(t *testing.T) {
 		0x00100073, // EBREAK
 	})
 
-	cpu := NewCPU(mem)
+	cpu := NewCPU(*mem)
 	cpu.SetPC(code)
 	cpu.SetReg(10, 5) // a0 = 5
 	cpu.SetReg(11, 5) // a1 = 5 → equal
@@ -73,7 +73,7 @@ func TestCPU_BEQ_NotTaken(t *testing.T) {
 		0x00100073, // EBREAK
 	})
 
-	cpu := NewCPU(mem)
+	cpu := NewCPU(*mem)
 	cpu.SetPC(code)
 	cpu.SetReg(10, 5) // a0 = 5
 	cpu.SetReg(11, 6) // a1 = 6 → not equal
@@ -89,7 +89,7 @@ func TestCPU_BEQ_NotTaken(t *testing.T) {
 //	ADDI a2, zero, 3       # a2 = 3
 //	loop:
 //	ADDI a2, a2, -1        # a2--
-//	BEQ  a2, zero, +4      # if a2==0, skip backward branch → fall to EBREAK
+//	BEQ  a2, zero, +8      # if a2==0, skip backward branch → fall to EBREAK
 //	BEQ  zero, zero, -8    # always jump back to loop
 //	EBREAK
 //
@@ -103,12 +103,12 @@ func TestCPU_BEQ_BackwardBranch(t *testing.T) {
 	storeProgram(t, mem, code, []uint32{
 		0x00300613, // ADDI a2, zero, 3
 		0xFFF60613, // ADDI a2, a2, -1   ← loop top
-		0x00060263, // BEQ  a2, zero, +4
+		0x00060463, // BEQ  a2, zero, +8
 		0xFE000CE3, // BEQ  zero, zero, -8
 		0x00100073, // EBREAK
 	})
 
-	cpu := NewCPU(mem)
+	cpu := NewCPU(*mem)
 	cpu.SetPC(code)
 	runCPU(t, cpu)
 
@@ -134,7 +134,7 @@ func TestCPU_BNE_Taken(t *testing.T) {
 		0x00100073, // EBREAK
 	})
 
-	cpu := NewCPU(mem)
+	cpu := NewCPU(*mem)
 	cpu.SetPC(code)
 	cpu.SetReg(10, 3) // a0 = 3
 	cpu.SetReg(11, 4) // a1 = 4 → not equal → taken
@@ -158,7 +158,7 @@ func TestCPU_BNE_NotTaken(t *testing.T) {
 		0x00100073, // EBREAK
 	})
 
-	cpu := NewCPU(mem)
+	cpu := NewCPU(*mem)
 	cpu.SetPC(code)
 	cpu.SetReg(10, 7) // a0 = 7
 	cpu.SetReg(11, 7) // a1 = 7 → equal → not taken

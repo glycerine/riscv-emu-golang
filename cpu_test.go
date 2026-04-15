@@ -62,7 +62,7 @@ func TestCPU_LoadIncrementStore(t *testing.T) {
 	}
 
 	// Create CPU, set PC and registers
-	cpu := NewCPU(mem)
+	cpu := NewCPU(*mem)
 	cpu.SetPC(codeAddr)
 	cpu.SetReg(11, dataAddr) // a1 = address of our integer
 
