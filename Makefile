@@ -515,3 +515,7 @@ fuzz:
 	    -run FuzzCPU -fuzz=FuzzCPU \
 	    -fuzztime=$(FUZZ_TIME) \
 	    . 2>&1
+
+profile:
+	go test -run='^$' -bench='^BenchmarkCPU_FullExecution$' -benchtime=1x -cpuprofile cpu.prof ./bench/
+	go tool pprof -http=:8080 cpu.prof
