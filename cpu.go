@@ -559,7 +559,7 @@ func (c *CPU) step() error {
 			case 0x4F: v, fl = fenv.NMAddF32(a, b, d)
 			}
 			c.fcsr |= fl
-			c.SetFReg(rd, boxF32(f32bits(v)))
+			c.SetFReg(rd, boxF32(canonNaN32(f32bits(v))))
 		} else if fmt == 1 { // .D double-precision
 			a := f64frombits(c.FReg(rs1))
 			b := f64frombits(c.FReg(rs2))
@@ -572,7 +572,7 @@ func (c *CPU) step() error {
 			case 0x4F: v, fl = fenv.NMAddF64(a, b, d)
 			}
 			c.fcsr |= fl
-			c.SetFReg(rd, boxF64(f64bits(v)))
+			c.SetFReg(rd, boxF64(canonNaN64(f64bits(v))))
 		} else { return ErrIllegalInstruction }
 
 	// ── FPFUNC — all other float ops (opcode=0x53) ────────────────────────
@@ -584,11 +584,11 @@ func (c *CPU) step() error {
 			b := unboxF32(c.FReg(rs2))
 			af, bf := f32frombits(a), f32frombits(b)
 			switch funct5 {
-			case 0x00: r32, fl := fenv.AddF32(af,bf); c.fcsr|=fl; c.SetFReg(rd, boxF32(f32bits(r32)))
-			case 0x01: r32, fl := fenv.SubF32(af,bf); c.fcsr|=fl; c.SetFReg(rd, boxF32(f32bits(r32)))
-			case 0x02: r32, fl := fenv.MulF32(af,bf); c.fcsr|=fl; c.SetFReg(rd, boxF32(f32bits(r32)))
-			case 0x03: r32, fl := fenv.DivF32(af,bf); c.fcsr|=fl; c.SetFReg(rd, boxF32(f32bits(r32)))
-			case 0x0B: r32, fl := fenv.SqrtF32(af);   c.fcsr|=fl; c.SetFReg(rd, boxF32(f32bits(r32)))
+			case 0x00: r32, fl := fenv.AddF32(af,bf); c.fcsr|=fl; c.SetFReg(rd, boxF32(canonNaN32(f32bits(r32))))
+			case 0x01: r32, fl := fenv.SubF32(af,bf); c.fcsr|=fl; c.SetFReg(rd, boxF32(canonNaN32(f32bits(r32))))
+			case 0x02: r32, fl := fenv.MulF32(af,bf); c.fcsr|=fl; c.SetFReg(rd, boxF32(canonNaN32(f32bits(r32))))
+			case 0x03: r32, fl := fenv.DivF32(af,bf); c.fcsr|=fl; c.SetFReg(rd, boxF32(canonNaN32(f32bits(r32))))
+			case 0x0B: r32, fl := fenv.SqrtF32(af);   c.fcsr|=fl; c.SetFReg(rd, boxF32(canonNaN32(f32bits(r32))))
 			case 0x04: // FSGNJ.S / FSGNJN.S / FSGNJX.S
 				switch funct3 {
 				case 0: c.SetFReg(rd, boxF32(fsgnjF32(a,b)))
@@ -597,40 +597,53 @@ func (c *CPU) step() error {
 				default: return ErrIllegalInstruction
 				}
 			case 0x05: // FMIN.S / FMAX.S
+				if isSNaNF32(a) || isSNaNF32(b) { c.fcsr |= fflagNV }
 				switch funct3 {
 				case 0: c.SetFReg(rd, boxF32(fminF32(a,b)))
 				case 1: c.SetFReg(rd, boxF32(fmaxF32(a,b)))
 				default: return ErrIllegalInstruction
 				}
 			case 0x08: // FCVT.S.D  (rs2=1 = from D)
-				c.SetFReg(rd, boxF32(f32bits(float32(f64frombits(c.FReg(rs1))))))
+				src := c.FReg(rs1)
+				r := float32(f64frombits(src))
+				c.fcsr |= fenv.FFlags()
+				c.SetFReg(rd, boxF32(canonNaN32(f32bits(r))))
 			case 0x14: // FEQ.S / FLT.S / FLE.S -> integer rd
 				var v uint64
 				switch funct3 {
-				case 2: if af == bf { v = 1 }
-				case 1: if af < bf { v = 1 }
-				case 0: if af <= bf { v = 1 }
+				case 2: // FEQ.S
+					if af == bf { v = 1 }
+					if isSNaNF32(a) || isSNaNF32(b) { c.fcsr |= fflagNV }
+				case 1: // FLT.S
+					if af < bf { v = 1 }
+					if isNaNF32(a) || isNaNF32(b) { c.fcsr |= fflagNV }
+				case 0: // FLE.S
+					if af <= bf { v = 1 }
+					if isNaNF32(a) || isNaNF32(b) { c.fcsr |= fflagNV }
 				default: return ErrIllegalInstruction
 				}
 				c.SetReg(rd, v)
 			case 0x18: // FCVT.{W,WU,L,LU}.S -> integer rd
 				switch rs2 {
-				case 0: c.SetReg(rd, uint64(int64(int32(af))))           // FCVT.W.S
-				case 1: c.SetReg(rd, uint64(uint32(af)))                 // FCVT.WU.S
-				case 2: c.SetReg(rd, uint64(int64(af)))                  // FCVT.L.S
-				case 3: c.SetReg(rd, uint64(af))                         // FCVT.LU.S
+				case 0: v, fl := fcvtWS(af);  c.fcsr |= fl; c.SetReg(rd, v)
+				case 1: v, fl := fcvtWUS(af); c.fcsr |= fl; c.SetReg(rd, v)
+				case 2: v, fl := fcvtLS(af);  c.fcsr |= fl; c.SetReg(rd, v)
+				case 3: v, fl := fcvtLUS(af); c.fcsr |= fl; c.SetReg(rd, v)
 				}
 			case 0x1A: // FCVT.S.{W,WU,L,LU} <- integer rs1
+				var r float32
 				switch rs2 {
-				case 0: c.SetFReg(rd, boxF32(f32bits(float32(int32(c.Reg(rs1))))))  // FCVT.S.W
-				case 1: c.SetFReg(rd, boxF32(f32bits(float32(uint32(c.Reg(rs1)))))) // FCVT.S.WU
-				case 2: c.SetFReg(rd, boxF32(f32bits(float32(int64(c.Reg(rs1))))))  // FCVT.S.L
-				case 3: c.SetFReg(rd, boxF32(f32bits(float32(c.Reg(rs1)))))          // FCVT.S.LU
+				case 0: r = float32(int32(c.Reg(rs1)))   // FCVT.S.W
+				case 1: r = float32(uint32(c.Reg(rs1)))  // FCVT.S.WU
+				case 2: r = float32(int64(c.Reg(rs1)))   // FCVT.S.L
+				case 3: r = float32(c.Reg(rs1))           // FCVT.S.LU
 				}
+				c.fcsr |= fenv.FFlags()
+				c.SetFReg(rd, boxF32(f32bits(r)))
 			case 0x1C: // FMV.X.W (funct3=0) / FCLASS.S (funct3=1)
 				switch funct3 {
-				case 0: c.SetReg(rd, uint64(int64(int32(a))))            // FMV.X.W sign-extend
-				case 1: c.SetReg(rd, fclassF32(a))                       // FCLASS.S
+				case 0: c.SetReg(rd, uint64(int64(int32(uint32(c.FReg(rs1))))))  // FMV.X.W raw bits
+				case 1: c.SetReg(rd, fclassF32(a))                                // FCLASS.S
 				default: return ErrIllegalInstruction
 				}
 			case 0x1E: // FMV.W.X
@@ -642,11 +655,11 @@ func (c *CPU) step() error {
 			b := c.FReg(rs2)
 			af, bf := f64frombits(a), f64frombits(b)
 			switch funct5 {
-			case 0x00: r64, fl := fenv.AddF64(af,bf); c.fcsr|=fl; c.SetFReg(rd, boxF64(f64bits(r64)))
-			case 0x01: r64, fl := fenv.SubF64(af,bf); c.fcsr|=fl; c.SetFReg(rd, boxF64(f64bits(r64)))
-			case 0x02: r64, fl := fenv.MulF64(af,bf); c.fcsr|=fl; c.SetFReg(rd, boxF64(f64bits(r64)))
-			case 0x03: r64, fl := fenv.DivF64(af,bf); c.fcsr|=fl; c.SetFReg(rd, boxF64(f64bits(r64)))
-			case 0x0B: r64, fl := fenv.SqrtF64(af);   c.fcsr|=fl; c.SetFReg(rd, boxF64(f64bits(r64)))
+			case 0x00: r64, fl := fenv.AddF64(af,bf); c.fcsr|=fl; c.SetFReg(rd, boxF64(canonNaN64(f64bits(r64))))
+			case 0x01: r64, fl := fenv.SubF64(af,bf); c.fcsr|=fl; c.SetFReg(rd, boxF64(canonNaN64(f64bits(r64))))
+			case 0x02: r64, fl := fenv.MulF64(af,bf); c.fcsr|=fl; c.SetFReg(rd, boxF64(canonNaN64(f64bits(r64))))
+			case 0x03: r64, fl := fenv.DivF64(af,bf); c.fcsr|=fl; c.SetFReg(rd, boxF64(canonNaN64(f64bits(r64))))
+			case 0x0B: r64, fl := fenv.SqrtF64(af);   c.fcsr|=fl; c.SetFReg(rd, boxF64(canonNaN64(f64bits(r64))))
 			case 0x04: // FSGNJ.D / FSGNJN.D / FSGNJX.D
 				switch funct3 {
 				case 0: c.SetFReg(rd, boxF64(fsgnjF64(a,b)))
@@ -655,36 +668,48 @@ func (c *CPU) step() error {
 				default: return ErrIllegalInstruction
 				}
 			case 0x05: // FMIN.D / FMAX.D
+				if isSNaNF64(a) || isSNaNF64(b) { c.fcsr |= fflagNV }
 				switch funct3 {
 				case 0: c.SetFReg(rd, boxF64(fminF64(a,b)))
 				case 1: c.SetFReg(rd, boxF64(fmaxF64(a,b)))
 				default: return ErrIllegalInstruction
 				}
 			case 0x08: // FCVT.D.S  (rs2=0 = from S)
-				c.SetFReg(rd, boxF64(f64bits(float64(f32frombits(unboxF32(c.FReg(rs1)))))))
+				src := unboxF32(c.FReg(rs1))
+				r := float64(f32frombits(src))
+				c.SetFReg(rd, boxF64(canonNaN64(f64bits(r))))
 			case 0x14: // FEQ.D / FLT.D / FLE.D
 				var v uint64
 				switch funct3 {
-				case 2: if af == bf { v = 1 }
-				case 1: if af < bf { v = 1 }
-				case 0: if af <= bf { v = 1 }
+				case 2: // FEQ.D
+					if af == bf { v = 1 }
+					if isSNaNF64(a) || isSNaNF64(b) { c.fcsr |= fflagNV }
+				case 1: // FLT.D
+					if af < bf { v = 1 }
+					if isNaNF64(a) || isNaNF64(b) { c.fcsr |= fflagNV }
+				case 0: // FLE.D
+					if af <= bf { v = 1 }
+					if isNaNF64(a) || isNaNF64(b) { c.fcsr |= fflagNV }
 				default: return ErrIllegalInstruction
 				}
 				c.SetReg(rd, v)
 			case 0x18: // FCVT.{W,WU,L,LU}.D
 				switch rs2 {
-				case 0: c.SetReg(rd, uint64(int64(int32(af))))
-				case 1: c.SetReg(rd, uint64(uint32(af)))
-				case 2: c.SetReg(rd, uint64(int64(af)))
-				case 3: c.SetReg(rd, uint64(af))
+				case 0: v, fl := fcvtWD(af);  c.fcsr |= fl; c.SetReg(rd, v)
+				case 1: v, fl := fcvtWUD(af); c.fcsr |= fl; c.SetReg(rd, v)
+				case 2: v, fl := fcvtLD(af);  c.fcsr |= fl; c.SetReg(rd, v)
+				case 3: v, fl := fcvtLUD(af); c.fcsr |= fl; c.SetReg(rd, v)
 				}
 			case 0x1A: // FCVT.D.{W,WU,L,LU}
+				var r float64
 				switch rs2 {
-				case 0: c.SetFReg(rd, boxF64(f64bits(float64(int32(c.Reg(rs1))))))
-				case 1: c.SetFReg(rd, boxF64(f64bits(float64(uint32(c.Reg(rs1))))))
-				case 2: c.SetFReg(rd, boxF64(f64bits(float64(int64(c.Reg(rs1))))))
-				case 3: c.SetFReg(rd, boxF64(f64bits(float64(c.Reg(rs1)))))
+				case 0: r = float64(int32(c.Reg(rs1)))   // FCVT.D.W
+				case 1: r = float64(uint32(c.Reg(rs1)))  // FCVT.D.WU
+				case 2: r = float64(int64(c.Reg(rs1)))   // FCVT.D.L
+				case 3: r = float64(c.Reg(rs1))           // FCVT.D.LU
 				}
+				c.fcsr |= fenv.FFlags()
+				c.SetFReg(rd, boxF64(f64bits(r)))
 			case 0x1C: // FMV.X.D (funct3=0) / FCLASS.D (funct3=1)
 				switch funct3 {
 				case 0: c.SetReg(rd, a)                                  // FMV.X.D

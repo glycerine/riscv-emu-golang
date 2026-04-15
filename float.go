@@ -73,6 +73,40 @@ const (
 	fclassQNaN    = uint64(1 << 9) // quiet NaN
 )
 
+// ── NaN classification and canonicalization ───────────────────────────────
+
+func isNaNF32(bits uint32) bool {
+	return (bits&f32ExpMask) == f32ExpMask && (bits&f32ManMask) != 0
+}
+
+func isSNaNF32(bits uint32) bool {
+	return isNaNF32(bits) && (bits&0x00400000) == 0
+}
+
+func isNaNF64(bits uint64) bool {
+	return (bits&f64ExpMask) == f64ExpMask && (bits&f64ManMask) != 0
+}
+
+func isSNaNF64(bits uint64) bool {
+	return isNaNF64(bits) && (bits&0x0008000000000000) == 0
+}
+
+// canonNaN32 returns canonical quiet NaN if v is NaN, otherwise v unchanged.
+func canonNaN32(bits uint32) uint32 {
+	if isNaNF32(bits) {
+		return f32CanonNaN
+	}
+	return bits
+}
+
+// canonNaN64 returns canonical quiet NaN if v is NaN, otherwise v unchanged.
+func canonNaN64(bits uint64) uint64 {
+	if isNaNF64(bits) {
+		return f64CanonNaN
+	}
+	return bits
+}
+
 // ── NaN-box read/write helpers ────────────────────────────────────────────
 
 // boxF32 NaN-boxes a float32 bit-pattern for storage in an f-register.
@@ -100,6 +134,160 @@ func f32bits(v float32) uint32  { return math.Float32bits(v) }
 func f32frombits(b uint32) float32 { return math.Float32frombits(b) }
 func f64bits(v float64) uint64  { return math.Float64bits(v) }
 func f64frombits(b uint64) float64 { return math.Float64frombits(b) }
+
+// sext32 sign-extends a 32-bit value to 64 bits (for W-type result writing).
+func sext32(v uint32) uint64 { return uint64(int64(int32(v))) }
+
+// ── Float-to-int conversion helpers (RISC-V saturation + flags) ──────────
+// These implement FCVT.{W,WU,L,LU}.{S,D} with proper RISC-V saturation
+// semantics: NaN → max positive, overflow → saturate, inexact → NX flag.
+// All use RTZ (truncation toward zero) matching Go's int(float) cast.
+
+func fcvtWS(f float32) (uint64, uint32) {
+	bits := f32bits(f)
+	if isNaNF32(bits) {
+		return 0x000000007FFFFFFF, fflagNV
+	}
+	if f >= 2147483648.0 { // >= 2^31
+		return 0x000000007FFFFFFF, fflagNV
+	}
+	if f < -2147483648.0 { // < -2^31
+		return 0xFFFFFFFF80000000, fflagNV
+	}
+	result := int32(f)
+	if float32(result) != f {
+		return sext32(uint32(result)), fflagNX
+	}
+	return sext32(uint32(result)), 0
+}
+
+func fcvtWUS(f float32) (uint64, uint32) {
+	bits := f32bits(f)
+	if isNaNF32(bits) {
+		return 0xFFFFFFFFFFFFFFFF, fflagNV // 0xFFFFFFFF sign-extended
+	}
+	if f >= 4294967296.0 { // >= 2^32
+		return 0xFFFFFFFFFFFFFFFF, fflagNV
+	}
+	if f <= -1.0 { // negative (truncating: -0.9 -> 0 is valid)
+		return 0, fflagNV
+	}
+	result := uint32(f)
+	if float32(result) != f {
+		return sext32(result), fflagNX
+	}
+	return sext32(result), 0
+}
+
+func fcvtLS(f float32) (uint64, uint32) {
+	bits := f32bits(f)
+	if isNaNF32(bits) {
+		return uint64(int64(0x7FFFFFFFFFFFFFFF)), fflagNV
+	}
+	// 2^63 = 9223372036854775808.0 — float32 can't represent this exactly,
+	// but the nearest float32 is 9223372036854775808.0 (0x5F000000).
+	if f >= 9223372036854775808.0 {
+		return uint64(int64(0x7FFFFFFFFFFFFFFF)), fflagNV
+	}
+	if f < -9223372036854775808.0 {
+		return 0x8000000000000000, fflagNV
+	}
+	result := int64(f)
+	if float32(result) != f {
+		return uint64(result), fflagNX
+	}
+	return uint64(result), 0
+}
+
+func fcvtLUS(f float32) (uint64, uint32) {
+	bits := f32bits(f)
+	if isNaNF32(bits) {
+		return 0xFFFFFFFFFFFFFFFF, fflagNV
+	}
+	if f >= 18446744073709551616.0 { // >= 2^64
+		return 0xFFFFFFFFFFFFFFFF, fflagNV
+	}
+	if f <= -1.0 {
+		return 0, fflagNV
+	}
+	result := uint64(f)
+	if float32(result) != f {
+		return result, fflagNX
+	}
+	return result, 0
+}
+
+func fcvtWD(f float64) (uint64, uint32) {
+	bits := f64bits(f)
+	if isNaNF64(bits) {
+		return 0x000000007FFFFFFF, fflagNV
+	}
+	if f >= 2147483648.0 {
+		return 0x000000007FFFFFFF, fflagNV
+	}
+	if f < -2147483648.0 {
+		return 0xFFFFFFFF80000000, fflagNV
+	}
+	result := int32(f)
+	if float64(result) != f {
+		return sext32(uint32(result)), fflagNX
+	}
+	return sext32(uint32(result)), 0
+}
+
+func fcvtWUD(f float64) (uint64, uint32) {
+	bits := f64bits(f)
+	if isNaNF64(bits) {
+		return 0xFFFFFFFFFFFFFFFF, fflagNV
+	}
+	if f >= 4294967296.0 {
+		return 0xFFFFFFFFFFFFFFFF, fflagNV
+	}
+	if f <= -1.0 {
+		return 0, fflagNV
+	}
+	result := uint32(f)
+	if float64(result) != f {
+		return sext32(result), fflagNX
+	}
+	return sext32(result), 0
+}
+
+func fcvtLD(f float64) (uint64, uint32) {
+	bits := f64bits(f)
+	if isNaNF64(bits) {
+		return uint64(int64(0x7FFFFFFFFFFFFFFF)), fflagNV
+	}
+	if f >= 9223372036854775808.0 {
+		return uint64(int64(0x7FFFFFFFFFFFFFFF)), fflagNV
+	}
+	if f < -9223372036854775808.0 {
+		return 0x8000000000000000, fflagNV
+	}
+	result := int64(f)
+	if float64(result) != f {
+		return uint64(result), fflagNX
+	}
+	return uint64(result), 0
+}
+
+func fcvtLUD(f float64) (uint64, uint32) {
+	bits := f64bits(f)
+	if isNaNF64(bits) {
+		return 0xFFFFFFFFFFFFFFFF, fflagNV
+	}
+	if f >= 18446744073709551616.0 {
+		return 0xFFFFFFFFFFFFFFFF, fflagNV
+	}
+	if f <= -1.0 {
+		return 0, fflagNV
+	}
+	result := uint64(f)
+	if float64(result) != f {
+		return result, fflagNX
+	}
+	return result, 0
+}
 
 // ── FCLASS helpers ────────────────────────────────────────────────────────
 
