@@ -2,8 +2,9 @@ package riscv
 
 import (
 	"errors"
-	"math"
 	"math/bits"
+
+	"riscv/internal/fenv"
 )
 
 var ErrEcall  = errors.New("ecall")
@@ -46,6 +47,7 @@ func (c *CPU) Run() error {
 func (c *CPU) Step() error { return c.step() }
 
 func (c *CPU) step() error {
+	fenv.ClearFFlags() // zero MXCSR flags; float ops set them; tail ORs into fcsr
 	// Fetch 16 bits first to detect compressed (RVC) instructions.
 	// Bits[1:0] != 0b11 means 16-bit; 0b11 means 32-bit.
 	half, fh := (&c.mem).Fetch16(c.pc)
@@ -535,7 +537,7 @@ func (c *CPU) step() error {
 		addr := uint64(int64(c.Reg(rs1)) + simm)
 		switch funct3 {
 		case 0b010: // FSW
-			if f := (&c.mem).Store32(addr, unboxF32(c.FReg(rs2))); f != nil { return f }
+			if f := (&c.mem).Store32(addr, uint32(c.FReg(rs2))); f != nil { return f }  // FSW: raw low 32 bits
 		case 0b011: // FSD
 			if f := (&c.mem).Store64(addr, c.FReg(rs2)); f != nil { return f }
 		default: return ErrIllegalInstruction
@@ -549,25 +551,27 @@ func (c *CPU) step() error {
 			a := f32frombits(unboxF32(c.FReg(rs1)))
 			b := f32frombits(unboxF32(c.FReg(rs2)))
 			d := f32frombits(unboxF32(c.FReg(rs3)))
-			var v float32
+			var v float32; var fl uint32
 			switch opcode {
-			case 0x43: v = a*b + d           // FMADD.S
-			case 0x47: v = a*b - d           // FMSUB.S
-			case 0x4B: v = -(a*b) + d        // FNMSUB.S
-			case 0x4F: v = -(a*b) - d        // FNMADD.S
+			case 0x43: v, fl = fenv.MAddF32(a, b, d)
+			case 0x47: v, fl = fenv.MSubF32(a, b, d)
+			case 0x4B: v, fl = fenv.NMSubF32(a, b, d)
+			case 0x4F: v, fl = fenv.NMAddF32(a, b, d)
 			}
+			c.fcsr |= fl
 			c.SetFReg(rd, boxF32(f32bits(v)))
 		} else if fmt == 1 { // .D double-precision
 			a := f64frombits(c.FReg(rs1))
 			b := f64frombits(c.FReg(rs2))
 			d := f64frombits(c.FReg(rs3))
-			var v float64
+			var v float64; var fl uint32
 			switch opcode {
-			case 0x43: v = a*b + d
-			case 0x47: v = a*b - d
-			case 0x4B: v = -(a*b) + d
-			case 0x4F: v = -(a*b) - d
+			case 0x43: v, fl = fenv.MAddF64(a, b, d)
+			case 0x47: v, fl = fenv.MSubF64(a, b, d)
+			case 0x4B: v, fl = fenv.NMSubF64(a, b, d)
+			case 0x4F: v, fl = fenv.NMAddF64(a, b, d)
 			}
+			c.fcsr |= fl
 			c.SetFReg(rd, boxF64(f64bits(v)))
 		} else { return ErrIllegalInstruction }
 
@@ -580,11 +584,11 @@ func (c *CPU) step() error {
 			b := unboxF32(c.FReg(rs2))
 			af, bf := f32frombits(a), f32frombits(b)
 			switch funct5 {
-			case 0x00: c.SetFReg(rd, boxF32(f32bits(af+bf)))          // FADD.S
-			case 0x01: c.SetFReg(rd, boxF32(f32bits(af-bf)))          // FSUB.S
-			case 0x02: c.SetFReg(rd, boxF32(f32bits(af*bf)))          // FMUL.S
-			case 0x03: c.SetFReg(rd, boxF32(f32bits(af/bf)))          // FDIV.S
-			case 0x0B: c.SetFReg(rd, boxF32(f32bits(float32(math.Sqrt(float64(af)))))) // FSQRT.S
+			case 0x00: r32, fl := fenv.AddF32(af,bf); c.fcsr|=fl; c.SetFReg(rd, boxF32(f32bits(r32)))
+			case 0x01: r32, fl := fenv.SubF32(af,bf); c.fcsr|=fl; c.SetFReg(rd, boxF32(f32bits(r32)))
+			case 0x02: r32, fl := fenv.MulF32(af,bf); c.fcsr|=fl; c.SetFReg(rd, boxF32(f32bits(r32)))
+			case 0x03: r32, fl := fenv.DivF32(af,bf); c.fcsr|=fl; c.SetFReg(rd, boxF32(f32bits(r32)))
+			case 0x0B: r32, fl := fenv.SqrtF32(af);   c.fcsr|=fl; c.SetFReg(rd, boxF32(f32bits(r32)))
 			case 0x04: // FSGNJ.S / FSGNJN.S / FSGNJX.S
 				switch funct3 {
 				case 0: c.SetFReg(rd, boxF32(fsgnjF32(a,b)))
@@ -638,11 +642,11 @@ func (c *CPU) step() error {
 			b := c.FReg(rs2)
 			af, bf := f64frombits(a), f64frombits(b)
 			switch funct5 {
-			case 0x00: c.SetFReg(rd, boxF64(f64bits(af+bf)))          // FADD.D
-			case 0x01: c.SetFReg(rd, boxF64(f64bits(af-bf)))          // FSUB.D
-			case 0x02: c.SetFReg(rd, boxF64(f64bits(af*bf)))          // FMUL.D
-			case 0x03: c.SetFReg(rd, boxF64(f64bits(af/bf)))          // FDIV.D
-			case 0x0B: c.SetFReg(rd, boxF64(f64bits(math.Sqrt(af))))  // FSQRT.D
+			case 0x00: r64, fl := fenv.AddF64(af,bf); c.fcsr|=fl; c.SetFReg(rd, boxF64(f64bits(r64)))
+			case 0x01: r64, fl := fenv.SubF64(af,bf); c.fcsr|=fl; c.SetFReg(rd, boxF64(f64bits(r64)))
+			case 0x02: r64, fl := fenv.MulF64(af,bf); c.fcsr|=fl; c.SetFReg(rd, boxF64(f64bits(r64)))
+			case 0x03: r64, fl := fenv.DivF64(af,bf); c.fcsr|=fl; c.SetFReg(rd, boxF64(f64bits(r64)))
+			case 0x0B: r64, fl := fenv.SqrtF64(af);   c.fcsr|=fl; c.SetFReg(rd, boxF64(f64bits(r64)))
 			case 0x04: // FSGNJ.D / FSGNJN.D / FSGNJX.D
 				switch funct3 {
 				case 0: c.SetFReg(rd, boxF64(fsgnjF64(a,b)))

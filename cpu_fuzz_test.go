@@ -176,12 +176,18 @@ func reference(insn uint32, rd, rs1, rs2 uint8, a, b uint64) uint64 {
 	case 0x13: // OP-IMM
 		switch funct3 {
 		case 0: return a + uint64(iimm)
-		case 1: return a << shamt
+		case 1: // SLLI — funct7[6:1] must be 0x00; bit25 is shamt[5] (allowed to be 1)
+			if funct7 &^ 1 != 0 { return 0 } // reserved encoding → illegal instruction
+			return a << shamt
 		case 2: if int64(a) < iimm { return 1 }; return 0
 		case 3: if a < uint64(iimm) { return 1 }; return 0
 		case 4: return a ^ uint64(iimm)
-		case 5:
-			if (insn>>30)&1 == 1 { return uint64(int64(a) >> shamt) }
+		case 5: // SRLI/SRAI — funct7[6:1] must be 0x00 or 0x10
+			if (insn>>30)&1 == 1 {
+				if funct7 &^ 1 != 0x20 { return 0 } // reserved
+				return uint64(int64(a) >> shamt)
+			}
+			if funct7 &^ 1 != 0 { return 0 } // reserved
 			return a >> shamt
 		case 6: return a | uint64(iimm)
 		case 7: return a & uint64(iimm)
