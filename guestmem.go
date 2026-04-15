@@ -196,6 +196,7 @@ func (m *GuestMemory) Size() uint64 { return m.size }
 // valid in-bounds guest address by construction — the same guarantee the
 // memory system uses internally for its containment invariant.
 func (m *GuestMemory) Mask() uint64 { return m.mask }
+func (m *GuestMemory) Base() uintptr { return m.base }
 
 // ZeroRange returns physical pages in [addr, addr+length) to the OS.
 // Virtual address space is retained. Use to reclaim RAM after a guest

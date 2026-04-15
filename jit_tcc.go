@@ -13,13 +13,11 @@ package riscv
 
 // compile_block compiles C source to native code in memory.
 // Returns the function pointer for "block_entry", or NULL on error.
-static void* compile_block(const char *csrc, char *errbuf, int errbuf_len) {
+// *out_state receives the TCCState (caller must keep alive to prevent code free).
+static void* compile_block(const char *csrc, TCCState **out_state) {
     TCCState *s = tcc_new();
     if (!s) return NULL;
-
-    // Capture errors into buffer
-    errbuf[0] = '\0';
-    tcc_set_error_func(s, errbuf, (TCCErrorFunc)0); // TODO: wire error callback
+    *out_state = NULL;
 
     tcc_set_output_type(s, TCC_OUTPUT_MEMORY);
     tcc_set_options(s, "-nostdlib");
@@ -28,7 +26,7 @@ static void* compile_block(const char *csrc, char *errbuf, int errbuf_len) {
         tcc_delete(s);
         return NULL;
     }
-    if (tcc_relocate(s, TCC_RELOCATE_AUTO) < 0) {
+    if (tcc_relocate(s) < 0) {
         tcc_delete(s);
         return NULL;
     }
@@ -37,10 +35,8 @@ static void* compile_block(const char *csrc, char *errbuf, int errbuf_len) {
         tcc_delete(s);
         return NULL;
     }
-    // NOTE: we intentionally do NOT call tcc_delete(s) here.
-    // The TCCState owns the allocated code memory. Deleting it
-    // would free the native code we're about to execute.
-    // The Go side holds a reference to prevent GC.
+    // Keep the TCCState alive — it owns the compiled code memory.
+    *out_state = s;
     return fn;
 }
 */
@@ -62,13 +58,13 @@ func tccCompile(csrc string) (*compiledBlock, error) {
 	cs := C.CString(csrc)
 	defer C.free(unsafe.Pointer(cs))
 
-	var errbuf [1024]C.char
-	fn := C.compile_block(cs, &errbuf[0], 1024)
+	var state *C.TCCState
+	fn := C.compile_block(cs, &state)
 	if fn == nil {
-		return nil, fmt.Errorf("jit: TCC compilation failed: %s", C.GoString(&errbuf[0]))
+		return nil, fmt.Errorf("jit: TCC compilation failed")
 	}
 	return &compiledBlock{
 		fn:    uintptr(fn),
-		state: fn, // prevent GC from collecting the code pages
+		state: unsafe.Pointer(state),
 	}, nil
 }
