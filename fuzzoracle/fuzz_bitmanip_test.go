@@ -52,6 +52,13 @@ func FuzzBitmanipVsLibriscv(f *testing.F) {
 		{24, 0xF0, 7},         // BEXT
 		{25, 0, 5},            // BSETI
 		{26, 0xFF, 3},         // BCLRI
+		// Zbc
+		{27, 2, 25},                          // CLMUL
+		{28, 0xDEADBEEFCAFEBABE, 0x12345678}, // CLMULR
+		{29, 0xDEADBEEFCAFEBABE, 0x12345678}, // CLMULH
+		// Zicond
+		{30, 42, 0},                          // CZERO.EQZ (rs2=0)
+		{31, 42, 1},                          // CZERO.NEZ (rs2!=0)
 	}
 	for _, s := range seeds {
 		var buf [17]byte
@@ -63,7 +70,7 @@ func FuzzBitmanipVsLibriscv(f *testing.F) {
 
 	f.Fuzz(func(t *testing.T, data []byte) {
 		if len(data) < 17 { return }
-		family := data[0] % 27
+		family := data[0] % 32
 		a := binary.LittleEndian.Uint64(data[1:])
 		b := binary.LittleEndian.Uint64(data[9:])
 
@@ -109,6 +116,13 @@ func FuzzBitmanipVsLibriscv(f *testing.F) {
 		case 24: insn = brt(0x24, 1, 1, 2, 3)          // BCLR
 		case 25: insn = brt(0x34, 1, 1, 2, 3)          // BINV
 		case 26: insn = brt(0x24, 5, 1, 2, 3)          // BEXT
+		// ── Zbc ───────────────────────────────────────────────────────────
+		case 27: insn = brt(0x05, 1, 1, 2, 3)          // CLMUL
+		case 28: insn = brt(0x05, 2, 1, 2, 3)          // CLMULR
+		case 29: insn = brt(0x05, 3, 1, 2, 3)          // CLMULH
+		// ── Zicond ────────────────────────────────────────────────────────
+		case 30: insn = brt(0x07, 5, 1, 2, 3)          // CZERO.EQZ
+		case 31: insn = brt(0x07, 7, 1, 2, 3)          // CZERO.NEZ
 		default: return
 		}
 

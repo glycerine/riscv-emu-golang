@@ -10,7 +10,11 @@ package fuzzoracle
 //   opcode 0x1B = OP-IMM-32
 //   opcode 0x73 = SYSTEM (CSR)
 
-import "testing"
+import (
+	"testing"
+
+	riscv "riscv"
+)
 
 // ── Encoding helpers ──────────────────────────────────────────────────────
 
@@ -194,4 +198,51 @@ func TestBINVI(t *testing.T) {
 }
 func TestBEXTI(t *testing.T) {
 	runOne(t, bimm(0x24, 5, 1, 2, 7), regs(2, 0xF0), nil) // bit 7 -> 1
+}
+
+// ── Zbc: Carryless Multiply ──────────────────────────────────────────────
+
+func TestCLMUL(t *testing.T) {
+	runOne(t, brt(0x05, 1, 1, 2, 3), regs(2, 2, 3, 25), nil)
+}
+func TestCLMUL_Large(t *testing.T) {
+	runOne(t, brt(0x05, 1, 1, 2, 3), regs(2, 0xDEADBEEFCAFEBABE, 3, 0x123456789ABCDEF0), nil)
+}
+func TestCLMULR(t *testing.T) {
+	runOne(t, brt(0x05, 2, 1, 2, 3), regs(2, 0xDEADBEEFCAFEBABE, 3, 0x123456789ABCDEF0), nil)
+}
+func TestCLMULH(t *testing.T) {
+	runOne(t, brt(0x05, 3, 1, 2, 3), regs(2, 0xDEADBEEFCAFEBABE, 3, 0x123456789ABCDEF0), nil)
+}
+
+// ── Zicond: Conditional Zero ─────────────────────────────────────────────
+
+func TestCZERO_EQZ_Zero(t *testing.T) {
+	runOne(t, brt(0x07, 5, 1, 2, 3), regs(2, 42, 3, 0), nil)
+}
+func TestCZERO_EQZ_NonZero(t *testing.T) {
+	runOne(t, brt(0x07, 5, 1, 2, 3), regs(2, 42, 3, 1), nil)
+}
+func TestCZERO_NEZ_Zero(t *testing.T) {
+	runOne(t, brt(0x07, 7, 1, 2, 3), regs(2, 42, 3, 0), nil)
+}
+func TestCZERO_NEZ_NonZero(t *testing.T) {
+	runOne(t, brt(0x07, 7, 1, 2, 3), regs(2, 42, 3, 1), nil)
+}
+
+// ── SRET: illegal instruction (matches libriscv) ────────────────────────
+
+func TestSRET_Illegal(t *testing.T) {
+	// SRET = 0x10200073: libriscv triggers ILLEGAL_OPERATION, we return ErrIllegalInstruction.
+	// We can't use runOne (which calls Step then compares regs) because Step errors out.
+	mem, err := riscv.NewGuestMemory(oracleMemSize)
+	if err != nil { t.Fatal(err) }
+	defer mem.Free()
+	elf := riscv.BuildELF(oracleCodeVA, []uint32{0x10200073, 0x00000073})
+	riscv.LoadELFBytes(mem, elf)
+	cpu := riscv.NewCPU(*mem)
+	cpu.SetPC(oracleCodeVA)
+	if err := cpu.Step(); err != riscv.ErrIllegalInstruction {
+		t.Errorf("SRET: got %v, want ErrIllegalInstruction", err)
+	}
 }

@@ -373,6 +373,116 @@ func TestRORIW_Zero(t *testing.T) {
 	}
 }
 
+// ── Zbc: CLMUL / CLMULR / CLMULH ────────────────────────────────────────
+
+func clmulRef(a, b uint64) uint64 {
+	var r uint64
+	for i := 0; i < 64; i++ {
+		if (b>>i)&1 != 0 { r ^= a << i }
+	}
+	return r
+}
+
+func TestCLMUL_Basic(t *testing.T) {
+	mem, _ := NewGuestMemory(Size64MB)
+	defer mem.Free()
+	cpu := setupM(t, mem, brtD(0x05, 1, 1, 2, 3, 0x33), 2, 25)
+	if cpu.Reg(1) != 50 {
+		t.Errorf("CLMUL(2,25): got %d want 50", cpu.Reg(1))
+	}
+}
+
+func TestCLMUL_Large(t *testing.T) {
+	mem, _ := NewGuestMemory(Size64MB)
+	defer mem.Free()
+	a, b := uint64(0xDEADBEEFCAFEBABE), uint64(0x123456789ABCDEF0)
+	cpu := setupM(t, mem, brtD(0x05, 1, 1, 2, 3, 0x33), a, b)
+	if cpu.Reg(1) != clmulRef(a, b) {
+		t.Errorf("CLMUL: got 0x%X want 0x%X", cpu.Reg(1), clmulRef(a, b))
+	}
+}
+
+func TestCLMULH_Basic(t *testing.T) {
+	mem, _ := NewGuestMemory(Size64MB)
+	defer mem.Free()
+	a, b := uint64(0xDEADBEEFCAFEBABE), uint64(0x123456789ABCDEF0)
+	cpu := setupM(t, mem, brtD(0x05, 3, 1, 2, 3, 0x33), a, b)
+	var r uint64
+	for i := 1; i < 64; i++ {
+		if (b>>i)&1 != 0 { r ^= a >> (64 - i) }
+	}
+	if cpu.Reg(1) != r {
+		t.Errorf("CLMULH: got 0x%X want 0x%X", cpu.Reg(1), r)
+	}
+}
+
+func TestCLMULR_Basic(t *testing.T) {
+	mem, _ := NewGuestMemory(Size64MB)
+	defer mem.Free()
+	a, b := uint64(0xDEADBEEFCAFEBABE), uint64(0x123456789ABCDEF0)
+	cpu := setupM(t, mem, brtD(0x05, 2, 1, 2, 3, 0x33), a, b)
+	var r uint64
+	for i := 0; i < 63; i++ {
+		if (b>>i)&1 != 0 { r ^= a >> (63 - i) }
+	}
+	if cpu.Reg(1) != r {
+		t.Errorf("CLMULR: got 0x%X want 0x%X", cpu.Reg(1), r)
+	}
+}
+
+// ── Zicond: CZERO.EQZ / CZERO.NEZ ───────────────────────────────────────
+
+func TestCZERO_EQZ_Zero(t *testing.T) {
+	mem, _ := NewGuestMemory(Size64MB)
+	defer mem.Free()
+	cpu := setupM(t, mem, brtD(0x07, 5, 1, 2, 3, 0x33), 42, 0)
+	if cpu.Reg(1) != 0 {
+		t.Errorf("CZERO.EQZ(42,0): got %d want 0", cpu.Reg(1))
+	}
+}
+
+func TestCZERO_EQZ_NonZero(t *testing.T) {
+	mem, _ := NewGuestMemory(Size64MB)
+	defer mem.Free()
+	cpu := setupM(t, mem, brtD(0x07, 5, 1, 2, 3, 0x33), 42, 1)
+	if cpu.Reg(1) != 42 {
+		t.Errorf("CZERO.EQZ(42,1): got %d want 42", cpu.Reg(1))
+	}
+}
+
+func TestCZERO_NEZ_Zero(t *testing.T) {
+	mem, _ := NewGuestMemory(Size64MB)
+	defer mem.Free()
+	cpu := setupM(t, mem, brtD(0x07, 7, 1, 2, 3, 0x33), 42, 0)
+	if cpu.Reg(1) != 42 {
+		t.Errorf("CZERO.NEZ(42,0): got %d want 42", cpu.Reg(1))
+	}
+}
+
+func TestCZERO_NEZ_NonZero(t *testing.T) {
+	mem, _ := NewGuestMemory(Size64MB)
+	defer mem.Free()
+	cpu := setupM(t, mem, brtD(0x07, 7, 1, 2, 3, 0x33), 42, 1)
+	if cpu.Reg(1) != 0 {
+		t.Errorf("CZERO.NEZ(42,1): got %d want 0", cpu.Reg(1))
+	}
+}
+
+// ── SRET: should be illegal instruction ──────────────────────────────────
+
+func TestSRET_IllegalInstruction(t *testing.T) {
+	mem, _ := NewGuestMemory(Size64MB)
+	defer mem.Free()
+	const codeVA = uint64(0x1000)
+	mem.Store32(codeVA, 0x10200073) // SRET
+	cpu := NewCPU(*mem)
+	cpu.SetPC(codeVA)
+	err := cpu.Step()
+	if err != ErrIllegalInstruction {
+		t.Errorf("SRET: got %v, want ErrIllegalInstruction", err)
+	}
+}
+
 func TestFflags_NV(t *testing.T) {
 	inf := math.Float32frombits(0x7F800000)
 	r, fl := fenv.SubF32(inf, inf) // Inf - Inf = NaN, should set NV

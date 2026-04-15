@@ -237,12 +237,29 @@ func (c *CPU) step() error {
 		// ── Zbb/Zbs/Zba (OP) ────────────────────────────────────────────────
 		case 0x04: // Zbb: ZEXT.H
 			v = a & 0xFFFF
-		case 0x05: // Zbb: MIN/MAX/MINU/MAXU
+		case 0x05: // Zbb: MIN/MAX + Zbc: CLMUL/CLMULR/CLMULH
 			switch funct3 {
+			case 1: // CLMUL
+				var r uint64
+				for i := 0; i < 64; i++ { if (b>>i)&1 != 0 { r ^= a << i } }
+				v = r
+			case 2: // CLMULR
+				var r uint64
+				for i := 0; i < 63; i++ { if (b>>i)&1 != 0 { r ^= a >> (63 - i) } }
+				v = r
+			case 3: // CLMULH
+				var r uint64
+				for i := 1; i < 64; i++ { if (b>>i)&1 != 0 { r ^= a >> (64 - i) } }
+				v = r
 			case 4: if int64(a)<int64(b) { v=a } else { v=b }  // MIN
 			case 5: if a<b { v=a } else { v=b }                 // MINU
 			case 6: if int64(a)>int64(b) { v=a } else { v=b }  // MAX
 			case 7: if a>b { v=a } else { v=b }                 // MAXU
+			}
+		case 0x07: // Zicond: CZERO.EQZ / CZERO.NEZ
+			switch funct3 {
+			case 5: if b == 0 { v = 0 } else { v = a }  // CZERO.EQZ
+			case 7: if b != 0 { v = 0 } else { v = a }  // CZERO.NEZ
 			}
 		case 0x10: // Zba: SH1ADD/SH2ADD/SH3ADD
 			switch funct3 {
