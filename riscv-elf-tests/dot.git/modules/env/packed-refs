@@ -1,0 +1,6 @@
+# pack-refs with: peeled fully-peeled sorted 
+a1c373ec89a3500630bafabf406108a8fc568bcc refs/remotes/origin/master
+db0bfa223142e56b17dae6d92610f195014bbb80 refs/remotes/origin/priv-1.10
+ef1457fa7a3bf3fd58dadd0f30002828b353e573 refs/remotes/origin/priv-1.9
+325be644bf7ac935146841ae7de6cf926dbf7ab8 refs/remotes/origin/riscv-test-env-sail
+b8548164acc7a0b36aebc8855a9457057b28189e refs/remotes/origin/vectorless

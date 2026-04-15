@@ -1,0 +1,15 @@
+for ext in rv64ui rv64um rv64ua rv64uf rv64ud rv64uc; do
+    for f in isa/${ext}/*.S; do
+        name=$(basename $f .S)
+        zig cc \
+            -target riscv64-freestanding \
+            -mcpu=generic_rv64+m+a+f+d+c \
+            -mabi=lp64d \
+            -static -nostdlib \
+            -T env/p/link.ld \
+            -I env/p \
+            -I isa/macros/scalar \
+            -o "${ext}-p-${name}" "$f" \
+            && echo "✓ ${ext}/${name}" || echo "✗ ${ext}/${name}"
+    done
+done
