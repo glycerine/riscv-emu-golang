@@ -24,7 +24,7 @@
 
 .PHONY: all help bench-setup bench bench-quick bench-ours bench-libriscv bench-mem \
         bench-smoke bench-summary test clean check-tools \
-        libriscv-clone libriscv-patch libriscv-build guest-elf quick-bench
+        libriscv-clone libriscv-patch libriscv-build guest-elf
 
 # ── platform detection ─────────────────────────────────────────────────────
 
@@ -278,8 +278,6 @@ bench: bench-setup
 	@$(MAKE) --no-print-directory bench-summary
 
 
-quick-bench: bench-quick
-
 bench-quick: bench-setup
 	@mkdir -p $(RESULTS_DIR)
 	@echo ""
@@ -298,7 +296,7 @@ bench-quick: bench-setup
 	        -run='^$$' \
 	        -bench='^BenchmarkLibriscv_MemWriteRead64$$|^BenchmarkLibriscv_FullExecution_Steady$$' \
 	        ./bench/libriscv/ 2>&1 \
-	    | grep -E 'copy_to\+from_guest:|full execution:'
+	    | grep -E 'copy_to\+from_guest:|full execution:' || true
 	@echo ""
 
 bench-ours:

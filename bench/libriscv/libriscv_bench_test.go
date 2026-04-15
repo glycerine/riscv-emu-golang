@@ -162,6 +162,6 @@ func BenchmarkLibriscv_FullExecution_Steady(b *testing.B) {
 	if elapsed > 0 && totalInsns > 0 {
 		mips := float64(totalInsns) / elapsed / 1e6
 		b.ReportMetric(mips, "MIPS")
-		fmt.Printf("\n  libriscv steady-state: %.0f MIPS\n", mips)
+		fmt.Printf("\n  libriscv full execution: %.0f MIPS\n", mips)
 	}
 }
