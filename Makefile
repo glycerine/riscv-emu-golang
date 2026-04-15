@@ -22,7 +22,7 @@
 #   make clean          # remove vendor/ and generated ELF
 #   make help           # this message
 
-.PHONY: all help bench-setup bench bench-ours bench-libriscv bench-mem \
+.PHONY: all help bench-setup bench bench-quick bench-ours bench-libriscv bench-mem \
         bench-smoke bench-summary test clean check-tools \
         libriscv-clone libriscv-patch libriscv-build guest-elf
 
@@ -125,6 +125,7 @@ endif
 	@echo "    make bench-setup"
 	@echo ""
 	@echo "  Benchmarks:"
+	@echo "    make bench-quick      fast head-to-head (<1s)"
 	@echo "    make bench            full comparison (ours + libriscv)"
 	@echo "    make bench-ours       our GuestMemory only (no libriscv needed)"
 	@echo "    make bench-libriscv   libriscv calibration only"
@@ -210,11 +211,8 @@ $(PATCH_STAMP): $(VENDOR)/.git
 ifeq ($(PLATFORM),macos)
 	@if [ "$$(uname -m)" = "x86_64" ]; then \
 	    echo "  ✓ Intel Mac: patching libtcc target to x86_64"; \
-	    awk '\
-/CMAKE_HOST_APPLE OR APPLE/ { in_apple=1 }\
-in_apple && /TCC_TARGET_ARM64=1/ { sub(/TCC_TARGET_ARM64=1/, "TCC_TARGET_X86_64=1"); in_apple=0 }\
-{ print }\
-' $(VENDOR)/lib/CMakeLists.txt > $(VENDOR)/lib/CMakeLists.txt.tmp \
+	    awk '/CMAKE_HOST_APPLE OR APPLE/{in_apple=1} in_apple && /TCC_TARGET_ARM64=1/{sub(/TCC_TARGET_ARM64=1/,"TCC_TARGET_X86_64=1");in_apple=0} {print}' \
+	        $(VENDOR)/lib/CMakeLists.txt > $(VENDOR)/lib/CMakeLists.txt.tmp \
 	    && mv $(VENDOR)/lib/CMakeLists.txt.tmp $(VENDOR)/lib/CMakeLists.txt; \
 	else \
 	    echo "  ✓ Apple Silicon: TCC_TARGET_ARM64 correct"; \
@@ -278,6 +276,34 @@ bench: bench-setup
 	        -run='^$$' -bench='^BenchmarkLibriscv' \
 	        ./bench/libriscv/ 2>&1 | tee $(RESULTS_DIR)/libriscv.txt
 	@$(MAKE) --no-print-directory bench-summary
+
+
+bench-quick: bench-setup
+	@mkdir -p $(RESULTS_DIR)
+	@echo ""
+	@echo "── quick benchmark  [<1s total] ────────────────────────────────"
+	@echo ""
+	@printf "  %-40s " "GuestMem Store64+Load64 pair:"
+	@cd $(ROOT) && $(GO) test -count=1 -benchtime=100ms -benchmem \
+	    -run='^$$' -bench='^BenchmarkGuestMem_Store64Load64Pair$$' \
+	    ./bench/ 2>&1 | awk '/Benchmark/{printf "%-12s %s\n", $$3, $$4}'
+	@printf "  %-40s " "libriscv copy_to+from_guest pair:"
+	@cd $(ROOT) && \
+	    CGO_CFLAGS="$(CGO_CFLAGS_VAL)" \
+	    CGO_LDFLAGS="$(CGO_LDFLAGS_VAL)" \
+	    BENCH_ELF=$(GUEST_ELF) \
+	    $(GO) test -tags libriscv -count=1 -benchtime=100ms -benchmem \
+	        -run='^$$' -bench='^BenchmarkLibriscv_MemWriteRead64$$' \
+	        ./bench/libriscv/ 2>&1 | awk '/ns\/pair/{printf "%-12s %s\n", $$NF, "ns/pair"}'
+	@printf "  %-40s " "libriscv full execution:"
+	@cd $(ROOT) && \
+	    CGO_CFLAGS="$(CGO_CFLAGS_VAL)" \
+	    CGO_LDFLAGS="$(CGO_LDFLAGS_VAL)" \
+	    BENCH_ELF=$(GUEST_ELF) \
+	    $(GO) test -tags libriscv -count=1 -benchtime=100ms -benchmem \
+	        -run='^$$' -bench='^BenchmarkLibriscv_FullExecution_Steady$$' \
+	        ./bench/libriscv/ 2>&1 | awk '/MIPS/{printf "%s MIPS\n", $$NF}'
+	@echo ""
 
 bench-ours:
 	@echo "── our GuestMemory benchmarks ──────────────────────────────────"
