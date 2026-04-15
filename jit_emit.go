@@ -506,10 +506,14 @@ func (e *emitter) emitOp(rd, rs1, rs2, funct3, funct7 uint32) {
 		default:
 			e.terminated = true
 		}
-	case 0x14: // Zbs: BSET
+	case 0x14: // Zbs: BSET / Zbb: ORC.B
 		switch funct3 {
-		case 1:
+		case 1: // BSET
 			e.emit("    %s = %s | (1ULL << (%s & 63));\n", d, a, b)
+		case 5: // ORC.B
+			e.emit("    { uint64_t v_ = %s;\n", a)
+			e.emit("      v_ |= v_ << 1; v_ |= v_ << 2; v_ |= v_ << 4;\n")
+			e.emit("      %s = v_ & 0x0101010101010101ULL; %s *= 0xFF; }\n", d, d)
 		default:
 			e.terminated = true
 		}
