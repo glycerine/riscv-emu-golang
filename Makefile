@@ -519,3 +519,7 @@ fuzz:
 prof:
 	go test -run=xxx -bench=BenchmarkCPU_FullExecution -benchtime=1x -cpuprofile cpu.prof ./bench/
 	go tool pprof -http=:8080 cpu.prof
+
+mem:
+	go test -run=xxx -bench=BenchmarkCPU_FullExecution -benchtime=1x -memprofile mem.prof ./bench/
+	go tool pprof -http=:8080 mem.prof
