@@ -25,9 +25,20 @@ func emitBlock(mem *GuestMemory, pc uint64) *emitResult {
 		startPC: pc,
 		pc:      pc,
 		body:    strings.Builder{},
+		visited: make(map[uint64]bool),
 	}
 
 	for e.numInsns < 512 && !e.terminated {
+		// Cycle detection: if we've already emitted code at this PC
+		// (e.g., a forward J landed on a PC we passed through), emit
+		// a goto to the existing label and stop.
+		if e.visited[e.pc] {
+			e.emit("    goto b_%x;\n", e.pc)
+			e.terminated = true
+			break
+		}
+		e.visited[e.pc] = true
+
 		// Fetch instruction (handle RVC)
 		half, fh := mem.Fetch16(e.pc)
 		if fh != nil {
@@ -38,10 +49,15 @@ func emitBlock(mem *GuestMemory, pc uint64) *emitResult {
 			// 16-bit compressed instruction
 			e.emitRVC(uint16(half))
 		} else {
-			// 32-bit instruction
+			// 32-bit instruction — fall back to unaligned fetch if needed
 			insn, f := mem.Fetch32(e.pc)
 			if f != nil {
-				break
+				if f.Kind == FaultMisalign {
+					insn, f = mem.Fetch32U(e.pc)
+				}
+				if f != nil {
+					break
+				}
 			}
 			e.emit32(insn)
 		}
@@ -65,6 +81,8 @@ type emitter struct {
 	terminated bool
 	// Branch targets within this block (for internal gotos)
 	labels map[uint64]bool
+	// Visited PCs — cycle detection for jump following (Phase 1 chaining)
+	visited map[uint64]bool
 	// FP / extension flags — control conditional header emission
 	usesFP         bool // any FP instruction emitted
 	usesZbbHelpers bool // CLZ/CTZ/CPOP emitted (need inline helpers)
@@ -1064,6 +1082,18 @@ func (e *emitter) emitJAL(rd uint32, offset int64, insnSize uint64) {
 		e.emit("    %s = 0x%xULL;\n", e.rd(rd), e.pc+insnSize) // link
 	}
 	e.advancePC(insnSize)
+
+	// Phase 1 chaining: for pure jumps (rd==0), follow the target
+	// instead of exiting to the Go dispatch loop.
+	if rd == 0 {
+		e.emit("    goto b_%x;\n", target)
+		e.pc = target // continue emitting from target
+		// Don't set terminated — the main loop will continue from target.
+		// The visited check at the top of the loop handles cycles.
+		return
+	}
+
+	// rd != 0: function call — must exit block.
 	e.emitReturn(target, jitOK)
 	e.terminated = true
 }
@@ -1088,9 +1118,9 @@ func (e *emitter) emitBranch(rs1, rs2, funct3 uint32, offset int64) {
 	target := e.pc + uint64(offset)
 	cmp := branchCmp(funct3)
 
-	// Check if target is within this block (backward branch = loop)
-	if target >= e.startPC && target < e.pc {
-		// Internal backward branch — emit goto
+	// Check if target has already been emitted (backward branch or
+	// jump-followed code) — if so, use goto to stay in native code.
+	if e.visited[target] {
 		e.emit("    if (%s %s %s) goto b_%x;\n",
 			e.rsC(rs1, funct3), cmp, e.rsC(rs2, funct3), target)
 	} else {
