@@ -54,6 +54,19 @@ static void snapshot_regs(RISCVMachine *m, uint64_t *dst) {
     dst[32] = r->pc;
 }
 
+static void snapshot_fregs(RISCVMachine *m, uint64_t *dst) {
+    RISCVRegisters *r = libriscv_get_registers(m);
+    // RISCVFloat union is exactly 8 bytes. Copy raw bits for both F and D.
+    // For NaN-boxed singles: low 32 = float32 bits, high 32 = 0xFFFFFFFF.
+    // For doubles: all 64 bits are the double bit-pattern.
+    memcpy(dst, r->fr, 32 * sizeof(uint64_t));
+}
+
+static void set_fregs(RISCVMachine *m, const uint64_t *src) {
+    RISCVRegisters *r = libriscv_get_registers(m);
+    memcpy(r->fr, src, 32 * sizeof(uint64_t));
+}
+
 static int snapshot_mem(RISCVMachine *m, uint64_t gva, void *dst, unsigned len) {
     return libriscv_copy_from_guest(m, dst, gva, len);
 }
@@ -105,6 +118,20 @@ func (m *Machine) SnapshotRegs() [33]uint64 {
 	var dst [33]uint64
 	C.snapshot_regs(m.m, (*C.uint64_t)(unsafe.Pointer(&dst[0])))
 	return dst
+}
+
+// SnapshotFRegs returns f0..f31 as raw uint64.
+// NaN-boxed singles: low32=float32 bits, high32=0xFFFFFFFF.
+// Doubles: full 64-bit IEEE-754 pattern.
+func (m *Machine) SnapshotFRegs() [32]uint64 {
+	var dst [32]uint64
+	C.snapshot_fregs(m.m, (*C.uint64_t)(unsafe.Pointer(&dst[0])))
+	return dst
+}
+
+// SetFRegs sets f0..f31 from raw uint64 values.
+func (m *Machine) SetFRegs(fregs [32]uint64) {
+	C.set_fregs(m.m, (*C.uint64_t)(unsafe.Pointer(&fregs[0])))
 }
 
 // SnapshotMem reads length bytes of guest memory at gva. Returns nil on failure.

@@ -2,6 +2,7 @@ package riscv
 
 import (
 	"errors"
+	"math"
 	"math/bits"
 )
 
@@ -14,11 +15,13 @@ var ErrIllegalInstruction = errors.New("illegal instruction")
 type CPU struct {
 	mem   GuestMemory
 	pc    uint64
-	x     [32]uint64 // x[0] is hardwired zero
-	Notes NoteChain  // exception delivery chain; handlers installed by OS layer
+	x     [32]uint64  // x[0] is hardwired zero
+	f     [32]uint64  // f0-f31: uint64 holds NaN-boxed float32 or raw float64 bits
+	fcsr  uint32      // floating-point control and status register (fflags + frm)
+	Notes NoteChain   // exception delivery chain; handlers installed by OS layer
 	// LR/SC reservation — single address, invalidated by any SC or context switch.
-	resvAddr  uint64 // guest physical address of active reservation (0 = none)
-	resvValid bool   // true while a reservation is held
+	resvAddr  uint64
+	resvValid bool
 }
 
 func NewCPU(mem GuestMemory) *CPU { return &CPU{mem: mem} }
@@ -27,6 +30,10 @@ func (c *CPU) SetPC(addr uint64)        { c.pc = addr }
 func (c *CPU) PC() uint64               { return c.pc }
 func (c *CPU) SetReg(r uint8, v uint64) { if r != 0 { c.x[r] = v } }
 func (c *CPU) Reg(r uint8) uint64       { if r == 0 { return 0 }; return c.x[r] }
+func (c *CPU) SetFReg(r uint8, v uint64) { c.f[r] = v }
+func (c *CPU) FReg(r uint8) uint64       { return c.f[r] }
+func (c *CPU) FCSR() uint32              { return c.fcsr }
+func (c *CPU) SetFCSR(v uint32)          { c.fcsr = v }
 
 // Run executes instructions until an unhandled note or fatal exception.
 // Exceptions are delivered through cpu.Notes; see NoteChain and RunWithChain.
@@ -401,6 +408,183 @@ func (c *CPU) step() error {
 			return ErrIllegalInstruction
 		}
 
+	// ── FLW / FLD — float loads ──────────────────────────────────────────
+	case 0x07:
+		addr := uint64(int64(c.Reg(rs1)) + iimm)
+		switch funct3 {
+		case 0b010: // FLW
+			v, f := (&c.mem).Load32(addr); if f != nil { return f }
+			c.SetFReg(rd, boxF32(v))
+		case 0b011: // FLD
+			v, f := (&c.mem).Load64(addr); if f != nil { return f }
+			c.SetFReg(rd, boxF64(v))
+		default: return ErrIllegalInstruction
+		}
+
+	// ── FSW / FSD — float stores ──────────────────────────────────────────
+	case 0x27:
+		simm := int64(int32(insn&0xFE000000)>>20) | int64((insn>>7)&0x1F)
+		addr := uint64(int64(c.Reg(rs1)) + simm)
+		switch funct3 {
+		case 0b010: // FSW
+			if f := (&c.mem).Store32(addr, unboxF32(c.FReg(rs2))); f != nil { return f }
+		case 0b011: // FSD
+			if f := (&c.mem).Store64(addr, c.FReg(rs2)); f != nil { return f }
+		default: return ErrIllegalInstruction
+		}
+
+	// ── FMADD/FMSUB/FNMSUB/FNMADD — fused multiply-add (R4-type) ─────────
+	case 0x43, 0x47, 0x4B, 0x4F:
+		rs3 := uint8(insn >> 27)
+		fmt := uint8((insn >> 25) & 0x3)
+		if fmt == 0 { // .S single-precision
+			a := f32frombits(unboxF32(c.FReg(rs1)))
+			b := f32frombits(unboxF32(c.FReg(rs2)))
+			d := f32frombits(unboxF32(c.FReg(rs3)))
+			var v float32
+			switch opcode {
+			case 0x43: v = a*b + d           // FMADD.S
+			case 0x47: v = a*b - d           // FMSUB.S
+			case 0x4B: v = -(a*b) + d        // FNMSUB.S
+			case 0x4F: v = -(a*b) - d        // FNMADD.S
+			}
+			c.SetFReg(rd, boxF32(f32bits(v)))
+		} else if fmt == 1 { // .D double-precision
+			a := f64frombits(c.FReg(rs1))
+			b := f64frombits(c.FReg(rs2))
+			d := f64frombits(c.FReg(rs3))
+			var v float64
+			switch opcode {
+			case 0x43: v = a*b + d
+			case 0x47: v = a*b - d
+			case 0x4B: v = -(a*b) + d
+			case 0x4F: v = -(a*b) - d
+			}
+			c.SetFReg(rd, boxF64(f64bits(v)))
+		} else { return ErrIllegalInstruction }
+
+	// ── FPFUNC — all other float ops (opcode=0x53) ────────────────────────
+	case 0x53:
+		funct5 := uint8(insn >> 27)
+		fmt    := uint8((insn >> 25) & 0x3)
+		if fmt == 0 { // ── single-precision ────────────────────────────────
+			a := unboxF32(c.FReg(rs1))
+			b := unboxF32(c.FReg(rs2))
+			af, bf := f32frombits(a), f32frombits(b)
+			switch funct5 {
+			case 0x00: c.SetFReg(rd, boxF32(f32bits(af+bf)))          // FADD.S
+			case 0x01: c.SetFReg(rd, boxF32(f32bits(af-bf)))          // FSUB.S
+			case 0x02: c.SetFReg(rd, boxF32(f32bits(af*bf)))          // FMUL.S
+			case 0x03: c.SetFReg(rd, boxF32(f32bits(af/bf)))          // FDIV.S
+			case 0x0B: c.SetFReg(rd, boxF32(f32bits(float32(math.Sqrt(float64(af)))))) // FSQRT.S
+			case 0x04: // FSGNJ.S / FSGNJN.S / FSGNJX.S
+				switch funct3 {
+				case 0: c.SetFReg(rd, boxF32(fsgnjF32(a,b)))
+				case 1: c.SetFReg(rd, boxF32(fsgnjnF32(a,b)))
+				case 2: c.SetFReg(rd, boxF32(fsgnjxF32(a,b)))
+				default: return ErrIllegalInstruction
+				}
+			case 0x05: // FMIN.S / FMAX.S
+				switch funct3 {
+				case 0: c.SetFReg(rd, boxF32(fminF32(a,b)))
+				case 1: c.SetFReg(rd, boxF32(fmaxF32(a,b)))
+				default: return ErrIllegalInstruction
+				}
+			case 0x08: // FCVT.S.D  (rs2=1 = from D)
+				c.SetFReg(rd, boxF32(f32bits(float32(f64frombits(c.FReg(rs1))))))
+			case 0x14: // FEQ.S / FLT.S / FLE.S -> integer rd
+				var v uint64
+				switch funct3 {
+				case 2: if af == bf { v = 1 }
+				case 1: if af < bf { v = 1 }
+				case 0: if af <= bf { v = 1 }
+				default: return ErrIllegalInstruction
+				}
+				c.SetReg(rd, v)
+			case 0x18: // FCVT.{W,WU,L,LU}.S -> integer rd
+				switch rs2 {
+				case 0: c.SetReg(rd, uint64(int64(int32(af))))           // FCVT.W.S
+				case 1: c.SetReg(rd, uint64(uint32(af)))                 // FCVT.WU.S
+				case 2: c.SetReg(rd, uint64(int64(af)))                  // FCVT.L.S
+				case 3: c.SetReg(rd, uint64(af))                         // FCVT.LU.S
+				}
+			case 0x1A: // FCVT.S.{W,WU,L,LU} <- integer rs1
+				switch rs2 {
+				case 0: c.SetFReg(rd, boxF32(f32bits(float32(int32(c.Reg(rs1))))))  // FCVT.S.W
+				case 1: c.SetFReg(rd, boxF32(f32bits(float32(uint32(c.Reg(rs1)))))) // FCVT.S.WU
+				case 2: c.SetFReg(rd, boxF32(f32bits(float32(int64(c.Reg(rs1))))))  // FCVT.S.L
+				case 3: c.SetFReg(rd, boxF32(f32bits(float32(c.Reg(rs1)))))          // FCVT.S.LU
+				}
+			case 0x1C: // FMV.X.W (funct3=0) / FCLASS.S (funct3=1)
+				switch funct3 {
+				case 0: c.SetReg(rd, uint64(int64(int32(a))))            // FMV.X.W sign-extend
+				case 1: c.SetReg(rd, fclassF32(a))                       // FCLASS.S
+				default: return ErrIllegalInstruction
+				}
+			case 0x1E: // FMV.W.X
+				c.SetFReg(rd, boxF32(uint32(c.Reg(rs1))))
+			default: return ErrIllegalInstruction
+			}
+		} else if fmt == 1 { // ── double-precision ────────────────────────
+			a := c.FReg(rs1)
+			b := c.FReg(rs2)
+			af, bf := f64frombits(a), f64frombits(b)
+			switch funct5 {
+			case 0x00: c.SetFReg(rd, boxF64(f64bits(af+bf)))          // FADD.D
+			case 0x01: c.SetFReg(rd, boxF64(f64bits(af-bf)))          // FSUB.D
+			case 0x02: c.SetFReg(rd, boxF64(f64bits(af*bf)))          // FMUL.D
+			case 0x03: c.SetFReg(rd, boxF64(f64bits(af/bf)))          // FDIV.D
+			case 0x0B: c.SetFReg(rd, boxF64(f64bits(math.Sqrt(af))))  // FSQRT.D
+			case 0x04: // FSGNJ.D / FSGNJN.D / FSGNJX.D
+				switch funct3 {
+				case 0: c.SetFReg(rd, boxF64(fsgnjF64(a,b)))
+				case 1: c.SetFReg(rd, boxF64(fsgnjnF64(a,b)))
+				case 2: c.SetFReg(rd, boxF64(fsgnjxF64(a,b)))
+				default: return ErrIllegalInstruction
+				}
+			case 0x05: // FMIN.D / FMAX.D
+				switch funct3 {
+				case 0: c.SetFReg(rd, boxF64(fminF64(a,b)))
+				case 1: c.SetFReg(rd, boxF64(fmaxF64(a,b)))
+				default: return ErrIllegalInstruction
+				}
+			case 0x08: // FCVT.D.S  (rs2=0 = from S)
+				c.SetFReg(rd, boxF64(f64bits(float64(f32frombits(unboxF32(c.FReg(rs1)))))))
+			case 0x14: // FEQ.D / FLT.D / FLE.D
+				var v uint64
+				switch funct3 {
+				case 2: if af == bf { v = 1 }
+				case 1: if af < bf { v = 1 }
+				case 0: if af <= bf { v = 1 }
+				default: return ErrIllegalInstruction
+				}
+				c.SetReg(rd, v)
+			case 0x18: // FCVT.{W,WU,L,LU}.D
+				switch rs2 {
+				case 0: c.SetReg(rd, uint64(int64(int32(af))))
+				case 1: c.SetReg(rd, uint64(uint32(af)))
+				case 2: c.SetReg(rd, uint64(int64(af)))
+				case 3: c.SetReg(rd, uint64(af))
+				}
+			case 0x1A: // FCVT.D.{W,WU,L,LU}
+				switch rs2 {
+				case 0: c.SetFReg(rd, boxF64(f64bits(float64(int32(c.Reg(rs1))))))
+				case 1: c.SetFReg(rd, boxF64(f64bits(float64(uint32(c.Reg(rs1))))))
+				case 2: c.SetFReg(rd, boxF64(f64bits(float64(int64(c.Reg(rs1))))))
+				case 3: c.SetFReg(rd, boxF64(f64bits(float64(c.Reg(rs1)))))
+				}
+			case 0x1C: // FMV.X.D (funct3=0) / FCLASS.D (funct3=1)
+				switch funct3 {
+				case 0: c.SetReg(rd, a)                                  // FMV.X.D
+				case 1: c.SetReg(rd, fclassF64(a))                       // FCLASS.D
+				default: return ErrIllegalInstruction
+				}
+			case 0x1E: // FMV.D.X
+				c.SetFReg(rd, boxF64(c.Reg(rs1)))
+			default: return ErrIllegalInstruction
+			}
+		} else { return ErrIllegalInstruction }
+
 	default:
 		return ErrIllegalInstruction
 	}
@@ -595,33 +779,14 @@ func (c *CPU) stepRVC(insn uint16) error {
 			return ErrIllegalInstruction
 		}
 
+	// end switch quad (Quadrant 2)
+
 	default:
 		return ErrIllegalInstruction
 	}
 
 	c.pc = nextPC
 	return nil
-}
-
-// cjOffset extracts the sign-extended 12-bit J-type offset from a C.J instruction.
-func cjOffset(insn uint16) int64 {
-	// bits: [15:13]=101, [12]=off[11], [11]=off[4], [10:9]=off[9:8],
-	//       [8]=off[10], [7]=off[6], [6]=off[7], [5:3]=off[3:1], [2]=off[5], [1:0]=01
-	o := int64(insn)
-	off := ((o>>12)&1)<<11 | ((o>>11)&1)<<4 | ((o>>9)&3)<<8 | ((o>>8)&1)<<10 |
-		((o>>7)&1)<<6 | ((o>>6)&1)<<7 | ((o>>3)&7)<<1 | ((o>>2)&1)<<5
-	// sign-extend bit 11
-	if off&(1<<11) != 0 { off |= -1 << 12 }
-	return off
-}
-
-// cbOffset extracts the sign-extended 9-bit branch offset from C.BEQZ/C.BNEZ.
-func cbOffset(insn uint16) int64 {
-	// bits: [12]=off[8], [11:10]=off[4:3], [6:5]=off[7:6], [4:3]=off[2:1], [2]=off[5]
-	o := int64(insn)
-	off := ((o>>12)&1)<<8 | ((o>>10)&3)<<3 | ((o>>5)&3)<<6 | ((o>>3)&3)<<1 | ((o>>2)&1)<<5
-	if off&(1<<8) != 0 { off |= -1 << 9 }
-	return off
 }
 
 // amoOpW applies the AMO operation to a 32-bit word value.
@@ -654,4 +819,21 @@ func amoOpD(funct5 uint32, mem, rs2 uint64) uint64 {
 	case 0b11100: if mem > rs2 { return mem }; return rs2                                // AMOMAXU
 	}
 	return mem
+}
+
+// cjOffset extracts the sign-extended 12-bit J-type offset from a C.J instruction.
+func cjOffset(insn uint16) int64 {
+	o := int64(insn)
+	off := ((o>>12)&1)<<11 | ((o>>11)&1)<<4 | ((o>>9)&3)<<8 | ((o>>8)&1)<<10 |
+		((o>>7)&1)<<6 | ((o>>6)&1)<<7 | ((o>>3)&7)<<1 | ((o>>2)&1)<<5
+	if off&(1<<11) != 0 { off |= -1 << 12 }
+	return off
+}
+
+// cbOffset extracts the sign-extended 9-bit branch offset from C.BEQZ/C.BNEZ.
+func cbOffset(insn uint16) int64 {
+	o := int64(insn)
+	off := ((o>>12)&1)<<8 | ((o>>10)&3)<<3 | ((o>>5)&3)<<6 | ((o>>3)&3)<<1 | ((o>>2)&1)<<5
+	if off&(1<<8) != 0 { off |= -1 << 9 }
+	return off
 }

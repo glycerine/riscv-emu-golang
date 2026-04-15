@@ -404,7 +404,7 @@ clean:
 FUZZ_ORACLE_CGO_LDFLAGS := -L$(BUILD) -L$(BUILD)/libriscv \
                             -lriscv_capi -lriscv -lstdc++ -lm $(EXTRA_LDFLAGS)
 
-.PHONY: fuzz-oracle fuzz-stores fuzz-rvc fuzz-amo
+.PHONY: fuzz-oracle fuzz-stores fuzz-rvc fuzz-amo fuzz-fd
 fuzz-oracle: bench-setup
 	@echo "── fuzz ALU vs libriscv oracle ($(FUZZ_TIME)) ──────────────"
 	cd $(ROOT) && FUZZ_TIMEOUT=1 \
@@ -437,6 +437,15 @@ fuzz-amo: bench-setup
 	cd $(ROOT) && FUZZ_TIMEOUT=1 \
 	    $(GO) test \
 	        -run FuzzAMOVsLibriscv -fuzz=FuzzAMOVsLibriscv \
+	        -fuzztime=$(FUZZ_TIME) \
+	        ./fuzzoracle/ 2>&1
+
+.PHONY: fuzz-fd
+fuzz-fd: bench-setup
+	@echo "── fuzz F+D vs libriscv oracle ($(FUZZ_TIME)) ──────────────"
+	cd $(ROOT) && FUZZ_TIMEOUT=1 \
+	    $(GO) test \
+	        -run FuzzFDVsLibriscv -fuzz=FuzzFDVsLibriscv \
 	        -fuzztime=$(FUZZ_TIME) \
 	        ./fuzzoracle/ 2>&1
 
