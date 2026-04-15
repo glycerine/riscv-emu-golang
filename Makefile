@@ -287,22 +287,16 @@ bench-quick: bench-setup
 	@cd $(ROOT) && $(GO) test -count=1 -benchtime=100ms -benchmem \
 	    -run='^$$' -bench='^BenchmarkGuestMem_Store64Load64Pair$$' \
 	    ./bench/ 2>&1 | awk '/Benchmark/{printf "%-12s %s\n", $$3, $$4}'
-	@printf "  %-40s " "libriscv copy_to+from_guest pair:"
+	@echo "  libriscv (memory pair + execution throughput):"
 	@cd $(ROOT) && \
 	    CGO_CFLAGS="$(CGO_CFLAGS_VAL)" \
 	    CGO_LDFLAGS="$(CGO_LDFLAGS_VAL)" \
 	    BENCH_ELF=$(GUEST_ELF) \
 	    $(GO) test -tags libriscv -count=1 -benchtime=100ms -benchmem \
-	        -run='^$$' -bench='^BenchmarkLibriscv_MemWriteRead64$$' \
-	        ./bench/libriscv/ 2>&1 | awk '/ns\/pair/{printf "%-12s %s\n", $$NF, "ns/pair"}'
-	@printf "  %-40s " "libriscv full execution:"
-	@cd $(ROOT) && \
-	    CGO_CFLAGS="$(CGO_CFLAGS_VAL)" \
-	    CGO_LDFLAGS="$(CGO_LDFLAGS_VAL)" \
-	    BENCH_ELF=$(GUEST_ELF) \
-	    $(GO) test -tags libriscv -count=1 -benchtime=100ms -benchmem \
-	        -run='^$$' -bench='^BenchmarkLibriscv_FullExecution_Steady$$' \
-	        ./bench/libriscv/ 2>&1 | awk '/MIPS/{printf "%s MIPS\n", $$NF}'
+	        -run='^$$' \
+	        -bench='^BenchmarkLibriscv_MemWriteRead64$$|^BenchmarkLibriscv_FullExecution_Steady$$' \
+	        ./bench/libriscv/ 2>&1 \
+	    | grep -E 'copy_to\+from_guest:|full execution:'
 	@echo ""
 
 bench-ours:
