@@ -389,7 +389,7 @@ bench-summary:
 
 test:
 	@echo "── unit tests ──────────────────────────────────────────────────"
-	cd $(ROOT) && $(GO) test -count=1 . ./bench 2>&1
+	cd $(ROOT) && $(GO) test -count=1 -v . ./fuzzoracle 2>&1
 
 # ── clean ──────────────────────────────────────────────────────────────────
 
