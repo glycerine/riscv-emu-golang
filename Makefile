@@ -394,3 +394,21 @@ rebuild-libriscv:
 	rm -rf $(BUILD) $(PATCH_STAMP)
 	$(MAKE) libriscv-patch libriscv-build
 	@echo "  ✓ rebuild complete"
+
+# ── fuzz ───────────────────────────────────────────────────────────────────
+# Fuzz the CPU instruction decoder against a pure-Go reference oracle.
+# Uses FUZZ_TIMEOUT env var to extend the TestMain timeout beyond 3s.
+#
+# Usage:
+#   make fuzz           # 60s run
+#   make fuzz FUZZ_TIME=5m
+
+FUZZ_TIME ?= 60s
+
+.PHONY: fuzz
+fuzz:
+	@echo "── fuzzing CPU ($(FUZZ_TIME)) ──────────────────────────────────"
+	cd $(ROOT) && FUZZ_TIMEOUT=1 $(GO) test \
+	    -run FuzzCPU -fuzz=FuzzCPU \
+	    -fuzztime=$(FUZZ_TIME) \
+	    . 2>&1

@@ -118,7 +118,7 @@ func (c *CPU) step() error {
 		case 0x4: // XORI
 			v = c.Reg(rs1) ^ uint64(iimm)
 		case 0x5:
-			if insn>>30&1 == 1 { // SRAI
+			if (insn>>30)&1 == 1 { // SRAI
 				v = uint64(int64(c.Reg(rs1)) >> shamt)
 			} else { // SRLI
 				v = c.Reg(rs1) >> shamt
@@ -140,7 +140,7 @@ func (c *CPU) step() error {
 		case 0x1: // SLLIW
 			v = int32(c.Reg(rs1)) << shamt
 		case 0x5:
-			if insn>>30&1 == 1 { // SRAIW
+			if (insn>>30)&1 == 1 { // SRAIW
 				v = int32(c.Reg(rs1)) >> shamt
 			} else { // SRLIW
 				v = int32(uint32(c.Reg(rs1)) >> shamt)
