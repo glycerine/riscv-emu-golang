@@ -1,16 +1,21 @@
 package riscv
 
-import "errors"
+import (
+	"errors"
+	"math/bits"
+)
 
+var ErrEcall  = errors.New("ecall")
 var ErrEbreak = errors.New("ebreak")
 var ErrIllegalInstruction = errors.New("illegal instruction")
 
 // CPU is a single RV64I hart.
 // mem is inline and first for cache locality — touched on every instruction.
 type CPU struct {
-	mem GuestMemory
-	pc  uint64
-	x   [32]uint64 // x[0] is hardwired zero
+	mem   GuestMemory
+	pc    uint64
+	x     [32]uint64 // x[0] is hardwired zero
+	Notes NoteChain  // exception delivery chain; handlers installed by OS layer
 }
 
 func NewCPU(mem GuestMemory) *CPU { return &CPU{mem: mem} }
@@ -20,13 +25,14 @@ func (c *CPU) PC() uint64               { return c.pc }
 func (c *CPU) SetReg(r uint8, v uint64) { if r != 0 { c.x[r] = v } }
 func (c *CPU) Reg(r uint8) uint64       { if r == 0 { return 0 }; return c.x[r] }
 
+// Run executes instructions until an unhandled note or fatal exception.
+// Exceptions are delivered through cpu.Notes; see NoteChain and RunWithChain.
 func (c *CPU) Run() error {
-	for {
-		if err := c.step(); err != nil {
-			return err
-		}
-	}
+	return RunWithChain(c, &c.Notes)
 }
+
+// Step executes a single instruction. Returns ErrEbreak, ErrEcall, or ErrIllegalInstruction on halt/fault.
+func (c *CPU) Step() error { return c.step() }
 
 func (c *CPU) step() error {
 	insn, f := (&c.mem).Fetch32(c.pc)
@@ -155,33 +161,100 @@ func (c *CPU) step() error {
 		funct7 := insn >> 25
 		a, b := c.Reg(rs1), c.Reg(rs2)
 		var v uint64
-		switch funct3 {
-		case 0x0:
-			if funct7 == 0x20 { v = a - b } else { v = a + b } // SUB / ADD
-		case 0x1: v = a << (b & 0x3F)                          // SLL
-		case 0x2: if int64(a) < int64(b) { v = 1 }            // SLT
-		case 0x3: if a < b { v = 1 }                           // SLTU
-		case 0x4: v = a ^ b                                    // XOR
-		case 0x5:
-			if funct7 == 0x20 { v = uint64(int64(a) >> (b & 0x3F)) } else { v = a >> (b & 0x3F) } // SRA/SRL
-		case 0x6: v = a | b                                    // OR
-		case 0x7: v = a & b                                    // AND
+		if funct7 == 0x01 { // ── RV64M ──────────────────────────────────
+			switch funct3 {
+			case 0x0: v = a * b                                          // MUL
+			case 0x1: // MULH: signed × signed, upper 64 bits
+				hi, _ := bits.Mul64(a, b)
+				// Adjust for signed: if rs1<0 subtract rs2; if rs2<0 subtract rs1
+				if int64(a) < 0 { hi -= b }
+				if int64(b) < 0 { hi -= a }
+				v = hi
+			case 0x2: // MULHSU: signed rs1 × unsigned rs2, upper 64 bits
+				hi, _ := bits.Mul64(a, b)
+				if int64(a) < 0 { hi -= b }
+				v = hi
+			case 0x3: // MULHU: unsigned × unsigned, upper 64 bits
+				hi, _ := bits.Mul64(a, b)
+				v = hi
+			case 0x4: // DIV: signed division
+				if b == 0 {
+					v = ^uint64(0) // -1
+				} else if a == 0x8000000000000000 && b == ^uint64(0) {
+					v = a // overflow: INT_MIN / -1 = INT_MIN
+				} else {
+					v = uint64(int64(a) / int64(b))
+				}
+			case 0x5: // DIVU: unsigned division
+				if b == 0 { v = ^uint64(0) } else { v = a / b }
+			case 0x6: // REM: signed remainder
+				if b == 0 {
+					v = a
+				} else if a == 0x8000000000000000 && b == ^uint64(0) {
+					v = 0
+				} else {
+					v = uint64(int64(a) % int64(b))
+				}
+			case 0x7: // REMU: unsigned remainder
+				if b == 0 { v = a } else { v = a % b }
+			}
+		} else { // ── RV64I ──────────────────────────────────────────────
+			switch funct3 {
+			case 0x0:
+				if funct7 == 0x20 { v = a - b } else { v = a + b } // SUB / ADD
+			case 0x1: v = a << (b & 0x3F)                          // SLL
+			case 0x2: if int64(a) < int64(b) { v = 1 }            // SLT
+			case 0x3: if a < b { v = 1 }                           // SLTU
+			case 0x4: v = a ^ b                                    // XOR
+			case 0x5:
+				if funct7 == 0x20 { v = uint64(int64(a) >> (b & 0x3F)) } else { v = a >> (b & 0x3F) } // SRA/SRL
+			case 0x6: v = a | b                                    // OR
+			case 0x7: v = a & b                                    // AND
+			}
 		}
 		c.SetReg(rd, v)
 
 	// ── OP-32 (R-type, 32-bit, sign-extend) ─────────────────────────────
 	case 0x3B:
 		funct7 := insn >> 25
-		a, b := uint32(c.Reg(rs1)), uint32(c.Reg(rs2))
+		a32, b32 := uint32(c.Reg(rs1)), uint32(c.Reg(rs2))
 		var v int32
-		switch funct3 {
-		case 0x0:
-			if funct7 == 0x20 { v = int32(a - b) } else { v = int32(a + b) } // SUBW/ADDW
-		case 0x1: v = int32(a << (b & 0x1F))                                  // SLLW
-		case 0x5:
-			if funct7 == 0x20 { v = int32(a) >> (b & 0x1F) } else { v = int32(a >> (b & 0x1F)) } // SRAW/SRLW
-		default:
-			return ErrIllegalInstruction
+		if funct7 == 0x01 { // ── RV64M word ops ─────────────────────────
+			switch funct3 {
+			case 0x0: v = int32(a32 * b32)                          // MULW
+			case 0x4: // DIVW: signed 32-bit division
+				if b32 == 0 {
+					v = -1
+				} else if a32 == 0x80000000 && b32 == 0xFFFFFFFF {
+					v = int32(a32) // overflow: INT32_MIN / -1 = INT32_MIN
+				} else {
+					v = int32(a32) / int32(b32)
+				}
+			case 0x5: // DIVUW: unsigned 32-bit division
+				if b32 == 0 { v = -1 } else { v = int32(a32 / b32) }
+			case 0x6: // REMW: signed 32-bit remainder
+				if b32 == 0 {
+					v = int32(a32)
+				} else if a32 == 0x80000000 && b32 == 0xFFFFFFFF {
+					v = 0
+				} else {
+					v = int32(a32) % int32(b32)
+				}
+			case 0x7: // REMUW: unsigned 32-bit remainder
+				if b32 == 0 { v = int32(a32) } else { v = int32(a32 % b32) }
+			default:
+				return ErrIllegalInstruction
+			}
+		} else { // ── RV64I word ops ─────────────────────────────────────
+			switch funct3 {
+			case 0x0:
+				if funct7 == 0x20 { v = int32(a32 - b32) } else { v = int32(a32 + b32) } // SUBW/ADDW
+			case 0x1: v = int32(a32 << (b32 & 0x1F))                                  // SLLW
+			case 0x5:
+				if funct7 == 0x20 { v = int32(a32) >> (b32 & 0x1F) } else { v = int32(a32 >> (b32 & 0x1F)) } // SRAW/SRLW
+			default:
+				return ErrIllegalInstruction
+			}
 		}
 		c.SetReg(rd, uint64(int64(v)))
 
@@ -195,11 +268,14 @@ func (c *CPU) step() error {
 
 	// ── JAL (J-type) ─────────────────────────────────────────────────────
 	case 0x6F:
-		jimm := int64(int32(
-			((insn>>31)&1)<<20 |
+		// Reconstruct J-type immediate (21 bits, bit 0 always 0).
+		// Shift left 11 so the sign bit lands at bit 31 of int32,
+		// then arithmetic-right-shift 11 to sign-extend to 64 bits.
+		raw := ((insn>>31)&1)<<20 |
 			((insn>>12)&0xFF)<<12 |
 			((insn>>20)&1)<<11 |
-			((insn>>21)&0x3FF)<<1)) >> 11 // sign-extend 21→64
+			((insn>>21)&0x3FF)<<1
+		jimm := int64(int32(raw<<11)) >> 11 // sign-extend 21→64
 		c.SetReg(rd, uint64(nextPC))
 		c.pc = c.pc + uint64(jimm)
 		return nil
@@ -246,8 +322,9 @@ func (c *CPU) step() error {
 		case 0x001: // EBREAK
 			c.pc = nextPC
 			return ErrEbreak
-		case 0x000: // ECALL — not yet implemented
-			return ErrIllegalInstruction
+		case 0x000: // ECALL
+			c.pc = nextPC
+			return ErrEcall
 		default:
 			return ErrIllegalInstruction
 		}

@@ -1,22 +1,7 @@
 //go:build libriscv
 
-// Package libriscv_bench provides benchmark calibration numbers for libriscv.
-//
-// Build requirements (managed by `make bench-setup`):
-//
-//	vendor/libriscv/c/libriscv.h               — C API header
-//	vendor/libriscv/build_capi/libriscv_capi.a — C API static lib
-//	vendor/libriscv/build_capi/libriscv/libriscv.a — core static lib
-//	bench/libriscv_guest/bench_guest.elf       — RISC-V guest binary
-//
-// The #cgo LDFLAGS line is intentionally absent: Go's security policy
-// forbids ${SRCDIR}-relative paths in linker flags. Library paths are
-// supplied by the Makefile via CGO_LDFLAGS env var instead.
-//
-// Usage:
-//
-//	make bench              # full comparison
-//	make bench-libriscv     # this package only
+// Package libriscv_bench provides benchmark calibration and fuzz oracle
+// against libriscv.
 package libriscv_bench
 
 /*
@@ -25,6 +10,7 @@ package libriscv_bench
 #include <libriscv.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <string.h>
 #include <time.h>
 
 // ── silent callbacks ───────────────────────────────────────────────────────
@@ -36,7 +22,7 @@ static void null_stdout(void *o, const char *m, unsigned n) {
     (void)o; (void)m; (void)n;
 }
 
-// ── timing ────────────────────────────────────────────────────────────────
+// ── timing ─────────────────────────────────────────────────────────────────
 
 static int64_t mono_ns(void) {
     struct timespec t;
@@ -53,7 +39,7 @@ static RISCVMachine *new_bench_machine(const void *elf, size_t elf_size,
     opts.max_memory     = memory_bytes;
     opts.strict_sandbox = 1;
     opts.error          = null_error;
-    opts.output = null_stdout;  // renamed: stdout is a macro on macOS (stdio.h)
+    opts.output         = null_stdout; // renamed: stdout is a macro on macOS
     return libriscv_new(elf, (unsigned)elf_size, &opts);
 }
 
@@ -61,8 +47,6 @@ static void delete_machine(RISCVMachine *m) {
     libriscv_delete(m);
 }
 
-// run_to_completion runs m until the guest calls exit or hits insn_limit.
-// Returns instructions retired, or 0 on error.
 static uint64_t run_to_completion(RISCVMachine *m, uint64_t insn_limit) {
     int r = libriscv_run(m, insn_limit);
     if (r < 0) return 0;
@@ -71,9 +55,6 @@ static uint64_t run_to_completion(RISCVMachine *m, uint64_t insn_limit) {
 
 // ── memory benchmark ───────────────────────────────────────────────────────
 
-// mem_write_read_pairs performs n copy_to_guest+copy_from_guest uint64
-// pairs at guest_addr. Timing is done entirely in C so no cgo boundary
-// is crossed in the hot loop. Returns total elapsed nanoseconds.
 static int64_t mem_write_read_pairs(RISCVMachine *m, uint64_t guest_addr,
                                      int64_t n) {
     uint64_t val = 0xDEADBEEFCAFEBABEULL;
@@ -86,9 +67,42 @@ static int64_t mem_write_read_pairs(RISCVMachine *m, uint64_t guest_addr,
     }
     return mono_ns() - t0;
 }
+
+// ── oracle helpers for fuzz comparison ────────────────────────────────────
+
+// step1 runs exactly one instruction. Returns libriscv error code.
+static int step1(RISCVMachine *m) {
+    return libriscv_run(m, 1);
+}
+
+// snapshot_regs fills dst[0..31]=integer regs, dst[32]=PC.
+static void snapshot_regs(RISCVMachine *m, uint64_t *dst) {
+    RISCVRegisters *r = libriscv_get_registers(m);
+    memcpy(dst, r->r, 32 * sizeof(uint64_t));
+    dst[32] = r->pc;
+}
+
+// snapshot_mem copies len bytes of guest memory at gva into dst.
+static int snapshot_mem(RISCVMachine *m, uint64_t gva, void *dst, unsigned len) {
+    return libriscv_copy_from_guest(m, dst, gva, len);
+}
+
+// set_regs_and_pc sets x1..x31 and PC. x0 is always 0.
+static void set_regs_and_pc(RISCVMachine *m, const uint64_t *xregs, uint64_t pc) {
+    RISCVRegisters *r = libriscv_get_registers(m);
+    memcpy(&r->r[1], xregs+1, 31 * sizeof(uint64_t));
+    libriscv_jump(m, pc);
+}
+
+// write_guest copies src into guest memory at gva.
+static int write_guest(RISCVMachine *m, uint64_t gva, const void *src, unsigned len) {
+    return libriscv_copy_to_guest(m, gva, src, len);
+}
 */
 import "C"
 import "unsafe"
+
+// ── Machine (benchmark use) ────────────────────────────────────────────────
 
 // Machine wraps a libriscv RISCVMachine with a Go-friendly lifecycle.
 type Machine struct {
@@ -109,7 +123,7 @@ func NewMachine(elf []byte, memBytes uint64) *Machine {
 	return &Machine{m: m}
 }
 
-// Close frees the machine. Safe to call multiple times.
+// Close frees the machine.
 func (m *Machine) Close() {
 	if m.m != nil {
 		C.delete_machine(m.m)
@@ -118,14 +132,49 @@ func (m *Machine) Close() {
 }
 
 // RunToCompletion runs the guest until it calls exit or insnLimit is reached.
-// Returns instructions retired, or 0 on error.
 func (m *Machine) RunToCompletion(insnLimit uint64) uint64 {
 	return uint64(C.run_to_completion(m.m, C.uint64_t(insnLimit)))
 }
 
-// MemWriteReadPairs performs n copy_to_guest+copy_from_guest uint64 pairs
-// at guestAddr. Timing is measured inside C (no cgo overhead in the loop).
-// Returns total nanoseconds elapsed.
+// MemWriteReadPairs benchmarks copy_to_guest+copy_from_guest pairs in C.
 func (m *Machine) MemWriteReadPairs(guestAddr uint64, n int64) int64 {
 	return int64(C.mem_write_read_pairs(m.m, C.uint64_t(guestAddr), C.int64_t(n)))
+}
+
+// ── Oracle helpers (fuzz comparison) ──────────────────────────────────────
+
+// Step1 runs exactly one instruction. Returns the libriscv error code.
+func (m *Machine) Step1() int {
+	return int(C.step1(m.m))
+}
+
+// SnapshotRegs returns all 32 integer registers and PC as [33]uint64.
+// Index 0..31 = x0..x31, index 32 = PC.
+func (m *Machine) SnapshotRegs() [33]uint64 {
+	var dst [33]uint64
+	C.snapshot_regs(m.m, (*C.uint64_t)(unsafe.Pointer(&dst[0])))
+	return dst
+}
+
+// SnapshotMem reads length bytes of guest memory at gva.
+// Returns nil on failure.
+func (m *Machine) SnapshotMem(gva uint64, length uint) []byte {
+	buf := make([]byte, length)
+	if C.snapshot_mem(m.m, C.uint64_t(gva), unsafe.Pointer(&buf[0]), C.uint(length)) != 0 {
+		return nil
+	}
+	return buf
+}
+
+// SetRegsAndPC sets x1..x31 and PC. x0 is always zero and is ignored.
+func (m *Machine) SetRegsAndPC(xregs [32]uint64, pc uint64) {
+	C.set_regs_and_pc(m.m, (*C.uint64_t)(unsafe.Pointer(&xregs[0])), C.uint64_t(pc))
+}
+
+// WriteGuest copies src into guest memory at gva. Returns true on success.
+func (m *Machine) WriteGuest(gva uint64, src []byte) bool {
+	if len(src) == 0 {
+		return true
+	}
+	return C.write_guest(m.m, C.uint64_t(gva), unsafe.Pointer(&src[0]), C.uint(len(src))) == 0
 }

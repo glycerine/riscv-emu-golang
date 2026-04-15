@@ -176,3 +176,85 @@ func (b *byteReader) Seek(offset int64, whence int) (int64, error) {
 	b.pos = abs
 	return abs, nil
 }
+
+// BuildELF constructs a minimal RV64 executable ELF with one PT_LOAD
+// segment at codeVA containing the given 32-bit instruction words.
+// Useful for constructing synthetic test programs without an assembler.
+//
+// The ELF includes a minimal section header table (SHT_NULL + SHT_STRTAB)
+// so that consumers such as libriscv that call section_by_name() during
+// ELF loading do not reject the binary for having e_shnum == 0.
+func BuildELF(codeVA uint64, code []uint32) []byte {
+	// File layout:
+	//   [  0..63] ELF header (64 bytes)
+	//   [ 64..119] Program header — PT_LOAD (56 bytes)
+	//   [120..120+codeLen-1] Instruction words
+	//   [120+codeLen] strtab: "\0" padded to 8 bytes
+	//   [128+codeLen] Section header [0]: SHT_NULL (64 bytes)
+	//   [192+codeLen] Section header [1]: SHT_STRTAB (64 bytes)
+	const (
+		codeOff    = 64 + 56 // 120
+		strtabData = "\x00"  // one null byte — all section names are empty string
+		strtabPad  = 8       // padded to 8-byte alignment
+		shdrSize   = 64      // ELF64 section header size
+		shdrCount  = 2       // SHT_NULL + SHT_STRTAB
+	)
+
+	codeBytes := make([]byte, len(code)*4)
+	for i, insn := range code {
+		binary.LittleEndian.PutUint32(codeBytes[i*4:], insn)
+	}
+
+	strtabOff := uint64(codeOff + len(codeBytes))
+	shOff      := strtabOff + strtabPad
+	total      := int(shOff) + shdrCount*shdrSize
+
+	buf := make([]byte, total)
+	le  := binary.LittleEndian
+
+	// ── ELF header ───────────────────────────────────────────────────────
+	copy(buf[0:], "\x7fELF")
+	buf[4], buf[5], buf[6] = 2, 1, 1              // ELFCLASS64, ELFDATA2LSB, EV_CURRENT
+	le.PutUint16(buf[16:], 2)                      // ET_EXEC
+	le.PutUint16(buf[18:], 0xF3)                   // EM_RISCV
+	le.PutUint32(buf[20:], 1)                      // e_version
+	le.PutUint64(buf[24:], codeVA)                 // e_entry
+	le.PutUint64(buf[32:], 64)                     // e_phoff
+	le.PutUint64(buf[40:], shOff)                  // e_shoff
+	le.PutUint16(buf[52:], 64)                     // e_ehsize
+	le.PutUint16(buf[54:], 56)                     // e_phentsize
+	le.PutUint16(buf[56:], 1)                      // e_phnum
+	le.PutUint16(buf[58:], shdrSize)               // e_shentsize
+	le.PutUint16(buf[60:], shdrCount)              // e_shnum
+	le.PutUint16(buf[62:], 1)                      // e_shstrndx = section [1]
+
+	// ── Program header ────────────────────────────────────────────────────
+	ph := buf[64:]
+	le.PutUint32(ph[0:], 1)                        // PT_LOAD
+	le.PutUint32(ph[4:], 5)                        // PF_R|PF_X
+	le.PutUint64(ph[8:], uint64(codeOff))          // p_offset
+	le.PutUint64(ph[16:], codeVA)                  // p_vaddr
+	le.PutUint64(ph[24:], codeVA)                  // p_paddr
+	le.PutUint64(ph[32:], uint64(len(codeBytes)))  // p_filesz
+	le.PutUint64(ph[40:], uint64(len(codeBytes)))  // p_memsz
+	le.PutUint64(ph[48:], 0x10)                    // p_align
+
+	// ── Code ──────────────────────────────────────────────────────────────
+	copy(buf[codeOff:], codeBytes)
+
+	// ── Strtab: just a single null byte (all names are "") ────────────────
+	buf[strtabOff] = 0x00
+
+	// ── Section header [0]: SHT_NULL ─────────────────────────────────────
+	// All zeros — required first entry in every ELF section table.
+
+	// ── Section header [1]: SHT_STRTAB (.shstrtab) ───────────────────────
+	sh1 := buf[int(shOff)+shdrSize:]
+	// sh_name=0 (points to "\0" in strtab — empty string, valid)
+	le.PutUint32(sh1[4:], 3)                       // sh_type = SHT_STRTAB
+	le.PutUint64(sh1[24:], strtabOff)              // sh_offset
+	le.PutUint64(sh1[32:], 1)                      // sh_size = 1 byte ("\0")
+	le.PutUint64(sh1[48:], 1)                      // sh_addralign
+
+	return buf
+}

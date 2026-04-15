@@ -80,3 +80,158 @@ func TestCPU_LoadIncrementStore(t *testing.T) {
 		t.Errorf("expected 42, got %d", got)
 	}
 }
+
+// ── RV64M divide-by-zero and overflow — spec-defined corner cases ─────────
+// These can't be oracle-tested via libriscv (it delivers SIGFPE instead),
+// so we verify directly against the RISC-V spec values.
+
+func TestDIV_ByZero(t *testing.T) {
+	mem, _ := NewGuestMemory(Size64MB)
+	defer mem.Free()
+	// DIV x1, x2, x3 where x3=0 -> x1 = -1
+	insn := uint32(0x023140B3) // DIV x0... let us encode properly
+	_ = insn
+	// Use the CPU directly: set up registers and step
+	cpu := setupM(t, mem, 0x023140B3, 42, 0) // DIV x1,x2,x3: x2=42,x3=0
+	if cpu.Reg(1) != 0xFFFFFFFFFFFFFFFF {
+		t.Errorf("DIV x,0: got 0x%016X want 0xFFFFFFFFFFFFFFFF", cpu.Reg(1))
+	}
+}
+func TestDIV_Overflow(t *testing.T) {
+	mem, _ := NewGuestMemory(Size64MB)
+	defer mem.Free()
+	cpu := setupM(t, mem, 0x023140B3, 0x8000000000000000, 0xFFFFFFFFFFFFFFFF)
+	if cpu.Reg(1) != 0x8000000000000000 {
+		t.Errorf("DIV INT_MIN,-1: got 0x%016X want 0x8000000000000000", cpu.Reg(1))
+	}
+}
+func TestDIVU_ByZero(t *testing.T) {
+	mem, _ := NewGuestMemory(Size64MB)
+	defer mem.Free()
+	cpu := setupM(t, mem, 0x023150B3, 42, 0) // DIVU x1,x2,x3
+	if cpu.Reg(1) != 0xFFFFFFFFFFFFFFFF {
+		t.Errorf("DIVU x,0: got 0x%016X want 0xFFFFFFFFFFFFFFFF", cpu.Reg(1))
+	}
+}
+func TestREM_ByZero(t *testing.T) {
+	mem, _ := NewGuestMemory(Size64MB)
+	defer mem.Free()
+	cpu := setupM(t, mem, 0x023160B3, 42, 0) // REM x1,x2,x3
+	if cpu.Reg(1) != 42 {
+		t.Errorf("REM x,0: got %d want 42", cpu.Reg(1))
+	}
+}
+func TestREM_Overflow(t *testing.T) {
+	mem, _ := NewGuestMemory(Size64MB)
+	defer mem.Free()
+	cpu := setupM(t, mem, 0x023160B3, 0x8000000000000000, 0xFFFFFFFFFFFFFFFF)
+	if cpu.Reg(1) != 0 {
+		t.Errorf("REM INT_MIN,-1: got 0x%016X want 0", cpu.Reg(1))
+	}
+}
+func TestREMU_ByZero(t *testing.T) {
+	mem, _ := NewGuestMemory(Size64MB)
+	defer mem.Free()
+	cpu := setupM(t, mem, 0x023170B3, 42, 0) // REMU x1,x2,x3
+	if cpu.Reg(1) != 42 {
+		t.Errorf("REMU x,0: got %d want 42", cpu.Reg(1))
+	}
+}
+func TestDIVW_ByZero(t *testing.T) {
+	mem, _ := NewGuestMemory(Size64MB)
+	defer mem.Free()
+	cpu := setupM(t, mem, 0x023140BB, 42, 0) // DIVW x1,x2,x3
+	if cpu.Reg(1) != 0xFFFFFFFFFFFFFFFF {
+		t.Errorf("DIVW x,0: got 0x%016X want 0xFFFFFFFFFFFFFFFF", cpu.Reg(1))
+	}
+}
+func TestDIVW_Overflow(t *testing.T) {
+	mem, _ := NewGuestMemory(Size64MB)
+	defer mem.Free()
+	cpu := setupM(t, mem, 0x023140BB, 0x80000000, 0xFFFFFFFFFFFFFFFF)
+	if cpu.Reg(1) != 0xFFFFFFFF80000000 {
+		t.Errorf("DIVW INT32_MIN,-1: got 0x%016X want 0xFFFFFFFF80000000", cpu.Reg(1))
+	}
+}
+func TestDIVUW_ByZero(t *testing.T) {
+	mem, _ := NewGuestMemory(Size64MB)
+	defer mem.Free()
+	cpu := setupM(t, mem, 0x023150BB, 42, 0) // DIVUW x1,x2,x3
+	// 2^32-1 sign-extended = 0xFFFFFFFFFFFFFFFF
+	if cpu.Reg(1) != 0xFFFFFFFFFFFFFFFF {
+		t.Errorf("DIVUW x,0: got 0x%016X want 0xFFFFFFFFFFFFFFFF", cpu.Reg(1))
+	}
+}
+func TestREMW_ByZero(t *testing.T) {
+	mem, _ := NewGuestMemory(Size64MB)
+	defer mem.Free()
+	cpu := setupM(t, mem, 0x023160BB, 42, 0) // REMW x1,x2,x3
+	if cpu.Reg(1) != 42 {
+		t.Errorf("REMW x,0: got %d want 42", cpu.Reg(1))
+	}
+}
+func TestREMUW_ByZero(t *testing.T) {
+	mem, _ := NewGuestMemory(Size64MB)
+	defer mem.Free()
+	cpu := setupM(t, mem, 0x023170BB, 42, 0) // REMUW x1,x2,x3
+	if cpu.Reg(1) != 42 {
+		t.Errorf("REMUW x,0: got %d want 42", cpu.Reg(1))
+	}
+}
+
+// setupM builds a 1-instruction machine with x2=a, x3=b, steps it, returns CPU.
+func setupM(t *testing.T, mem *GuestMemory, insn uint32, a, b uint64) *CPU {
+	t.Helper()
+	const codeVA = uint64(0x1000)
+	mem.Store32(codeVA, insn)
+	mem.Store32(codeVA+4, 0x00100073) // EBREAK
+	cpu := NewCPU(*mem)
+	cpu.SetPC(codeVA)
+	cpu.SetReg(2, a)
+	cpu.SetReg(3, b)
+	if err := cpu.Step(); err != nil && err != ErrEbreak {
+		t.Fatalf("Step: %v", err)
+	}
+	return cpu
+}
+
+// ── MULH/MULHSU negative-operand corner cases ─────────────────────────────
+// libriscv has incorrect results for MULH/MULHSU with negative rs1, so we
+// verify these directly against the RISC-V spec definition.
+
+func TestMULH_NegPos(t *testing.T) {
+	// MULH(-1, 2) = upper64(-2 as 128-bit) = 0xFFFFFFFFFFFFFFFF
+	mem, _ := NewGuestMemory(Size64MB)
+	defer mem.Free()
+	cpu := setupM(t, mem, 0x023110B3, ^uint64(0), 2) // MULH x1,x2,x3
+	if cpu.Reg(1) != 0xFFFFFFFFFFFFFFFF {
+		t.Errorf("MULH(-1,2): got 0x%016X want 0xFFFFFFFFFFFFFFFF", cpu.Reg(1))
+	}
+}
+func TestMULH_NegNeg(t *testing.T) {
+	// MULH(-1, -1) = upper64(1 as 128-bit) = 0
+	mem, _ := NewGuestMemory(Size64MB)
+	defer mem.Free()
+	cpu := setupM(t, mem, 0x023110B3, ^uint64(0), ^uint64(0))
+	if cpu.Reg(1) != 0 {
+		t.Errorf("MULH(-1,-1): got 0x%016X want 0", cpu.Reg(1))
+	}
+}
+func TestMULHSU_NegPos(t *testing.T) {
+	// MULHSU(signed(-1), unsigned(2)) = upper64(-2 as 128-bit) = 0xFFFFFFFFFFFFFFFF
+	mem, _ := NewGuestMemory(Size64MB)
+	defer mem.Free()
+	cpu := setupM(t, mem, 0x023120B3, ^uint64(0), 2) // MULHSU x1,x2,x3
+	if cpu.Reg(1) != 0xFFFFFFFFFFFFFFFF {
+		t.Errorf("MULHSU(-1,2): got 0x%016X want 0xFFFFFFFFFFFFFFFF", cpu.Reg(1))
+	}
+}
+func TestMULHSU_Large(t *testing.T) {
+	// MULHSU(INT_MIN, 2^64-1) = 0x8000000000000000 (see spec math)
+	mem, _ := NewGuestMemory(Size64MB)
+	defer mem.Free()
+	cpu := setupM(t, mem, 0x023120B3, 0x8000000000000000, 0xFFFFFFFFFFFFFFFF)
+	if cpu.Reg(1) != 0x8000000000000000 {
+		t.Errorf("MULHSU(INT_MIN,MAX): got 0x%016X want 0x8000000000000000", cpu.Reg(1))
+	}
+}

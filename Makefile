@@ -375,7 +375,7 @@ bench-summary:
 
 test:
 	@echo "── unit tests ──────────────────────────────────────────────────"
-	cd $(ROOT) && $(GO) test -count=1 ./... 2>&1
+	cd $(ROOT) && $(GO) test -count=1 riscv riscv/bench 2>&1
 
 # ── clean ──────────────────────────────────────────────────────────────────
 
@@ -383,6 +383,32 @@ clean:
 	@echo "── cleaning ────────────────────────────────────────────────────"
 	rm -rf $(VENDOR) $(GUEST_ELF) $(RESULTS_DIR)
 	@echo "  ✓ done"
+
+# ── fuzz oracle targets (fuzzoracle package, CGO always on) ───────────────
+# Requires: make bench-setup
+
+FUZZ_ORACLE_CGO_LDFLAGS := -L$(BUILD) -L$(BUILD)/libriscv \
+                            -lriscv_capi -lriscv -lstdc++ -lm $(EXTRA_LDFLAGS)
+
+.PHONY: fuzz-oracle fuzz-stores
+fuzz-oracle: bench-setup
+	@echo "── fuzz ALU vs libriscv oracle ($(FUZZ_TIME)) ──────────────"
+	cd $(ROOT) && FUZZ_TIMEOUT=1 \
+	    CGO_LDFLAGS="$(FUZZ_ORACLE_CGO_LDFLAGS)" \
+	    $(GO) test \
+	        -run FuzzALUVsLibriscv -fuzz=FuzzALUVsLibriscv \
+	        -fuzztime=$(FUZZ_TIME) \
+	        ./fuzzoracle/ 2>&1
+
+fuzz-stores: bench-setup
+	@echo "── fuzz loads/stores vs libriscv oracle ($(FUZZ_TIME)) ─────"
+	cd $(ROOT) && FUZZ_TIMEOUT=1 \
+	    CGO_LDFLAGS="$(FUZZ_ORACLE_CGO_LDFLAGS)" \
+	    $(GO) test \
+	        -run FuzzStoresVsLibriscv -fuzz=FuzzStoresVsLibriscv \
+	        -fuzztime=$(FUZZ_TIME) \
+	        ./fuzzoracle/ 2>&1
+
 
 # ── rebuild libriscv (after flag changes) ──────────────────────────────────
 # Use when cmake flags have changed (e.g. after updating the Makefile):

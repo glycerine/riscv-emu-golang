@@ -192,6 +192,11 @@ func (m *GuestMemory) Free() {
 // Size returns the guest address space size in bytes.
 func (m *GuestMemory) Size() uint64 { return m.size }
 
+// Mask returns size-1. ANDing any uint64 address with Mask() produces a
+// valid in-bounds guest address by construction — the same guarantee the
+// memory system uses internally for its containment invariant.
+func (m *GuestMemory) Mask() uint64 { return m.mask }
+
 // ZeroRange returns physical pages in [addr, addr+length) to the OS.
 // Virtual address space is retained. Use to reclaim RAM after a guest
 // process exits without reallocating the address space for reuse.
