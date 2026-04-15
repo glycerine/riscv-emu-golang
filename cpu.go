@@ -35,6 +35,16 @@ func (c *CPU) Run() error {
 func (c *CPU) Step() error { return c.step() }
 
 func (c *CPU) step() error {
+	// Fetch 16 bits first to detect compressed (RVC) instructions.
+	// Bits[1:0] != 0b11 means 16-bit; 0b11 means 32-bit.
+	half, fh := (&c.mem).Fetch16(c.pc)
+	if fh != nil {
+		return fh
+	}
+	if half&0x3 != 0x3 {
+		return c.stepRVC(uint16(half))
+	}
+
 	insn, f := (&c.mem).Fetch32(c.pc)
 	if f != nil {
 		return f
@@ -258,6 +268,12 @@ func (c *CPU) step() error {
 		}
 		c.SetReg(rd, uint64(int64(v)))
 
+	// ── FENCE / FENCE.I (no-op for single-threaded emulator) ────────────
+	case 0x0F:
+		// FENCE and FENCE.I are memory/instruction-cache ordering barriers.
+		// In our single-threaded emulator with no instruction cache,
+		// both are safe no-ops. We just advance PC.
+
 	// ── LUI (U-type) ─────────────────────────────────────────────────────
 	case 0x37:
 		c.SetReg(rd, uint64(int64(int32(insn&0xFFFFF000))))
@@ -335,4 +351,219 @@ func (c *CPU) step() error {
 
 	c.pc = nextPC
 	return nil
+}
+
+// stepRVC decodes and executes a 16-bit RVC (compressed) instruction.
+// Called from step() when bits[1:0] != 0b11.
+// Advances PC by 2 on success.
+func (c *CPU) stepRVC(insn uint16) error {
+	// Compressed register fields:
+	//   rd'/rs1'/rs2' (3-bit) map to x(8+field) — the "popular" registers x8-x15.
+	// Full rd/rs1/rs2 (5-bit) map directly.
+	rp := func(f uint16) uint8 { return uint8(8 + (f & 7)) } // 3-bit -> x8..x15
+	rf := func(hi, lo uint) uint8 { return uint8((insn >> lo) & ((1 << (hi - lo + 1)) - 1) & 31) }
+
+	quad   := insn & 0x3
+	funct3 := insn >> 13
+
+	nextPC := c.pc + 2
+
+	switch quad {
+
+	// ── Quadrant 0 ────────────────────────────────────────────────────
+	case 0x0:
+		rd  := rp((insn >> 2) & 7)
+		rs1 := rp((insn >> 7) & 7)
+		switch funct3 {
+		case 0b000: // C.ADDI4SPN  rd'= sp + nzuimm*4
+			nzuimm := uint64(((insn>>11)&3)<<4 | ((insn>>7)&0xF)<<6 |
+				((insn>>6)&1)<<2 | ((insn>>5)&1)<<3)
+			if nzuimm == 0 {
+				return ErrIllegalInstruction
+			}
+			c.SetReg(rd, c.Reg(2)+nzuimm)
+		case 0b010: // C.LW  rd'= mem[rs1'+uimm]
+			uimm := uint64(((insn>>10)&7)<<3 | ((insn>>6)&1)<<2 | ((insn>>5)&1)<<6)
+			v, f := (&c.mem).Load32(c.Reg(rs1) + uimm)
+			if f != nil { return f }
+			c.SetReg(rd, uint64(int64(int32(v))))
+		case 0b011: // C.LD  rd'= mem[rs1'+uimm]
+			uimm := uint64(((insn>>10)&7)<<3 | ((insn>>5)&3)<<6)
+			v, f := (&c.mem).Load64(c.Reg(rs1) + uimm)
+			if f != nil { return f }
+			c.SetReg(rd, v)
+		case 0b110: // C.SW  mem[rs1'+uimm] = rs2'
+			rs2 := rp((insn >> 2) & 7)
+			uimm := uint64(((insn>>10)&7)<<3 | ((insn>>6)&1)<<2 | ((insn>>5)&1)<<6)
+			if f := (&c.mem).Store32(c.Reg(rs1)+uimm, uint32(c.Reg(rs2))); f != nil { return f }
+		case 0b111: // C.SD  mem[rs1'+uimm] = rs2'
+			rs2 := rp((insn >> 2) & 7)
+			uimm := uint64(((insn>>10)&7)<<3 | ((insn>>5)&3)<<6)
+			if f := (&c.mem).Store64(c.Reg(rs1)+uimm, c.Reg(rs2)); f != nil { return f }
+		default:
+			return ErrIllegalInstruction
+		}
+
+	// ── Quadrant 1 ────────────────────────────────────────────────────
+	case 0x1:
+		switch funct3 {
+		case 0b000: // C.NOP (rd=0) / C.ADDI (rd!=0)
+			rd := rf(11, 7)
+			imm6 := int64(insn>>2) & 0x1F
+			if (insn>>12)&1 != 0 { imm6 |= -32 }
+			c.SetReg(rd, c.Reg(rd)+uint64(imm6))
+		case 0b001: // C.ADDIW (RV64, rd!=0)
+			rd := rf(11, 7)
+			imm6 := int64(insn>>2) & 0x1F
+			if (insn>>12)&1 != 0 { imm6 |= -32 }
+			c.SetReg(rd, uint64(int64(int32(c.Reg(rd))+int32(imm6))))
+		case 0b010: // C.LI  rd = sign_extend(imm6)
+			rd := rf(11, 7)
+			imm6 := int64(insn>>2) & 0x1F
+			if (insn>>12)&1 != 0 { imm6 |= -32 }
+			c.SetReg(rd, uint64(imm6))
+		case 0b011:
+			rd := rf(11, 7)
+			if rd == 2 { // C.ADDI16SP
+				nzimm := int64(((insn>>12)&1)<<9 | ((insn>>6)&1)<<4 |
+					((insn>>5)&1)<<6 | ((insn>>3)&3)<<7 | ((insn>>2)&1)<<5)
+				if (insn>>12)&1 != 0 { nzimm |= -512 }
+				if nzimm == 0 { return ErrIllegalInstruction }
+				c.SetReg(2, c.Reg(2)+uint64(nzimm))
+			} else { // C.LUI
+				nzimm := int64(((insn>>12)&1)<<5 | (insn>>2)&0x1F)
+				if (insn>>12)&1 != 0 { nzimm |= -32 }
+				if nzimm == 0 { return ErrIllegalInstruction }
+				c.SetReg(rd, uint64(nzimm<<12))
+			}
+		case 0b100: // C.MISC-ALU
+			rs1 := rp((insn >> 7) & 7)
+			rs2 := rp((insn >> 2) & 7)
+			funct2 := (insn >> 10) & 3
+			switch funct2 {
+			case 0b00: // C.SRLI
+				shamt := uint8(((insn>>12)&1)<<5 | (insn>>2)&0x1F)
+				c.SetReg(rs1, c.Reg(rs1)>>shamt)
+			case 0b01: // C.SRAI
+				shamt := uint8(((insn>>12)&1)<<5 | (insn>>2)&0x1F)
+				c.SetReg(rs1, uint64(int64(c.Reg(rs1))>>shamt))
+			case 0b10: // C.ANDI
+				imm6 := int64(insn>>2) & 0x1F
+				if (insn>>12)&1 != 0 { imm6 |= -32 }
+				c.SetReg(rs1, c.Reg(rs1)&uint64(imm6))
+			case 0b11: // C.SUB/XOR/OR/AND/SUBW/ADDW
+				bit12 := (insn >> 12) & 1
+				op    := (insn >> 5) & 3
+				if bit12 == 0 {
+					switch op {
+					case 0b00: c.SetReg(rs1, c.Reg(rs1)-c.Reg(rs2))                                      // C.SUB
+					case 0b01: c.SetReg(rs1, c.Reg(rs1)^c.Reg(rs2))                                      // C.XOR
+					case 0b10: c.SetReg(rs1, c.Reg(rs1)|c.Reg(rs2))                                      // C.OR
+					case 0b11: c.SetReg(rs1, c.Reg(rs1)&c.Reg(rs2))                                      // C.AND
+					}
+				} else {
+					switch op {
+					case 0b00: c.SetReg(rs1, uint64(int64(int32(c.Reg(rs1))-int32(c.Reg(rs2)))))          // C.SUBW
+					case 0b01: c.SetReg(rs1, uint64(int64(int32(c.Reg(rs1))+int32(c.Reg(rs2)))))          // C.ADDW
+					default:   return ErrIllegalInstruction
+					}
+				}
+			}
+		case 0b101: // C.J  pc += offset
+			off := cjOffset(insn)
+			c.pc = c.pc + uint64(off)
+			return nil
+		case 0b110: // C.BEQZ
+			rs1 := rp((insn >> 7) & 7)
+			if c.Reg(rs1) == 0 {
+				c.pc = c.pc + uint64(cbOffset(insn))
+				return nil
+			}
+		case 0b111: // C.BNEZ
+			rs1 := rp((insn >> 7) & 7)
+			if c.Reg(rs1) != 0 {
+				c.pc = c.pc + uint64(cbOffset(insn))
+				return nil
+			}
+		}
+
+	// ── Quadrant 2 ────────────────────────────────────────────────────
+	case 0x2:
+		rd  := rf(11, 7)
+		rs2 := rf(6, 2)
+		switch funct3 {
+		case 0b000: // C.SLLI
+			shamt := uint8(((insn>>12)&1)<<5 | (insn>>2)&0x1F)
+			c.SetReg(rd, c.Reg(rd)<<shamt)
+		case 0b010: // C.LWSP
+			uimm := uint64(((insn>>12)&1)<<5 | ((insn>>4)&7)<<2 | ((insn>>2)&3)<<6)
+			v, f := (&c.mem).Load32(c.Reg(2) + uimm)
+			if f != nil { return f }
+			c.SetReg(rd, uint64(int64(int32(v))))
+		case 0b011: // C.LDSP
+			uimm := uint64(((insn>>12)&1)<<5 | ((insn>>5)&3)<<3 | ((insn>>2)&7)<<6)
+			v, f := (&c.mem).Load64(c.Reg(2) + uimm)
+			if f != nil { return f }
+			c.SetReg(rd, v)
+		case 0b100:
+			bit12 := (insn >> 12) & 1
+			if bit12 == 0 {
+				if rs2 == 0 { // C.JR
+					if rd == 0 { return ErrIllegalInstruction }
+					c.pc = c.Reg(rd) &^ 1
+					return nil
+				}
+				// C.MV
+				c.SetReg(rd, c.Reg(rs2))
+			} else {
+				if rd == 0 && rs2 == 0 { // C.EBREAK
+					c.pc = nextPC
+					return ErrEbreak
+				}
+				if rs2 == 0 { // C.JALR
+					ret := nextPC
+					c.pc = c.Reg(rd) &^ 1
+					c.SetReg(1, ret)
+					return nil
+				}
+				// C.ADD
+				c.SetReg(rd, c.Reg(rd)+c.Reg(rs2))
+			}
+		case 0b110: // C.SWSP
+			uimm := uint64(((insn>>9)&0xF)<<2 | ((insn>>7)&3)<<6)
+			if f := (&c.mem).Store32(c.Reg(2)+uimm, uint32(c.Reg(rs2))); f != nil { return f }
+		case 0b111: // C.SDSP
+			uimm := uint64(((insn>>10)&7)<<3 | ((insn>>7)&7)<<6)
+			if f := (&c.mem).Store64(c.Reg(2)+uimm, c.Reg(rs2)); f != nil { return f }
+		default:
+			return ErrIllegalInstruction
+		}
+
+	default:
+		return ErrIllegalInstruction
+	}
+
+	c.pc = nextPC
+	return nil
+}
+
+// cjOffset extracts the sign-extended 12-bit J-type offset from a C.J instruction.
+func cjOffset(insn uint16) int64 {
+	// bits: [15:13]=101, [12]=off[11], [11]=off[4], [10:9]=off[9:8],
+	//       [8]=off[10], [7]=off[6], [6]=off[7], [5:3]=off[3:1], [2]=off[5], [1:0]=01
+	o := int64(insn)
+	off := ((o>>12)&1)<<11 | ((o>>11)&1)<<4 | ((o>>9)&3)<<8 | ((o>>8)&1)<<10 |
+		((o>>7)&1)<<6 | ((o>>6)&1)<<7 | ((o>>3)&7)<<1 | ((o>>2)&1)<<5
+	// sign-extend bit 11
+	if off&(1<<11) != 0 { off |= -1 << 12 }
+	return off
+}
+
+// cbOffset extracts the sign-extended 9-bit branch offset from C.BEQZ/C.BNEZ.
+func cbOffset(insn uint16) int64 {
+	// bits: [12]=off[8], [11:10]=off[4:3], [6:5]=off[7:6], [4:3]=off[2:1], [2]=off[5]
+	o := int64(insn)
+	off := ((o>>12)&1)<<8 | ((o>>10)&3)<<3 | ((o>>5)&3)<<6 | ((o>>3)&3)<<1 | ((o>>2)&1)<<5
+	if off&(1<<8) != 0 { off |= -1 << 9 }
+	return off
 }
