@@ -24,7 +24,7 @@
 
 .PHONY: all help bench-setup bench bench-quick bench-ours bench-libriscv bench-mem \
         bench-smoke bench-summary test clean check-tools \
-        libriscv-clone libriscv-patch libriscv-build guest-elf
+        libriscv-clone libriscv-patch libriscv-build guest-elf quick-bench
 
 # ── platform detection ─────────────────────────────────────────────────────
 
@@ -278,6 +278,8 @@ bench: bench-setup
 	@$(MAKE) --no-print-directory bench-summary
 
 
+quick-bench: bench-quick
+
 bench-quick: bench-setup
 	@mkdir -p $(RESULTS_DIR)
 	@echo ""
@@ -375,7 +377,7 @@ bench-summary:
 
 test:
 	@echo "── unit tests ──────────────────────────────────────────────────"
-	cd $(ROOT) && $(GO) test -count=1 riscv riscv/bench 2>&1
+	cd $(ROOT) && $(GO) test -count=1 . ./bench 2>&1
 
 # ── clean ──────────────────────────────────────────────────────────────────
 
