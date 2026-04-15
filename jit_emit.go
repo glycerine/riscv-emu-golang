@@ -17,23 +17,169 @@ type emitResult struct {
 	regsUsed [32]bool // which registers are read or written
 }
 
-// emitBlock translates a basic block starting at pc into C source.
-// Reads instructions from guest memory until a block-terminating instruction.
-func emitBlock(mem *GuestMemory, pc uint64) *emitResult {
-	e := &emitter{
-		mem:     mem,
-		startPC: pc,
-		pc:      pc,
-		body:    strings.Builder{},
-		visited: make(map[uint64]bool),
+// ── Region pre-scan (Phase 2: block chaining) ─────────────────────────
+
+type flowClass int
+
+const (
+	flowSeq    flowClass = iota // sequential: next = pc + insnSize
+	flowBranch                  // conditional: next = {pc + insnSize, target}
+	flowJump                    // unconditional J/C.J rd==0: next = target only
+	flowTerm                    // no successors (JALR, JAL rd!=0, ECALL, CSR)
+)
+
+// classifyFlow determines the control-flow type of the instruction at pc.
+// Returns the flow class, branch/jump target (if any), and instruction size.
+// Only decodes enough to identify control flow — NOT full semantics.
+func classifyFlow(mem *GuestMemory, pc uint64) (flowClass, uint64, uint64) {
+	half, f := mem.Fetch16(pc)
+	if f != nil {
+		return flowTerm, 0, 0 // can't fetch — treat as terminator
 	}
 
-	for e.numInsns < 512 && !e.terminated {
+	if half&0x3 != 0x3 {
+		// 16-bit RVC
+		insn := uint16(half)
+		quad := insn & 0x3
+		funct3 := insn >> 13
+
+		switch quad {
+		case 0x1: // Quadrant 1
+			switch funct3 {
+			case 0b101: // C.J
+				return flowJump, pc + uint64(rvcJOffset(insn)), 2
+			case 0b110: // C.BEQZ
+				return flowBranch, pc + uint64(rvcBOffset(insn)), 2
+			case 0b111: // C.BNEZ
+				return flowBranch, pc + uint64(rvcBOffset(insn)), 2
+			}
+		case 0x2: // Quadrant 2
+			if funct3 == 0b100 {
+				rd := (insn >> 7) & 0x1F
+				rs2 := (insn >> 2) & 0x1F
+				bit12 := (insn >> 12) & 1
+				if bit12 == 0 && rs2 == 0 { // C.JR
+					return flowTerm, 0, 2
+				}
+				if bit12 == 1 && rs2 == 0 { // C.JALR or C.EBREAK
+					_ = rd
+					return flowTerm, 0, 2
+				}
+			}
+		}
+		return flowSeq, 0, 2
+	}
+
+	// 32-bit instruction
+	insn, f2 := mem.Fetch32(pc)
+	if f2 != nil {
+		insn, f2 = mem.Fetch32U(pc)
+		if f2 != nil {
+			return flowTerm, 0, 0
+		}
+	}
+
+	opcode := insn & 0x7F
+	rd := (insn >> 7) & 0x1F
+
+	switch opcode {
+	case 0x63: // BRANCH
+		return flowBranch, pc + uint64(bImm(insn)), 4
+	case 0x6F: // JAL
+		if rd == 0 {
+			return flowJump, pc + uint64(jImm(insn)), 4
+		}
+		return flowTerm, 0, 4 // function call
+	case 0x67: // JALR
+		return flowTerm, 0, 4
+	case 0x73: // SYSTEM (ECALL, EBREAK, CSR)
+		return flowTerm, 0, 4
+	default:
+		return flowSeq, 0, 4
+	}
+}
+
+// regionInfo describes the extent of a JIT block region.
+type regionInfo struct {
+	endPC   uint64 // exclusive: first PC past the region
+	pcCount int    // number of distinct PCs in the region
+}
+
+// scanRegion does a BFS over the control flow graph starting at entryPC
+// to determine the region of code that should be emitted as a single block.
+func scanRegion(mem *GuestMemory, entryPC uint64) regionInfo {
+	const maxInsns = 2048
+	const maxRange = 16384
+
+	visited := make(map[uint64]bool)
+	worklist := []uint64{entryPC}
+	maxEnd := entryPC
+
+	for len(worklist) > 0 && len(visited) < maxInsns {
+		pc := worklist[0]
+		worklist = worklist[1:]
+
+		if visited[pc] {
+			continue
+		}
+		if pc < entryPC || pc > entryPC+maxRange {
+			continue
+		}
+
+		fc, target, insnSize := classifyFlow(mem, pc)
+		if insnSize == 0 {
+			continue // fetch failed
+		}
+
+		visited[pc] = true
+		if end := pc + insnSize; end > maxEnd {
+			maxEnd = end
+		}
+
+		switch fc {
+		case flowSeq:
+			worklist = append(worklist, pc+insnSize)
+		case flowBranch:
+			worklist = append(worklist, pc+insnSize)
+			if target >= entryPC && target <= entryPC+maxRange {
+				worklist = append(worklist, target)
+			}
+		case flowJump:
+			if target >= entryPC && target <= entryPC+maxRange {
+				worklist = append(worklist, target)
+			}
+		case flowTerm:
+			// no successors
+		}
+	}
+
+	return regionInfo{endPC: maxEnd, pcCount: len(visited)}
+}
+
+// emitBlock translates a basic block starting at pc into C source.
+// Uses a two-phase approach: scan the region, then emit all instructions.
+func emitBlock(mem *GuestMemory, pc uint64) *emitResult {
+	// Phase 1: pre-scan to determine region extent.
+	region := scanRegion(mem, pc)
+
+	e := &emitter{
+		mem:         mem,
+		startPC:     pc,
+		pc:          pc,
+		body:        strings.Builder{},
+		visited:     make(map[uint64]bool),
+		regionEnd:   region.endPC,
+		gotoTargets: make(map[uint64]bool),
+	}
+
+	// Phase 2: emit all instructions from startPC to regionEnd.
+	for e.numInsns < 2048 && !e.terminated && e.pc < e.regionEnd {
 		// Cycle detection: if we've already emitted code at this PC
 		// (e.g., a forward J landed on a PC we passed through), emit
 		// a goto to the existing label and stop.
 		if e.visited[e.pc] {
 			e.emit("    goto b_%x;\n", e.pc)
+			e.gotoTargets[e.pc] = true
 			e.terminated = true
 			break
 		}
@@ -83,6 +229,9 @@ type emitter struct {
 	labels map[uint64]bool
 	// Visited PCs — cycle detection for jump following (Phase 1 chaining)
 	visited map[uint64]bool
+	// Region pre-scan results (Phase 2 chaining)
+	regionEnd   uint64          // exclusive end PC from scanRegion
+	gotoTargets map[uint64]bool // PCs referenced by goto (for bail labels in finalize)
 	// FP / extension flags — control conditional header emission
 	usesFP         bool // any FP instruction emitted
 	usesZbbHelpers bool // CLZ/CTZ/CPOP emitted (need inline helpers)
@@ -1087,6 +1236,7 @@ func (e *emitter) emitJAL(rd uint32, offset int64, insnSize uint64) {
 	// instead of exiting to the Go dispatch loop.
 	if rd == 0 {
 		e.emit("    goto b_%x;\n", target)
+		e.gotoTargets[target] = true
 		e.pc = target // continue emitting from target
 		// Don't set terminated — the main loop will continue from target.
 		// The visited check at the top of the loop handles cycles.
@@ -1118,11 +1268,13 @@ func (e *emitter) emitBranch(rs1, rs2, funct3 uint32, offset int64) {
 	target := e.pc + uint64(offset)
 	cmp := branchCmp(funct3)
 
-	// Check if target has already been emitted (backward branch or
-	// jump-followed code) — if so, use goto to stay in native code.
-	if e.visited[target] {
+	// Internal branch: target already emitted OR will be emitted (within region).
+	internal := e.visited[target] ||
+		(e.regionEnd > 0 && target >= e.startPC && target < e.regionEnd)
+	if internal {
 		e.emit("    if (%s %s %s) goto b_%x;\n",
 			e.rsC(rs1, funct3), cmp, e.rsC(rs2, funct3), target)
+		e.gotoTargets[target] = true
 	} else {
 		// External branch — exit block.
 		// The fall-through return address is computed from e.pc AFTER the
@@ -1537,6 +1689,21 @@ func (e *emitter) finalize() *emitResult {
 		}
 	}
 	fmt.Fprintf(&out, "    return (JITResult){0x%xULL, ic, 0, 0};\n", e.pc)
+
+	// Bail labels: safety net for gotos to PCs that were not emitted
+	// (e.g., block terminated early due to untranslatable instruction mid-region).
+	// Each bail label writes back registers and returns to Go dispatch at that PC.
+	for target := range e.gotoTargets {
+		if !e.visited[target] {
+			fmt.Fprintf(&out, "b_%x:\n", target)
+			for i := 1; i < 32; i++ {
+				if e.regsUsed[i] {
+					fmt.Fprintf(&out, "    x[%d] = r%d;\n", i, i)
+				}
+			}
+			fmt.Fprintf(&out, "    return (JITResult){0x%xULL, ic, 0, 0};\n", target)
+		}
+	}
 
 	out.WriteString("}\n")
 
