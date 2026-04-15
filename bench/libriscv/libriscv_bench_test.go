@@ -3,7 +3,6 @@
 package libriscv_bench
 
 import (
-	"fmt"
 	"os"
 	"testing"
 )
@@ -106,7 +105,6 @@ func BenchmarkLibriscv_MemWriteRead64(b *testing.B) {
 	if totalPairs > 0 {
 		nsPerPair := float64(totalNs) / float64(totalPairs)
 		b.ReportMetric(nsPerPair, "ns/pair")
-		fmt.Printf("\n  libriscv copy_to+from_guest: %.1f ns/pair\n", nsPerPair)
 	}
 }
 
@@ -139,7 +137,6 @@ func BenchmarkLibriscv_FullExecution(b *testing.B) {
 	if elapsed > 0 && totalInsns > 0 {
 		mips := float64(totalInsns) / elapsed / 1e6
 		b.ReportMetric(mips, "MIPS")
-		fmt.Printf("\n  libriscv full execution: %.0f MIPS\n", mips)
 	}
 }
 
@@ -162,6 +159,5 @@ func BenchmarkLibriscv_FullExecution_Steady(b *testing.B) {
 	if elapsed > 0 && totalInsns > 0 {
 		mips := float64(totalInsns) / elapsed / 1e6
 		b.ReportMetric(mips, "MIPS")
-		fmt.Printf("\n  libriscv full execution: %.0f MIPS\n", mips)
 	}
 }

@@ -296,7 +296,14 @@ bench-quick: bench-setup
 	        -run='^$$' \
 	        -bench='^BenchmarkLibriscv_MemWriteRead64$$|^BenchmarkLibriscv_FullExecution_Steady$$' \
 	        ./bench/libriscv/ 2>&1 \
-	    | grep -E 'copy_to\+from_guest:|full execution:' || true
+	    | awk ' \
+	        /MemWriteRead64/ { \
+	            for(i=1;i<=NF;i++) if($(i)=="ns/pair") printf "  %-40s %s ns/pair\n","libriscv copy_to+from_guest:",$(i-1) \
+	        } \
+	        /FullExecution_Steady/ { \
+	            for(i=1;i<=NF;i++) if($(i)=="MIPS") printf "  %-40s %s MIPS\n","libriscv full execution:",$(i-1) \
+	        } \
+	    '
 	@echo ""
 
 bench-ours:
