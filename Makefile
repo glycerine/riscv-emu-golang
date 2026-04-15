@@ -22,7 +22,7 @@
 #   make clean          # remove vendor/ and generated ELF
 #   make help           # this message
 
-.PHONY: all help bench-setup bench bench-quick bench-raw bench-ours bench-libriscv bench-mem \
+.PHONY: all help bench-setup bench bench-quick bench-raw bench-ours bench-cpu bench-libriscv bench-mem \
         bench-smoke bench-summary test clean check-tools \
         libriscv-clone libriscv-patch libriscv-build guest-elf
 
@@ -281,7 +281,7 @@ bench: bench-setup
 bench-quick: bench-setup
 	@mkdir -p $(RESULTS_DIR)
 	@echo ""
-	@echo "── quick benchmark  [<1s total] ────────────────────────────────"
+	@echo "── quick benchmark ────────────────────────────────────────────"
 	@echo ""
 	@printf "  %-40s " "GuestMem Store64+Load64 pair:"
 	@cd $(ROOT) && $(GO) test -count=1 -benchtime=100ms -benchmem \
@@ -300,6 +300,14 @@ bench-quick: bench-setup
 	        /MemWriteRead64/      { p=""; for(i=1;i<=NF;i++){ if($$i=="ns/pair")   printf "  %-40s %s ns/pair\n","libriscv copy_to+from_guest:",p; p=$$i } } \
 	        /FullExecution_Steady/ { p=""; for(i=1;i<=NF;i++){ if($$i=="MIPS")       printf "  %-40s %s MIPS\n","libriscv full execution:",p;    p=$$i } } \
 	    '
+	@echo "  Go CPU (full execution throughput):"
+	@cd $(ROOT) && BENCH_ELF=$(GUEST_ELF) \
+	    $(GO) test -count=1 -benchtime=1x -benchmem \
+	        -run='^$$' -bench='^BenchmarkCPU_FullExecution$$' \
+	        ./bench/ 2>&1 \
+	    | awk ' \
+	        /FullExecution/ { p=""; for(i=1;i<=NF;i++){ if($$i=="MIPS") printf "  %-40s %s MIPS\n","Go CPU full execution:",p; p=$$i } } \
+	    '
 	@echo ""
 
 bench-raw: bench-setup
@@ -312,6 +320,13 @@ bench-raw: bench-setup
 	        -bench='^BenchmarkLibriscv_MemWriteRead64$$|^BenchmarkLibriscv_FullExecution_Steady$$' \
 	        ./bench/libriscv/ 2>&1
 
+
+bench-cpu: guest-elf
+	@echo "── Go CPU execution benchmark ─────────────────────────────────"
+	cd $(ROOT) && BENCH_ELF=$(GUEST_ELF) \
+	    $(GO) test -count=1 -benchtime=1x -benchmem \
+	        -run='^$$' -bench='^BenchmarkCPU' \
+	        ./bench/ 2>&1
 
 bench-ours:
 	@echo "── our GuestMemory benchmarks ──────────────────────────────────"

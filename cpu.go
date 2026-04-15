@@ -36,6 +36,8 @@ func (c *CPU) SetFReg(r uint8, v uint64) { c.f[r] = v }
 func (c *CPU) FReg(r uint8) uint64       { return c.f[r] }
 func (c *CPU) FCSR() uint32              { return c.fcsr }
 func (c *CPU) SetFCSR(v uint32)          { c.fcsr = v }
+func (c *CPU) Cycle() uint64             { return c.cycle }
+func (c *CPU) ResetCycle()               { c.cycle = 0 }
 
 // Run executes instructions until an unhandled note or fatal exception.
 // Exceptions are delivered through cpu.Notes; see NoteChain and RunWithChain.

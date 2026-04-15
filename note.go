@@ -228,6 +228,7 @@ func (nc *NoteChain) Deliver(cpu *CPU, n Note) NoteDisposition {
 func RunWithChain(cpu *CPU, nc *NoteChain) error {
 	for {
 		err := cpu.step()
+		cpu.cycle++
 		if err == nil {
 			continue
 		}
