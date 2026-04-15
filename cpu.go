@@ -16,6 +16,9 @@ type CPU struct {
 	pc    uint64
 	x     [32]uint64 // x[0] is hardwired zero
 	Notes NoteChain  // exception delivery chain; handlers installed by OS layer
+	// LR/SC reservation — single address, invalidated by any SC or context switch.
+	resvAddr  uint64 // guest physical address of active reservation (0 = none)
+	resvValid bool   // true while a reservation is held
 }
 
 func NewCPU(mem GuestMemory) *CPU { return &CPU{mem: mem} }
@@ -267,6 +270,59 @@ func (c *CPU) step() error {
 			}
 		}
 		c.SetReg(rd, uint64(int64(v)))
+
+	// ── AMO — RV64A atomic memory operations ─────────────────────────────
+	case 0x2F:
+		funct5 := insn >> 27
+		width  := funct3 // 010=W, 011=D
+		addr   := c.Reg(rs1)
+
+		switch funct5 {
+		case 0b00010: // LR.W / LR.D
+			var v uint64
+			if width == 0b010 {
+				u, f := (&c.mem).Load32(addr)
+				if f != nil { return f }
+				v = uint64(int64(int32(u)))
+			} else {
+				u, f := (&c.mem).Load64(addr)
+				if f != nil { return f }
+				v = u
+			}
+			c.SetReg(rd, v)
+			c.resvAddr  = addr
+			c.resvValid = true
+
+		case 0b00011: // SC.W / SC.D
+			if c.resvValid && c.resvAddr == addr {
+				if width == 0b010 {
+					if f := (&c.mem).Store32(addr, uint32(c.Reg(rs2))); f != nil { return f }
+				} else {
+					if f := (&c.mem).Store64(addr, c.Reg(rs2)); f != nil { return f }
+				}
+				c.SetReg(rd, 0) // success
+			} else {
+				c.SetReg(rd, 1) // failure
+			}
+			c.resvValid = false
+
+		default: // AMO ops: rd=mem[rs1]; mem[rs1]=op(rd,rs2); advance PC
+			if width == 0b010 { // .W — 32-bit
+				old, f := (&c.mem).Load32(addr)
+				if f != nil { return f }
+				oldSE := uint64(int64(int32(old))) // sign-extended for rd
+				newVal := amoOpW(funct5, old, uint32(c.Reg(rs2)))
+				if f := (&c.mem).Store32(addr, newVal); f != nil { return f }
+				c.SetReg(rd, oldSE)
+			} else { // .D — 64-bit
+				old, f := (&c.mem).Load64(addr)
+				if f != nil { return f }
+				newVal := amoOpD(funct5, old, c.Reg(rs2))
+				if f := (&c.mem).Store64(addr, newVal); f != nil { return f }
+				c.SetReg(rd, old)
+			}
+			c.resvValid = false // any AMO invalidates reservation
+		}
 
 	// ── FENCE / FENCE.I (no-op for single-threaded emulator) ────────────
 	case 0x0F:
@@ -566,4 +622,36 @@ func cbOffset(insn uint16) int64 {
 	off := ((o>>12)&1)<<8 | ((o>>10)&3)<<3 | ((o>>5)&3)<<6 | ((o>>3)&3)<<1 | ((o>>2)&1)<<5
 	if off&(1<<8) != 0 { off |= -1 << 9 }
 	return off
+}
+
+// amoOpW applies the AMO operation to a 32-bit word value.
+func amoOpW(funct5 uint32, mem, rs2 uint32) uint32 {
+	switch funct5 {
+	case 0b00001: return rs2                                                       // AMOSWAP
+	case 0b00000: return mem + rs2                                                 // AMOADD
+	case 0b00100: return mem ^ rs2                                                 // AMOXOR
+	case 0b01100: return mem & rs2                                                 // AMOAND
+	case 0b01000: return mem | rs2                                                 // AMOOR
+	case 0b10000: if int32(mem) < int32(rs2) { return mem }; return rs2           // AMOMIN
+	case 0b10100: if int32(mem) > int32(rs2) { return mem }; return rs2           // AMOMAX
+	case 0b11000: if mem < rs2 { return mem }; return rs2                         // AMOMINU
+	case 0b11100: if mem > rs2 { return mem }; return rs2                         // AMOMAXU
+	}
+	return mem
+}
+
+// amoOpD applies the AMO operation to a 64-bit doubleword value.
+func amoOpD(funct5 uint32, mem, rs2 uint64) uint64 {
+	switch funct5 {
+	case 0b00001: return rs2                                                              // AMOSWAP
+	case 0b00000: return mem + rs2                                                        // AMOADD
+	case 0b00100: return mem ^ rs2                                                        // AMOXOR
+	case 0b01100: return mem & rs2                                                        // AMOAND
+	case 0b01000: return mem | rs2                                                        // AMOOR
+	case 0b10000: if int64(mem) < int64(rs2) { return mem }; return rs2                  // AMOMIN
+	case 0b10100: if int64(mem) > int64(rs2) { return mem }; return rs2                  // AMOMAX
+	case 0b11000: if mem < rs2 { return mem }; return rs2                                // AMOMINU
+	case 0b11100: if mem > rs2 { return mem }; return rs2                                // AMOMAXU
+	}
+	return mem
 }
