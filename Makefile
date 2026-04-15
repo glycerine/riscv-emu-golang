@@ -297,12 +297,8 @@ bench-quick: bench-setup
 	        -bench='^BenchmarkLibriscv_MemWriteRead64$$|^BenchmarkLibriscv_FullExecution_Steady$$' \
 	        ./bench/libriscv/ 2>&1 \
 	    | awk ' \
-	        /MemWriteRead64/ { \
-	            for(i=1;i<=NF;i++) if($(i)=="ns/pair") printf "  %-40s %s ns/pair\n","libriscv copy_to+from_guest:",$(i-1) \
-	        } \
-	        /FullExecution_Steady/ { \
-	            for(i=1;i<=NF;i++) if($(i)=="MIPS") printf "  %-40s %s MIPS\n","libriscv full execution:",$(i-1) \
-	        } \
+	        /MemWriteRead64/      { p=""; for(i=1;i<=NF;i++){ if($$i=="ns/pair")   printf "  %-40s %s ns/pair\n","libriscv copy_to+from_guest:",p; p=$$i } } \
+	        /FullExecution_Steady/ { p=""; for(i=1;i<=NF;i++){ if($$i=="MIPS")       printf "  %-40s %s MIPS\n","libriscv full execution:",p;    p=$$i } } \
 	    '
 	@echo ""
 
