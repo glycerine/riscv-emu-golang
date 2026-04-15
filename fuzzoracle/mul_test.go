@@ -1,3 +1,5 @@
+//go:build libriscv
+
 package fuzzoracle
 
 // mul_test.go — RED tests for RV64M multiply/divide instructions.

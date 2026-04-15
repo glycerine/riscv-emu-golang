@@ -1,3 +1,5 @@
+//go:build libriscv
+
 package fuzzoracle
 
 // Instruction encoding helpers shared across all files in this package.

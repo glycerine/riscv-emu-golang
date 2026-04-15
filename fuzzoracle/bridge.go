@@ -1,3 +1,5 @@
+//go:build libriscv
+
 // Package fuzzoracle compares our CPU against libriscv instruction-by-instruction.
 // CGO is always enabled — this package requires libriscv to be built first:
 //
@@ -10,8 +12,6 @@
 package fuzzoracle
 
 /*
-#cgo CFLAGS: -I${SRCDIR}/../vendor/libriscv/c
-
 #include <libriscv.h>
 #include <stdlib.h>
 #include <stdint.h>

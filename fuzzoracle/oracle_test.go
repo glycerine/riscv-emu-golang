@@ -1,3 +1,5 @@
+//go:build libriscv
+
 package fuzzoracle
 
 // oracle_test.go — unit tests comparing our CPU against libriscv for every
