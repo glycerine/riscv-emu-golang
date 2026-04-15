@@ -188,11 +188,15 @@ func (c *CPU) step() error {
 				c.pc = nextPC; return nil
 			}
 			v = int32(c.Reg(rs1)) << shamt
-		case 0x5:
-			if (insn>>30)&1 == 1 { // SRAIW
-				v = int32(c.Reg(rs1)) >> shamt
-			} else { // SRLIW
-				v = int32(uint32(c.Reg(rs1)) >> shamt)
+		case 0x5: // SRLIW / SRAIW / RORIW
+			switch funct7i32 >> 1 { // mask shamt[5] (always 0 for 5-bit shamt)
+			case 0x00: v = int32(uint32(c.Reg(rs1)) >> shamt)           // SRLIW
+			case 0x10: v = int32(c.Reg(rs1)) >> shamt                   // SRAIW
+			case 0x30: // RORIW: rotate right word immediate
+				a32 := uint32(c.Reg(rs1))
+				sh := uint(shamt & 0x1F)
+				v = int32(a32>>sh | a32<<(32-sh))
+			default: return ErrIllegalInstruction
 			}
 		default:
 			return ErrIllegalInstruction
@@ -473,6 +477,8 @@ func (c *CPU) step() error {
 			c.pc = nextPC; return ErrEcall
 		case insn == 0x30200073: // MRET
 			c.pc = nextPC; return nil
+		case insn == 0x10500073: // WFI — no-op in user-mode emulation
+		case funct3 == 0 && insn>>25 == 0x09: // SFENCE.VMA — no-op in user-mode
 		case funct3 >= 1 && funct3 <= 7 && funct3 != 4: // Zicsr
 			// Read old CSR value
 			old := c.readCSR(csrAddr)
@@ -717,11 +723,20 @@ func (c *CPU) stepRVC(insn uint16) error {
 			v, f := (&c.mem).Load32(c.Reg(rs1) + uimm)
 			if f != nil { return f }
 			c.SetReg(rd, uint64(int64(int32(v))))
+		case 0b001: // C.FLD fd' = mem[rs1'+uimm] (RV64: double-precision float)
+			uimm := uint64(((insn>>10)&7)<<3 | ((insn>>5)&3)<<6)
+			v, f := (&c.mem).Load64(c.Reg(rs1) + uimm)
+			if f != nil { return f }
+			c.SetFReg(rd, boxF64(v))
 		case 0b011: // C.LD  rd'= mem[rs1'+uimm]
 			uimm := uint64(((insn>>10)&7)<<3 | ((insn>>5)&3)<<6)
 			v, f := (&c.mem).Load64(c.Reg(rs1) + uimm)
 			if f != nil { return f }
 			c.SetReg(rd, v)
+		case 0b101: // C.FSD mem[rs1'+uimm] = fs2' (double-precision float)
+			rs2f := rp((insn >> 2) & 7)
+			uimm := uint64(((insn>>10)&7)<<3 | ((insn>>5)&3)<<6)
+			if f := (&c.mem).Store64(c.Reg(rs1)+uimm, unboxF64(c.FReg(rs2f))); f != nil { return f }
 		case 0b110: // C.SW  mem[rs1'+uimm] = rs2'
 			rs2 := rp((insn >> 2) & 7)
 			uimm := uint64(((insn>>10)&7)<<3 | ((insn>>6)&1)<<2 | ((insn>>5)&1)<<6)
@@ -825,6 +840,11 @@ func (c *CPU) stepRVC(insn uint16) error {
 		case 0b000: // C.SLLI
 			shamt := uint8(((insn>>12)&1)<<5 | (insn>>2)&0x1F)
 			c.SetReg(rd, c.Reg(rd)<<shamt)
+		case 0b001: // C.FLDSP fd = mem[sp+uimm] (double-precision float)
+			uimm := uint64(((insn>>12)&1)<<5 | ((insn>>5)&3)<<3 | ((insn>>2)&7)<<6)
+			v, f := (&c.mem).Load64(c.Reg(2) + uimm)
+			if f != nil { return f }
+			c.SetFReg(rd, boxF64(v))
 		case 0b010: // C.LWSP
 			uimm := uint64(((insn>>12)&1)<<5 | ((insn>>4)&7)<<2 | ((insn>>2)&3)<<6)
 			v, f := (&c.mem).Load32(c.Reg(2) + uimm)
@@ -859,6 +879,9 @@ func (c *CPU) stepRVC(insn uint16) error {
 				// C.ADD
 				c.SetReg(rd, c.Reg(rd)+c.Reg(rs2))
 			}
+		case 0b101: // C.FSDSP mem[sp+uimm] = fs2 (double-precision float)
+			uimm := uint64(((insn>>10)&7)<<3 | ((insn>>7)&7)<<6)
+			if f := (&c.mem).Store64(c.Reg(2)+uimm, unboxF64(c.FReg(rs2))); f != nil { return f }
 		case 0b110: // C.SWSP
 			uimm := uint64(((insn>>9)&0xF)<<2 | ((insn>>7)&3)<<6)
 			if f := (&c.mem).Store32(c.Reg(2)+uimm, uint32(c.Reg(rs2))); f != nil { return f }

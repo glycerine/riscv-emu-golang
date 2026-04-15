@@ -4,6 +4,8 @@ import (
 	"encoding/binary"
 	"math"
 	"testing"
+
+	riscv "riscv"
 )
 
 // FuzzFDVsLibriscv fuzzes RV64F+D instructions against libriscv.
@@ -245,3 +247,90 @@ func isSpecialF64(bits uint64) bool {
 // f64SignBit is also in float.go (package riscv), but we need it here as a
 // local constant for the fuzz test (it's unexported from the riscv package).
 const f64SignBit = uint64(0x8000000000000000)
+
+// FuzzCFloatVsLibriscv fuzzes C.FLD, C.FSD, C.FLDSP, C.FSDSP against libriscv.
+// Corpus: [op:1][fval:8][memval:8]
+//   op     — 0=C.FLD, 1=C.FSD, 2=C.FLDSP, 3=C.FSDSP
+//   fval   — raw bits placed in f1 (for stores)
+//   memval — raw 8 bytes at data address (for loads)
+
+func FuzzCFloatVsLibriscv(f *testing.F) {
+	f.Add([]byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE})
+	f.Add([]byte{1, 0x40, 0x09, 0x21, 0xFB, 0x54, 0x44, 0x2D, 0x18, 0, 0, 0, 0, 0, 0, 0, 0})
+	f.Add([]byte{2, 0, 0, 0, 0, 0, 0, 0, 0, 0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE})
+	f.Add([]byte{3, 0x40, 0x09, 0x21, 0xFB, 0x54, 0x44, 0x2D, 0x18, 0, 0, 0, 0, 0, 0, 0, 0})
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		if len(data) < 17 { return }
+		op     := data[0] & 3
+		fval   := binary.LittleEndian.Uint64(data[1:])
+		memval := data[9:17]
+
+		// Build 16-bit instruction + C.EBREAK + ECALL
+		var insn16 uint16
+		var initX [32]uint64
+		var initF [32]uint64
+		for i := range initF { initF[i] = nb32(0) }
+		initX[2] = oracleDataVA + 64  // sp
+		initX[9] = oracleDataVA       // rs1 for Q0 instructions
+
+		initMem := make([]byte, 128)
+		copy(initMem[0:], memval)      // Q0 load target at oracleDataVA
+		copy(initMem[64:], memval)     // Q2 load target at sp offset
+
+		switch op {
+		case 0: // C.FLD f8(rd'=0), 0(x9(rs1'=1))
+			insn16 = uint16(0b001<<13 | 0<<10 | 1<<7 | 0<<5 | 0<<2 | 0b00)
+		case 1: // C.FSD f9(rs2'=1), 0(x9(rs1'=1))
+			insn16 = uint16(0b101<<13 | 0<<10 | 1<<7 | 0<<5 | 1<<2 | 0b00)
+			initF[9] = fval
+		case 2: // C.FLDSP f1, 0
+			insn16 = uint16(0b001<<13 | 0<<12 | 1<<7 | 0<<5 | 0<<2 | 0b10)
+		case 3: // C.FSDSP f1, 0
+			insn16 = uint16(0b101<<13 | 0<<10 | 0<<7 | 1<<2 | 0b10)
+			initF[1] = fval
+		}
+
+		word0 := uint32(insn16) | (uint32(0x9002) << 16)
+		elf := riscv.BuildELF(oracleCodeVA, []uint32{word0, 0x00000073})
+
+		lm := NewMachine(elf)
+		if lm == nil { return }
+		defer lm.Close()
+		lm.WriteGuest(oracleDataVA, initMem)
+		lm.SetRegsAndPC(initX, oracleCodeVA)
+		lm.SetFRegs(initF)
+		lm.RunToEcall()
+		lFRegs := lm.SnapshotFRegs()
+		lMem   := lm.SnapshotMem(0, oracleMemSize)
+
+		mem, err := riscv.NewGuestMemory(oracleMemSize)
+		if err != nil { t.Fatal(err) }
+		defer mem.Free()
+		riscv.LoadELFBytes(mem, elf)
+		mem.WriteBytes(oracleDataVA, initMem)
+
+		cpu := riscv.NewCPU(*mem)
+		cpu.SetPC(oracleCodeVA)
+		cpu.SetReg(2, initX[2])
+		cpu.SetReg(9, initX[9])
+		for r := uint8(0); r < 32; r++ { cpu.SetFReg(r, initF[r]) }
+		cpu.Step()
+
+		for r := 0; r < 32; r++ {
+			if cpu.FReg(uint8(r)) != lFRegs[r] {
+				t.Fatalf("op=%d f%d: ours=0x%016X libriscv=0x%016X", op, r, cpu.FReg(uint8(r)), lFRegs[r])
+			}
+		}
+		ourMem := make([]byte, oracleMemSize)
+		if lMem != nil {
+			if f := mem.ReadBytes(0, ourMem); f == nil {
+				for i := range ourMem {
+					if ourMem[i] != lMem[i] {
+						t.Fatalf("op=%d mem[0x%05X]: ours=0x%02X libriscv=0x%02X", op, i, ourMem[i], lMem[i])
+					}
+				}
+			}
+		}
+	})
+}

@@ -312,3 +312,33 @@ func TestREV8_Spec(t *testing.T) {
 	want := uint64(0x0807060504030201)
 	if cpu.Reg(1) != want { t.Errorf("REV8: got 0x%016X want 0x%016X", cpu.Reg(1), want) }
 }
+
+// ── RORIW (Zbb) — not supported by libriscv oracle ────────────────────────
+
+func roriw_enc(rd, rs1, shamt int) uint32 {
+	return uint32(0x60<<25|shamt<<20|rs1<<15|5<<12|rd<<7|0x1B)
+}
+
+func TestRORIW_Basic(t *testing.T) {
+	mem, _ := NewGuestMemory(Size64MB)
+	defer mem.Free()
+	// ror32(1, 4) = 0x10000000; sign-extend (bit31=0) = 0x10000000
+	cpu := setupM(t, mem, roriw_enc(1, 2, 4), 1, 0)
+	if cpu.Reg(1) != 0x10000000 { t.Errorf("RORIW(1,4): got 0x%X want 0x10000000", cpu.Reg(1)) }
+}
+
+func TestRORIW_SignExtend(t *testing.T) {
+	mem, _ := NewGuestMemory(Size64MB)
+	defer mem.Free()
+	// ror32(1, 1) = 0x80000000; sign-extend = 0xFFFFFFFF80000000
+	cpu := setupM(t, mem, roriw_enc(1, 2, 1), 1, 0)
+	if cpu.Reg(1) != 0xFFFFFFFF80000000 { t.Errorf("RORIW(1,1): got 0x%X", cpu.Reg(1)) }
+}
+
+func TestRORIW_Zero(t *testing.T) {
+	mem, _ := NewGuestMemory(Size64MB)
+	defer mem.Free()
+	// ror32(0xFF, 0) = 0xFF; sign-extend = 0xFF
+	cpu := setupM(t, mem, roriw_enc(1, 2, 0), 0xFF, 0)
+	if cpu.Reg(1) != 0xFF { t.Errorf("RORIW(0xFF,0): got 0x%X want 0xFF", cpu.Reg(1)) }
+}
