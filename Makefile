@@ -404,7 +404,7 @@ clean:
 FUZZ_ORACLE_CGO_LDFLAGS := -L$(BUILD) -L$(BUILD)/libriscv \
                             -lriscv_capi -lriscv -lstdc++ -lm $(EXTRA_LDFLAGS)
 
-.PHONY: fuzz-oracle fuzz-stores
+.PHONY: fuzz-oracle fuzz-stores fuzz-rvc
 fuzz-oracle: bench-setup
 	@echo "── fuzz ALU vs libriscv oracle ($(FUZZ_TIME)) ──────────────"
 	cd $(ROOT) && FUZZ_TIMEOUT=1 \
@@ -421,6 +421,15 @@ fuzz-stores: bench-setup
 	        -fuzztime=$(FUZZ_TIME) \
 	        ./fuzzoracle/ 2>&1
 
+
+.PHONY: fuzz-rvc
+fuzz-rvc: bench-setup
+	@echo "── fuzz RVC vs libriscv oracle ($(FUZZ_TIME)) ──────────────"
+	cd $(ROOT) && FUZZ_TIMEOUT=1 \
+	    $(GO) test \
+	        -run FuzzRVCVsLibriscv -fuzz=FuzzRVCVsLibriscv \
+	        -fuzztime=$(FUZZ_TIME) \
+	        ./fuzzoracle/ 2>&1
 
 # ── rebuild libriscv (after flag changes) ──────────────────────────────────
 # Use when cmake flags have changed (e.g. after updating the Makefile):
