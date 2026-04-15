@@ -22,7 +22,7 @@
 #   make clean          # remove vendor/ and generated ELF
 #   make help           # this message
 
-.PHONY: all help bench-setup bench bench-quick bench-ours bench-libriscv bench-mem \
+.PHONY: all help bench-setup bench bench-quick bench-raw bench-ours bench-libriscv bench-mem \
         bench-smoke bench-summary test clean check-tools \
         libriscv-clone libriscv-patch libriscv-build guest-elf
 
@@ -301,6 +301,17 @@ bench-quick: bench-setup
 	        /FullExecution_Steady/ { p=""; for(i=1;i<=NF;i++){ if($$i=="MIPS")       printf "  %-40s %s MIPS\n","libriscv full execution:",p;    p=$$i } } \
 	    '
 	@echo ""
+
+bench-raw: bench-setup
+	@cd $(ROOT) && \
+	    CGO_CFLAGS="$(CGO_CFLAGS_VAL)" \
+	    CGO_LDFLAGS="$(CGO_LDFLAGS_VAL)" \
+	    BENCH_ELF=$(GUEST_ELF) \
+	    $(GO) test -tags libriscv -count=1 -benchtime=100ms -benchmem \
+	        -run='^$$' \
+	        -bench='^BenchmarkLibriscv_MemWriteRead64$$|^BenchmarkLibriscv_FullExecution_Steady$$' \
+	        ./bench/libriscv/ 2>&1
+
 
 bench-ours:
 	@echo "── our GuestMemory benchmarks ──────────────────────────────────"
