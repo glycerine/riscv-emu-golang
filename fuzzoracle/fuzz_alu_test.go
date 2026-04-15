@@ -1,5 +1,3 @@
-//go:build libriscv
-
 package fuzzoracle
 
 import (
@@ -19,43 +17,44 @@ const (
 // against libriscv step-by-step (register state only; no memory access).
 //
 // Corpus: [n:1][insns:n*4][a:8][b:8]
-//   n     — number of instructions (1..8)
-//   insns — raw instruction words (legalised before use)
-//   a     — value placed in x2 (rs1 for most instructions)
-//   b     — value placed in x3 (rs2 for most instructions)
+//
+//	n     — number of instructions (1..8)
+//	insns — raw instruction words (legalised before use)
+//	a     — value placed in x2 (rs1 for most instructions)
+//	b     — value placed in x3 (rs2 for most instructions)
 func FuzzALUVsLibriscv(f *testing.F) {
 	seeds := []struct {
-		insns  []uint32
-		a, b   uint64
+		insns []uint32
+		a, b  uint64
 	}{
 		// RV64I
-		{[]uint32{ienc(0x13, 0, 1, 2, 1)}, 100, 0},          // ADDI
-		{[]uint32{ienc(0x13, 0, 1, 2, -1)}, 5, 0},           // ADDI neg
-		{[]uint32{renc(0x33, 0, 0x00, 1, 2, 3)}, 100, 200},  // ADD
-		{[]uint32{renc(0x33, 0, 0x20, 1, 2, 3)}, 200, 100},  // SUB
-		{[]uint32{renc(0x33, 4, 0x00, 1, 2, 3)}, 0xAA, 0x55},// XOR
+		{[]uint32{ienc(0x13, 0, 1, 2, 1)}, 100, 0},           // ADDI
+		{[]uint32{ienc(0x13, 0, 1, 2, -1)}, 5, 0},            // ADDI neg
+		{[]uint32{renc(0x33, 0, 0x00, 1, 2, 3)}, 100, 200},   // ADD
+		{[]uint32{renc(0x33, 0, 0x20, 1, 2, 3)}, 200, 100},   // SUB
+		{[]uint32{renc(0x33, 4, 0x00, 1, 2, 3)}, 0xAA, 0x55}, // XOR
 		{[]uint32{uenc(0x37, 1, 0x12345)}, 0, 0},             // LUI
 		{[]uint32{uenc(0x17, 1, 0x12345)}, 0, 0},             // AUIPC
 		{[]uint32{benc(0x63, 0, 2, 3, 8)}, 42, 42},           // BEQ taken
 		{[]uint32{benc(0x63, 1, 2, 3, 8)}, 1, 2},             // BNE
 		{[]uint32{ienc(0x1B, 0, 1, 2, -1)}, 5, 0},            // ADDIW
-		{[]uint32{renc(0x3B, 0, 0x00, 1, 2, 3)}, 100, 200},  // ADDW
+		{[]uint32{renc(0x3B, 0, 0x00, 1, 2, 3)}, 100, 200},   // ADDW
 		// RV64M — use b=6 (non-zero divisor)
-		{[]uint32{renc(0x33, 0, 0x01, 1, 2, 3)}, 42, 6},     // MUL
-		{[]uint32{renc(0x33, 1, 0x01, 1, 2, 3)}, 42, 6},     // MULH
-		{[]uint32{renc(0x33, 2, 0x01, 1, 2, 3)}, 42, 6},     // MULHSU
-		{[]uint32{renc(0x33, 3, 0x01, 1, 2, 3)}, 42, 6},     // MULHU
-		{[]uint32{renc(0x33, 4, 0x01, 1, 2, 3)}, 42, 6},     // DIV
-		{[]uint32{renc(0x33, 5, 0x01, 1, 2, 3)}, 42, 6},     // DIVU
-		{[]uint32{renc(0x33, 6, 0x01, 1, 2, 3)}, 43, 6},     // REM
-		{[]uint32{renc(0x33, 7, 0x01, 1, 2, 3)}, 43, 6},     // REMU
-		{[]uint32{renc(0x3B, 0, 0x01, 1, 2, 3)}, 7, 6},      // MULW
-		{[]uint32{renc(0x3B, 4, 0x01, 1, 2, 3)}, 42, 6},     // DIVW
-		{[]uint32{renc(0x3B, 5, 0x01, 1, 2, 3)}, 42, 6},     // DIVUW
-		{[]uint32{renc(0x3B, 6, 0x01, 1, 2, 3)}, 43, 6},     // REMW
-		{[]uint32{renc(0x3B, 7, 0x01, 1, 2, 3)}, 43, 6},     // REMUW
+		{[]uint32{renc(0x33, 0, 0x01, 1, 2, 3)}, 42, 6}, // MUL
+		{[]uint32{renc(0x33, 1, 0x01, 1, 2, 3)}, 42, 6}, // MULH
+		{[]uint32{renc(0x33, 2, 0x01, 1, 2, 3)}, 42, 6}, // MULHSU
+		{[]uint32{renc(0x33, 3, 0x01, 1, 2, 3)}, 42, 6}, // MULHU
+		{[]uint32{renc(0x33, 4, 0x01, 1, 2, 3)}, 42, 6}, // DIV
+		{[]uint32{renc(0x33, 5, 0x01, 1, 2, 3)}, 42, 6}, // DIVU
+		{[]uint32{renc(0x33, 6, 0x01, 1, 2, 3)}, 43, 6}, // REM
+		{[]uint32{renc(0x33, 7, 0x01, 1, 2, 3)}, 43, 6}, // REMU
+		{[]uint32{renc(0x3B, 0, 0x01, 1, 2, 3)}, 7, 6},  // MULW
+		{[]uint32{renc(0x3B, 4, 0x01, 1, 2, 3)}, 42, 6}, // DIVW
+		{[]uint32{renc(0x3B, 5, 0x01, 1, 2, 3)}, 42, 6}, // DIVUW
+		{[]uint32{renc(0x3B, 6, 0x01, 1, 2, 3)}, 43, 6}, // REMW
+		{[]uint32{renc(0x3B, 7, 0x01, 1, 2, 3)}, 43, 6}, // REMUW
 		// MULH negative (our CPU is correct; only test where libriscv agrees)
-		{[]uint32{renc(0x33, 1, 0x01, 1, 2, 3)}, 3, 4},      // MULH pos*pos
+		{[]uint32{renc(0x33, 1, 0x01, 1, 2, 3)}, 3, 4},                  // MULH pos*pos
 		{[]uint32{renc(0x33, 3, 0x01, 1, 2, 3)}, 0xFFFFFFFFFFFFFFFF, 2}, // MULHU
 	}
 	for _, s := range seeds {
@@ -192,44 +191,68 @@ func aluCorpus(insns []uint32, a, b uint64) []byte {
 // aluLegalise maps raw fuzz bytes to a legal instruction from our
 // implemented set — now including M-extension multiply/divide.
 func aluLegalise(raw uint32) uint32 {
-	rd     := uint8((raw >> 7) & 0x1F)
-	rs1    := uint8((raw >> 15) & 0x1F)
-	rs2    := uint8((raw >> 20) & 0x1F)
+	rd := uint8((raw >> 7) & 0x1F)
+	rs1 := uint8((raw >> 15) & 0x1F)
+	rs2 := uint8((raw >> 20) & 0x1F)
 	funct3 := uint8((raw >> 12) & 0x7)
 	funct7 := uint8(raw >> 25)
-	imm12  := int32(raw) >> 20
-	shamt  := uint8(raw>>20) & 0x3F
-	srai   := (raw>>30)&1 == 1
-	imm20  := (raw >> 12) & 0xFFFFF
+	imm12 := int32(raw) >> 20
+	shamt := uint8(raw>>20) & 0x3F
+	srai := (raw>>30)&1 == 1
+	imm20 := (raw >> 12) & 0xFFFFF
 
-	if rd == 0 { rd = 1 }
+	if rd == 0 {
+		rd = 1
+	}
 
 	switch (raw & 0xF) % 16 {
 	case 0: // OP-IMM non-shift
-		if funct3 == 1 || funct3 == 5 { funct3 = 0 }
+		if funct3 == 1 || funct3 == 5 {
+			funct3 = 0
+		}
 		return ienc(0x13, funct3, rd, rs1, imm12)
 	case 1: // OP-IMM shift
-		if funct3 != 1 { funct3 = 5 }
+		if funct3 != 1 {
+			funct3 = 5
+		}
 		return senc(0x13, funct3, rd, rs1, shamt, srai)
 	case 2: // OP R-type (RV64I)
-		if funct3 != 0 && funct3 != 5 { funct7 = 0 }
-		if funct7 != 0 { funct7 = 0x20 }
+		if funct3 != 0 && funct3 != 5 {
+			funct7 = 0
+		}
+		if funct7 != 0 {
+			funct7 = 0x20
+		}
 		return renc(0x33, funct3, funct7, rd, rs1, rs2)
-	case 3: return uenc(0x37, rd, imm20)                          // LUI
-	case 4: return uenc(0x17, rd, imm20)                          // AUIPC
-	case 5: return benc(0x63, 0, rs1, rs2, 8)                     // BEQ
-	case 6: return benc(0x63, 1, rs1, rs2, 8)                     // BNE
-	case 7:                                                        // BLT/BGE/BLTU/BGEU
-		if funct3 < 4 { funct3 = 4 }
+	case 3:
+		return uenc(0x37, rd, imm20) // LUI
+	case 4:
+		return uenc(0x17, rd, imm20) // AUIPC
+	case 5:
+		return benc(0x63, 0, rs1, rs2, 8) // BEQ
+	case 6:
+		return benc(0x63, 1, rs1, rs2, 8) // BNE
+	case 7: // BLT/BGE/BLTU/BGEU
+		if funct3 < 4 {
+			funct3 = 4
+		}
 		return benc(0x63, funct3, rs1, rs2, 8)
 	case 8: // OP-IMM-32
-		if funct3 != 0 && funct3 != 1 && funct3 != 5 { funct3 = 0 }
-		if funct3 == 0 { return ienc(0x1B, 0, rd, rs1, imm12) }
+		if funct3 != 0 && funct3 != 1 && funct3 != 5 {
+			funct3 = 0
+		}
+		if funct3 == 0 {
+			return ienc(0x1B, 0, rd, rs1, imm12)
+		}
 		return senc(0x1B, funct3, rd, rs1, shamt&0x1F, srai)
 	case 9: // OP-32 (RV64I)
-		if funct3 != 0 && funct3 != 1 && funct3 != 5 { funct3 = 0 }
+		if funct3 != 0 && funct3 != 1 && funct3 != 5 {
+			funct3 = 0
+		}
 		f7 := uint8(0)
-		if (raw>>30)&1 == 1 && (funct3 == 0 || funct3 == 5) { f7 = 0x20 }
+		if (raw>>30)&1 == 1 && (funct3 == 0 || funct3 == 5) {
+			f7 = 0x20
+		}
 		return renc(0x3B, funct3, f7, rd, rs1, rs2)
 	case 10: // MUL/MULH/MULHSU/MULHU (funct7=0x01, funct3=0..3)
 		// Only funct3 0..3 — avoids divide (funct3 4..7)

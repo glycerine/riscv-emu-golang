@@ -1,5 +1,3 @@
-//go:build libriscv
-
 package fuzzoracle
 
 /*

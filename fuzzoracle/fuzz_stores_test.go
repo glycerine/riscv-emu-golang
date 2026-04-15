@@ -1,5 +1,3 @@
-//go:build libriscv
-
 package fuzzoracle
 
 import (
@@ -34,17 +32,17 @@ func FuzzStoresVsLibriscv(f *testing.F) {
 		rs2val  uint64
 		init    []byte
 	}{
-		{lenc(0x23, 0, 2, 3, 0), 0x00, 0xAB, []byte{0}},                                              // SB
-		{lenc(0x23, 1, 2, 3, 0), 0x00, 0xABCD, []byte{0, 0}},                                         // SH
-		{lenc(0x23, 2, 2, 3, 0), 0x00, 0xDEADBEEF, []byte{0, 0, 0, 0}},                               // SW
-		{lenc(0x23, 3, 2, 3, 0), 0x00, 0xDEADBEEFCAFEBABE, make([]byte, 8)},                          // SD
-		{lenc(0x03, 0, 1, 2, 0), 0x00, 0, []byte{0xFF}},                                              // LB
-		{lenc(0x03, 4, 1, 2, 0), 0x00, 0, []byte{0xFF}},                                              // LBU
-		{lenc(0x03, 1, 1, 2, 0), 0x00, 0, []byte{0x00, 0x80}},                                        // LH
-		{lenc(0x03, 5, 1, 2, 0), 0x00, 0, []byte{0x00, 0x80}},                                        // LHU
-		{lenc(0x03, 2, 1, 2, 0), 0x00, 0, []byte{0xFF, 0xFF, 0xFF, 0x80}},                            // LW
-		{lenc(0x03, 6, 1, 2, 0), 0x00, 0, []byte{0xFF, 0xFF, 0xFF, 0x80}},                            // LWU
-		{lenc(0x03, 3, 1, 2, 0), 0x00, 0, []byte{0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE}},  // LD
+		{lenc(0x23, 0, 2, 3, 0), 0x00, 0xAB, []byte{0}},                                           // SB
+		{lenc(0x23, 1, 2, 3, 0), 0x00, 0xABCD, []byte{0, 0}},                                      // SH
+		{lenc(0x23, 2, 2, 3, 0), 0x00, 0xDEADBEEF, []byte{0, 0, 0, 0}},                            // SW
+		{lenc(0x23, 3, 2, 3, 0), 0x00, 0xDEADBEEFCAFEBABE, make([]byte, 8)},                       // SD
+		{lenc(0x03, 0, 1, 2, 0), 0x00, 0, []byte{0xFF}},                                           // LB
+		{lenc(0x03, 4, 1, 2, 0), 0x00, 0, []byte{0xFF}},                                           // LBU
+		{lenc(0x03, 1, 1, 2, 0), 0x00, 0, []byte{0x00, 0x80}},                                     // LH
+		{lenc(0x03, 5, 1, 2, 0), 0x00, 0, []byte{0x00, 0x80}},                                     // LHU
+		{lenc(0x03, 2, 1, 2, 0), 0x00, 0, []byte{0xFF, 0xFF, 0xFF, 0x80}},                         // LW
+		{lenc(0x03, 6, 1, 2, 0), 0x00, 0, []byte{0xFF, 0xFF, 0xFF, 0x80}},                         // LWU
+		{lenc(0x03, 3, 1, 2, 0), 0x00, 0, []byte{0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE}}, // LD
 	}
 	for _, s := range seeds {
 		var buf [32]byte
@@ -144,16 +142,21 @@ func FuzzStoresVsLibriscv(f *testing.F) {
 // lsLegalise maps raw bytes to a load or store with imm=0, rs1=x2, rs2=x3.
 func lsLegalise(raw uint32) uint32 {
 	funct3 := uint8((raw >> 12) & 0x7)
-	rd     := uint8((raw >> 7) & 0x1F)
+	rd := uint8((raw >> 7) & 0x1F)
 	const rs1, rs2 = uint8(2), uint8(3)
-	if rd == 0 || rd == 2 || rd == 3 { rd = 1 }
+	if rd == 0 || rd == 2 || rd == 3 {
+		rd = 1
+	}
 	switch raw & 1 {
 	case 0: // LOAD
-		if funct3 == 7 { funct3 = 6 }
+		if funct3 == 7 {
+			funct3 = 6
+		}
 		return lenc(0x03, funct3, rd, rs1, 0)
 	default: // STORE
-		if funct3 > 3 { funct3 &= 3 }
+		if funct3 > 3 {
+			funct3 &= 3
+		}
 		return lenc(0x23, funct3, rs1, rs2, 0)
 	}
 }
-
