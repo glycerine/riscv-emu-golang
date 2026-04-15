@@ -53,7 +53,7 @@ static RISCVMachine *new_bench_machine(const void *elf, size_t elf_size,
     opts.max_memory     = memory_bytes;
     opts.strict_sandbox = 1;
     opts.error          = null_error;
-    opts.output = null_stdout;  // renamed from stdout: macro conflict on macOS
+    opts.output = null_stdout;  // renamed: stdout is a macro on macOS (stdio.h)
     return libriscv_new(elf, (unsigned)elf_size, &opts);
 }
 

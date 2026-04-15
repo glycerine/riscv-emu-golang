@@ -205,6 +205,17 @@ $(PATCH_STAMP): $(VENDOR)/.git
 	    $(VENDOR)/c/libriscv.cpp
 	@grep -q '\.stdout\b' $(VENDOR)/c/libriscv.h $(VENDOR)/c/libriscv.cpp \
 	    && { echo "  ✗ patch incomplete"; exit 1; } || true
+	@# Fix Intel Mac: libriscv CMake assumes all macOS == ARM64 (Apple Silicon).
+	@# On Intel Macs (x86_64) we must patch CMakeLists.txt to use TCC_TARGET_X86_64.
+ifeq ($(PLATFORM),macos)
+	@if [ "$$(uname -m)" = "x86_64" ]; then \
+	    echo "  ✓ Intel Mac: patching libtcc target to x86_64"; \
+	    sed -i.bak '/CMAKE_HOST_APPLE OR APPLE/,/TCC_TARGET_ARM64=1/{s/TCC_TARGET_ARM64=1/TCC_TARGET_X86_64=1/}' \
+	        $(VENDOR)/lib/CMakeLists.txt; \
+	else \
+	    echo "  ✓ Apple Silicon: TCC_TARGET_ARM64 correct"; \
+	fi
+endif
 	@touch $(PATCH_STAMP)
 	@echo "  ✓ patch applied"
 
@@ -348,3 +359,14 @@ clean:
 	@echo "── cleaning ────────────────────────────────────────────────────"
 	rm -rf $(VENDOR) $(GUEST_ELF) $(RESULTS_DIR)
 	@echo "  ✓ done"
+
+# ── rebuild libriscv (after flag changes) ──────────────────────────────────
+# Use when cmake flags have changed (e.g. after updating the Makefile):
+#   make rebuild-libriscv
+
+.PHONY: rebuild-libriscv
+rebuild-libriscv:
+	@echo "── rebuilding libriscv from scratch ────────────────────────────"
+	rm -rf $(BUILD) $(PATCH_STAMP)
+	$(MAKE) libriscv-patch libriscv-build
+	@echo "  ✓ rebuild complete"
