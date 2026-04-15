@@ -352,6 +352,64 @@ func (m *GuestMemory) Store64(addr uint64, v uint64) *MemFault {
 }
 
 // ---------------------------------------------------------------------------
+// Unaligned loads — read byte-by-byte, little-endian. No alignment requirement.
+// Used by cpu.go when a naturally-aligned load hits FaultMisalign.
+// ---------------------------------------------------------------------------
+
+// Load16U loads a 16-bit value from an unaligned address.
+func (m *GuestMemory) Load16U(addr uint64) (uint16, *MemFault) {
+	b0, f := m.Load8(addr)
+	if f != nil { return 0, f }
+	b1, f := m.Load8(addr + 1)
+	if f != nil { return 0, f }
+	return uint16(b0) | uint16(b1)<<8, nil
+}
+
+// Load32U loads a 32-bit value from an unaligned address.
+func (m *GuestMemory) Load32U(addr uint64) (uint32, *MemFault) {
+	v := uint32(0)
+	for i := uint64(0); i < 4; i++ {
+		b, f := m.Load8(addr + i)
+		if f != nil { return 0, f }
+		v |= uint32(b) << (i * 8)
+	}
+	return v, nil
+}
+
+// Load64U loads a 64-bit value from an unaligned address.
+func (m *GuestMemory) Load64U(addr uint64) (uint64, *MemFault) {
+	v := uint64(0)
+	for i := uint64(0); i < 8; i++ {
+		b, f := m.Load8(addr + i)
+		if f != nil { return 0, f }
+		v |= uint64(b) << (i * 8)
+	}
+	return v, nil
+}
+
+// Store16U stores a 16-bit value at an unaligned address.
+func (m *GuestMemory) Store16U(addr uint64, v uint16) *MemFault {
+	if f := m.Store8(addr, uint8(v)); f != nil { return f }
+	return m.Store8(addr+1, uint8(v>>8))
+}
+
+// Store32U stores a 32-bit value at an unaligned address.
+func (m *GuestMemory) Store32U(addr uint64, v uint32) *MemFault {
+	for i := uint64(0); i < 4; i++ {
+		if f := m.Store8(addr+i, uint8(v>>(i*8))); f != nil { return f }
+	}
+	return nil
+}
+
+// Store64U stores a 64-bit value at an unaligned address.
+func (m *GuestMemory) Store64U(addr uint64, v uint64) *MemFault {
+	for i := uint64(0); i < 8; i++ {
+		if f := m.Store8(addr+i, uint8(v>>(i*8))); f != nil { return f }
+	}
+	return nil
+}
+
+// ---------------------------------------------------------------------------
 // Instruction fetch — separate entry points to report FaultFetch kind.
 // ---------------------------------------------------------------------------
 
@@ -374,6 +432,18 @@ func (m *GuestMemory) Fetch32(addr uint64) (uint32, *MemFault) {
 		return 0, m.fault(addr, 4, FaultFetch)
 	}
 	return *(*uint32)(m.hostPtr(addr)), nil
+}
+
+// Fetch32U fetches a 32-bit instruction word without alignment requirement.
+// Used to read 32-bit instructions at 2-byte-aligned addresses (C extension).
+//
+//go:nosplit
+func (m *GuestMemory) Fetch32U(addr uint64) (uint32, *MemFault) {
+	lo, f := m.Fetch16(addr)
+	if f != nil { return 0, f }
+	hi, f := m.Fetch16(addr + 2)
+	if f != nil { return 0, f }
+	return uint32(lo) | uint32(hi)<<16, nil
 }
 
 // ---------------------------------------------------------------------------

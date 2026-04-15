@@ -58,7 +58,10 @@ func (c *CPU) step() error {
 
 	insn, f := (&c.mem).Fetch32(c.pc)
 	if f != nil {
-		return f
+		if f.Kind == FaultMisalign {
+			insn, f = (&c.mem).Fetch32U(c.pc)
+		}
+		if f != nil { return f }
 	}
 
 	opcode := uint8(insn & 0x7F)
@@ -79,32 +82,35 @@ func (c *CPU) step() error {
 		addr := c.Reg(rs1) + uint64(iimm)
 		var v uint64
 		switch funct3 {
-		case 0x0: // LB  — sign-extend 8→64
-			u, f := (&c.mem).Load8(addr)
-			if f != nil { return f }
+		case 0x0: // LB — sign-extend 8→64
+			u, f := (&c.mem).Load8(addr); if f != nil { return f }
 			v = uint64(int64(int8(u)))
-		case 0x1: // LH  — sign-extend 16→64
+		case 0x1: // LH — sign-extend 16→64 (misalign-capable)
 			u, f := (&c.mem).Load16(addr)
+			if f != nil && f.Kind == FaultMisalign { u, f = (&c.mem).Load16U(addr) }
 			if f != nil { return f }
 			v = uint64(int64(int16(u)))
-		case 0x2: // LW  — sign-extend 32→64
+		case 0x2: // LW — sign-extend 32→64 (misalign-capable)
 			u, f := (&c.mem).Load32(addr)
+			if f != nil && f.Kind == FaultMisalign { u, f = (&c.mem).Load32U(addr) }
 			if f != nil { return f }
 			v = uint64(int64(int32(u)))
-		case 0x3: // LD  — full 64-bit
+		case 0x3: // LD — full 64-bit (misalign-capable)
 			u, f := (&c.mem).Load64(addr)
+			if f != nil && f.Kind == FaultMisalign { u, f = (&c.mem).Load64U(addr) }
 			if f != nil { return f }
 			v = u
 		case 0x4: // LBU — zero-extend 8→64
-			u, f := (&c.mem).Load8(addr)
-			if f != nil { return f }
+			u, f := (&c.mem).Load8(addr); if f != nil { return f }
 			v = uint64(u)
-		case 0x5: // LHU — zero-extend 16→64
+		case 0x5: // LHU — zero-extend 16→64 (misalign-capable)
 			u, f := (&c.mem).Load16(addr)
+			if f != nil && f.Kind == FaultMisalign { u, f = (&c.mem).Load16U(addr) }
 			if f != nil { return f }
 			v = uint64(u)
-		case 0x6: // LWU — zero-extend 32→64
+		case 0x6: // LWU — zero-extend 32→64 (misalign-capable)
 			u, f := (&c.mem).Load32(addr)
+			if f != nil && f.Kind == FaultMisalign { u, f = (&c.mem).Load32U(addr) }
 			if f != nil { return f }
 			v = uint64(u)
 		default:
@@ -114,17 +120,23 @@ func (c *CPU) step() error {
 
 	// ── STORE (S-type) ───────────────────────────────────────────────────
 	case 0x23:
-		simm := int64((insn&0xFE000000)>>20) | int64((insn>>7)&0x1F)
+		simm := int64(int32(insn&0xFE000000)>>20) | int64((insn>>7)&0x1F)
 		addr := c.Reg(rs1) + uint64(simm)
 		switch funct3 {
 		case 0x0: // SB
 			if f := (&c.mem).Store8(addr, uint8(c.Reg(rs2))); f != nil { return f }
-		case 0x1: // SH
-			if f := (&c.mem).Store16(addr, uint16(c.Reg(rs2))); f != nil { return f }
-		case 0x2: // SW
-			if f := (&c.mem).Store32(addr, uint32(c.Reg(rs2))); f != nil { return f }
-		case 0x3: // SD
-			if f := (&c.mem).Store64(addr, c.Reg(rs2)); f != nil { return f }
+		case 0x1: // SH (misalign-capable)
+			f := (&c.mem).Store16(addr, uint16(c.Reg(rs2)))
+			if f != nil && f.Kind == FaultMisalign { f = (&c.mem).Store16U(addr, uint16(c.Reg(rs2))) }
+			if f != nil { return f }
+		case 0x2: // SW (misalign-capable)
+			f := (&c.mem).Store32(addr, uint32(c.Reg(rs2)))
+			if f != nil && f.Kind == FaultMisalign { f = (&c.mem).Store32U(addr, uint32(c.Reg(rs2))) }
+			if f != nil { return f }
+		case 0x3: // SD (misalign-capable)
+			f := (&c.mem).Store64(addr, c.Reg(rs2))
+			if f != nil && f.Kind == FaultMisalign { f = (&c.mem).Store64U(addr, c.Reg(rs2)) }
+			if f != nil { return f }
 		default:
 			return ErrIllegalInstruction
 		}
