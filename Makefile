@@ -210,10 +210,10 @@ $(PATCH_STAMP): $(VENDOR)/.git
 ifeq ($(PLATFORM),macos)
 	@if [ "$$(uname -m)" = "x86_64" ]; then \
 	    echo "  ✓ Intel Mac: patching libtcc target to x86_64"; \
-	    awk '
-/CMAKE_HOST_APPLE OR APPLE/ { in_apple=1 }
-in_apple && /TCC_TARGET_ARM64=1/ { sub(/TCC_TARGET_ARM64=1/, "TCC_TARGET_X86_64=1"); in_apple=0 }
-{ print }
+	    awk '\
+/CMAKE_HOST_APPLE OR APPLE/ { in_apple=1 }\
+in_apple && /TCC_TARGET_ARM64=1/ { sub(/TCC_TARGET_ARM64=1/, "TCC_TARGET_X86_64=1"); in_apple=0 }\
+{ print }\
 ' $(VENDOR)/lib/CMakeLists.txt > $(VENDOR)/lib/CMakeLists.txt.tmp \
 	    && mv $(VENDOR)/lib/CMakeLists.txt.tmp $(VENDOR)/lib/CMakeLists.txt; \
 	else \
