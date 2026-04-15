@@ -36,6 +36,7 @@ void libriscv_set_defaults(RISCVOptions *options)
 	options->stack_size = mo.stack_size;
 	options->strict_sandbox = true;
 	options->argc = 0;
+	options->no_translate = 0;
 }
 
 extern "C"
@@ -45,6 +46,9 @@ RISCVMachine *libriscv_new(const void *elf_prog, unsigned elf_length, RISCVOptio
 		.memory_max = options->max_memory,
 		.stack_size = options->stack_size,
 	};
+#ifdef RISCV_BINARY_TRANSLATION
+	mo.translate_enabled = !options->no_translate;
+#endif
 	UserData *u = nullptr;
 	try {
 		auto view = std::string_view{(const char *)elf_prog, size_t(elf_length)};

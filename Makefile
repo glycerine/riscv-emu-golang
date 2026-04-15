@@ -206,6 +206,10 @@ $(PATCH_STAMP): $(VENDOR)/.git
 	    $(VENDOR)/c/libriscv.cpp
 	@grep -q '\.stdout\b' $(VENDOR)/c/libriscv.h $(VENDOR)/c/libriscv.cpp \
 	    && { echo "  ✗ patch incomplete"; exit 1; } || true
+	@# no_translate field (for JIT-disabled benchmarks) should already be
+	@# present in the committed vendor files. Warn if missing.
+	@grep -q 'no_translate' $(VENDOR)/c/libriscv.h \
+	    || echo "  ⚠ no_translate field missing from libriscv.h — no-JIT benchmark will not work"
 	@# Fix Intel Mac: libriscv CMake assumes all macOS == ARM64 (Apple Silicon).
 	@# On Intel Macs (x86_64) we must patch CMakeLists.txt to use TCC_TARGET_X86_64.
 ifeq ($(PLATFORM),macos)
@@ -294,11 +298,12 @@ bench-quick: bench-setup
 	    BENCH_ELF=$(GUEST_ELF) \
 	    $(GO) test -tags libriscv -count=1 -benchtime=100ms -benchmem \
 	        -run='^$$' \
-	        -bench='^BenchmarkLibriscv_MemWriteRead64$$|^BenchmarkLibriscv_FullExecution_Steady$$' \
+	        -bench='^BenchmarkLibriscv_MemWriteRead64$$|^BenchmarkLibriscv_FullExecution_Steady$$|^BenchmarkLibriscv_FullExecution_NoJIT$$' \
 	        ./bench/libriscv/ 2>&1 \
 	    | awk ' \
 	        /MemWriteRead64/      { p=""; for(i=1;i<=NF;i++){ if($$i=="ns/pair")   printf "  %-40s %s ns/pair\n","libriscv copy_to+from_guest:",p; p=$$i } } \
 	        /FullExecution_Steady/ { p=""; for(i=1;i<=NF;i++){ if($$i=="MIPS")       printf "  %-40s %s MIPS\n","libriscv full execution:",p;    p=$$i } } \
+	        /FullExecution_NoJIT/  { p=""; for(i=1;i<=NF;i++){ if($$i=="MIPS")       printf "  %-40s %s MIPS\n","libriscv interp (no JIT):",p;   p=$$i } } \
 	    '
 	@echo "  Go CPU (full execution throughput):"
 	@cd $(ROOT) && BENCH_ELF=$(GUEST_ELF) \

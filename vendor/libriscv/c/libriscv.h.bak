@@ -30,6 +30,7 @@ typedef struct {
 	riscv_error_func_t error; /* Error callback */
 	riscv_stdout_func_t output; /* renamed: stdout is a macro on macOS */ /* Stdout callback */
 	void *opaque;             /* User-provided pointer */
+	int   no_translate;       /* Disable binary translation (JIT) */
 } RISCVOptions;
 
 /* Fill out default values. */

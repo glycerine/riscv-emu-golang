@@ -43,6 +43,18 @@ static RISCVMachine *new_bench_machine(const void *elf, size_t elf_size,
     return libriscv_new(elf, (unsigned)elf_size, &opts);
 }
 
+static RISCVMachine *new_bench_machine_no_jit(const void *elf, size_t elf_size,
+                                               uint64_t memory_bytes) {
+    RISCVOptions opts;
+    libriscv_set_defaults(&opts);
+    opts.max_memory     = memory_bytes;
+    opts.strict_sandbox = 1;
+    opts.no_translate   = 1;
+    opts.error          = null_error;
+    opts.output         = null_stdout;
+    return libriscv_new(elf, (unsigned)elf_size, &opts);
+}
+
 static void delete_machine(RISCVMachine *m) {
     libriscv_delete(m);
 }
@@ -113,6 +125,19 @@ type Machine struct {
 // memBytes is the guest address space size. Returns nil on failure.
 func NewMachine(elf []byte, memBytes uint64) *Machine {
 	m := C.new_bench_machine(
+		unsafe.Pointer(&elf[0]),
+		C.size_t(len(elf)),
+		C.uint64_t(memBytes),
+	)
+	if m == nil {
+		return nil
+	}
+	return &Machine{m: m}
+}
+
+// NewMachineNoJIT creates a libriscv machine with binary translation disabled.
+func NewMachineNoJIT(elf []byte, memBytes uint64) *Machine {
+	m := C.new_bench_machine_no_jit(
 		unsafe.Pointer(&elf[0]),
 		C.size_t(len(elf)),
 		C.uint64_t(memBytes),

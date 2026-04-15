@@ -161,3 +161,31 @@ func BenchmarkLibriscv_FullExecution_Steady(b *testing.B) {
 		b.ReportMetric(mips, "MIPS")
 	}
 }
+
+// BenchmarkLibriscv_FullExecution_NoJIT measures libriscv throughput with
+// binary translation disabled — pure threaded interpreter only.
+func BenchmarkLibriscv_FullExecution_NoJIT(b *testing.B) {
+	elf := loadELF(b)
+	const memSize = 64 << 20
+	const insnLimit = uint64(10_000_000_000)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	totalInsns := uint64(0)
+	for i := 0; i < b.N; i++ {
+		m := NewMachineNoJIT(elf, memSize)
+		if m == nil {
+			b.Fatal("NewMachineNoJIT returned nil")
+		}
+		totalInsns += m.RunToCompletion(insnLimit)
+		m.Close()
+	}
+
+	b.StopTimer()
+	elapsed := b.Elapsed().Seconds()
+	if elapsed > 0 && totalInsns > 0 {
+		mips := float64(totalInsns) / elapsed / 1e6
+		b.ReportMetric(mips, "MIPS")
+	}
+}
