@@ -1,0 +1,698 @@
+// Register constants re-exported from each architecture backend.
+// All names are prefixed by arch to avoid collision across packages.
+// Constant values are taken directly from the extracted a.out.go files.
+package goasm
+
+import (
+	"riscv/goasm/obj/arm"
+	"riscv/goasm/obj/arm64"
+	"riscv/goasm/obj/loong64"
+	"riscv/goasm/obj/mips"
+	"riscv/goasm/obj/ppc64"
+	goariscv "riscv/goasm/obj/riscv"
+	"riscv/goasm/obj/s390x"
+	"riscv/goasm/obj/wasm"
+	"riscv/goasm/obj/x86"
+)
+
+// ── AMD64 / x86-64 ────────────────────────────────────────────────────────────
+
+// AMD64 general-purpose registers (64-bit names).
+const (
+	REG_AMD64_AX  = x86.REG_AX
+	REG_AMD64_CX  = x86.REG_CX
+	REG_AMD64_DX  = x86.REG_DX
+	REG_AMD64_BX  = x86.REG_BX
+	REG_AMD64_SP  = x86.REG_SP
+	REG_AMD64_BP  = x86.REG_BP
+	REG_AMD64_SI  = x86.REG_SI
+	REG_AMD64_DI  = x86.REG_DI
+	REG_AMD64_R8  = x86.REG_R8
+	REG_AMD64_R9  = x86.REG_R9
+	REG_AMD64_R10 = x86.REG_R10
+	REG_AMD64_R11 = x86.REG_R11
+	REG_AMD64_R12 = x86.REG_R12
+	REG_AMD64_R13 = x86.REG_R13
+	REG_AMD64_R14 = x86.REG_R14
+	REG_AMD64_R15 = x86.REG_R15
+)
+
+// AMD64 SSE/XMM registers (128-bit).
+const (
+	REG_AMD64_X0  = x86.REG_X0
+	REG_AMD64_X1  = x86.REG_X1
+	REG_AMD64_X2  = x86.REG_X2
+	REG_AMD64_X3  = x86.REG_X3
+	REG_AMD64_X4  = x86.REG_X4
+	REG_AMD64_X5  = x86.REG_X5
+	REG_AMD64_X6  = x86.REG_X6
+	REG_AMD64_X7  = x86.REG_X7
+	REG_AMD64_X8  = x86.REG_X8
+	REG_AMD64_X9  = x86.REG_X9
+	REG_AMD64_X10 = x86.REG_X10
+	REG_AMD64_X11 = x86.REG_X11
+	REG_AMD64_X12 = x86.REG_X12
+	REG_AMD64_X13 = x86.REG_X13
+	REG_AMD64_X14 = x86.REG_X14
+	REG_AMD64_X15 = x86.REG_X15
+)
+
+// AMD64 AVX/YMM registers (256-bit).
+const (
+	REG_AMD64_Y0  = x86.REG_Y0
+	REG_AMD64_Y1  = x86.REG_Y1
+	REG_AMD64_Y2  = x86.REG_Y2
+	REG_AMD64_Y3  = x86.REG_Y3
+	REG_AMD64_Y4  = x86.REG_Y4
+	REG_AMD64_Y5  = x86.REG_Y5
+	REG_AMD64_Y6  = x86.REG_Y6
+	REG_AMD64_Y7  = x86.REG_Y7
+	REG_AMD64_Y8  = x86.REG_Y8
+	REG_AMD64_Y9  = x86.REG_Y9
+	REG_AMD64_Y10 = x86.REG_Y10
+	REG_AMD64_Y11 = x86.REG_Y11
+	REG_AMD64_Y12 = x86.REG_Y12
+	REG_AMD64_Y13 = x86.REG_Y13
+	REG_AMD64_Y14 = x86.REG_Y14
+	REG_AMD64_Y15 = x86.REG_Y15
+)
+
+// AMD64 AVX-512/ZMM registers (512-bit).
+const (
+	REG_AMD64_Z0  = x86.REG_Z0
+	REG_AMD64_Z1  = x86.REG_Z1
+	REG_AMD64_Z2  = x86.REG_Z2
+	REG_AMD64_Z3  = x86.REG_Z3
+	REG_AMD64_Z4  = x86.REG_Z4
+	REG_AMD64_Z5  = x86.REG_Z5
+	REG_AMD64_Z6  = x86.REG_Z6
+	REG_AMD64_Z7  = x86.REG_Z7
+	REG_AMD64_Z8  = x86.REG_Z8
+	REG_AMD64_Z9  = x86.REG_Z9
+	REG_AMD64_Z10 = x86.REG_Z10
+	REG_AMD64_Z11 = x86.REG_Z11
+	REG_AMD64_Z12 = x86.REG_Z12
+	REG_AMD64_Z13 = x86.REG_Z13
+	REG_AMD64_Z14 = x86.REG_Z14
+	REG_AMD64_Z15 = x86.REG_Z15
+	REG_AMD64_Z16 = x86.REG_Z16
+	REG_AMD64_Z17 = x86.REG_Z17
+	REG_AMD64_Z18 = x86.REG_Z18
+	REG_AMD64_Z19 = x86.REG_Z19
+	REG_AMD64_Z20 = x86.REG_Z20
+	REG_AMD64_Z21 = x86.REG_Z21
+	REG_AMD64_Z22 = x86.REG_Z22
+	REG_AMD64_Z23 = x86.REG_Z23
+	REG_AMD64_Z24 = x86.REG_Z24
+	REG_AMD64_Z25 = x86.REG_Z25
+	REG_AMD64_Z26 = x86.REG_Z26
+	REG_AMD64_Z27 = x86.REG_Z27
+	REG_AMD64_Z28 = x86.REG_Z28
+	REG_AMD64_Z29 = x86.REG_Z29
+	REG_AMD64_Z30 = x86.REG_Z30
+	REG_AMD64_Z31 = x86.REG_Z31
+)
+
+// ── ARM64 ─────────────────────────────────────────────────────────────────────
+
+// ARM64 integer registers (X0..X30; X31 = XZR/WSP depending on context).
+const (
+	REG_ARM64_R0  = arm64.REG_R0
+	REG_ARM64_R1  = arm64.REG_R1
+	REG_ARM64_R2  = arm64.REG_R2
+	REG_ARM64_R3  = arm64.REG_R3
+	REG_ARM64_R4  = arm64.REG_R4
+	REG_ARM64_R5  = arm64.REG_R5
+	REG_ARM64_R6  = arm64.REG_R6
+	REG_ARM64_R7  = arm64.REG_R7
+	REG_ARM64_R8  = arm64.REG_R8
+	REG_ARM64_R9  = arm64.REG_R9
+	REG_ARM64_R10 = arm64.REG_R10
+	REG_ARM64_R11 = arm64.REG_R11
+	REG_ARM64_R12 = arm64.REG_R12
+	REG_ARM64_R13 = arm64.REG_R13
+	REG_ARM64_R14 = arm64.REG_R14
+	REG_ARM64_R15 = arm64.REG_R15
+	REG_ARM64_R16 = arm64.REG_R16
+	REG_ARM64_R17 = arm64.REG_R17
+	REG_ARM64_R18 = arm64.REG_R18
+	REG_ARM64_R19 = arm64.REG_R19
+	REG_ARM64_R20 = arm64.REG_R20
+	REG_ARM64_R21 = arm64.REG_R21
+	REG_ARM64_R22 = arm64.REG_R22
+	REG_ARM64_R23 = arm64.REG_R23
+	REG_ARM64_R24 = arm64.REG_R24
+	REG_ARM64_R25 = arm64.REG_R25
+	REG_ARM64_R26 = arm64.REG_R26
+	REG_ARM64_R27 = arm64.REG_R27
+	REG_ARM64_R28 = arm64.REG_R28
+	REG_ARM64_R29 = arm64.REG_R29 // FP (frame pointer)
+	REG_ARM64_R30 = arm64.REG_R30 // LR (link register)
+	REG_ARM64_ZR  = arm64.REGZERO // XZR: zero register (REG_R31)
+	REG_ARM64_RSP = arm64.REGSP   // SP: stack pointer (encoded differently from XZR)
+	REG_ARM64_G   = arm64.REGG    // goroutine pointer (R28 in Go runtime)
+)
+
+// ARM64 scalar FP registers (D0..D31 / S0..S31).
+const (
+	REG_ARM64_F0  = arm64.REG_F0
+	REG_ARM64_F1  = arm64.REG_F1
+	REG_ARM64_F2  = arm64.REG_F2
+	REG_ARM64_F3  = arm64.REG_F3
+	REG_ARM64_F4  = arm64.REG_F4
+	REG_ARM64_F5  = arm64.REG_F5
+	REG_ARM64_F6  = arm64.REG_F6
+	REG_ARM64_F7  = arm64.REG_F7
+	REG_ARM64_F8  = arm64.REG_F8
+	REG_ARM64_F9  = arm64.REG_F9
+	REG_ARM64_F10 = arm64.REG_F10
+	REG_ARM64_F11 = arm64.REG_F11
+	REG_ARM64_F12 = arm64.REG_F12
+	REG_ARM64_F13 = arm64.REG_F13
+	REG_ARM64_F14 = arm64.REG_F14
+	REG_ARM64_F15 = arm64.REG_F15
+	REG_ARM64_F16 = arm64.REG_F16
+	REG_ARM64_F17 = arm64.REG_F17
+	REG_ARM64_F18 = arm64.REG_F18
+	REG_ARM64_F19 = arm64.REG_F19
+	REG_ARM64_F20 = arm64.REG_F20
+	REG_ARM64_F21 = arm64.REG_F21
+	REG_ARM64_F22 = arm64.REG_F22
+	REG_ARM64_F23 = arm64.REG_F23
+	REG_ARM64_F24 = arm64.REG_F24
+	REG_ARM64_F25 = arm64.REG_F25
+	REG_ARM64_F26 = arm64.REG_F26
+	REG_ARM64_F27 = arm64.REG_F27
+	REG_ARM64_F28 = arm64.REG_F28
+	REG_ARM64_F29 = arm64.REG_F29
+	REG_ARM64_F30 = arm64.REG_F30
+	REG_ARM64_F31 = arm64.REG_F31
+)
+
+// ARM64 SIMD/vector registers (V0..V31).
+const (
+	REG_ARM64_V0  = arm64.REG_V0
+	REG_ARM64_V1  = arm64.REG_V1
+	REG_ARM64_V2  = arm64.REG_V2
+	REG_ARM64_V3  = arm64.REG_V3
+	REG_ARM64_V4  = arm64.REG_V4
+	REG_ARM64_V5  = arm64.REG_V5
+	REG_ARM64_V6  = arm64.REG_V6
+	REG_ARM64_V7  = arm64.REG_V7
+	REG_ARM64_V8  = arm64.REG_V8
+	REG_ARM64_V9  = arm64.REG_V9
+	REG_ARM64_V10 = arm64.REG_V10
+	REG_ARM64_V11 = arm64.REG_V11
+	REG_ARM64_V12 = arm64.REG_V12
+	REG_ARM64_V13 = arm64.REG_V13
+	REG_ARM64_V14 = arm64.REG_V14
+	REG_ARM64_V15 = arm64.REG_V15
+	REG_ARM64_V16 = arm64.REG_V16
+	REG_ARM64_V17 = arm64.REG_V17
+	REG_ARM64_V18 = arm64.REG_V18
+	REG_ARM64_V19 = arm64.REG_V19
+	REG_ARM64_V20 = arm64.REG_V20
+	REG_ARM64_V21 = arm64.REG_V21
+	REG_ARM64_V22 = arm64.REG_V22
+	REG_ARM64_V23 = arm64.REG_V23
+	REG_ARM64_V24 = arm64.REG_V24
+	REG_ARM64_V25 = arm64.REG_V25
+	REG_ARM64_V26 = arm64.REG_V26
+	REG_ARM64_V27 = arm64.REG_V27
+	REG_ARM64_V28 = arm64.REG_V28
+	REG_ARM64_V29 = arm64.REG_V29
+	REG_ARM64_V30 = arm64.REG_V30
+	REG_ARM64_V31 = arm64.REG_V31
+)
+
+// ── ARM (32-bit) ──────────────────────────────────────────────────────────────
+
+// ARM integer registers (R0..R15).
+const (
+	REG_ARM_R0  = arm.REG_R0
+	REG_ARM_R1  = arm.REG_R1
+	REG_ARM_R2  = arm.REG_R2
+	REG_ARM_R3  = arm.REG_R3
+	REG_ARM_R4  = arm.REG_R4
+	REG_ARM_R5  = arm.REG_R5
+	REG_ARM_R6  = arm.REG_R6
+	REG_ARM_R7  = arm.REG_R7
+	REG_ARM_R8  = arm.REG_R8
+	REG_ARM_R9  = arm.REG_R9
+	REG_ARM_R10 = arm.REG_R10
+	REG_ARM_R11 = arm.REG_R11
+	REG_ARM_R12 = arm.REG_R12
+	REG_ARM_SP  = arm.REGSP   // R13 / SP
+	REG_ARM_LR  = arm.REGLINK // R14 / LR
+	REG_ARM_PC  = arm.REGPC   // R15 / PC
+)
+
+// ARM scalar FP registers (F0..F15).
+const (
+	REG_ARM_F0  = arm.REG_F0
+	REG_ARM_F1  = arm.REG_F1
+	REG_ARM_F2  = arm.REG_F2
+	REG_ARM_F3  = arm.REG_F3
+	REG_ARM_F4  = arm.REG_F4
+	REG_ARM_F5  = arm.REG_F5
+	REG_ARM_F6  = arm.REG_F6
+	REG_ARM_F7  = arm.REG_F7
+	REG_ARM_F8  = arm.REG_F8
+	REG_ARM_F9  = arm.REG_F9
+	REG_ARM_F10 = arm.REG_F10
+	REG_ARM_F11 = arm.REG_F11
+	REG_ARM_F12 = arm.REG_F12
+	REG_ARM_F13 = arm.REG_F13
+	REG_ARM_F14 = arm.REG_F14
+	REG_ARM_F15 = arm.REG_F15
+)
+
+// ── RISC-V (Go compiler backend) ─────────────────────────────────────────────
+// Note: this is Go's own RISC-V backend (obj/riscv), distinct from the RISC-V
+// emulator that is the subject of this repository.
+
+// RISC-V integer registers (X0..X31).
+const (
+	REG_RISCV_X0  = goariscv.REG_X0  // zero
+	REG_RISCV_X1  = goariscv.REG_X1  // ra
+	REG_RISCV_X2  = goariscv.REG_X2  // sp
+	REG_RISCV_X3  = goariscv.REG_X3  // gp
+	REG_RISCV_X4  = goariscv.REG_X4  // tp
+	REG_RISCV_X5  = goariscv.REG_X5  // t0
+	REG_RISCV_X6  = goariscv.REG_X6  // t1
+	REG_RISCV_X7  = goariscv.REG_X7  // t2
+	REG_RISCV_X8  = goariscv.REG_X8  // s0/fp
+	REG_RISCV_X9  = goariscv.REG_X9  // s1
+	REG_RISCV_X10 = goariscv.REG_X10 // a0
+	REG_RISCV_X11 = goariscv.REG_X11 // a1
+	REG_RISCV_X12 = goariscv.REG_X12 // a2
+	REG_RISCV_X13 = goariscv.REG_X13 // a3
+	REG_RISCV_X14 = goariscv.REG_X14 // a4
+	REG_RISCV_X15 = goariscv.REG_X15 // a5
+	REG_RISCV_X16 = goariscv.REG_X16 // a6
+	REG_RISCV_X17 = goariscv.REG_X17 // a7
+	REG_RISCV_X18 = goariscv.REG_X18 // s2
+	REG_RISCV_X19 = goariscv.REG_X19 // s3
+	REG_RISCV_X20 = goariscv.REG_X20 // s4
+	REG_RISCV_X21 = goariscv.REG_X21 // s5
+	REG_RISCV_X22 = goariscv.REG_X22 // s6
+	REG_RISCV_X23 = goariscv.REG_X23 // s7
+	REG_RISCV_X24 = goariscv.REG_X24 // s8
+	REG_RISCV_X25 = goariscv.REG_X25 // s9
+	REG_RISCV_X26 = goariscv.REG_X26 // s10
+	REG_RISCV_X27 = goariscv.REG_X27 // s11
+	REG_RISCV_X28 = goariscv.REG_X28 // t3
+	REG_RISCV_X29 = goariscv.REG_X29 // t4
+	REG_RISCV_X30 = goariscv.REG_X30 // t5
+	REG_RISCV_X31 = goariscv.REG_X31 // t6
+)
+
+// RISC-V FP registers (F0..F31).
+const (
+	REG_RISCV_F0  = goariscv.REG_F0
+	REG_RISCV_F1  = goariscv.REG_F1
+	REG_RISCV_F2  = goariscv.REG_F2
+	REG_RISCV_F3  = goariscv.REG_F3
+	REG_RISCV_F4  = goariscv.REG_F4
+	REG_RISCV_F5  = goariscv.REG_F5
+	REG_RISCV_F6  = goariscv.REG_F6
+	REG_RISCV_F7  = goariscv.REG_F7
+	REG_RISCV_F8  = goariscv.REG_F8
+	REG_RISCV_F9  = goariscv.REG_F9
+	REG_RISCV_F10 = goariscv.REG_F10
+	REG_RISCV_F11 = goariscv.REG_F11
+	REG_RISCV_F12 = goariscv.REG_F12
+	REG_RISCV_F13 = goariscv.REG_F13
+	REG_RISCV_F14 = goariscv.REG_F14
+	REG_RISCV_F15 = goariscv.REG_F15
+	REG_RISCV_F16 = goariscv.REG_F16
+	REG_RISCV_F17 = goariscv.REG_F17
+	REG_RISCV_F18 = goariscv.REG_F18
+	REG_RISCV_F19 = goariscv.REG_F19
+	REG_RISCV_F20 = goariscv.REG_F20
+	REG_RISCV_F21 = goariscv.REG_F21
+	REG_RISCV_F22 = goariscv.REG_F22
+	REG_RISCV_F23 = goariscv.REG_F23
+	REG_RISCV_F24 = goariscv.REG_F24
+	REG_RISCV_F25 = goariscv.REG_F25
+	REG_RISCV_F26 = goariscv.REG_F26
+	REG_RISCV_F27 = goariscv.REG_F27
+	REG_RISCV_F28 = goariscv.REG_F28
+	REG_RISCV_F29 = goariscv.REG_F29
+	REG_RISCV_F30 = goariscv.REG_F30
+	REG_RISCV_F31 = goariscv.REG_F31
+)
+
+// ── MIPS / MIPS64 ─────────────────────────────────────────────────────────────
+
+// MIPS integer registers (R0..R31).
+const (
+	REG_MIPS_R0  = mips.REG_R0
+	REG_MIPS_R1  = mips.REG_R1
+	REG_MIPS_R2  = mips.REG_R2
+	REG_MIPS_R3  = mips.REG_R3
+	REG_MIPS_R4  = mips.REG_R4
+	REG_MIPS_R5  = mips.REG_R5
+	REG_MIPS_R6  = mips.REG_R6
+	REG_MIPS_R7  = mips.REG_R7
+	REG_MIPS_R8  = mips.REG_R8
+	REG_MIPS_R9  = mips.REG_R9
+	REG_MIPS_R10 = mips.REG_R10
+	REG_MIPS_R11 = mips.REG_R11
+	REG_MIPS_R12 = mips.REG_R12
+	REG_MIPS_R13 = mips.REG_R13
+	REG_MIPS_R14 = mips.REG_R14
+	REG_MIPS_R15 = mips.REG_R15
+	REG_MIPS_R16 = mips.REG_R16
+	REG_MIPS_R17 = mips.REG_R17
+	REG_MIPS_R18 = mips.REG_R18
+	REG_MIPS_R19 = mips.REG_R19
+	REG_MIPS_R20 = mips.REG_R20
+	REG_MIPS_R21 = mips.REG_R21
+	REG_MIPS_R22 = mips.REG_R22
+	REG_MIPS_R23 = mips.REG_R23
+	REG_MIPS_R24 = mips.REG_R24
+	REG_MIPS_R25 = mips.REG_R25
+	REG_MIPS_R26 = mips.REG_R26
+	REG_MIPS_R27 = mips.REG_R27
+	REG_MIPS_R28 = mips.REG_R28
+	REG_MIPS_R29 = mips.REG_R29
+	REG_MIPS_R30 = mips.REG_R30
+	REG_MIPS_R31 = mips.REG_R31
+)
+
+// MIPS FP registers (F0..F31).
+const (
+	REG_MIPS_F0  = mips.REG_F0
+	REG_MIPS_F1  = mips.REG_F1
+	REG_MIPS_F2  = mips.REG_F2
+	REG_MIPS_F3  = mips.REG_F3
+	REG_MIPS_F4  = mips.REG_F4
+	REG_MIPS_F5  = mips.REG_F5
+	REG_MIPS_F6  = mips.REG_F6
+	REG_MIPS_F7  = mips.REG_F7
+	REG_MIPS_F8  = mips.REG_F8
+	REG_MIPS_F9  = mips.REG_F9
+	REG_MIPS_F10 = mips.REG_F10
+	REG_MIPS_F11 = mips.REG_F11
+	REG_MIPS_F12 = mips.REG_F12
+	REG_MIPS_F13 = mips.REG_F13
+	REG_MIPS_F14 = mips.REG_F14
+	REG_MIPS_F15 = mips.REG_F15
+	REG_MIPS_F16 = mips.REG_F16
+	REG_MIPS_F17 = mips.REG_F17
+	REG_MIPS_F18 = mips.REG_F18
+	REG_MIPS_F19 = mips.REG_F19
+	REG_MIPS_F20 = mips.REG_F20
+	REG_MIPS_F21 = mips.REG_F21
+	REG_MIPS_F22 = mips.REG_F22
+	REG_MIPS_F23 = mips.REG_F23
+	REG_MIPS_F24 = mips.REG_F24
+	REG_MIPS_F25 = mips.REG_F25
+	REG_MIPS_F26 = mips.REG_F26
+	REG_MIPS_F27 = mips.REG_F27
+	REG_MIPS_F28 = mips.REG_F28
+	REG_MIPS_F29 = mips.REG_F29
+	REG_MIPS_F30 = mips.REG_F30
+	REG_MIPS_F31 = mips.REG_F31
+)
+
+// ── PPC64 ─────────────────────────────────────────────────────────────────────
+
+// PPC64 integer registers (R0..R31).
+const (
+	REG_PPC64_R0  = ppc64.REG_R0
+	REG_PPC64_R1  = ppc64.REG_R1
+	REG_PPC64_R2  = ppc64.REG_R2
+	REG_PPC64_R3  = ppc64.REG_R3
+	REG_PPC64_R4  = ppc64.REG_R4
+	REG_PPC64_R5  = ppc64.REG_R5
+	REG_PPC64_R6  = ppc64.REG_R6
+	REG_PPC64_R7  = ppc64.REG_R7
+	REG_PPC64_R8  = ppc64.REG_R8
+	REG_PPC64_R9  = ppc64.REG_R9
+	REG_PPC64_R10 = ppc64.REG_R10
+	REG_PPC64_R11 = ppc64.REG_R11
+	REG_PPC64_R12 = ppc64.REG_R12
+	REG_PPC64_R13 = ppc64.REG_R13
+	REG_PPC64_R14 = ppc64.REG_R14
+	REG_PPC64_R15 = ppc64.REG_R15
+	REG_PPC64_R16 = ppc64.REG_R16
+	REG_PPC64_R17 = ppc64.REG_R17
+	REG_PPC64_R18 = ppc64.REG_R18
+	REG_PPC64_R19 = ppc64.REG_R19
+	REG_PPC64_R20 = ppc64.REG_R20
+	REG_PPC64_R21 = ppc64.REG_R21
+	REG_PPC64_R22 = ppc64.REG_R22
+	REG_PPC64_R23 = ppc64.REG_R23
+	REG_PPC64_R24 = ppc64.REG_R24
+	REG_PPC64_R25 = ppc64.REG_R25
+	REG_PPC64_R26 = ppc64.REG_R26
+	REG_PPC64_R27 = ppc64.REG_R27
+	REG_PPC64_R28 = ppc64.REG_R28
+	REG_PPC64_R29 = ppc64.REG_R29
+	REG_PPC64_R30 = ppc64.REG_R30
+	REG_PPC64_R31 = ppc64.REG_R31
+)
+
+// PPC64 floating-point registers (F0..F31).
+const (
+	REG_PPC64_F0  = ppc64.REG_F0
+	REG_PPC64_F1  = ppc64.REG_F1
+	REG_PPC64_F2  = ppc64.REG_F2
+	REG_PPC64_F3  = ppc64.REG_F3
+	REG_PPC64_F4  = ppc64.REG_F4
+	REG_PPC64_F5  = ppc64.REG_F5
+	REG_PPC64_F6  = ppc64.REG_F6
+	REG_PPC64_F7  = ppc64.REG_F7
+	REG_PPC64_F8  = ppc64.REG_F8
+	REG_PPC64_F9  = ppc64.REG_F9
+	REG_PPC64_F10 = ppc64.REG_F10
+	REG_PPC64_F11 = ppc64.REG_F11
+	REG_PPC64_F12 = ppc64.REG_F12
+	REG_PPC64_F13 = ppc64.REG_F13
+	REG_PPC64_F14 = ppc64.REG_F14
+	REG_PPC64_F15 = ppc64.REG_F15
+	REG_PPC64_F16 = ppc64.REG_F16
+	REG_PPC64_F17 = ppc64.REG_F17
+	REG_PPC64_F18 = ppc64.REG_F18
+	REG_PPC64_F19 = ppc64.REG_F19
+	REG_PPC64_F20 = ppc64.REG_F20
+	REG_PPC64_F21 = ppc64.REG_F21
+	REG_PPC64_F22 = ppc64.REG_F22
+	REG_PPC64_F23 = ppc64.REG_F23
+	REG_PPC64_F24 = ppc64.REG_F24
+	REG_PPC64_F25 = ppc64.REG_F25
+	REG_PPC64_F26 = ppc64.REG_F26
+	REG_PPC64_F27 = ppc64.REG_F27
+	REG_PPC64_F28 = ppc64.REG_F28
+	REG_PPC64_F29 = ppc64.REG_F29
+	REG_PPC64_F30 = ppc64.REG_F30
+	REG_PPC64_F31 = ppc64.REG_F31
+)
+
+// ── LoongArch64 ───────────────────────────────────────────────────────────────
+
+// LoongArch64 integer registers (R0..R31).
+const (
+	REG_LOONG64_R0  = loong64.REG_R0
+	REG_LOONG64_R1  = loong64.REG_R1
+	REG_LOONG64_R2  = loong64.REG_R2
+	REG_LOONG64_R3  = loong64.REG_R3
+	REG_LOONG64_R4  = loong64.REG_R4
+	REG_LOONG64_R5  = loong64.REG_R5
+	REG_LOONG64_R6  = loong64.REG_R6
+	REG_LOONG64_R7  = loong64.REG_R7
+	REG_LOONG64_R8  = loong64.REG_R8
+	REG_LOONG64_R9  = loong64.REG_R9
+	REG_LOONG64_R10 = loong64.REG_R10
+	REG_LOONG64_R11 = loong64.REG_R11
+	REG_LOONG64_R12 = loong64.REG_R12
+	REG_LOONG64_R13 = loong64.REG_R13
+	REG_LOONG64_R14 = loong64.REG_R14
+	REG_LOONG64_R15 = loong64.REG_R15
+	REG_LOONG64_R16 = loong64.REG_R16
+	REG_LOONG64_R17 = loong64.REG_R17
+	REG_LOONG64_R18 = loong64.REG_R18
+	REG_LOONG64_R19 = loong64.REG_R19
+	REG_LOONG64_R20 = loong64.REG_R20
+	REG_LOONG64_R21 = loong64.REG_R21
+	REG_LOONG64_R22 = loong64.REG_R22
+	REG_LOONG64_R23 = loong64.REG_R23
+	REG_LOONG64_R24 = loong64.REG_R24
+	REG_LOONG64_R25 = loong64.REG_R25
+	REG_LOONG64_R26 = loong64.REG_R26
+	REG_LOONG64_R27 = loong64.REG_R27
+	REG_LOONG64_R28 = loong64.REG_R28
+	REG_LOONG64_R29 = loong64.REG_R29
+	REG_LOONG64_R30 = loong64.REG_R30
+	REG_LOONG64_R31 = loong64.REG_R31
+)
+
+// LoongArch64 FP registers (F0..F31).
+const (
+	REG_LOONG64_F0  = loong64.REG_F0
+	REG_LOONG64_F1  = loong64.REG_F1
+	REG_LOONG64_F2  = loong64.REG_F2
+	REG_LOONG64_F3  = loong64.REG_F3
+	REG_LOONG64_F4  = loong64.REG_F4
+	REG_LOONG64_F5  = loong64.REG_F5
+	REG_LOONG64_F6  = loong64.REG_F6
+	REG_LOONG64_F7  = loong64.REG_F7
+	REG_LOONG64_F8  = loong64.REG_F8
+	REG_LOONG64_F9  = loong64.REG_F9
+	REG_LOONG64_F10 = loong64.REG_F10
+	REG_LOONG64_F11 = loong64.REG_F11
+	REG_LOONG64_F12 = loong64.REG_F12
+	REG_LOONG64_F13 = loong64.REG_F13
+	REG_LOONG64_F14 = loong64.REG_F14
+	REG_LOONG64_F15 = loong64.REG_F15
+	REG_LOONG64_F16 = loong64.REG_F16
+	REG_LOONG64_F17 = loong64.REG_F17
+	REG_LOONG64_F18 = loong64.REG_F18
+	REG_LOONG64_F19 = loong64.REG_F19
+	REG_LOONG64_F20 = loong64.REG_F20
+	REG_LOONG64_F21 = loong64.REG_F21
+	REG_LOONG64_F22 = loong64.REG_F22
+	REG_LOONG64_F23 = loong64.REG_F23
+	REG_LOONG64_F24 = loong64.REG_F24
+	REG_LOONG64_F25 = loong64.REG_F25
+	REG_LOONG64_F26 = loong64.REG_F26
+	REG_LOONG64_F27 = loong64.REG_F27
+	REG_LOONG64_F28 = loong64.REG_F28
+	REG_LOONG64_F29 = loong64.REG_F29
+	REG_LOONG64_F30 = loong64.REG_F30
+	REG_LOONG64_F31 = loong64.REG_F31
+)
+
+// ── IBM s390x ─────────────────────────────────────────────────────────────────
+
+// s390x integer registers (R0..R15).
+const (
+	REG_S390X_R0  = s390x.REG_R0
+	REG_S390X_R1  = s390x.REG_R1
+	REG_S390X_R2  = s390x.REG_R2
+	REG_S390X_R3  = s390x.REG_R3
+	REG_S390X_R4  = s390x.REG_R4
+	REG_S390X_R5  = s390x.REG_R5
+	REG_S390X_R6  = s390x.REG_R6
+	REG_S390X_R7  = s390x.REG_R7
+	REG_S390X_R8  = s390x.REG_R8
+	REG_S390X_R9  = s390x.REG_R9
+	REG_S390X_R10 = s390x.REG_R10
+	REG_S390X_R11 = s390x.REG_R11
+	REG_S390X_R12 = s390x.REG_R12
+	REG_S390X_R13 = s390x.REG_R13
+	REG_S390X_R14 = s390x.REG_R14
+	REG_S390X_R15 = s390x.REG_R15
+)
+
+// s390x floating-point registers (F0..F15).
+const (
+	REG_S390X_F0  = s390x.REG_F0
+	REG_S390X_F1  = s390x.REG_F1
+	REG_S390X_F2  = s390x.REG_F2
+	REG_S390X_F3  = s390x.REG_F3
+	REG_S390X_F4  = s390x.REG_F4
+	REG_S390X_F5  = s390x.REG_F5
+	REG_S390X_F6  = s390x.REG_F6
+	REG_S390X_F7  = s390x.REG_F7
+	REG_S390X_F8  = s390x.REG_F8
+	REG_S390X_F9  = s390x.REG_F9
+	REG_S390X_F10 = s390x.REG_F10
+	REG_S390X_F11 = s390x.REG_F11
+	REG_S390X_F12 = s390x.REG_F12
+	REG_S390X_F13 = s390x.REG_F13
+	REG_S390X_F14 = s390x.REG_F14
+	REG_S390X_F15 = s390x.REG_F15
+)
+
+// s390x vector registers (V0..V31; V0..V15 alias F0..F15).
+const (
+	REG_S390X_V0  = s390x.REG_V0
+	REG_S390X_V1  = s390x.REG_V1
+	REG_S390X_V2  = s390x.REG_V2
+	REG_S390X_V3  = s390x.REG_V3
+	REG_S390X_V4  = s390x.REG_V4
+	REG_S390X_V5  = s390x.REG_V5
+	REG_S390X_V6  = s390x.REG_V6
+	REG_S390X_V7  = s390x.REG_V7
+	REG_S390X_V8  = s390x.REG_V8
+	REG_S390X_V9  = s390x.REG_V9
+	REG_S390X_V10 = s390x.REG_V10
+	REG_S390X_V11 = s390x.REG_V11
+	REG_S390X_V12 = s390x.REG_V12
+	REG_S390X_V13 = s390x.REG_V13
+	REG_S390X_V14 = s390x.REG_V14
+	REG_S390X_V15 = s390x.REG_V15
+	REG_S390X_V16 = s390x.REG_V16
+	REG_S390X_V17 = s390x.REG_V17
+	REG_S390X_V18 = s390x.REG_V18
+	REG_S390X_V19 = s390x.REG_V19
+	REG_S390X_V20 = s390x.REG_V20
+	REG_S390X_V21 = s390x.REG_V21
+	REG_S390X_V22 = s390x.REG_V22
+	REG_S390X_V23 = s390x.REG_V23
+	REG_S390X_V24 = s390x.REG_V24
+	REG_S390X_V25 = s390x.REG_V25
+	REG_S390X_V26 = s390x.REG_V26
+	REG_S390X_V27 = s390x.REG_V27
+	REG_S390X_V28 = s390x.REG_V28
+	REG_S390X_V29 = s390x.REG_V29
+	REG_S390X_V30 = s390x.REG_V30
+	REG_S390X_V31 = s390x.REG_V31
+)
+
+// ── WebAssembly ───────────────────────────────────────────────────────────────
+
+// Wasm virtual registers.
+const (
+	REG_WASM_SP    = wasm.REG_SP    // stack pointer (32-bit until 64-bit memory ops available)
+	REG_WASM_CTXT  = wasm.REG_CTXT // context pointer
+	REG_WASM_G     = wasm.REG_g    // goroutine pointer
+	REG_WASM_RET0  = wasm.REG_RET0 // return value 0
+	REG_WASM_RET1  = wasm.REG_RET1
+	REG_WASM_RET2  = wasm.REG_RET2
+	REG_WASM_RET3  = wasm.REG_RET3
+	REG_WASM_PAUSE = wasm.REG_PAUSE
+)
+
+// Wasm integer scratch registers.
+const (
+	REG_WASM_R0  = wasm.REG_R0
+	REG_WASM_R1  = wasm.REG_R1
+	REG_WASM_R2  = wasm.REG_R2
+	REG_WASM_R3  = wasm.REG_R3
+	REG_WASM_R4  = wasm.REG_R4
+	REG_WASM_R5  = wasm.REG_R5
+	REG_WASM_R6  = wasm.REG_R6
+	REG_WASM_R7  = wasm.REG_R7
+	REG_WASM_R8  = wasm.REG_R8
+	REG_WASM_R9  = wasm.REG_R9
+	REG_WASM_R10 = wasm.REG_R10
+	REG_WASM_R11 = wasm.REG_R11
+	REG_WASM_R12 = wasm.REG_R12
+	REG_WASM_R13 = wasm.REG_R13
+	REG_WASM_R14 = wasm.REG_R14
+	REG_WASM_R15 = wasm.REG_R15
+)
+
+// Wasm FP registers.
+const (
+	REG_WASM_F0  = wasm.REG_F0
+	REG_WASM_F1  = wasm.REG_F1
+	REG_WASM_F2  = wasm.REG_F2
+	REG_WASM_F3  = wasm.REG_F3
+	REG_WASM_F4  = wasm.REG_F4
+	REG_WASM_F5  = wasm.REG_F5
+	REG_WASM_F6  = wasm.REG_F6
+	REG_WASM_F7  = wasm.REG_F7
+	REG_WASM_F8  = wasm.REG_F8
+	REG_WASM_F9  = wasm.REG_F9
+	REG_WASM_F10 = wasm.REG_F10
+	REG_WASM_F11 = wasm.REG_F11
+	REG_WASM_F12 = wasm.REG_F12
+	REG_WASM_F13 = wasm.REG_F13
+	REG_WASM_F14 = wasm.REG_F14
+	REG_WASM_F15 = wasm.REG_F15
+)
