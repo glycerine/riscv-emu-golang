@@ -424,7 +424,7 @@ test:
 
 clean:
 	@echo "── cleaning ────────────────────────────────────────────────────"
-	rm -rf $(VENDOR) $(GUEST_ELF) $(RESULTS_DIR)
+	rm -rf $(BUILD) $(GUEST_ELF) $(RESULTS_DIR)
 	@echo "  ✓ done"
 
 # ── fuzz oracle targets (fuzzoracle package, CGO always on) ───────────────
