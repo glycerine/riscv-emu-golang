@@ -3,3 +3,4 @@ bench/libriscv_guest/bench_guest.elf
 riscv.test
 vendor/tcc/libtcc.o
 next_plan.md
+bench.test
