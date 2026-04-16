@@ -14,7 +14,7 @@
  */
 
 #include <stdint.h>
-#include <stdlib.h>
+/*include <stdlib.h>*/
 
 /* ── syscall exit (used directly so we don't need stdio) ─────────────────── */
 
@@ -85,4 +85,15 @@ int main(void) {
     (void)primes;
 
     do_exit(0);
+    return 0;
 }
+
+/* freestanding! (no C stdlib) Define the entry point the linker looks for */
+void _start(void) {
+    /* Call your logic */
+    main();
+    
+    /* Ensure we never return, as there is no OS to return to */
+    do_exit(0);
+}
+
