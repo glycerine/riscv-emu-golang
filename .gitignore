@@ -4,3 +4,6 @@ riscv.test
 vendor/tcc/libtcc.o
 next_plan.md
 bench.test
+cpu.prof
+mem.prof
+*test
