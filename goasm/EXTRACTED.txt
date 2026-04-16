@@ -1,1 +1,5 @@
-Extracted goasm from Go go version go1.26.2 darwin/amd64 on Thu Apr 16 16:23:34 -03 2026
+go_version:   go1.26.2
+go_root:      /usr/local/go
+host_goos:    darwin
+host_goarch:  amd64
+extracted_at: 2026-04-16T19:23:34Z

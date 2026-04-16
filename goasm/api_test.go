@@ -359,6 +359,289 @@ func TestAMD64_MOVQ_load_store(t *testing.T) {
 	assertBytes(t, got, want)
 }
 
+// TestAMD64_MOVABS_const — Issue 11: 64-bit immediate that does not fit
+// in sign-extended 32 bits forces the 10-byte MOVABS encoding (REX.W +
+// opcode B8+r + imm64). Required for RISC-V LUI+ADDI sequences whose
+// combined value overflows int32.
+func TestAMD64_MOVABS_const(t *testing.T) {
+	c := amd64Ctx(t)
+	c.Append(immReg(c, x86.AMOVQ, 0x123456789ABCDEF, x86.REG_AX))
+	c.Append(c.NewRET())
+	got, err := c.Assemble()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []byte{
+		0x48, 0xB8, 0xEF, 0xCD, 0xAB, 0x89, 0x67, 0x45, 0x23, 0x01, // MOVQ $0x123456789ABCDEF, AX
+		0xC3, // RET
+	}
+	assertBytes(t, got, want)
+}
+
+// TestAMD64_MOVQ_load_disp32 — Issue 11: large memory displacement
+// (>127) forces ModR/M disp32 form. Mirrors RV LD with 32-bit offsets.
+func TestAMD64_MOVQ_load_disp32(t *testing.T) {
+	c := amd64Ctx(t)
+	c.Append(memLoad(c, x86.AMOVQ, x86.REG_BX, 0x10000, x86.REG_AX))
+	c.Append(c.NewRET())
+	got, err := c.Assemble()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []byte{
+		0x48, 0x8B, 0x83, 0x00, 0x00, 0x01, 0x00, // MOVQ 0x10000(BX), AX
+		0xC3, // RET
+	}
+	assertBytes(t, got, want)
+}
+
+// TestAMD64_MOVQ_store_reg — Issue 11: register→memory store.
+// memStoreImm covers the const→memory case; this covers reg→memory,
+// which is what the JIT will emit for RV SD.
+func TestAMD64_MOVQ_store_reg(t *testing.T) {
+	c := amd64Ctx(t)
+	p := c.NewProg()
+	p.As = x86.AMOVQ
+	p.From.Type = obj.TYPE_REG
+	p.From.Reg = x86.REG_AX
+	p.To.Type = obj.TYPE_MEM
+	p.To.Reg = x86.REG_BX
+	p.To.Offset = 8
+	c.Append(p)
+	c.Append(c.NewRET())
+	got, err := c.Assemble()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []byte{
+		0x48, 0x89, 0x43, 0x08, // MOVQ AX, 8(BX)
+		0xC3, // RET
+	}
+	assertBytes(t, got, want)
+}
+
+// TestAMD64_SHLQ_CL — Issue 11: variable-amount shift uses CL implicitly
+// (D3 /4). Required for RV SLL / SRL where the shift amount is in a
+// register, not an immediate.
+func TestAMD64_SHLQ_CL(t *testing.T) {
+	c := amd64Ctx(t)
+	c.Append(regReg(c, x86.ASHLQ, x86.REG_CX, x86.REG_AX))
+	c.Append(c.NewRET())
+	got, err := c.Assemble()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []byte{
+		0x48, 0xD3, 0xE0, // SHLQ CL, AX
+		0xC3,             // RET
+	}
+	assertBytes(t, got, want)
+}
+
+// TestAMD64_MULQ — Issue 11: single-operand unsigned multiply (F7 /4).
+// MULQ BX computes RDX:RAX = RAX * RBX. Required for RV MULHU.
+func TestAMD64_MULQ(t *testing.T) {
+	c := amd64Ctx(t)
+	c.Append(immReg(c, x86.AMOVQ, 7, x86.REG_AX))
+	c.Append(immReg(c, x86.AMOVQ, 6, x86.REG_BX))
+	p := c.NewProg()
+	p.As = x86.AMULQ
+	p.To.Type = obj.TYPE_REG
+	p.To.Reg = x86.REG_BX
+	c.Append(p)
+	c.Append(c.NewRET())
+	got, err := c.Assemble()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []byte{
+		0x48, 0xC7, 0xC0, 0x07, 0x00, 0x00, 0x00, // MOVQ $7, AX
+		0x48, 0xC7, 0xC3, 0x06, 0x00, 0x00, 0x00, // MOVQ $6, BX
+		0x48, 0xF7, 0xE3,                         // MULQ BX
+		0xC3,                                     // RET
+	}
+	assertBytes(t, got, want)
+}
+
+// TestAMD64_IDIVQ — Issue 11: signed divide RDX:RAX by r/m64 (F7 /7).
+// Required for RV DIV. Test sets up DX:AX = 0:42, divides by 7.
+func TestAMD64_IDIVQ(t *testing.T) {
+	c := amd64Ctx(t)
+	c.Append(immReg(c, x86.AMOVQ, 0, x86.REG_DX))
+	c.Append(immReg(c, x86.AMOVQ, 42, x86.REG_AX))
+	c.Append(immReg(c, x86.AMOVQ, 7, x86.REG_BX))
+	p := c.NewProg()
+	p.As = x86.AIDIVQ
+	p.To.Type = obj.TYPE_REG
+	p.To.Reg = x86.REG_BX
+	c.Append(p)
+	c.Append(c.NewRET())
+	got, err := c.Assemble()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []byte{
+		0x48, 0xC7, 0xC2, 0x00, 0x00, 0x00, 0x00, // MOVQ $0, DX
+		0x48, 0xC7, 0xC0, 0x2A, 0x00, 0x00, 0x00, // MOVQ $42, AX
+		0x48, 0xC7, 0xC3, 0x07, 0x00, 0x00, 0x00, // MOVQ $7, BX
+		0x48, 0xF7, 0xFB,                         // IDIVQ BX
+		0xC3,                                     // RET
+	}
+	assertBytes(t, got, want)
+}
+
+// TestAMD64_JEQ_forward — Issue 11: short-form conditional jump
+// (74 imm8). Locks in the condition encoding for RV BEQ / BNE.
+func TestAMD64_JEQ_forward(t *testing.T) {
+	c := amd64Ctx(t)
+	c.Append(regReg(c, x86.ACMPQ, x86.REG_AX, x86.REG_BX))
+	jeq := c.NewProg()
+	jeq.As = x86.AJEQ
+	jeq.To.Type = obj.TYPE_BRANCH
+	c.Append(jeq)
+	c.Append(immReg(c, x86.AMOVQ, 1, x86.REG_AX))
+	done := c.NewRET()
+	jeq.To.SetTarget(done)
+	c.Append(done)
+	got, err := c.Assemble()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []byte{
+		0x48, 0x39, 0xC3,                         // CMPQ AX, BX
+		0x74, 0x07,                               // JE +7 (skip MOVQ)
+		0x48, 0xC7, 0xC0, 0x01, 0x00, 0x00, 0x00, // MOVQ $1, AX
+		0xC3,                                     // RET
+	}
+	assertBytes(t, got, want)
+}
+
+// TestAMD64_JNE_backward — Issue 11: backward conditional jump.
+// Pattern is the canonical loop body the RV JIT will emit.
+func TestAMD64_JNE_backward(t *testing.T) {
+	c := amd64Ctx(t)
+	target := immReg(c, x86.AMOVQ, 0, x86.REG_AX)
+	c.Append(target)
+	c.Append(regReg(c, x86.ACMPQ, x86.REG_AX, x86.REG_BX))
+	jne := c.NewProg()
+	jne.As = x86.AJNE
+	jne.To.Type = obj.TYPE_BRANCH
+	jne.To.SetTarget(target)
+	c.Append(jne)
+	c.Append(c.NewRET())
+	got, err := c.Assemble()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []byte{
+		0x48, 0xC7, 0xC0, 0x00, 0x00, 0x00, 0x00, // MOVQ $0, AX (target)
+		0x48, 0x39, 0xD8,                         // CMPQ AX, BX
+		0x75, 0xF4,                               // JNE -12 (back to target)
+		0xC3,                                     // RET
+	}
+	assertBytes(t, got, want)
+}
+
+// TestAMD64_MOVL_zeroext — Issue 11: 32-bit MOV implicitly zeros the
+// upper 32 bits. Required to model RV ADDIW / SLLIW correctly.
+func TestAMD64_MOVL_zeroext(t *testing.T) {
+	c := amd64Ctx(t)
+	c.Append(regReg(c, x86.AMOVL, x86.REG_AX, x86.REG_AX))
+	c.Append(c.NewRET())
+	got, err := c.Assemble()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []byte{
+		0x89, 0xC0, // MOVL AX, AX (zero-extends EAX into RAX)
+		0xC3,       // RET
+	}
+	assertBytes(t, got, want)
+}
+
+// TestAMD64_MOVBQSX — Issue 11: byte → 64-bit sign-extending move.
+// Required for RV LB.
+func TestAMD64_MOVBQSX(t *testing.T) {
+	c := amd64Ctx(t)
+	c.Append(regReg(c, x86.AMOVBQSX, x86.REG_AL, x86.REG_AX))
+	c.Append(c.NewRET())
+	got, err := c.Assemble()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []byte{
+		0x48, 0x0F, 0xBE, 0xC0, // MOVBQSX AL, AX
+		0xC3,                   // RET
+	}
+	assertBytes(t, got, want)
+}
+
+// ─── AMD64 SSE / SSE2 byte tests ──────────────────────────────────────────────
+
+// TestAMD64_MOVSD_load — Issue 11: scalar f64 load. Required for RV FLD.
+func TestAMD64_MOVSD_load(t *testing.T) {
+	c := amd64Ctx(t)
+	c.Append(memLoad(c, x86.AMOVSD, x86.REG_BX, 0, x86.REG_X0))
+	c.Append(c.NewRET())
+	got, err := c.Assemble()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []byte{
+		0xF2, 0x0F, 0x10, 0x03, // MOVSD 0(BX), X0
+		0xC3,                   // RET
+	}
+	assertBytes(t, got, want)
+}
+
+// TestAMD64_ADDSD — Issue 11: scalar f64 add. Required for RV FADD.D.
+func TestAMD64_ADDSD(t *testing.T) {
+	c := amd64Ctx(t)
+	c.Append(regReg(c, x86.AADDSD, x86.REG_X1, x86.REG_X0))
+	c.Append(c.NewRET())
+	got, err := c.Assemble()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []byte{
+		0xF2, 0x0F, 0x58, 0xC1, // ADDSD X1, X0
+		0xC3,                   // RET
+	}
+	assertBytes(t, got, want)
+}
+
+// TestAMD64_MULSD — Issue 11: scalar f64 multiply. Required for RV FMUL.D.
+func TestAMD64_MULSD(t *testing.T) {
+	c := amd64Ctx(t)
+	c.Append(regReg(c, x86.AMULSD, x86.REG_X1, x86.REG_X0))
+	c.Append(c.NewRET())
+	got, err := c.Assemble()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []byte{
+		0xF2, 0x0F, 0x59, 0xC1, // MULSD X1, X0
+		0xC3,                   // RET
+	}
+	assertBytes(t, got, want)
+}
+
+// TestAMD64_SQRTSD — Issue 11: scalar f64 sqrt. Required for RV FSQRT.D.
+func TestAMD64_SQRTSD(t *testing.T) {
+	c := amd64Ctx(t)
+	c.Append(regReg(c, x86.ASQRTSD, x86.REG_X0, x86.REG_X0))
+	c.Append(c.NewRET())
+	got, err := c.Assemble()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []byte{
+		0xF2, 0x0F, 0x51, 0xC0, // SQRTSD X0, X0
+		0xC3,                   // RET
+	}
+	assertBytes(t, got, want)
+}
+
 // ─── ARM64 byte tests ─────────────────────────────────────────────────────────
 // Expected bytes verified via:
 //   GOARCH=arm64 GOOS=linux go tool asm -o /tmp/t.o /tmp/t.s
@@ -805,6 +1088,48 @@ func TestConcurrentNew(t *testing.T) {
 	close(errs)
 	for err := range errs {
 		t.Errorf("concurrent Assemble: %v", err)
+	}
+}
+
+// TestArchTablesInitOnce — Issue 22: a second goasm.New for the same
+// arch (and a Reset cycle) must not re-run instinit / buildop in a way
+// that yields "phase error in optab" diags. We assert: no errors, and
+// identical bytes from three independent encodings of the same prog
+// list.
+func TestArchTablesInitOnce(t *testing.T) {
+	encode := func() []byte {
+		c := goasm.New(goasm.AMD64)
+		c.Append(c.NewATEXT())
+		c.Append(immReg(c, x86.AMOVQ, 1, x86.REG_AX))
+		c.Append(c.NewRET())
+		b, err := c.Assemble()
+		if err != nil {
+			t.Fatalf("Assemble: %v", err)
+		}
+		return b
+	}
+
+	a := encode()
+	b := encode()
+
+	c := goasm.New(goasm.AMD64)
+	c.Append(c.NewATEXT())
+	c.Append(immReg(c, x86.AMOVQ, 1, x86.REG_AX))
+	c.Append(c.NewRET())
+	if _, err := c.Assemble(); err != nil {
+		t.Fatalf("third Assemble: %v", err)
+	}
+	c.Reset()
+	c.Append(c.NewATEXT())
+	c.Append(immReg(c, x86.AMOVQ, 1, x86.REG_AX))
+	c.Append(c.NewRET())
+	d, err := c.Assemble()
+	if err != nil {
+		t.Fatalf("post-reset Assemble: %v", err)
+	}
+
+	if !bytes.Equal(a, b) || !bytes.Equal(a, d) {
+		t.Errorf("inconsistent bytes across encodings:\n  a=%X\n  b=%X\n  d=%X", a, b, d)
 	}
 }
 

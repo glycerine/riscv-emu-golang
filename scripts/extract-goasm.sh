@@ -151,7 +151,15 @@ done
 
 # Preserve Go's BSD-3-Clause license.
 cp "$GOROOT/LICENSE" "$DEST/LICENSE"
-echo "Extracted goasm from Go $(go version) on $(date)" > "$DEST/EXTRACTED.txt"
+
+# Structured key:value provenance, parseable by future extraction tooling.
+{
+    echo "go_version:   $(go env GOVERSION)"
+    echo "go_root:      $(go env GOROOT)"
+    echo "host_goos:    $(go env GOOS)"
+    echo "host_goarch:  $(go env GOARCH)"
+    echo "extracted_at: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+} > "$DEST/EXTRACTED.txt"
 
 echo ""
 echo "Done. Next:"
