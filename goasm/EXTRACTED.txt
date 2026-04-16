@@ -1,1 +1,1 @@
-Extracted goasm from Go go version go1.26.2 darwin/amd64 on Thu Apr 16 16:07:39 -03 2026
+Extracted goasm from Go go version go1.26.2 darwin/amd64 on Thu Apr 16 16:23:34 -03 2026

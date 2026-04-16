@@ -169,12 +169,25 @@ func Flushplist(ctxt *Link, plist *Plist, newprog ProgAlloc) {
 		if ctxt.Errors > 0 {
 			continue
 		}
-		linkpcln(ctxt, s)
-		ctxt.populateDWARF(plist.Curfn, s)
 		if ctxt.Headtype == objabi.Hwindows && ctxt.Arch.SEH != nil {
 			s.Func().sehUnwindInfoSym = ctxt.Arch.SEH(ctxt, s)
 		}
 	}
+}
+
+// AssembleBlock is a stripped-down Flushplist that encodes a single text
+// symbol to native bytes (sym.P) without DWARF, PCLN, or SEH.
+//
+// The Prog chain must begin with an ATEXT Prog so that Preprocess sets
+// sym.Func().Text correctly. Call InitTextSym first to initialize FuncInfo.
+func AssembleBlock(ctxt *Link, sym *LSym, newprog ProgAlloc) {
+	if ctxt.Arch.ErrorCheck != nil {
+		ctxt.Arch.ErrorCheck(ctxt, sym)
+	}
+	mkfwd(sym)
+	linkpatch(ctxt, sym, newprog)
+	ctxt.Arch.Preprocess(ctxt, sym, newprog)
+	ctxt.Arch.Assemble(ctxt, sym, newprog)
 }
 
 func (ctxt *Link) InitTextSym(s *LSym, flag int, start src.XPos) {
@@ -213,11 +226,7 @@ func (ctxt *Link) InitTextSym(s *LSym, flag int, start src.XPos) {
 	s.Set(AttrNoFrame, flag&NOFRAME != 0)
 	s.Set(AttrPkgInit, flag&PKGINIT != 0)
 	s.Type = objabi.STEXT
-	s.setFIPSType(ctxt)
 	ctxt.Text = append(ctxt.Text, s)
-
-	// Set up DWARF entries for s
-	ctxt.dwarfSym(s)
 }
 
 func (ctxt *Link) toFuncFlag(flag int) abi.FuncFlag {
@@ -259,7 +268,6 @@ func (ctxt *Link) GloblPos(s *LSym, size int64, flag int, pos src.XPos) {
 	} else if flag&TLSBSS != 0 {
 		s.Type = objabi.STLSBSS
 	}
-	s.setFIPSType(ctxt)
 }
 
 // EmitEntryLiveness generates PCDATA Progs after p to switch to the

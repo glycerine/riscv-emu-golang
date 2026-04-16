@@ -94,3 +94,8 @@ make mem                      # memory profile
 ### ignore the plans/ sub-folder.
 
 These are user's archives and not for CLAUDE.
+
+### goasm assembler targets
+
+goasm/ is an extraction of the Go assembler backend. All targets
+must be preserved.

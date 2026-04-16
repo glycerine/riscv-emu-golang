@@ -33,8 +33,6 @@ package obj
 import (
 	"bufio"
 	"bytes"
-	"cmd/internal/dwarf"
-	"cmd/internal/goobj"
 	"riscv/goasm/objabi"
 	"riscv/goasm/src"
 	"riscv/goasm/sys"
@@ -1114,7 +1112,7 @@ type Pcln struct {
 	Pcinline  *LSym
 	Pcdata    []*LSym
 	Funcdata  []*LSym
-	UsedFiles map[goobj.CUFileIndex]struct{} // file indices used while generating pcfile
+	UsedFiles map[uint32]struct{} // file indices used while generating pcfile
 	InlTree   InlTree                        // per-function inlining tree extracted from the global tree
 }
 
@@ -1176,12 +1174,8 @@ type Link struct {
 	statichash           map[string]*LSym // name -> sym mapping for static syms
 	PosTable             src.PosTable
 	InlTree              InlTree // global inlining tree used by gc/inl.go
-	DwFixups             *DwarfFixupTable
-	DwTextCount          int
-	Imports              []goobj.ImportedPkg
 	DiagFunc             func(string, ...any)
 	DiagFlush            func()
-	DebugInfo            func(ctxt *Link, fn *LSym, info *LSym, curfn Func) ([]dwarf.Scope, dwarf.InlCalls)
 	GenAbstractFunc      func(fn *LSym)
 	Errors               int
 
@@ -1214,7 +1208,6 @@ type Link struct {
 	nonpkgdefs   []*LSym // list of defined non-package symbols
 	nonpkgrefs   []*LSym // list of referenced non-package symbols
 
-	Fingerprint goobj.FingerprintType // fingerprint of symbol indices, to catch index mismatch
 }
 
 // Assert to vet's printf checker that Link.DiagFunc is a printf-like.

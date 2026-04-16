@@ -5,14 +5,8 @@
 package obj
 
 import (
-	"cmd/internal/goobj"
 	"riscv/goasm/src"
 )
-
-// AddImport adds a package to the list of imported packages.
-func (ctxt *Link) AddImport(pkg string, fingerprint goobj.FingerprintType) {
-	ctxt.Imports = append(ctxt.Imports, goobj.ImportedPkg{Pkg: pkg, Fingerprint: fingerprint})
-}
 
 // getFileIndexAndLine returns the relative file index (local to the CU), and
 // the relative line number for a position (i.e., as adjusted by a //line
