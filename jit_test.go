@@ -1,9 +1,6 @@
 package riscv
 
-import (
-	"fmt"
-	"testing"
-)
+import "testing"
 
 // ── Instruction encoding helpers ─────────────────────────────────────────
 
@@ -941,5 +938,4 @@ func TestJIT_FaultAddress(t *testing.T) {
 		t.Fatal("expected load fault")
 	}
 	t.Logf("fault addr = 0x%x", faultAddr)
-	_ = fmt.Sprintf("") // use fmt
 }

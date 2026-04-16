@@ -23,8 +23,12 @@
 //   R8  = memBase
 //   R9  = memMask
 //
-// Local frame: 32 (sret area) + 48 (6 callee-saved regs) = 80 bytes.
-TEXT ·Call(SB), NOSPLIT, $80-80
+// Local frame: 768 bytes. Must be large enough for TCC-compiled code's
+// stack frame (up to 32 uint64_t locals = 256 bytes plus temporaries).
+// NOSPLIT limit is 792, so 768 is the practical maximum.
+// The sret buffer occupies bytes [0,32), callee-saved regs at [32,80).
+// TCC code uses the remainder via RSP after its own prologue.
+TEXT ·Call(SB), NOSPLIT, $768-80
 
 	// Save callee-saved registers that TCC-compiled code may clobber.
 	MOVQ	BX,  32(SP)

@@ -388,6 +388,9 @@ func runLockstep(t *testing.T, elfPath string) {
 	interpCPU := NewCPU(*interpMem)
 	interpCPU.SetPC(interpEntry)
 
+	t.Logf("jitMem base=%#x interpMem base=%#x size=%#x",
+		jitMem.Base(), interpMem.Base(), jitMem.Size())
+
 	jit := NewJIT()
 	maxCycles := uint64(10_000_000)
 	blockNum := 0
@@ -398,15 +401,8 @@ func runLockstep(t *testing.T, elfPath string) {
 				blockNum, jitCPU.pc, interpCPU.pc)
 		}
 
-		startPC := jitCPU.pc
-
 		// JIT: one dispatch cycle
 		jitIC, jitErr := jit.StepBlock(jitCPU)
-
-		if blockNum < 5 {
-			t.Logf("block %d: startPC=0x%x jitIC=%d jitPC=0x%x jitErr=%v",
-				blockNum, startPC, jitIC, jitCPU.pc, jitErr)
-		}
 
 		// Interpreter: same number of instructions
 		var interpErr error

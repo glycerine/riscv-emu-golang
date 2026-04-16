@@ -10,7 +10,15 @@ package riscv
 #include <libtcc.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <math.h>
+
+// jit_trace — callable from TCC-compiled blocks for debugging.
+// Prints a label, an address, and a value to stderr.
+static void jit_trace(const char *label, uint64_t addr, uint64_t val) {
+    fprintf(stderr, "[JIT] %s addr=0x%llx val=0x%llx\n",
+        label, (unsigned long long)addr, (unsigned long long)val);
+}
 
 // compile_block compiles C source to native code in memory.
 // Returns the function pointer for "block_entry", or NULL on error.
@@ -30,6 +38,8 @@ static void* compile_block(const char *csrc, TCCState **out_state) {
     // Inject math symbols for FP JIT blocks (sqrtf/sqrt from libm).
     tcc_add_symbol(s, "jit_sqrtf", sqrtf);
     tcc_add_symbol(s, "jit_sqrt", sqrt);
+    // Inject debug tracing function.
+    tcc_add_symbol(s, "jit_trace", jit_trace);
 
     if (tcc_relocate(s) < 0) {
         tcc_delete(s);

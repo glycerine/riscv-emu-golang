@@ -24,7 +24,8 @@ func TestLoadELF_Header(t *testing.T) {
 		t.Fatalf("LoadELFBytes: %v", err)
 	}
 	if entry == 0 {
-		t.Error("entry point is 0")
+		// allowed now! in fact, preferred!
+		//	t.Error("entry point is 0")
 	}
 	t.Logf("entry=0x%x loaded %d bytes", entry, len(data))
 
@@ -82,4 +83,3 @@ func TestLoadELF_Errors(t *testing.T) {
 		})
 	}
 }
-

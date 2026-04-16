@@ -235,6 +235,9 @@ type emitter struct {
 	// FP / extension flags — control conditional header emission
 	usesFP         bool // any FP instruction emitted
 	usesZbbHelpers bool // CLZ/CTZ/CPOP emitted (need inline helpers)
+	// icEmitted is set by emitBranch to indicate it already emitted ic++.
+	// advancePC checks this to avoid double-counting.
+	icEmitted bool
 }
 
 // ── C source generation helpers ─────────────────────────────────────────
@@ -267,12 +270,6 @@ func (e *emitter) emitIC() {
 	e.emit("    ic++;\n")
 }
 
-// bail terminates the block before the current instruction.
-// Undoes the premature ic++ from emitIC and sets terminated.
-func (e *emitter) bail() {
-	e.emit("    ic--;\n")
-	e.terminated = true
-}
 
 // emitWriteBack emits code to write back all cached registers and return.
 func (e *emitter) emitReturn(pc uint64, status int) {
@@ -293,10 +290,17 @@ func (e *emitter) emitWriteBackAll() {
 	}
 }
 
-// advancePC moves to the next instruction.
+// advancePC marks an instruction as consumed and moves to the next PC.
+// Emits ic++ in the generated C so the instruction count stays accurate,
+// unless emitBranch already emitted ic++ (indicated by icEmitted flag).
 func (e *emitter) advancePC(size uint64) {
 	e.numInsns++
 	e.pc += size
+	if e.icEmitted {
+		e.icEmitted = false // consumed
+	} else {
+		e.emit("    ic++;\n")
+	}
 }
 
 // ── 32-bit instruction emitter ──────────────────────────────────────────
@@ -313,7 +317,6 @@ func (e *emitter) emit32(insn uint32) {
 	iimm := int64(int32(insn)) >> 20
 
 	e.emitLabel()
-	e.emitIC()
 
 	switch opcode {
 	// ── LUI ──────────────────────────────────────────────────────────
@@ -351,7 +354,7 @@ func (e *emitter) emit32(insn uint32) {
 			break
 		}
 		e.emitBranch(rs1, rs2, funct3, bimm)
-		e.advancePC(4)
+		e.advancePC(4) // icEmitted flag prevents double ic++
 
 	// ── LOAD ─────────────────────────────────────────────────────────
 	case 0x03:
@@ -434,12 +437,12 @@ func (e *emitter) emit32(insn uint32) {
 			e.terminated = true
 		default:
 			// CSR or unknown — end block before this instruction.
-			e.bail()
+			e.terminated = true
 		}
 
 	default:
 		// Unknown opcode — end block before this instruction.
-		e.bail()
+		e.terminated = true
 	}
 }
 
@@ -491,10 +494,10 @@ func (e *emitter) emitOpImm(rd, rs1 uint32, imm int64, funct3, funct7 uint32) {
 			case 0x23: // SEXT.H (rs2 field = 0x23)
 				e.emit("    %s = (int64_t)(int16_t)%s;\n", d, s)
 			default:
-				e.bail()
+				e.terminated = true
 			}
 		default:
-			e.bail()
+			e.terminated = true
 		}
 	case 2: // SLTI
 		e.emit("    %s = ((int64_t)%s < %dLL) ? 1 : 0;\n", d, s, imm)
@@ -525,7 +528,7 @@ func (e *emitter) emitOpImm(rd, rs1 uint32, imm int64, funct3, funct7 uint32) {
 		case 0x02: // ZEXT.H
 			e.emit("    %s = %s & 0xFFFFULL;\n", d, s)
 		default:
-			e.bail()
+			e.terminated = true
 		}
 	case 6: // ORI
 		e.emit("    %s = %s | %dLL;\n", d, s, imm)
@@ -571,10 +574,10 @@ func (e *emitter) emitOpImm32(rd, rs1 uint32, imm int64, funct3, funct7 uint32) 
 			e.emit("    { uint32_t a_ = (uint32_t)%s; %s = (int64_t)(int32_t)((a_ >> %d) | (a_ << %d)); }\n",
 				s, d, shamt, 32-shamt)
 		default:
-			e.bail()
+			e.terminated = true
 		}
 	default:
-		e.bail()
+		e.terminated = true
 	}
 }
 
@@ -656,7 +659,7 @@ func (e *emitter) emitOp(rd, rs1, rs2, funct3, funct7 uint32) {
 			e.emit("    %s = (%s > %s) ? %s : %s;\n", d, a, b, a, b) // MAXU
 		default:
 			// CLMUL etc. — bail to interpreter
-			e.bail()
+			e.terminated = true
 		}
 	case 0x07: // Zicond
 		switch funct3 {
@@ -665,7 +668,7 @@ func (e *emitter) emitOp(rd, rs1, rs2, funct3, funct7 uint32) {
 		case 7:
 			e.emit("    %s = (%s != 0) ? 0 : %s;\n", d, b, a) // CZERO.NEZ
 		default:
-			e.bail()
+			e.terminated = true
 		}
 	case 0x10: // Zba: SH1ADD/SH2ADD/SH3ADD
 		switch funct3 {
@@ -676,7 +679,7 @@ func (e *emitter) emitOp(rd, rs1, rs2, funct3, funct7 uint32) {
 		case 6:
 			e.emit("    %s = %s + (%s << 3);\n", d, b, a) // SH3ADD
 		default:
-			e.bail()
+			e.terminated = true
 		}
 	case 0x14: // Zbs: BSET / Zbb: ORC.B
 		switch funct3 {
@@ -687,7 +690,7 @@ func (e *emitter) emitOp(rd, rs1, rs2, funct3, funct7 uint32) {
 			e.emit("      v_ |= v_ << 1; v_ |= v_ << 2; v_ |= v_ << 4;\n")
 			e.emit("      %s = v_ & 0x0101010101010101ULL; %s *= 0xFF; }\n", d, d)
 		default:
-			e.bail()
+			e.terminated = true
 		}
 	case 0x24: // Zbs: BCLR/BEXT
 		switch funct3 {
@@ -696,7 +699,7 @@ func (e *emitter) emitOp(rd, rs1, rs2, funct3, funct7 uint32) {
 		case 5:
 			e.emit("    %s = (%s >> (%s & 63)) & 1;\n", d, a, b) // BEXT
 		default:
-			e.bail()
+			e.terminated = true
 		}
 	case 0x30: // Zbb: ROL/ROR
 		switch funct3 {
@@ -705,7 +708,7 @@ func (e *emitter) emitOp(rd, rs1, rs2, funct3, funct7 uint32) {
 		case 5: // ROR
 			e.emit("    { uint64_t s_ = %s & 63; %s = (%s >> s_) | (%s << (64-s_)); }\n", b, d, a, a)
 		default:
-			e.bail()
+			e.terminated = true
 		}
 	case 0x34: // Zbs: BINV
 		e.emit("    %s = %s ^ (1ULL << (%s & 63));\n", d, a, b)
@@ -724,11 +727,11 @@ func (e *emitter) emitOp(rd, rs1, rs2, funct3, funct7 uint32) {
 		case 2:
 			e.emit("    %s = jit_cpop64(%s);\n", d, a) // CPOP
 		default:
-			e.bail()
+			e.terminated = true
 		}
 	default:
 		// Unknown funct7 — bail
-		e.bail()
+		e.terminated = true
 	}
 }
 
@@ -785,7 +788,7 @@ func (e *emitter) emitOp32(rd, rs1, rs2, funct3, funct7 uint32) {
 		case 6:
 			e.emit("    %s = %s + ((uint64_t)(uint32_t)%s << 3);\n", d, b, a)
 		default:
-			e.bail()
+			e.terminated = true
 		}
 	case 0x30: // Zbb: ROLW/RORW
 		switch funct3 {
@@ -796,7 +799,7 @@ func (e *emitter) emitOp32(rd, rs1, rs2, funct3, funct7 uint32) {
 			e.emit("    { uint32_t s_ = (uint32_t)%s & 31; %s = (int64_t)(int32_t)(((uint32_t)%s >> s_) | ((uint32_t)%s << (32-s_))); }\n",
 				b, d, a, a)
 		default:
-			e.bail()
+			e.terminated = true
 		}
 	case 0x60: // Zbb: CLZW/CTZW/CPOPW
 		e.usesZbbHelpers = true
@@ -808,10 +811,10 @@ func (e *emitter) emitOp32(rd, rs1, rs2, funct3, funct7 uint32) {
 		case 2:
 			e.emit("    %s = jit_cpop32((uint32_t)%s);\n", d, a)
 		default:
-			e.bail()
+			e.terminated = true
 		}
 	default:
-		e.bail()
+		e.terminated = true
 	}
 }
 
@@ -820,7 +823,7 @@ func (e *emitter) emitOp32(rd, rs1, rs2, funct3, funct7 uint32) {
 func (e *emitter) emitLoad(rd, rs1 uint32, imm int64, funct3 uint32) {
 	width, ctype, signed_ := loadInfo(funct3)
 	if ctype == "" {
-		e.bail()
+		e.terminated = true
 		return
 	}
 
@@ -867,7 +870,7 @@ func loadInfo(funct3 uint32) (width uint64, ctype string, signed_ bool) {
 func (e *emitter) emitStore(rs1, rs2 uint32, imm int64, funct3 uint32) {
 	width, ctype := storeInfo(funct3)
 	if ctype == "" {
-		e.bail()
+		e.terminated = true
 		return
 	}
 
@@ -876,6 +879,7 @@ func (e *emitter) emitStore(rs1, rs2 uint32, imm int64, funct3 uint32) {
 		width-1, width-1)
 	e.emitWriteBackAll()
 	e.emit("        return (JITResult){0x%xULL, ic, %d, addr}; }\n", e.pc, jitStoreFault)
+	e.emit("      jit_trace(\"ST\", (uint64_t)(mem_base + (addr & mem_mask)), (uint64_t)(%s));\n", e.rsC(rs2, 0))
 	e.emit("      *(%s*)(mem_base + (addr & mem_mask)) = (%s)%s; }\n",
 		ctype, ctype, e.rs(rs2))
 }
@@ -905,7 +909,7 @@ func (e *emitter) emitFPLoad(rd, rs1 uint32, imm int64, funct3 uint32) {
 	case 3: // FLD
 		width = 8
 	default:
-		e.bail()
+		e.terminated = true
 		return
 	}
 	e.emit("    { uint64_t addr = %s + %dLL;\n", e.rs(rs1), imm)
@@ -931,7 +935,7 @@ func (e *emitter) emitFPStore(rs1, rs2 uint32, imm int64, funct3 uint32) {
 	case 3: // FSD
 		width = 8
 	default:
-		e.bail()
+		e.terminated = true
 		return
 	}
 	e.emit("    { uint64_t addr = %s + %dLL;\n", e.rs(rs1), imm)
@@ -951,7 +955,7 @@ func (e *emitter) emitFPStore(rs1, rs2 uint32, imm int64, funct3 uint32) {
 func (e *emitter) emitFMA(opcode, rd, rs1, rs2, rs3, fpfmt uint32) {
 	e.usesFP = true
 	if fpfmt > 1 {
-		e.bail()
+		e.terminated = true
 		return
 	}
 
@@ -989,7 +993,7 @@ func (e *emitter) emitFPOp(rd, rs1, rs2, funct3, funct5, fpfmt uint32) {
 	} else if fpfmt == 1 {
 		e.emitFPOpD(rd, rs1, rs2, funct3, funct5)
 	} else {
-		e.bail()
+		e.terminated = true
 	}
 }
 
@@ -1014,7 +1018,7 @@ func (e *emitter) emitFPOpS(rd, rs1, rs2, funct3, funct5 uint32) {
 		case 1:
 			e.emit("    wr_f32(f, %d, jit_fmaxf(rd_f32(f,%d), rd_f32(f,%d)));\n", rd, rs1, rs2)
 		default:
-			e.bail()
+			e.terminated = true
 		}
 	case 0x08: // FCVT.S.D (from double to single, fpfmt=0, rs2=1)
 		e.emit("    wr_f32(f, %d, (float)rd_f64(f,%d));\n", rd, rs1)
@@ -1031,12 +1035,12 @@ func (e *emitter) emitFPOpS(rd, rs1, rs2, funct3, funct5 uint32) {
 				e.emit("    %s = (int64_t)(int32_t)(uint32_t)f[%d];\n", e.rd(rd), rs1)
 			}
 		default: // FCLASS.S — bail
-			e.bail()
+			e.terminated = true
 		}
 	case 0x1E: // FMV.W.X
 		e.emit("    f[%d] = box_f32((uint32_t)%s);\n", rd, e.rs(rs1))
 	default:
-		e.bail()
+		e.terminated = true
 	}
 }
 
@@ -1061,7 +1065,7 @@ func (e *emitter) emitFPOpD(rd, rs1, rs2, funct3, funct5 uint32) {
 		case 1:
 			e.emit("    wr_f64(f, %d, jit_fmax(rd_f64(f,%d), rd_f64(f,%d)));\n", rd, rs1, rs2)
 		default:
-			e.bail()
+			e.terminated = true
 		}
 	case 0x08: // FCVT.D.S (from single to double, fpfmt=1, rs2=0)
 		e.emit("    wr_f64(f, %d, (double)rd_f32(f,%d));\n", rd, rs1)
@@ -1078,12 +1082,12 @@ func (e *emitter) emitFPOpD(rd, rs1, rs2, funct3, funct5 uint32) {
 				e.emit("    %s = f[%d];\n", e.rd(rd), rs1)
 			}
 		default: // FCLASS.D — bail
-			e.bail()
+			e.terminated = true
 		}
 	case 0x1E: // FMV.D.X
 		e.emit("    f[%d] = %s;\n", rd, e.rs(rs1))
 	default:
-		e.bail()
+		e.terminated = true
 	}
 }
 
@@ -1100,7 +1104,7 @@ func (e *emitter) emitFsgnjS(rd, rs1, rs2, funct3 uint32) {
 	case 2: // FSGNJX.S — XOR signs
 		e.emit("    f[%d] = box_f32(%s ^ (%s & 0x80000000u));\n", rd, s1, s2)
 	default:
-		e.bail()
+		e.terminated = true
 	}
 }
 
@@ -1113,7 +1117,7 @@ func (e *emitter) emitFsgnjD(rd, rs1, rs2, funct3 uint32) {
 	case 2: // FSGNJX.D
 		e.emit("    f[%d] = f[%d] ^ (f[%d] & 0x8000000000000000ULL);\n", rd, rs1, rs2)
 	default:
-		e.bail()
+		e.terminated = true
 	}
 }
 
@@ -1132,7 +1136,7 @@ func (e *emitter) emitFcmpS(rd, rs1, rs2, funct3 uint32) {
 	case 2: // FEQ.S
 		e.emit("    %s = (rd_f32(f,%d) == rd_f32(f,%d)) ? 1 : 0;\n", d, rs1, rs2)
 	default:
-		e.bail()
+		e.terminated = true
 	}
 }
 
@@ -1149,7 +1153,7 @@ func (e *emitter) emitFcmpD(rd, rs1, rs2, funct3 uint32) {
 	case 2: // FEQ.D
 		e.emit("    %s = (rd_f64(f,%d) == rd_f64(f,%d)) ? 1 : 0;\n", d, rs1, rs2)
 	default:
-		e.bail()
+		e.terminated = true
 	}
 }
 
@@ -1170,7 +1174,7 @@ func (e *emitter) emitFcvtToIntS(rd, rs1, rs2 uint32) {
 	case 3: // FCVT.LU.S
 		e.emit("    %s = (uint64_t)rd_f32(f,%d);\n", d, rs1)
 	default:
-		e.bail()
+		e.terminated = true
 	}
 }
 
@@ -1189,7 +1193,7 @@ func (e *emitter) emitFcvtToIntD(rd, rs1, rs2 uint32) {
 	case 3: // FCVT.LU.D
 		e.emit("    %s = (uint64_t)rd_f64(f,%d);\n", d, rs1)
 	default:
-		e.bail()
+		e.terminated = true
 	}
 }
 
@@ -1205,7 +1209,7 @@ func (e *emitter) emitFcvtFromIntS(rd, rs1, rs2 uint32) {
 	case 3: // FCVT.S.LU
 		e.emit("    wr_f32(f, %d, (float)%s);\n", rd, s)
 	default:
-		e.bail()
+		e.terminated = true
 	}
 }
 
@@ -1221,7 +1225,7 @@ func (e *emitter) emitFcvtFromIntD(rd, rs1, rs2 uint32) {
 	case 3: // FCVT.D.LU
 		e.emit("    wr_f64(f, %d, (double)%s);\n", rd, s)
 	default:
-		e.bail()
+		e.terminated = true
 	}
 }
 
@@ -1268,10 +1272,18 @@ func (e *emitter) emitJALR(rd, rs1 uint32, imm int64, insnSize uint64) {
 }
 
 // emitBranch emits a conditional branch (internal goto or external exit).
-// Does NOT call advancePC — the caller must do that.
+// Does NOT call advancePC — the caller must do that for the fall-through path.
+// Emits its own ic++ before the conditional because the caller's advancePC
+// (which also emits ic++) is unreachable on the taken path.
 func (e *emitter) emitBranch(rs1, rs2, funct3 uint32, offset int64) {
 	target := e.pc + uint64(offset)
 	cmp := branchCmp(funct3)
+
+	// ic++ for the branch instruction itself — must happen before the
+	// conditional so both taken and not-taken paths count it.
+	// Set icEmitted so the caller's advancePC doesn't double-count.
+	e.emitIC()
+	e.icEmitted = true
 
 	// Internal branch: target already emitted OR will be emitted (within region).
 	internal := e.visited[target] ||
@@ -1281,11 +1293,7 @@ func (e *emitter) emitBranch(rs1, rs2, funct3 uint32, offset int64) {
 			e.rsC(rs1, funct3), cmp, e.rsC(rs2, funct3), target)
 		e.gotoTargets[target] = true
 	} else {
-		// External branch — exit block.
-		// The fall-through return address is computed from e.pc AFTER the
-		// caller calls advancePC, which happens before finalize's
-		// fall-through return. For the taken path, we compute the target
-		// return address now (before advancePC).
+		// External branch — exit block on taken path.
 		e.emit("    if (%s %s %s) {\n",
 			e.rsC(rs1, funct3), cmp, e.rsC(rs2, funct3))
 		e.emitWriteBackAll()
@@ -1300,7 +1308,6 @@ func (e *emitter) emitBranch(rs1, rs2, funct3 uint32, offset int64) {
 
 func (e *emitter) emitRVC(insn uint16) {
 	e.emitLabel()
-	e.emitIC()
 
 	quad := insn & 0x3
 	funct3 := insn >> 13
@@ -1313,7 +1320,7 @@ func (e *emitter) emitRVC(insn uint16) {
 	case 0x2:
 		e.emitRVC_Q2(insn, funct3)
 	default:
-		e.bail()
+		e.terminated = true
 	}
 
 	if !e.terminated {
@@ -1331,7 +1338,7 @@ func (e *emitter) emitRVC_Q0(insn uint16, funct3 uint16) {
 		nzuimm := int64(((insn>>11)&3)<<4 | ((insn>>7)&0xF)<<6 |
 			((insn>>6)&1)<<2 | ((insn>>5)&1)<<3)
 		if nzuimm == 0 {
-			e.bail()
+			e.terminated = true
 			return
 		}
 		e.emitOpImm(rd, 2, nzuimm, 0, 0) // ADDI rd, sp, nzuimm
@@ -1357,7 +1364,7 @@ func (e *emitter) emitRVC_Q0(insn uint16, funct3 uint16) {
 		uimm := int64(((insn>>10)&7)<<3 | ((insn>>5)&3)<<6)
 		e.emitStore(rs1, rs2, uimm, 3) // SD rs2, uimm(rs1)
 	default:
-		e.bail()
+		e.terminated = true
 	}
 }
 
@@ -1388,7 +1395,7 @@ func (e *emitter) emitRVC_Q1(insn uint16, funct3 uint16) {
 				nzimm |= -512
 			}
 			if nzimm == 0 {
-				e.bail()
+				e.terminated = true
 				return
 			}
 			e.emitOpImm(2, 2, nzimm, 0, 0) // ADDI sp, sp, nzimm
@@ -1398,7 +1405,7 @@ func (e *emitter) emitRVC_Q1(insn uint16, funct3 uint16) {
 				nzimm |= -32
 			}
 			if nzimm == 0 {
-				e.bail()
+				e.terminated = true
 				return
 			}
 			uimm := nzimm << 12
@@ -1440,7 +1447,7 @@ func (e *emitter) emitRVC_Q1(insn uint16, funct3 uint16) {
 				case 0b01:
 					e.emitOp32(rs1, rs1, rs2, 0, 0) // ADDW
 				default:
-					e.bail()
+					e.terminated = true
 				}
 			}
 		}
@@ -1460,7 +1467,7 @@ func (e *emitter) emitRVC_Q1(insn uint16, funct3 uint16) {
 		e.emitBranch(rs1, 0, 1, off) // BNE rs1, x0, offset
 
 	default:
-		e.bail()
+		e.terminated = true
 	}
 }
 
@@ -1491,7 +1498,7 @@ func (e *emitter) emitRVC_Q2(insn uint16, funct3 uint16) {
 		if bit12 == 0 {
 			if rs2 == 0 { // C.JR
 				if rd == 0 {
-					e.bail()
+					e.terminated = true
 					return
 				}
 				e.emitJALR(0, rd, 0, 2) // JALR x0, rd, 0
@@ -1523,7 +1530,7 @@ func (e *emitter) emitRVC_Q2(insn uint16, funct3 uint16) {
 		e.emitStore(2, rs2, uimm, 3) // SD rs2, uimm(sp)
 
 	default:
-		e.bail()
+		e.terminated = true
 	}
 }
 
@@ -1643,6 +1650,7 @@ func (e *emitter) finalize() *emitResult {
 	out.WriteString("typedef unsigned char uint8_t;\n")
 	out.WriteString("typedef signed char int8_t;\n")
 	out.WriteString("void *memset(void *s, int c, unsigned long n) { char *p=s; while(n--) *p++=c; return s; }\n")
+	out.WriteString("extern void jit_trace(const char *label, uint64_t addr, uint64_t val);\n")
 	out.WriteString("typedef struct { uint64_t pc; uint64_t ic; uint64_t status; uint64_t fault_addr; } JITResult;\n\n")
 
 	// Conditional FP header
