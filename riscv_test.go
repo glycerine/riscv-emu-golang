@@ -401,8 +401,13 @@ func runLockstep(t *testing.T, elfPath string) {
 				blockNum, jitCPU.pc, interpCPU.pc)
 		}
 
+		startPC := jitCPU.pc
 		// JIT: one dispatch cycle
 		jitIC, jitErr := jit.StepBlock(jitCPU)
+		if blockNum >= 30 && blockNum <= 36 {
+			t.Logf("block %d: startPC=0x%x jitIC=%d jitPC=0x%x jitErr=%v",
+				blockNum, startPC, jitIC, jitCPU.pc, jitErr)
+		}
 
 		// Interpreter: same number of instructions
 		var interpErr error

@@ -359,33 +359,33 @@ func (e *emitter) emit32(insn uint32) {
 	// ── LOAD ─────────────────────────────────────────────────────────
 	case 0x03:
 		e.emitLoad(rd, rs1, iimm, funct3)
-		e.advancePC(4)
+		if !e.terminated { e.advancePC(4) }
 
 	// ── STORE ────────────────────────────────────────────────────────
 	case 0x23:
 		simm := sImm(insn)
 		e.emitStore(rs1, rs2, simm, funct3)
-		e.advancePC(4)
+		if !e.terminated { e.advancePC(4) }
 
 	// ── OP-IMM ───────────────────────────────────────────────────────
 	case 0x13:
 		e.emitOpImm(rd, rs1, iimm, funct3, funct7)
-		e.advancePC(4)
+		if !e.terminated { e.advancePC(4) }
 
 	// ── OP-IMM-32 ────────────────────────────────────────────────────
 	case 0x1B:
 		e.emitOpImm32(rd, rs1, iimm, funct3, funct7)
-		e.advancePC(4)
+		if !e.terminated { e.advancePC(4) }
 
 	// ── OP (R-type) ──────────────────────────────────────────────────
 	case 0x33:
 		e.emitOp(rd, rs1, rs2, funct3, funct7)
-		e.advancePC(4)
+		if !e.terminated { e.advancePC(4) }
 
 	// ── OP-32 (R-type, word) ─────────────────────────────────────────
 	case 0x3B:
 		e.emitOp32(rd, rs1, rs2, funct3, funct7)
-		e.advancePC(4)
+		if !e.terminated { e.advancePC(4) }
 
 	// ── FP LOAD ──────────────────────────────────────────────────────
 	case 0x07:
@@ -628,12 +628,15 @@ func (e *emitter) emitOp(rd, rs1, rs2, funct3, funct7 uint32) {
 		switch funct3 {
 		case 0:
 			e.emit("    %s = (uint64_t)((int64_t)%s * (int64_t)%s);\n", d, a, b) // MUL
-		case 1: // MULH
-			e.emit("    %s = (uint64_t)((__int128)(int64_t)%s * (__int128)(int64_t)%s >> 64);\n", d, a, b)
-		case 2: // MULHSU
-			e.emit("    %s = (uint64_t)(((__int128)(int64_t)%s * (__int128)(uint64_t)%s) >> 64);\n", d, a, b)
-		case 3: // MULHU
-			e.emit("    %s = (uint64_t)((unsigned __int128)(uint64_t)%s * (unsigned __int128)(uint64_t)%s >> 64);\n", d, a, b)
+		case 1: // MULH — bail: TCC has no __int128
+			e.terminated = true
+			return
+		case 2: // MULHSU — bail: TCC has no __int128
+			e.terminated = true
+			return
+		case 3: // MULHU — bail: TCC has no __int128
+			e.terminated = true
+			return
 		case 4: // DIV
 			e.emit("    %s = (%s == 0) ? (uint64_t)-1 : ((int64_t)%s == -9223372036854775807LL-1 && (int64_t)%s == -1) ? %s : (uint64_t)((int64_t)%s / (int64_t)%s);\n",
 				d, b, a, b, a, a, b)
