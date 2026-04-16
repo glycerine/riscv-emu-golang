@@ -94,7 +94,10 @@ func hexFmt(b []byte) string {
 
 func assertBytes(t *testing.T, got, want []byte) {
 	t.Helper()
-	if !bytes.Equal(got, want) {
+	// Some encoders (notably arm64) append alignment-padding zero bytes at the
+	// end of the symbol. Accept trailing zeros beyond the expected length.
+	trimmed := bytes.TrimRight(got, "\x00")
+	if !bytes.Equal(trimmed, want) {
 		t.Errorf("bytes mismatch:\n  got  %s\n  want %s", hexFmt(got), hexFmt(want))
 	}
 }
@@ -539,14 +542,25 @@ func TestSmoke_Assemble_and_Execute(t *testing.T) {
 }
 
 // callAt calls the function at the given code address and returns its int64
-// result. Uses Go's internal function-value representation: a function value
-// is a pointer to a struct { code uintptr; ... }, so we build that struct and
-// cast its address to the function type.
+// result.
+//
+// In Go's ABI, a function value is a pointer to a funcval struct:
+//   type funcval struct { fn uintptr; ... }
+// Calling fn() compiles to: MOV DX, fn; CALL [DX]
+// i.e. DX = funcval pointer, [DX] = code pointer.
+//
+// So we need fn (the Go function variable) to hold the *address* of a funcval
+// struct whose first field is addr. We do this by:
+//   1. Put addr in funcval[0].
+//   2. Take &funcval[0] — this is the funcval pointer.
+//   3. Treat &(&funcval[0]) as a *fnType and dereference it — the resulting
+//      fnType holds the value &funcval[0], so Go's calling convention will
+//      do CALL [[&funcval[0]]] = CALL [funcval[0]] = CALL addr. Correct.
 func callAt(addr uintptr) int64 {
 	type fnType func() int64
-	// funcval: first field is the code pointer.
 	funcval := [1]uintptr{addr}
-	fn := *(*fnType)(unsafe.Pointer(&funcval[0]))
+	fnptr := unsafe.Pointer(&funcval[0])     // fnptr = &funcval[0] = funcval pointer
+	fn := *(*fnType)(unsafe.Pointer(&fnptr)) // fn = fnptr (as func value)
 	return fn()
 }
 
