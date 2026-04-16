@@ -123,6 +123,12 @@ func (c *Ctx) Assemble() ([]byte, error) {
 	// Use src.NoXPos since we have no source position to report.
 	c.ctxt.InitTextSym(c.sym, 0, src.NoXPos)
 
+	// Attach the prog chain to the symbol. The Go assembler (cmd/asm/asm.go)
+	// does this immediately after InitTextSym: sym.Func().Text = atextProg.
+	// Without this, Preprocess sees Func().Text == nil and returns immediately,
+	// leaving sym.P empty.
+	c.sym.Func().Text = c.firstProg
+
 	// Run the stripped assembly pipeline (no DWARF, no PCLN).
 	obj.AssembleBlock(c.ctxt, c.sym, c.ctxt.NewProg)
 
@@ -175,6 +181,12 @@ func newLinkCtx(arch Arch) *obj.Link {
 		ctxt.Headtype = objabi.Hwindows
 	default:
 		ctxt.Headtype = objabi.Hlinux // safe default
+	}
+	// Init initialises architecture-specific instruction encoding tables
+	// (e.g. x86.instinit for amd64). The compiler calls this from main;
+	// we must call it explicitly here.
+	if la.Init != nil {
+		la.Init(ctxt)
 	}
 	return ctxt
 }
