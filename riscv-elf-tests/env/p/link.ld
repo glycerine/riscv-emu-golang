@@ -3,7 +3,9 @@ ENTRY(_start)
 
 SECTIONS
 {
-  . = 0x80000000;
+   /* Start at 0 so offsets are relative to the beginning of your buffer */
+  . = 0x0;
+
   .text.init : { *(.text.init) }
   . = ALIGN(0x1000);
   .tohost : { *(.tohost) }
