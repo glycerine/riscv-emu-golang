@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"fmt"
 	"runtime"
+	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"unsafe"
@@ -624,5 +626,199 @@ func TestCtx_Reset(t *testing.T) {
 	}
 	if len(b2) >= 4 && b2[3] != 0x02 {
 		t.Errorf("second block immediate: got 0x%02X want 0x02", b2[3])
+	}
+}
+
+// ─── Error-path & lifecycle tests ─────────────────────────────────────────────
+
+// TestErr_FirstProgNotATEXT — Issue 5: Assemble must reject a Prog list
+// whose first entry is not ATEXT.
+func TestErr_FirstProgNotATEXT(t *testing.T) {
+	c := goasm.New(goasm.AMD64)
+	// intentionally skip NewATEXT
+	c.Append(immReg(c, x86.AMOVQ, 0x42, x86.REG_AX))
+	c.Append(c.NewRET())
+
+	_, err := c.Assemble()
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "ATEXT") {
+		t.Errorf("expected error mentioning ATEXT, got: %v", err)
+	}
+}
+
+// TestErr_DoubleAssemble — Issue 4: a second Assemble on the same Ctx
+// without Reset must return a clear error rather than the confusing
+// "symbol redeclared" diag the encoder would otherwise emit.
+func TestErr_DoubleAssemble(t *testing.T) {
+	c := amd64Ctx(t)
+	c.Append(immReg(c, x86.AMOVQ, 1, x86.REG_AX))
+	c.Append(c.NewRET())
+	if _, err := c.Assemble(); err != nil {
+		t.Fatalf("first Assemble: %v", err)
+	}
+
+	_, err := c.Assemble()
+	if err == nil {
+		t.Fatal("expected error from second Assemble, got nil")
+	}
+	if !strings.Contains(err.Error(), "Reset") {
+		t.Errorf("expected error mentioning Reset, got: %v", err)
+	}
+}
+
+// TestErr_FatalRecovers — Issue 1: a malformed CALL (no target, no Sym)
+// drives obj/x86/asm6.go through ctxt.Diag → ctxt.DiagFlush → log.Fatalf.
+// With our DiagFlush installed as a panicking function and a deferred
+// recover in Assemble, this returns a normal error instead of killing
+// the process.
+func TestErr_FatalRecovers(t *testing.T) {
+	c := amd64Ctx(t)
+	bad := c.NewProg()
+	bad.As = obj.ACALL
+	bad.To.Type = obj.TYPE_BRANCH
+	// leave bad.To.Sym nil and no SetTarget — hits "call without target"
+	c.Append(bad)
+	c.Append(c.NewRET())
+
+	_, err := c.Assemble()
+	if err == nil {
+		t.Fatal("expected error from malformed CALL, got nil")
+	}
+	if !strings.Contains(err.Error(), "call without target") {
+		t.Errorf("expected 'call without target' in error, got: %v", err)
+	}
+}
+
+// TestErr_EmptyProgList — preexisting check, but we lock it in here so a
+// future refactor doesn't drop it.
+func TestErr_EmptyProgList(t *testing.T) {
+	c := goasm.New(goasm.AMD64)
+	_, err := c.Assemble()
+	if err == nil {
+		t.Fatal("expected error from empty prog list, got nil")
+	}
+	if !strings.Contains(err.Error(), "empty prog list") {
+		t.Errorf("expected 'empty prog list' in error, got: %v", err)
+	}
+}
+
+// ─── DefaultFlags / Issue 3 ──────────────────────────────────────────────────
+
+// TestDefaultFlags_NoMorestack — Issue 3: with default Flags
+// (NOSPLIT|NOFRAME), an ATEXT + ACALL + RET sequence must NOT produce a
+// relocation against runtime.morestack* (which would jump to garbage at
+// run time, since our LSym hash has no such symbol).
+func TestDefaultFlags_NoMorestack(t *testing.T) {
+	c := amd64Ctx(t)
+	call := c.NewProg()
+	call.As = obj.ACALL
+	call.To.Type = obj.TYPE_MEM
+	call.To.Name = obj.NAME_EXTERN
+	call.To.Sym = c.Ctxt().Lookup("some_target")
+	c.Append(call)
+	c.Append(c.NewRET())
+
+	if _, err := c.Assemble(); err != nil {
+		t.Fatalf("Assemble: %v", err)
+	}
+	for _, r := range c.Sym().R {
+		if r.Sym == nil {
+			continue
+		}
+		if strings.Contains(r.Sym.Name, "morestack") {
+			t.Errorf("unexpected morestack relocation in output: %s", r.Sym.Name)
+		}
+	}
+}
+
+// TestFlagsOverride_StackCheck — Issue 3: clearing Flags re-enables the
+// auto-prologue and stacksplit, which in turn produces the
+// runtime.morestack relocation. This proves the override knob works.
+func TestFlagsOverride_StackCheck(t *testing.T) {
+	c := goasm.New(goasm.AMD64)
+	c.Flags = 0 // opt back into default Go function prologue
+	c.Append(c.NewATEXT())
+	call := c.NewProg()
+	call.As = obj.ACALL
+	call.To.Type = obj.TYPE_MEM
+	call.To.Name = obj.NAME_EXTERN
+	call.To.Sym = c.Ctxt().Lookup("some_target")
+	c.Append(call)
+	c.Append(c.NewRET())
+
+	if _, err := c.Assemble(); err != nil {
+		t.Fatalf("Assemble: %v", err)
+	}
+	found := false
+	for _, r := range c.Sym().R {
+		if r.Sym != nil && strings.Contains(r.Sym.Name, "morestack") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected morestack relocation when Flags=0, found none")
+	}
+}
+
+// ─── Concurrency / Issue 7 ───────────────────────────────────────────────────
+
+// TestConcurrentNew exercises the sync.Once-protected LinkArch.Init.
+// Without the Once guard, concurrent first-time New() calls would race
+// on the package globals (ycover, optab, oprange) inside instinit /
+// buildop. Run under -race; must report no data race.
+func TestConcurrentNew(t *testing.T) {
+	const goroutines = 16
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	errs := make(chan error, goroutines)
+	for i := 0; i < goroutines; i++ {
+		i := i
+		go func() {
+			defer wg.Done()
+			arch := goasm.AMD64
+			if i%2 == 0 {
+				arch = goasm.ARM64
+			}
+			c := goasm.New(arch)
+			c.Append(c.NewATEXT())
+			if arch == goasm.AMD64 {
+				c.Append(immReg(c, x86.AMOVQ, int64(i), x86.REG_AX))
+			} else {
+				p := c.NewProg()
+				p.As = arm64.AMOVD
+				p.From.Type = obj.TYPE_CONST
+				p.From.Offset = int64(i)
+				p.To.Type = obj.TYPE_REG
+				p.To.Reg = arm64.REG_R0
+				c.Append(p)
+			}
+			c.Append(c.NewRET())
+			if _, err := c.Assemble(); err != nil {
+				errs <- err
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Errorf("concurrent Assemble: %v", err)
+	}
+}
+
+// ─── assertBytes self-test ────────────────────────────────────────────────────
+
+// TestAssertBytes_RejectsTrailingJunk verifies the helper now flags
+// non-zero trailing bytes (the previous TrimRight version silently let
+// any post-zero junk through).
+func TestAssertBytes_RejectsTrailingJunk(t *testing.T) {
+	want := []byte{0x90}
+	got := []byte{0x90, 0x00, 0x01} // a non-zero byte after a zero
+	fake := &testing.T{}
+	assertBytes(fake, got, want)
+	if !fake.Failed() {
+		t.Error("assertBytes accepted non-zero trailing byte; expected failure")
 	}
 }

@@ -61,9 +61,13 @@ done
 copy_pkg "$SRC/obj/x86" "obj/x86" \
     asm_test.go obj6_test.go pcrelative_test.go
 
-# obj/arm64 — all .go except tests
+# obj/arm64 — all .go except tests.
+# asm_arm64_test.go is excluded because its companion asm_arm64_test.s
+# (forward-declared bodies for testvmovs/testmovk/testCombined) is not
+# extracted and the test would fail to build on GOARCH=arm64.
 copy_pkg "$SRC/obj/arm64" "obj/arm64" \
-    asm_test.go
+    asm_test.go \
+    asm_arm64_test.go
 
 # obj/arm — all .go except tests
 copy_pkg "$SRC/obj/arm" "obj/arm"
