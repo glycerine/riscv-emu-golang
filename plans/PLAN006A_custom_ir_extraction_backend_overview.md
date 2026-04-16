@@ -1,6 +1,6 @@
 # Go-Native JIT Backend: Tiny IR + Extracted obj Encoders
 
-## Note: superceded by PLAN316 with more detail.
+## Note: superceded by PLAN006B with more detail.
 
 ## Context
 
