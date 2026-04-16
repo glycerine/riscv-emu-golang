@@ -60,7 +60,16 @@ endif
 
 ZIG_CC     ?= zig
 ZIG_TARGET := riscv64-linux-musl
-GUEST_CFLAGS := -O2 -target $(ZIG_TARGET) -static
+## or? ZIG_TARGET := riscv64-freestanding
+GUEST_CFLAGS := -O2 -target $(ZIG_TARGET) -static -mcpu=generic_rv64+m+a+f+d+c \
+            -mabi=lp64d \
+            -fPIC \
+            -mcmodel=medany \
+            -T riscv-elf-tests/env/p/link.ld \
+            -I riscv-elf-tests/env/p \
+            -I riscv-elf-tests/isa/macros/scalar
+##            -nostdlib
+
 
 # ── paths ──────────────────────────────────────────────────────────────────
 
