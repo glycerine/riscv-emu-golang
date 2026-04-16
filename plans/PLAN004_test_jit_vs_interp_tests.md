@@ -147,6 +147,7 @@ func storeInsns(mem *GuestMemory, addr uint64, insns []uint32) {
 **File: `riscv_test.go`**
 
 Add `runRISCVTestJIT` (mirrors `runRISCVTest` but uses JIT) and parallel test functions.
+Uses Size32KB sandboxes since PIC ELFs have all segments below 0x4000.
 
 ```go
 func runRISCVTestJIT(t *testing.T, elfPath string) {
@@ -154,7 +155,7 @@ func runRISCVTestJIT(t *testing.T, elfPath string) {
     data, err := os.ReadFile(elfPath)
     if err != nil { t.Skipf(...); return }
 
-    mem, _ := NewGuestMemory(Size4GB)
+    mem, _ := NewGuestMemory(Size32KB)
     defer mem.Free()
     entry, _ := LoadELFBytes(mem, data)
     cpu := NewCPU(*mem)
@@ -181,7 +182,7 @@ Add test functions for each ISA extension:
 
 Each follows the same pattern as existing TestRISCVTests_UI etc., but calls `runRISCVTestJIT`.
 
-**Why this matters:** 123 compliance tests running through JIT. Every JIT-translatable instruction gets tested against the official spec. Untranslatable instructions (AMO, FCLASS, CSR) exercise the mixed JIT/interpreter fallback path automatically.
+**Why this matters:** 123 compliance tests running through JIT in 32KB sandboxes. Every JIT-translatable instruction gets tested against the official spec. Untranslatable instructions (AMO, FCLASS, CSR) exercise the mixed JIT/interpreter fallback path automatically. The existing interpreter-only `runRISCVTest` should also be updated to use Size32KB with the PIC ELFs.
 
 ---
 
@@ -746,6 +747,14 @@ Expected: all tests pass. Any failure indicates a JIT correctness bug that must 
 
 **The crown jewel.** Runs every ELF from the `elfs` slice through a lockstep dispatch loop that compares ALL registers and guest memory after every single block boundary.
 
+### Prerequisite: PIC riscv-tests ELFs
+
+The riscv-tests must be recompiled with `-fPIC` so all PT_LOAD segments are at low addresses (verified: highest segment < 0x4000). This lets us use **Size32KB sandboxes** (32768 bytes, mask `0x7FFF`) instead of Size4GB. At 32KB per pair, the lockstep test allocates ~8MB total for all 123 ELFs (2 × 32KB × 123) — trivial.
+
+The PIC ELFs go in `riscv-elf-tests/` (replacing or alongside the old ones). No changes to GuestMemory, no guest_base, no subtraction — addresses are already small.
+
+Full byte-for-byte memory comparison of 32KB takes ~microseconds. We can compare after EVERY block.
+
 ### `StepBlock` — single-dispatch-cycle method
 
 **File: `jit.go`** — new public method on JIT, used by the lockstep test harness.
@@ -825,9 +834,12 @@ Actually place in `riscv_test.go` since it references `elfs` and `rvTestsDir`.
 The helpers (`cpuSnapshot`, `runJITWithOS`, etc.) are in `jit_test.go` (same package).
 
 ```go
-// runLockstep loads the same ELF into two separate CPU+Memory pairs,
+const lockstepMemSize = Size32KB  // PIC ELFs fit in 32KB (highest segment < 0x4000)
+
+// runLockstep loads the same PIC ELF into two separate 32KB sandboxes,
 // then runs them in lockstep: JIT executes one block, interpreter executes
-// the same number of instructions, then all state is compared.
+// the same number of instructions, then ALL registers AND all 32KB of
+// memory are compared byte-for-byte.
 func runLockstep(t *testing.T, elfPath string) {
     t.Helper()
     data, err := os.ReadFile(elfPath)
@@ -836,8 +848,8 @@ func runLockstep(t *testing.T, elfPath string) {
         return
     }
 
-    // --- JIT side ---
-    jitMem, err := NewGuestMemory(Size4GB)
+    // --- JIT side (32KB sandbox) ---
+    jitMem, err := NewGuestMemory(lockstepMemSize)
     if err != nil { t.Fatal(err) }
     defer jitMem.Free()
     jitEntry, err := LoadELFBytes(jitMem, data)
@@ -845,8 +857,8 @@ func runLockstep(t *testing.T, elfPath string) {
     jitCPU := NewCPU(*jitMem)
     jitCPU.SetPC(jitEntry)
 
-    // --- Interpreter side ---
-    interpMem, err := NewGuestMemory(Size4GB)
+    // --- Interpreter side (32KB sandbox) ---
+    interpMem, err := NewGuestMemory(lockstepMemSize)
     if err != nil { t.Fatal(err) }
     defer interpMem.Free()
     interpEntry, err := LoadELFBytes(interpMem, data)
@@ -921,51 +933,42 @@ func runLockstep(t *testing.T, elfPath string) {
                 blockNum, jitCPU.fcsr, interpCPU.fcsr)
         }
 
+        // COMPARE ALL 32KB OF MEMORY — byte for byte
+        compareFullMemory(t, jitMem, interpMem, blockNum)
+
         blockNum++
     }
-
-    // FINAL: Compare guest memory (ELF segment regions)
-    compareGuestMemory(t, jitMem, interpMem, data)
 }
 ```
 
 ### Memory comparison helper
 
+With 32KB sandboxes, we just compare the whole thing. No ELF parsing needed.
+
 ```go
-// compareGuestMemory compares the ELF's PT_LOAD segment regions in both memories.
-// Reads ELF headers to find segment addresses, then compares byte-for-byte.
-// This catches JIT store bugs that register comparison might miss.
-func compareGuestMemory(t *testing.T, a, b *GuestMemory, elfData []byte) {
+// compareFullMemory reads both 32KB sandboxes into byte slices and compares.
+// At 32KB this takes ~microseconds — cheap enough to run after every block.
+func compareFullMemory(t *testing.T, a, b *GuestMemory, blockNum int) {
     t.Helper()
-    // Parse ELF headers to find PT_LOAD segments
-    segments := elfPTLoadSegments(elfData) // returns []struct{VAddr, MemSz}
+    size := a.Size()
+    bufA := make([]byte, size)
+    bufB := make([]byte, size)
+    a.ReadBytes(0, bufA)
+    b.ReadBytes(0, bufB)
 
-    for _, seg := range segments {
-        // Compare segment region + 4KB padding (catches stack/BSS writes near segment)
-        size := seg.MemSz
-        if size > 1<<20 { size = 1<<20 } // cap at 1MB per segment
-
-        bufA := make([]byte, size)
-        bufB := make([]byte, size)
-        a.ReadBytes(seg.VAddr, bufA)
-        b.ReadBytes(seg.VAddr, bufB)
-
-        for i := range bufA {
-            if bufA[i] != bufB[i] {
-                addr := seg.VAddr + uint64(i)
-                t.Errorf("memory mismatch at 0x%x: jit=0x%02x interp=0x%02x",
-                    addr, bufA[i], bufB[i])
-                // Report first few differences only
-                break
+    diffs := 0
+    for i := range bufA {
+        if bufA[i] != bufB[i] {
+            if diffs < 5 { // report first 5 differences
+                t.Errorf("block %d: memory[0x%04x] mismatch: jit=0x%02x interp=0x%02x",
+                    blockNum, i, bufA[i], bufB[i])
             }
+            diffs++
         }
     }
-}
-
-// elfPTLoadSegments parses ELF headers and returns PT_LOAD segment info.
-func elfPTLoadSegments(data []byte) []struct{ VAddr, MemSz uint64 } {
-    // Parse elf64Header, iterate PhNum program headers, collect PT_LOAD entries
-    // Return slice of {VAddr, MemSz} for each
+    if diffs > 5 {
+        t.Errorf("block %d: ...and %d more memory differences", blockNum, diffs-5)
+    }
 }
 ```
 
@@ -1018,20 +1021,22 @@ This runs ALL 123 ELFs in lockstep mode, comparing every register and memory aft
 
 ### What lockstep catches that exit-code-only doesn't
 
-| Bug type | Exit-code test | Lockstep test |
-|----------|---------------|---------------|
-| Wrong register value (used later) | Maybe (if it affects exit code) | **Always** (immediate detection) |
-| Wrong register value (dead) | Never | **Always** |
-| Wrong store data | Maybe (if loaded later) | **Always** (memory comparison) |
-| Store to wrong address | Maybe | **Always** |
-| ic count off by 1 | Never | **Detectable** (cycle count diverges) |
-| JIT block exits at wrong PC | Eventually (program goes off rails) | **Immediately** (PC mismatch at start of next block) |
-| FCSR flags wrong | Never (tests don't check) | **Always** |
+| Bug type | Exit-code test | Lockstep test (32KB full compare) |
+|----------|---------------|-----------------------------------|
+| Wrong register value (used later) | Maybe (if it affects exit code) | **Always** — caught at next block boundary |
+| Wrong register value (dead) | Never | **Always** — all 64 regs compared |
+| Wrong store data | Maybe (if loaded later) | **Always** — every byte compared |
+| Store to wrong address | Maybe | **Always** — byte-level diff shows exact address |
+| ic count off by 1 | Never | **Detectable** — cycle count diverges |
+| JIT block exits at wrong PC | Eventually (program goes off rails) | **Immediately** — PC mismatch at start of next block |
+| FCSR flags wrong | Never (tests don't check) | **Always** — fcsr compared per block |
+| Writeback missed a register | Maybe (if used later) | **Always** — caught at next block load-from-x[] |
 
 ---
 
 ## Implementation Order (updated)
 
+0. **Prerequisite**: Verify PIC riscv-tests ELFs load into Size32KB (all PT_LOAD VAddrs < 0x8000). Place in `riscv-elf-tests/` replacing the old 0x80000000-linked binaries. Also add `Size32KB = 32768` constant to guestmem.go if it doesn't exist.
 1. Add `StepBlock` method to `jit.go`
 2. Add encoding helpers + `cpuSnapshot` + `storeInsns` to `jit_test.go`
 3. Add `runJITWithOS` helper to `jit_test.go`
