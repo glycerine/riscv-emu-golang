@@ -46,7 +46,7 @@ Our current JIT: RISC-V → C source → TCC → native code via cgo. Works (192
                                  │
                                  ▼
 ┌──────────────────────────────────────────────────────────────────────┐
-│  internal/goasm/  — Extracted from $GOROOT, BSD-3-Clause             │
+│  goasm/  — Extracted from $GOROOT, BSD-3-Clause             │
 │    obj.Prog → machine code bytes                                     │
 │    Reuses Go's mature amd64 / arm64 encoders                         │
 └──────────────────────────────────────────────────────────────────────┘
@@ -63,11 +63,11 @@ Our current JIT: RISC-V → C source → TCC → native code via cgo. Works (192
 # Phase 1: Extract `cmd/internal/obj` — Detailed Implementation
 
 ## Goal
-A self-contained, buildable Go package at `internal/goasm/` that exposes Go's amd64 and arm64 instruction encoders as a library. Pure BSD-3-Clause (inherited from Go).
+A self-contained, buildable Go package at `goasm/` that exposes Go's amd64 and arm64 instruction encoders as a library. Pure BSD-3-Clause (inherited from Go).
 
 ## Step 1.1: Write `scripts/extract-goasm.sh`
 
-Bash script that copies selected files from `$GOROOT/src/cmd/internal/` to `internal/goasm/`, rewrites imports, and skips files we don't need.
+Bash script that copies selected files from `$GOROOT/src/cmd/internal/` to `goasm/`, rewrites imports, and skips files we don't need.
 
 **Full script** (add to repo as `scripts/extract-goasm.sh`):
 
@@ -76,7 +76,7 @@ Bash script that copies selected files from `$GOROOT/src/cmd/internal/` to `inte
 set -euo pipefail
 
 GOROOT=${GOROOT:-$(go env GOROOT)}
-DEST=internal/goasm
+DEST=goasm
 SRC=$GOROOT/src/cmd/internal
 
 # Files to copy from each source package
@@ -116,18 +116,18 @@ for pkg in "${!KEEP[@]}"; do
     done
 done
 
-# Rewrite imports: cmd/internal/... → riscv/internal/goasm/...
+# Rewrite imports: cmd/internal/... → riscv/goasm/...
 find "$DEST" -name '*.go' | while read f; do
     sed -i.bak -E '
-        s|"cmd/internal/obj"|"riscv/internal/goasm/obj"|g
-        s|"cmd/internal/obj/x86"|"riscv/internal/goasm/obj/x86"|g
-        s|"cmd/internal/obj/arm64"|"riscv/internal/goasm/obj/arm64"|g
-        s|"cmd/internal/objabi"|"riscv/internal/goasm/objabi"|g
-        s|"cmd/internal/src"|"riscv/internal/goasm/src"|g
-        s|"cmd/internal/sys"|"riscv/internal/goasm/sys"|g
-        s|"cmd/internal/hash"|"riscv/internal/goasm/hash"|g
-        s|"cmd/internal/dwarf"|"riscv/internal/goasm/stub"|g
-        s|"cmd/internal/goobj"|"riscv/internal/goasm/stub"|g
+        s|"cmd/internal/obj"|"riscv/goasm/obj"|g
+        s|"cmd/internal/obj/x86"|"riscv/goasm/obj/x86"|g
+        s|"cmd/internal/obj/arm64"|"riscv/goasm/obj/arm64"|g
+        s|"cmd/internal/objabi"|"riscv/goasm/objabi"|g
+        s|"cmd/internal/src"|"riscv/goasm/src"|g
+        s|"cmd/internal/sys"|"riscv/goasm/sys"|g
+        s|"cmd/internal/hash"|"riscv/goasm/hash"|g
+        s|"cmd/internal/dwarf"|"riscv/goasm/stub"|g
+        s|"cmd/internal/goobj"|"riscv/goasm/stub"|g
     ' "$f"
     rm "$f.bak"
 done
@@ -139,7 +139,7 @@ echo "Extracted to $DEST. Go version: $(go version)" > "$DEST/EXTRACTED.txt"
 
 ## Step 1.2: Write stub package for removed deps
 
-Create `internal/goasm/stub/stub.go`:
+Create `goasm/stub/stub.go`:
 
 ```go
 // Package stub provides empty implementations of cmd/internal/dwarf and
@@ -166,15 +166,15 @@ The initial pass will cause compile errors listing missing types. Add stubs one-
 
 After imports are rewritten and stubs added, some files will reference skipped functionality. For each compile error:
 
-- **DWARF emission calls** (in `link.go`, `plist.go`): comment out or replace with no-op stubs
+- **DWARF emission calls** (in `link.go`, `plist.go`): comment out.
 - **Object file writing** (in `ld.go`, `sym.go`): comment out
 - **PCLN table generation** (in `pass.go`): comment out
 
 Expected: ~20-40 lines of surgery in `obj/*.go` to neuter unused features. Keep commented-out lines (don't delete) so future re-extractions preserve the edits as context.
 
-**File**: `internal/goasm/EDITS.md` — running log of every manual edit. Future re-extractions reference this to reapply them.
+**File**: `goasm/EDITS.md` — running log of every manual edit. Future re-extractions reference this to reapply them.
 
-## Step 1.4: API wrapper `internal/goasm/api.go`
+## Step 1.4: API wrapper `goasm/api.go`
 
 Expose a minimal API on top of the extracted obj package:
 
@@ -183,11 +183,11 @@ package goasm
 
 import (
     "fmt"
-    "riscv/internal/goasm/obj"
-    "riscv/internal/goasm/obj/x86"
-    "riscv/internal/goasm/obj/arm64"
-    "riscv/internal/goasm/objabi"
-    "riscv/internal/goasm/sys"
+    "riscv/goasm/obj"
+    "riscv/goasm/obj/x86"
+    "riscv/goasm/obj/arm64"
+    "riscv/goasm/objabi"
+    "riscv/goasm/sys"
 )
 
 // Arch selects the target ISA.
@@ -274,18 +274,18 @@ func (c *Ctx) drive() error {
 }
 ```
 
-**Detailed study task for phase 1**: read `$GOROOT/src/cmd/internal/obj/plist.go` (Flushplist) and `$GOROOT/src/cmd/internal/obj/x86/asm6.go` (span6/assemble) to understand the exact sequence of calls to go from `[]*Prog` to encoded bytes. Document findings in `internal/goasm/DRIVE.md`.
+**Detailed study task for phase 1**: read `$GOROOT/src/cmd/internal/obj/plist.go` (Flushplist) and `$GOROOT/src/cmd/internal/obj/x86/asm6.go` (span6/assemble) to understand the exact sequence of calls to go from `[]*Prog` to encoded bytes. Document findings in `goasm/DRIVE.md`.
 
 ## Step 1.5: Register constants
 
-Create `internal/goasm/regs.go` exposing register constants as Go names:
+Create `goasm/regs.go` exposing register constants as Go names:
 
 ```go
 package goasm
 
 import (
-    "riscv/internal/goasm/obj/x86"
-    "riscv/internal/goasm/obj/arm64"
+    "riscv/goasm/obj/x86"
+    "riscv/goasm/obj/arm64"
 )
 
 // AMD64 general-purpose registers (64-bit).
@@ -329,7 +329,7 @@ const (
 
 ## Step 1.6: Validation
 
-Create `internal/goasm/api_test.go` with golden tests:
+Create `goasm/api_test.go` with golden tests:
 
 ```go
 func TestAssembleAddAMD64(t *testing.T) {
@@ -1046,9 +1046,9 @@ Guest `x` and `f` arrays are accessed via pinned host regs (RSI, RDX on amd64; X
 package ir
 
 import (
-    "riscv/internal/goasm"
-    "riscv/internal/goasm/obj"
-    "riscv/internal/goasm/obj/x86"
+    "riscv/goasm"
+    "riscv/goasm/obj"
+    "riscv/goasm/obj/x86"
 )
 
 // LowerAMD64 converts a Block + Allocation into obj.Progs appended to ctx.
@@ -2020,7 +2020,7 @@ After validation passes:
 # Testing Plan (cross-phase)
 
 ## Phase 1 tests: goasm extraction
-- `go test ./internal/goasm/...`: every sample assembly sequence produces bytes identical to `go tool asm` output
+- `go test ./goasm/...`: every sample assembly sequence produces bytes identical to `go tool asm` output
 
 ## Phase 2 tests: IR emitter
 - `go test ./ir/...`: verify IR struct is constructed correctly from helper calls
@@ -2085,7 +2085,7 @@ After validation passes:
 scripts/
   extract-goasm.sh         # NEW: extraction script (Phase 1.1)
 
-internal/goasm/             # NEW, all extracted (Phase 1)
+goasm/             # NEW, all extracted (Phase 1)
   LICENSE                   # Go's BSD-3-Clause
   EXTRACTED.txt             # version stamp
   EDITS.md                  # manual edits log
