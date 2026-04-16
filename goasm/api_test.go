@@ -440,14 +440,15 @@ func TestAMD64_SHLQ_CL(t *testing.T) {
 
 // TestAMD64_MULQ — Issue 11: single-operand unsigned multiply (F7 /4).
 // MULQ BX computes RDX:RAX = RAX * RBX. Required for RV MULHU.
+// MULQ is NOT in unaryDst (unlike NEGQ), so the operand goes in From.
 func TestAMD64_MULQ(t *testing.T) {
 	c := amd64Ctx(t)
 	c.Append(immReg(c, x86.AMOVQ, 7, x86.REG_AX))
 	c.Append(immReg(c, x86.AMOVQ, 6, x86.REG_BX))
 	p := c.NewProg()
 	p.As = x86.AMULQ
-	p.To.Type = obj.TYPE_REG
-	p.To.Reg = x86.REG_BX
+	p.From.Type = obj.TYPE_REG
+	p.From.Reg = x86.REG_BX
 	c.Append(p)
 	c.Append(c.NewRET())
 	got, err := c.Assemble()
@@ -465,6 +466,7 @@ func TestAMD64_MULQ(t *testing.T) {
 
 // TestAMD64_IDIVQ — Issue 11: signed divide RDX:RAX by r/m64 (F7 /7).
 // Required for RV DIV. Test sets up DX:AX = 0:42, divides by 7.
+// Like MULQ, IDIVQ's single operand goes in From (not in unaryDst).
 func TestAMD64_IDIVQ(t *testing.T) {
 	c := amd64Ctx(t)
 	c.Append(immReg(c, x86.AMOVQ, 0, x86.REG_DX))
@@ -472,8 +474,8 @@ func TestAMD64_IDIVQ(t *testing.T) {
 	c.Append(immReg(c, x86.AMOVQ, 7, x86.REG_BX))
 	p := c.NewProg()
 	p.As = x86.AIDIVQ
-	p.To.Type = obj.TYPE_REG
-	p.To.Reg = x86.REG_BX
+	p.From.Type = obj.TYPE_REG
+	p.From.Reg = x86.REG_BX
 	c.Append(p)
 	c.Append(c.NewRET())
 	got, err := c.Assemble()
@@ -508,7 +510,7 @@ func TestAMD64_JEQ_forward(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []byte{
-		0x48, 0x39, 0xC3,                         // CMPQ AX, BX
+		0x48, 0x39, 0xD8,                         // CMPQ AX, BX (reg=BX, rm=AX)
 		0x74, 0x07,                               // JE +7 (skip MOVQ)
 		0x48, 0xC7, 0xC0, 0x01, 0x00, 0x00, 0x00, // MOVQ $1, AX
 		0xC3,                                     // RET
@@ -759,6 +761,117 @@ func TestARM64_LSL_imm(t *testing.T) {
 	want := []byte{
 		0xE0, 0x03, 0x40, 0xB2,
 		0x00, 0xF0, 0x7D, 0xD3,
+		0xC0, 0x03, 0x5F, 0xD6,
+	}
+	assertBytes(t, got, want)
+}
+
+// TestARM64_LDR_post — Issue 11: 64-bit load with positive 8-byte
+// offset. Mirrors RV LD encoding on an arm64 host.
+func TestARM64_LDR_post(t *testing.T) {
+	c := arm64Ctx(t)
+	c.Append(memLoad(c, arm64.AMOVD, arm64.REG_R0, 8, arm64.REG_R1))
+	c.Append(c.NewRET())
+	got, err := c.Assemble()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// MOVD 8(R0), R1 = 01 04 40 F9
+	// RET            = C0 03 5F D6
+	want := []byte{
+		0x01, 0x04, 0x40, 0xF9,
+		0xC0, 0x03, 0x5F, 0xD6,
+	}
+	assertBytes(t, got, want)
+}
+
+// TestARM64_STR — Issue 11: 64-bit store with positive 8-byte offset.
+// Mirrors RV SD encoding on an arm64 host.
+func TestARM64_STR(t *testing.T) {
+	c := arm64Ctx(t)
+	p := c.NewProg()
+	p.As = arm64.AMOVD
+	p.From.Type = obj.TYPE_REG
+	p.From.Reg = arm64.REG_R1
+	p.To.Type = obj.TYPE_MEM
+	p.To.Reg = arm64.REG_R0
+	p.To.Offset = 8
+	c.Append(p)
+	c.Append(c.NewRET())
+	got, err := c.Assemble()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// MOVD R1, 8(R0) = 01 04 00 F9
+	// RET            = C0 03 5F D6
+	want := []byte{
+		0x01, 0x04, 0x00, 0xF9,
+		0xC0, 0x03, 0x5F, 0xD6,
+	}
+	assertBytes(t, got, want)
+}
+
+// TestARM64_CBZ_forward — Issue 11: branch-if-zero with a forward
+// target. Mirrors RV BEQ X, X0, label.
+func TestARM64_CBZ_forward(t *testing.T) {
+	c := arm64Ctx(t)
+	cbz := c.NewProg()
+	cbz.As = arm64.ACBZ
+	cbz.From.Type = obj.TYPE_REG
+	cbz.From.Reg = arm64.REG_R0
+	cbz.To.Type = obj.TYPE_BRANCH
+	c.Append(cbz)
+
+	// MOVD $1, R1 (skipped on R0 == 0)
+	mid := c.NewProg()
+	mid.As = arm64.AMOVD
+	mid.From.Type = obj.TYPE_CONST
+	mid.From.Offset = 1
+	mid.To.Type = obj.TYPE_REG
+	mid.To.Reg = arm64.REG_R1
+	c.Append(mid)
+
+	done := c.NewRET()
+	cbz.To.SetTarget(done)
+	c.Append(done)
+
+	got, err := c.Assemble()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// CBZ R0, +2 instr  = 40 00 00 B4   (offset 2 instructions = 8 bytes)
+	// ORR $1, ZR, R1    = E1 03 40 B2
+	// RET               = C0 03 5F D6
+	want := []byte{
+		0x40, 0x00, 0x00, 0xB4,
+		0xE1, 0x03, 0x40, 0xB2,
+		0xC0, 0x03, 0x5F, 0xD6,
+	}
+	assertBytes(t, got, want)
+}
+
+// TestARM64_FADDD — Issue 11: scalar f64 add. Mirrors RV FADD.D.
+// In Go's arm64 assembly the form is FADDD Fm, Fn, Fd: From=Fm,
+// Reg=Fn, To=Fd.
+func TestARM64_FADDD(t *testing.T) {
+	c := arm64Ctx(t)
+	p := c.NewProg()
+	p.As = arm64.AFADDD
+	p.From.Type = obj.TYPE_REG
+	p.From.Reg = arm64.REG_F1
+	p.Reg = arm64.REG_F2
+	p.To.Type = obj.TYPE_REG
+	p.To.Reg = arm64.REG_F0
+	c.Append(p)
+	c.Append(c.NewRET())
+	got, err := c.Assemble()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// FADDD F1, F2, F0 = 40 28 61 1E
+	// RET              = C0 03 5F D6
+	want := []byte{
+		0x40, 0x28, 0x61, 0x1E,
 		0xC0, 0x03, 0x5F, 0xD6,
 	}
 	assertBytes(t, got, want)
