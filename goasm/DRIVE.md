@@ -33,6 +33,40 @@ stores it in `sym.Extra`. Preprocess then accesses `sym.Func()` safely.
 Without InitTextSym the very first call to `sym.Func()` inside Preprocess
 returns nil and Preprocess bails out immediately — no instructions are encoded.
 
+### sym.Func().Text must be set explicitly
+
+After `InitTextSym`, the caller **must** set `sym.Func().Text = atextProg`
+(the ATEXT Prog, the first in the chain). This is what `cmd/asm/asm.go` does
+at line 198: `nameAddr.Sym.Func().Text = prog`.
+
+Both x86 Preprocess and arm64 Preprocess start with:
+```go
+if cursym.Func().Text == nil || cursym.Func().Text.Link == nil {
+    return
+}
+```
+If Text is nil, they return immediately and sym.P stays empty (no bytes encoded).
+
+`goasm.Ctx.Assemble()` sets this:
+```go
+c.sym.Func().Text = c.firstProg   // after InitTextSym
+```
+
+### LinkArch.Init must be called
+
+Architecture-specific instruction encoding tables (e.g. `instinit` for x86)
+are registered as `LinkArch.Init`. The Go compiler calls this from
+`ssagen.Arch.LinkArch.Init(base.Ctxt)` in `cmd/compile/internal/gc/main.go`.
+
+`goasm.newLinkCtx()` must call it explicitly:
+```go
+if la.Init != nil {
+    la.Init(ctxt)
+}
+```
+Without this, x86 assembly fails with:
+  `x86 tables not initialized, call x86.instinit first`
+
 ---
 
 ## CRITICAL: ATEXT is required
