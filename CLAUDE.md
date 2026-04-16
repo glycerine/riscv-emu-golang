@@ -90,3 +90,7 @@ make mem                      # memory profile
 - Default build: JIT + TCC (vendor/tcc must be present)
 - `libriscv` build tag: Required for `bench/libriscv/`
 - `fuzzoracle/` no longer needs any build tag.
+
+### ignore the plans/ sub-folder.
+
+These are user's archives and not for CLAUDE.
