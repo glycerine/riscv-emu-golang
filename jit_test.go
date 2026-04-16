@@ -910,6 +910,77 @@ func TestJIT_LastBlockCache(t *testing.T) {
 	}
 }
 
+// ── Test 16: Instruction budget / semi-cooperative preemption ───────────
+
+// TestJIT_InstructionBudget verifies a loop that runs far more iterations than
+// the per-block instruction budget (maxIC=4096). The JIT block must exit at
+// the backward branch when the budget is exceeded, the dispatch loop re-enters
+// at the loop target, cached registers are re-read from x[], and execution
+// continues. The final result must be correct and the cycle count accurate.
+func TestJIT_InstructionBudget(t *testing.T) {
+	// Loop that iterates 100000 times — well above maxIC=4096.
+	// Tests the backward-branch budget check path.
+	//
+	//   0x1000: ADDI x1, x1, 1          # counter++
+	//   0x1004: BLT  x1, x2, -4         # if x1 < x2 goto 0x1000
+	//   0x1008: ECALL
+	cpu, mem := newTestCPU(t, Size64MB, 0x1000, []uint32{
+		ienc(opOPIMM, 0, 1, 1, 1),   // ADDI x1, x1, 1
+		benc(opBRANCH, 4, 1, 2, -4), // BLT x1, x2, -4
+		instrECALL,
+	})
+	defer mem.Free()
+	cpu.SetReg(1, 0)
+	cpu.SetReg(2, 100000)
+	cpu.Notes.Push(ecallStop)
+
+	jit := NewJIT()
+	jit.RunJIT(cpu)
+
+	if cpu.Reg(1) != 100000 {
+		t.Errorf("x1 = %d, want 100000", cpu.Reg(1))
+	}
+	// 100000 iterations × 2 instructions (ADDI+BLT) + 1 ECALL = 200001
+	if cpu.Cycle() != 200001 {
+		t.Errorf("cycles = %d, want 200001", cpu.Cycle())
+	}
+}
+
+// TestJIT_InstructionBudget_JForward_Loop verifies a loop formed by an
+// unconditional backward jump (JAL x0, -N). The JAL rd==0 backward path
+// must also respect the budget.
+func TestJIT_InstructionBudget_JForward_Loop(t *testing.T) {
+	// Loop: increment x1, check against x2, if reached then jump forward
+	// over the backward jump to ECALL. Otherwise, JAL backward.
+	//
+	//   0x1000: ADDI x1, x1, 1       # counter++
+	//   0x1004: BEQ  x1, x2, +8      # if x1 == x2 goto 0x100C
+	//   0x1008: JAL  x0, -8          # backward unconditional jump to 0x1000
+	//   0x100C: ECALL
+	cpu, mem := newTestCPU(t, Size64MB, 0x1000, []uint32{
+		ienc(opOPIMM, 0, 1, 1, 1),  // ADDI x1, x1, 1
+		benc(opBRANCH, 0, 1, 2, 8), // BEQ x1, x2, +8
+		jenc(0, -8),                 // JAL x0, -8
+		instrECALL,
+	})
+	defer mem.Free()
+	cpu.SetReg(1, 0)
+	cpu.SetReg(2, 50000)
+	cpu.Notes.Push(ecallStop)
+
+	jit := NewJIT()
+	jit.RunJIT(cpu)
+
+	if cpu.Reg(1) != 50000 {
+		t.Errorf("x1 = %d, want 50000", cpu.Reg(1))
+	}
+	// 50000 iterations: ADDI + BEQ + JAL for 49999 iters, ADDI + BEQ (taken) for last iter
+	// = 49999*3 + 2 + 1 (ECALL) = 150000
+	if cpu.Cycle() != 150000 {
+		t.Errorf("cycles = %d, want 150000", cpu.Cycle())
+	}
+}
+
 // ── Test 14: Fault address correctness ───────────────────────────────────
 
 func TestJIT_FaultAddress(t *testing.T) {

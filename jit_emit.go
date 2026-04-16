@@ -8,6 +8,14 @@ import (
 	"strings"
 )
 
+// maxIC is the per-execution instruction budget. At every backward branch/jump
+// we check `ic < maxIC` before continuing the loop in native code. If the
+// budget is exceeded, the block exits with PC=loop_target and the Go dispatch
+// loop re-enters immediately (last-block cache hits). This bounds the worst-
+// case non-preemptible window so Go's GC and scheduler can preempt the
+// goroutine between block re-entries. See libriscv's LOOP_EXPRESSION.
+const maxIC = 4096
+
 // emitResult holds the generated C source and metadata about the block.
 type emitResult struct {
 	csrc     string   // complete C source for the block
@@ -1279,7 +1287,18 @@ func (e *emitter) emitJAL(rd uint32, offset int64, insnSize uint64) {
 	// Phase 1 chaining: for pure jumps (rd==0), follow the target
 	// instead of exiting to the Go dispatch loop.
 	if rd == 0 {
-		e.emit("    goto b_%x;\n", target)
+		// advancePC was called above, so e.pc points past the jump.
+		// "Backward" means target is before the jump instruction itself.
+		origPC := e.pc - insnSize
+		if target < origPC {
+			// Backward jump — wrap goto in budget check.
+			e.emit("    if (__builtin_expect(ic < %d, 1)) goto b_%x;\n", maxIC, target)
+			e.emitWriteBackAll()
+			e.emit("    return (JITResult){0x%xULL, ic, 0, 0};\n", target)
+		} else {
+			// Forward jump — plain goto.
+			e.emit("    goto b_%x;\n", target)
+		}
 		e.gotoTargets[target] = true
 		e.pc = target // continue emitting from target
 		// Don't set terminated — the main loop will continue from target.
@@ -1324,8 +1343,19 @@ func (e *emitter) emitBranch(rs1, rs2, funct3 uint32, offset int64) {
 	internal := e.visited[target] ||
 		(e.regionEnd > 0 && target >= e.startPC && target < e.regionEnd)
 	if internal {
-		e.emit("    if (%s %s %s) goto b_%x;\n",
-			e.rsC(rs1, funct3), cmp, e.rsC(rs2, funct3), target)
+		if target < e.pc {
+			// Backward branch — wrap in budget check. If budget exceeded,
+			// exit block with PC=target so dispatch re-enters us.
+			e.emit("    if (%s %s %s) {\n",
+				e.rsC(rs1, funct3), cmp, e.rsC(rs2, funct3))
+			e.emit("      if (__builtin_expect(ic < %d, 1)) goto b_%x;\n", maxIC, target)
+			e.emitWriteBackAll()
+			e.emit("      return (JITResult){0x%xULL, ic, 0, 0};\n    }\n", target)
+		} else {
+			// Forward branch — plain goto; can't form a loop on its own.
+			e.emit("    if (%s %s %s) goto b_%x;\n",
+				e.rsC(rs1, funct3), cmp, e.rsC(rs2, funct3), target)
+		}
 		e.gotoTargets[target] = true
 	} else {
 		// External branch — exit block on taken path.
