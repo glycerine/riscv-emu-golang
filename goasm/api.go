@@ -1,6 +1,16 @@
 // Package goasm provides a thin API over Go's extracted obj instruction
-// encoders for amd64 and arm64. It is used by the riscv JIT backend to
-// emit machine code without cgo or an external assembler.
+// encoders. The Ctx (Assemble) path supports amd64 and arm64 host
+// architectures; register-name re-exports cover all 9 backends shipped
+// by Go (amd64, arm64, arm, loong64, mips, ppc64, riscv, s390x, wasm) so
+// callers can construct cross-arch Progs by hand if they extend the
+// New() switch in api.go.
+//
+// Lifecycle:
+//
+//	New() -> Append* -> Assemble() -> ( Reset() -> Append* -> Assemble() )*
+//
+// Each Ctx assembles exactly one text symbol named "jit_block". To
+// produce multiple independent symbols, use multiple Ctx instances.
 //
 // Typical usage:
 //
@@ -15,8 +25,12 @@
 package goasm
 
 import (
+	"bufio"
 	"fmt"
+	"io"
 	"runtime"
+	"strings"
+	"sync"
 
 	"riscv/goasm/obj"
 	"riscv/goasm/obj/arm64"
@@ -33,15 +47,45 @@ const (
 	ARM64
 )
 
+// DefaultFlags is the bitmask passed to obj.InitTextSym for every Ctx
+// unless overridden via Ctx.Flags. NOSPLIT|NOFRAME is correct for the
+// trampoline-style JIT blocks goasm is designed to produce: such blocks
+// own no Go stack frame and must not insert a runtime.morestack call
+// (which would reference an unresolved symbol in our Link context and
+// jump to garbage at run time).
+const DefaultFlags = obj.NOSPLIT | obj.NOFRAME
+
 // Ctx holds per-JIT-block assembler state.
 // Create with New; reuse across blocks by calling Reset.
 type Ctx struct {
+	// Flags is the bitmask of obj.{NOSPLIT,NOFRAME,WRAPPER,...} attached
+	// to the text symbol via InitTextSym at Assemble time. Defaults to
+	// DefaultFlags. Set to 0 (or any custom value) before calling
+	// Assemble to override.
+	Flags int
+
 	arch      Arch
 	ctxt      *obj.Link
 	sym       *obj.LSym
 	firstProg *obj.Prog // the ATEXT prog (first appended)
 	last      *obj.Prog // last appended Prog
 	errors    []string
+}
+
+// goasmFatal is the value panicked from DiagFlush. Assemble's deferred
+// recover converts it to a returned error so the host process is not
+// killed by the log.Fatalf calls that follow DiagFlush in extracted
+// obj/* code. A distinct type lets us re-panic anything else (real
+// bugs) without swallowing it.
+type goasmFatal struct {
+	diags []string
+}
+
+func (e *goasmFatal) Error() string {
+	if len(e.diags) == 0 {
+		return "goasm: assembler raised fatal (no diagnostic recorded)"
+	}
+	return "goasm: assembler raised fatal: " + strings.Join(e.diags, "; ")
 }
 
 // New creates a fresh Ctx for the given architecture.
@@ -58,6 +102,27 @@ func (c *Ctx) init() {
 	c.ctxt.DiagFunc = func(msg string, args ...any) {
 		c.errors = append(c.errors, fmt.Sprintf(msg, args...))
 	}
+	// DiagFlush is invoked by the extracted obj/* code immediately
+	// before log.Fatalf in unrecoverable error paths. We panic with a
+	// typed value so Assemble's deferred recover converts the fatal
+	// path into a normal error return — the log.Fatalf line itself is
+	// left in the extracted source for reference, but the panic unwinds
+	// the goroutine before it executes.
+	c.ctxt.DiagFlush = func() {
+		snapshot := append([]string(nil), c.errors...)
+		panic(&goasmFatal{diags: snapshot})
+	}
+	// Bso would be dereferenced by ctxt.Logf in some of the same fatal
+	// paths. Wire it to a discard writer so we don't nil-deref before
+	// reaching DiagFlush.
+	c.ctxt.Bso = bufio.NewWriter(io.Discard)
+	// IsAsm tells the encoder we are emitting hand-written assembly:
+	// disables 32-byte jump padding (which would silently insert NOPs)
+	// and skips the auto-SPWRITE log.Fatalf path triggered by any Prog
+	// that writes SP without setting Spadj.
+	c.ctxt.IsAsm = true
+
+	c.Flags = DefaultFlags
 	c.sym = c.ctxt.LookupInit("jit_block", func(s *obj.LSym) {
 		s.Type = objabi.STEXT
 	})
@@ -72,11 +137,8 @@ func (c *Ctx) Reset() {
 }
 
 // NewProg allocates an uninitialized Prog linked to this context.
-func (c *Ctx) NewProg() *obj.Prog {
-	p := c.ctxt.NewProg()
-	p.Ctxt = c.ctxt
-	return p
-}
+// (obj.Link.NewProg already wires p.Ctxt — no re-assignment needed.)
+func (c *Ctx) NewProg() *obj.Prog { return c.ctxt.NewProg() }
 
 // NewATEXT builds the ATEXT pseudo-instruction that must be the first
 // Prog in every function. InitTextSym + Preprocess use it to set up
@@ -112,16 +174,43 @@ func (c *Ctx) Append(p *obj.Prog) {
 }
 
 // Assemble encodes the Prog chain to native machine-code bytes.
-// Returns an error if any diagnostic was emitted during assembly.
-func (c *Ctx) Assemble() ([]byte, error) {
+// Returns an error if any diagnostic was emitted during assembly or if
+// the encoder hit a fatal path (which we convert from log.Fatalf to a
+// normal error via DiagFlush+recover).
+//
+// One-shot: a Ctx may be assembled exactly once. To assemble another
+// block, call Reset first.
+func (c *Ctx) Assemble() (out []byte, err error) {
 	if c.firstProg == nil {
 		return nil, fmt.Errorf("goasm: empty prog list")
 	}
+	if c.firstProg.As != obj.ATEXT {
+		return nil, fmt.Errorf("goasm: first Prog must be ATEXT (use Ctx.NewATEXT); got %v", c.firstProg.As)
+	}
+	if c.sym.Func() != nil {
+		return nil, fmt.Errorf("goasm: Assemble already called on this Ctx; call Reset before re-assembling")
+	}
 	c.last.Link = nil // terminate the chain
+
+	// Convert the encoder's fatal paths into a returned error. Any
+	// non-goasmFatal panic is a real bug — re-raise so it surfaces.
+	defer func() {
+		if r := recover(); r != nil {
+			if gf, ok := r.(*goasmFatal); ok {
+				err = gf
+				out = nil
+				return
+			}
+			panic(r)
+		}
+	}()
 
 	// InitTextSym initialises FuncInfo; Preprocess requires it.
 	// Use src.NoXPos since we have no source position to report.
-	c.ctxt.InitTextSym(c.sym, 0, src.NoXPos)
+	// Flags default to NOSPLIT|NOFRAME (see DefaultFlags) so the
+	// encoder does not inject runtime.morestack references for blocks
+	// containing CALL instructions.
+	c.ctxt.InitTextSym(c.sym, c.Flags, src.NoXPos)
 
 	// Attach the prog chain to the symbol. The Go assembler (cmd/asm/asm.go)
 	// does this immediately after InitTextSym: sym.Func().Text = atextProg.
@@ -135,7 +224,7 @@ func (c *Ctx) Assemble() ([]byte, error) {
 	if len(c.errors) > 0 {
 		return nil, fmt.Errorf("goasm: assembly errors: %v", c.errors)
 	}
-	out := make([]byte, len(c.sym.P))
+	out = make([]byte, len(c.sym.P))
 	copy(out, c.sym.P)
 	return out, nil
 }
@@ -158,6 +247,15 @@ func HostArch() Arch {
 	}
 }
 
+// initOnce serializes the first invocation of LinkArch.Init for each
+// arch. Init bodies write to package-level globals (ycover, optab,
+// oprange, …) without locking; concurrent first-time newLinkCtx calls
+// would race on those writes. After the first run each Init body has a
+// fast-path early return, so subsequent calls are safe — but Once still
+// guarantees the visibility of the initialized tables to all
+// goroutines.
+var initOnce sync.Map // map[Arch]*sync.Once
+
 func newLinkCtx(arch Arch) *obj.Link {
 	var la *obj.LinkArch
 	switch arch {
@@ -172,6 +270,11 @@ func newLinkCtx(arch Arch) *obj.Link {
 	ctxt.Flag_optimize = false
 	// Headtype must reflect the host OS so Preprocess makes the right
 	// platform decisions (TLS rewriting, frame-pointer conventions, etc.).
+	// Note: obj.Linknew already initialises Headtype from
+	// buildcfg.GOOS (which falls back to runtime.GOOS when the GOOS env
+	// var is unset). We override here so cross-tooling (e.g., a host
+	// process with GOOS env var set to a different target) still gets
+	// the host-correct headtype.
 	switch runtime.GOOS {
 	case "darwin", "ios":
 		ctxt.Headtype = objabi.Hdarwin
@@ -184,9 +287,12 @@ func newLinkCtx(arch Arch) *obj.Link {
 	}
 	// Init initialises architecture-specific instruction encoding tables
 	// (e.g. x86.instinit for amd64). The compiler calls this from main;
-	// we must call it explicitly here.
+	// we must call it explicitly here. Serialise via sync.Once per
+	// arch so concurrent first-time calls don't race on the global
+	// optab/ycover/oprange writes inside Init.
 	if la.Init != nil {
-		la.Init(ctxt)
+		oncev, _ := initOnce.LoadOrStore(arch, new(sync.Once))
+		oncev.(*sync.Once).Do(func() { la.Init(ctxt) })
 	}
 	return ctxt
 }

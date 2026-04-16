@@ -30,7 +30,7 @@ func arm64Ctx(t *testing.T) *goasm.Ctx {
 	return c
 }
 
-// immProg builds a Prog with a register destination and an immediate source.
+// immReg builds a Prog with a register destination and an immediate source.
 func immReg(c *goasm.Ctx, as obj.As, imm int64, dstreg int16) *obj.Prog {
 	p := c.NewProg()
 	p.As = as
@@ -82,23 +82,31 @@ func hexFmt(b []byte) string {
 	if len(b) == 0 {
 		return "<empty>"
 	}
-	var s []byte
-	for i, v := range b {
-		if i > 0 {
-			s = append(s, ' ')
-		}
-		s = append(s, []byte(fmt.Sprintf("%02X", v))...)
-	}
-	return string(s)
+	return fmt.Sprintf("% X", b)
 }
 
+// assertBytes verifies got starts with want, and that any trailing
+// bytes (alignment padding the encoder may append, notably arm64) are
+// all zeros. This is stricter than the previous TrimRight approach,
+// which silently accepted any non-zero junk after a leading zero.
 func assertBytes(t *testing.T, got, want []byte) {
 	t.Helper()
-	// Some encoders (notably arm64) append alignment-padding zero bytes at the
-	// end of the symbol. Accept trailing zeros beyond the expected length.
-	trimmed := bytes.TrimRight(got, "\x00")
-	if !bytes.Equal(trimmed, want) {
-		t.Errorf("bytes mismatch:\n  got  %s\n  want %s", hexFmt(got), hexFmt(want))
+	if len(got) < len(want) {
+		t.Errorf("output shorter than expected: got %d bytes %s, want %d bytes %s",
+			len(got), hexFmt(got), len(want), hexFmt(want))
+		return
+	}
+	if !bytes.Equal(got[:len(want)], want) {
+		t.Errorf("bytes mismatch:\n  got  %s\n  want %s",
+			hexFmt(got[:len(want)]), hexFmt(want))
+		return
+	}
+	for i, b := range got[len(want):] {
+		if b != 0 {
+			t.Errorf("non-zero trailing byte at offset %d: 0x%02X (full output: %s)",
+				len(want)+i, b, hexFmt(got))
+			return
+		}
 	}
 }
 
@@ -477,6 +485,14 @@ func TestARM64_LSL_imm(t *testing.T) {
 // (arm64), mmap the bytes as executable, call via unsafe, verify return value.
 
 func TestSmoke_Assemble_and_Execute(t *testing.T) {
+	// On Apple Silicon (darwin/arm64), W^X enforcement requires MAP_JIT
+	// plus pthread_jit_write_protect_np toggling. The simple anonymous
+	// PROT_WRITE|PROT_EXEC mmap below is rejected. Defer real darwin/arm64
+	// execution to the dedicated internal/jitcall path.
+	if runtime.GOOS == "darwin" && runtime.GOARCH == "arm64" {
+		t.Skip("smoke execute: darwin/arm64 requires MAP_JIT; tracked via internal/jitcall")
+	}
+
 	var (
 		code []byte
 		err  error
@@ -544,23 +560,19 @@ func TestSmoke_Assemble_and_Execute(t *testing.T) {
 // callAt calls the function at the given code address and returns its int64
 // result.
 //
-// In Go's ABI, a function value is a pointer to a funcval struct:
-//   type funcval struct { fn uintptr; ... }
-// Calling fn() compiles to: MOV DX, fn; CALL [DX]
-// i.e. DX = funcval pointer, [DX] = code pointer.
+// A Go function value is a pointer to a funcval struct whose first field
+// is the code pointer (uintptr). Calling fn() compiles to:
 //
-// So we need fn (the Go function variable) to hold the *address* of a funcval
-// struct whose first field is addr. We do this by:
-//   1. Put addr in funcval[0].
-//   2. Take &funcval[0] — this is the funcval pointer.
-//   3. Treat &(&funcval[0]) as a *fnType and dereference it — the resulting
-//      fnType holds the value &funcval[0], so Go's calling convention will
-//      do CALL [[&funcval[0]]] = CALL [funcval[0]] = CALL addr. Correct.
+//	MOV DX, fn  ; DX = funcval pointer
+//	CALL [DX]   ; jump to *(funcval+0) = code pointer
+//
+// So fn must hold the address of a uintptr that holds addr. We give addr
+// itself a stable address (&addr) and reinterpret the **uintptr as
+// *fnType. The compiler emits CALL [&addr] = CALL addr.
 func callAt(addr uintptr) int64 {
 	type fnType func() int64
-	funcval := [1]uintptr{addr}
-	fnptr := unsafe.Pointer(&funcval[0])     // fnptr = &funcval[0] = funcval pointer
-	fn := *(*fnType)(unsafe.Pointer(&fnptr)) // fn = fnptr (as func value)
+	fp := &addr
+	fn := *(*fnType)(unsafe.Pointer(&fp))
 	return fn()
 }
 
