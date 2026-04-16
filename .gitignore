@@ -1,3 +1,4 @@
 *~
 bench/libriscv_guest/bench_guest.elf
 riscv.test
+vendor/tcc/libtcc.o
