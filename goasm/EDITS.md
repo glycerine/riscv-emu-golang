@@ -3,6 +3,16 @@
 Re-running `scripts/extract-goasm.sh` overwrites these files. After re-extraction,
 re-apply every edit below in the order listed.
 
+To verify the current set of in-tree edits against vanilla Go, run:
+
+```bash
+diff -ru $GOROOT/src/cmd/internal/obj/  goasm/obj/  | less
+```
+
+The intent is that this diff shrinks over time. Anything new shown by
+the diff that isn't documented below should be added here (or dropped
+from the tree if redundant).
+
 ---
 
 ## goasm/obj/link.go
@@ -59,29 +69,28 @@ func (ctxt *Link) getFileIndexAndLine(xpos src.XPos) (int, int32) {
 
 ## goasm/obj/plist.go
 
-**Add `AssembleBlock` function** before `InitTextSym`:
+**Add `AssembleBlock` function** before `InitTextSym`. The order matches
+upstream `Flushplist` exactly so future Go upgrades produce minimal
+diffs:
 ```go
-// AssembleBlock is a stripped-down Flushplist that encodes a single text
-// symbol to native bytes (sym.P) without DWARF, PCLN, or SEH.
+// AssembleBlock is a stripped-down Flushplist that encodes a single
+// text symbol to native bytes (sym.P) without DWARF, PCLN, or SEH.
 //
 // The Prog chain must begin with an ATEXT Prog so that Preprocess sets
-// sym.Func().Text correctly. Call InitTextSym first to initialize FuncInfo.
+// sym.Func().Text correctly. Call InitTextSym first to initialize
+// FuncInfo.
+//
+// The pass order mirrors Flushplist exactly (mkfwd, ErrorCheck,
+// linkpatch, Preprocess, Assemble).
 func AssembleBlock(ctxt *Link, sym *LSym, newprog ProgAlloc) {
+    mkfwd(sym)
     if ctxt.Arch.ErrorCheck != nil {
         ctxt.Arch.ErrorCheck(ctxt, sym)
     }
-    mkfwd(sym)
     linkpatch(ctxt, sym, newprog)
     ctxt.Arch.Preprocess(ctxt, sym, newprog)
     ctxt.Arch.Assemble(ctxt, sym, newprog)
 }
-```
-
-**Remove `linkpcln` and `populateDWARF` calls** in `Flushplist`'s "Turn functions into machine code" loop:
-```go
-// DELETE these two lines:
-linkpcln(ctxt, s)
-ctxt.populateDWARF(plist.Curfn, s)
 ```
 
 **Remove `setFIPSType` calls** in `InitTextSym` and `GloblPos`:
@@ -95,6 +104,10 @@ ctxt.dwarfSym(s)
 s.setFIPSType(ctxt)
 ```
 
+(The `linkpcln` and `populateDWARF` calls referenced in earlier
+revisions of this file were not present in the Go 1.26 extraction;
+nothing to remove.)
+
 ---
 
 ## goasm/obj/sym.go
@@ -103,7 +116,8 @@ s.setFIPSType(ctxt)
 
 **Remove `NumberSyms` function entirely** (~125 lines, from `func (ctxt *Link) NumberSyms()` through its closing `}`). This function uses `goobj.PkgIdx*` constants and is only needed for object-file writing.
 
-**Remove `isNonPkgSym` function** if it has no remaining callers (it was only called from `NumberSyms`). If the compiler complains it's unused, delete it. If it is kept as dead code, add a comment.
+**Remove `isNonPkgSym` function entirely** — was only called from
+`NumberSyms`, has no remaining callers in the goasm extraction.
 
 **Fix `usedFiles` type** in `traverseFuncAux`:
 ```go
@@ -170,3 +184,30 @@ These files import `internal/testenv` which is stdlib-only:
 - `goasm/objabi/path_test.go` — delete after extraction
 
 These are already in the `copy_pkg` skip lists in the extract script.
+
+`goasm/obj/arm64/asm_arm64_test.go` — delete after extraction. Its
+companion `asm_arm64_test.s` (forward-declared bodies for testvmovs /
+testmovk / testCombined) is not extracted. Without the .s, the test
+fails to build on `GOARCH=arm64` with "missing function body". The
+extract script now lists this file in the skip list for `obj/arm64/`.
+
+---
+
+## Files left intact (no edits needed, despite earlier plan suggestions)
+
+- `goasm/obj/x86/seh.go` — Compiles and runs cleanly on all platforms in
+  the host matrix. The earlier plan suggested a `//go:build windows`
+  guard; not required.
+
+---
+
+## NOT edited: log.Fatalf and ctxt.DiagFlush call sites
+
+The 17 `ctxt.DiagFlush()` + `log.Fatalf(...)` call sites in
+`obj/{x86,arm64,arm,loong64,mips,ppc64,riscv,s390x}/*.go` are
+intentionally left as-is. `goasm.Ctx.init()` installs `DiagFlush` as a
+function that panics with a typed value; `goasm.Ctx.Assemble()` uses a
+deferred recover to convert that panic into a normal error return. The
+`log.Fatalf` line that follows is therefore unreachable in practice
+(the panic unwinds the goroutine first), but is left as a safety net /
+documentation aid.

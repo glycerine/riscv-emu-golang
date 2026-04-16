@@ -8,20 +8,32 @@ obj/arm64/obj7.go, and the AssembleBlock wrapper we added to obj/plist.go.
 ### Call order (goasm.Ctx.Assemble)
 
 ```
-1. ctxt.InitTextSym(sym, 0, src.NoXPos)  — initialises FuncInfo; sets up sym.Extra
-2. obj.AssembleBlock(ctxt, sym, newprog)
-       a. ctxt.Arch.ErrorCheck(ctxt, sym) — arch-specific sanity check (if set)
-       b. mkfwd(sym)            — obj/ld.go; sets Prog.Forwd for forward-branch resolution
-       c. linkpatch(ctxt, sym, newprog)  — obj/pass.go; per-instruction Progedit + branch fixup
+1. ctxt.InitTextSym(sym, c.Flags, src.NoXPos)
+       initialises FuncInfo; sets up sym.Extra; applies NOSPLIT|NOFRAME
+       (default) so Preprocess does not inject runtime.morestack refs.
+2. sym.Func().Text = c.firstProg                    — required: Preprocess
+       reads Func().Text directly (it does NOT scan for ATEXT itself —
+       cmd/asm/asm.go does that scan, and we mirror it here).
+3. obj.AssembleBlock(ctxt, sym, newprog)            — mirrors Flushplist:
+       a. mkfwd(sym)                                — obj/ld.go;
+            sets Prog.Forwd for forward-branch resolution
+       b. ctxt.Arch.ErrorCheck(ctxt, sym)           — if set;
+            x86: errorCheck (no-op unless Flag_dynlink)
+            arm64: not set
+       c. linkpatch(ctxt, sym, newprog)             — obj/pass.go;
+            per-instruction Progedit + branch fixup
        d. ctxt.Arch.Preprocess(ctxt, sym, newprog)
-              x86: obj6.Preprocess — scans for ATEXT → sets sym.Func().Text;
-                   expands RET (pop BP + RET on AMD64), handles TLS, stack analysis
-              arm64: obj7.Preprocess — similar ATEXT scan, stack frame setup
+            x86: obj6.preprocess — sets cursym.Func().Text from ATEXT;
+                 expands RET (pop BP + RET on AMD64), handles TLS,
+                 inserts stacksplit when not NOSPLIT
+            arm64: obj7.preprocess — similar; inserts STP/MOVD prologue,
+                 stacksplit, RET → LDP/MOVD.P epilogue
        e. ctxt.Arch.Assemble(ctxt, sym, newprog)
-              x86: span6() in asm6.go — iterates encoding until sizes stabilise → sym.P
-              arm64: span7() in asm7.go
-3. sym.P  — raw machine-code bytes
-4. sym.R  — relocations (empty for in-memory JIT blocks with no symbol references)
+            x86: span6() in asm6.go — iterates encoding until sizes
+                 stabilise → sym.P
+            arm64: span7() in asm7.go
+4. sym.P  — raw machine-code bytes
+5. sym.R  — relocations (empty for in-memory JIT blocks with no symbol references)
 ```
 
 ### Why InitTextSym comes before AssembleBlock
@@ -170,13 +182,19 @@ Iterates encoding until all instruction sizes stabilise, then writes to `s.P`.
 
 ---
 
-## InitTextSym signature (confirmed, Go 1.22)
+## InitTextSym signature (confirmed, Go 1.26)
 
 ```go
 func InitTextSym(ctxt *Link, s *LSym, flag int, pos src.XPos)
 ```
 Located in obj/plist.go. `flag` is `obj.NOSPLIT`, `obj.NOFRAME`, etc. or 0 for
 plain text symbols. `pos` is the source position; pass `src.NoXPos` for JIT blocks.
+
+`goasm.Ctx.Assemble` defaults `flag = obj.NOSPLIT|obj.NOFRAME` (the
+package-level `goasm.DefaultFlags` constant) — required for any block that
+contains a CALL/BL, otherwise Preprocess injects code that references
+`runtime.morestack` / `runtime.morestack_noctxt`, which doesn't exist in
+the JIT context. To override (rare), set `c.Flags = 0` before Assemble.
 
 ---
 
@@ -203,13 +221,17 @@ no DWARF line-number table, no SEH.
 
 `obj6.Preprocess` inspects `ctxt.Headtype` for TLS (thread-local storage) and
 stack-frame decisions.  For JIT blocks that do not use TLS, almost any valid
-headtype works.  goasm.Ctx sets it to the host OS:
+headtype works.  `obj.Linknew` already initialises Headtype from
+`buildcfg.GOOS` (which falls back to `runtime.GOOS` when the GOOS env var is
+unset). `goasm.newLinkCtx()` then re-sets it to the host OS — this matters
+only when cross-tooling sets a `GOOS` env var different from `runtime.GOOS`:
 
 ```go
 switch runtime.GOOS {
-case "darwin": ctxt.Headtype = objabi.Hdarwin
-case "linux":  ctxt.Headtype = objabi.Hlinux
-...
+case "darwin", "ios": ctxt.Headtype = objabi.Hdarwin
+case "linux":         ctxt.Headtype = objabi.Hlinux
+case "windows":       ctxt.Headtype = objabi.Hwindows
+default:              ctxt.Headtype = objabi.Hlinux
 }
 ```
 
@@ -218,12 +240,16 @@ case "linux":  ctxt.Headtype = objabi.Hlinux
 ## goasm.Ctx API summary
 
 ```go
-c := goasm.New(goasm.AMD64)   // or ARM64, RISCV, etc.
-c.Append(c.NewATEXT())        // always first
+c := goasm.New(goasm.AMD64)   // or goasm.ARM64 — only host arches supported today
+c.Append(c.NewATEXT())        // always first; Assemble rejects any other first Prog
 // ... append instruction Progs built with c.NewProg() ...
 c.Append(c.NewRET())          // terminate chain
 bytes, err := c.Assemble()    // returns raw machine code
+// To assemble another block from the same Ctx: c.Reset() then repeat.
 ```
 
-Full architecture list available via `goasm.LinkArch(arch)` — returns a
-`*obj.LinkArch` for the requested target.
+Adding a new host arch is mechanical: extend the `switch arch` blocks in
+`api.go:newLinkCtx` and `api.go:HostArch`, then add golden tests for the
+chosen instruction subset. Register-name re-exports for all 9 backends
+(amd64, arm64, arm, loong64, mips, ppc64, riscv, s390x, wasm) are
+already present in `regs.go`.

@@ -180,11 +180,15 @@ func Flushplist(ctxt *Link, plist *Plist, newprog ProgAlloc) {
 //
 // The Prog chain must begin with an ATEXT Prog so that Preprocess sets
 // sym.Func().Text correctly. Call InitTextSym first to initialize FuncInfo.
+//
+// The pass order mirrors Flushplist exactly (mkfwd, ErrorCheck,
+// linkpatch, Preprocess, Assemble) so future Go upgrades produce a
+// minimal diff against this file.
 func AssembleBlock(ctxt *Link, sym *LSym, newprog ProgAlloc) {
+	mkfwd(sym)
 	if ctxt.Arch.ErrorCheck != nil {
 		ctxt.Arch.ErrorCheck(ctxt, sym)
 	}
-	mkfwd(sym)
 	linkpatch(ctxt, sym, newprog)
 	ctxt.Arch.Preprocess(ctxt, sym, newprog)
 	ctxt.Arch.Assemble(ctxt, sym, newprog)

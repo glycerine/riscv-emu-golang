@@ -267,6 +267,14 @@ const (
 	REG_ARM_F15 = arm.REG_F15
 )
 
+// ARM status registers (FP and CPU).
+const (
+	REG_ARM_FPSR = arm.REG_FPSR
+	REG_ARM_FPCR = arm.REG_FPCR
+	REG_ARM_CPSR = arm.REG_CPSR
+	REG_ARM_SPSR = arm.REG_SPSR
+)
+
 // ── RISC-V (Go compiler backend) ─────────────────────────────────────────────
 // Note: this is Go's own RISC-V backend (obj/riscv), distinct from the RISC-V
 // emulator that is the subject of this repository.
@@ -343,6 +351,16 @@ const (
 	REG_RISCV_F31 = goariscv.REG_F31
 )
 
+// RISC-V ABI-named integer aliases (Go's backend exports these by name).
+const (
+	REG_RISCV_ZERO = goariscv.REG_ZERO
+	REG_RISCV_RA   = goariscv.REG_RA
+	REG_RISCV_SP   = goariscv.REG_SP
+	REG_RISCV_GP   = goariscv.REG_GP
+	REG_RISCV_TP   = goariscv.REG_TP
+	REG_RISCV_LR   = goariscv.REG_LR
+)
+
 // ── MIPS / MIPS64 ─────────────────────────────────────────────────────────────
 
 // MIPS integer registers (R0..R31).
@@ -415,6 +433,13 @@ const (
 	REG_MIPS_F29 = mips.REG_F29
 	REG_MIPS_F30 = mips.REG_F30
 	REG_MIPS_F31 = mips.REG_F31
+)
+
+// MIPS HI/LO multiplier registers and zero-register alias.
+const (
+	REG_MIPS_HI   = mips.REG_HI
+	REG_MIPS_LO   = mips.REG_LO
+	REG_MIPS_ZERO = mips.REGZERO
 )
 
 // ── PPC64 ─────────────────────────────────────────────────────────────────────
@@ -491,6 +516,48 @@ const (
 	REG_PPC64_F31 = ppc64.REG_F31
 )
 
+// PPC64 vector (Altivec V0..V31, VSX VS0..VS63) and special registers.
+const (
+	REG_PPC64_V0  = ppc64.REG_V0
+	REG_PPC64_V1  = ppc64.REG_V1
+	REG_PPC64_V2  = ppc64.REG_V2
+	REG_PPC64_V3  = ppc64.REG_V3
+	REG_PPC64_V4  = ppc64.REG_V4
+	REG_PPC64_V5  = ppc64.REG_V5
+	REG_PPC64_V6  = ppc64.REG_V6
+	REG_PPC64_V7  = ppc64.REG_V7
+	REG_PPC64_V8  = ppc64.REG_V8
+	REG_PPC64_V9  = ppc64.REG_V9
+	REG_PPC64_V10 = ppc64.REG_V10
+	REG_PPC64_V11 = ppc64.REG_V11
+	REG_PPC64_V12 = ppc64.REG_V12
+	REG_PPC64_V13 = ppc64.REG_V13
+	REG_PPC64_V14 = ppc64.REG_V14
+	REG_PPC64_V15 = ppc64.REG_V15
+	REG_PPC64_V16 = ppc64.REG_V16
+	REG_PPC64_V17 = ppc64.REG_V17
+	REG_PPC64_V18 = ppc64.REG_V18
+	REG_PPC64_V19 = ppc64.REG_V19
+	REG_PPC64_V20 = ppc64.REG_V20
+	REG_PPC64_V21 = ppc64.REG_V21
+	REG_PPC64_V22 = ppc64.REG_V22
+	REG_PPC64_V23 = ppc64.REG_V23
+	REG_PPC64_V24 = ppc64.REG_V24
+	REG_PPC64_V25 = ppc64.REG_V25
+	REG_PPC64_V26 = ppc64.REG_V26
+	REG_PPC64_V27 = ppc64.REG_V27
+	REG_PPC64_V28 = ppc64.REG_V28
+	REG_PPC64_V29 = ppc64.REG_V29
+	REG_PPC64_V30 = ppc64.REG_V30
+	REG_PPC64_V31 = ppc64.REG_V31
+
+	REG_PPC64_LR    = ppc64.REG_LR
+	REG_PPC64_CTR   = ppc64.REG_CTR
+	REG_PPC64_XER   = ppc64.REG_XER
+	REG_PPC64_MSR   = ppc64.REG_MSR
+	REG_PPC64_FPSCR = ppc64.REG_FPSCR
+)
+
 // ── LoongArch64 ───────────────────────────────────────────────────────────────
 
 // LoongArch64 integer registers (R0..R31).
@@ -563,6 +630,75 @@ const (
 	REG_LOONG64_F29 = loong64.REG_F29
 	REG_LOONG64_F30 = loong64.REG_F30
 	REG_LOONG64_F31 = loong64.REG_F31
+)
+
+// LoongArch64 LSX (128-bit V) and LASX (256-bit X) vector registers.
+const (
+	REG_LOONG64_V0  = loong64.REG_V0
+	REG_LOONG64_V1  = loong64.REG_V1
+	REG_LOONG64_V2  = loong64.REG_V2
+	REG_LOONG64_V3  = loong64.REG_V3
+	REG_LOONG64_V4  = loong64.REG_V4
+	REG_LOONG64_V5  = loong64.REG_V5
+	REG_LOONG64_V6  = loong64.REG_V6
+	REG_LOONG64_V7  = loong64.REG_V7
+	REG_LOONG64_V8  = loong64.REG_V8
+	REG_LOONG64_V9  = loong64.REG_V9
+	REG_LOONG64_V10 = loong64.REG_V10
+	REG_LOONG64_V11 = loong64.REG_V11
+	REG_LOONG64_V12 = loong64.REG_V12
+	REG_LOONG64_V13 = loong64.REG_V13
+	REG_LOONG64_V14 = loong64.REG_V14
+	REG_LOONG64_V15 = loong64.REG_V15
+	REG_LOONG64_V16 = loong64.REG_V16
+	REG_LOONG64_V17 = loong64.REG_V17
+	REG_LOONG64_V18 = loong64.REG_V18
+	REG_LOONG64_V19 = loong64.REG_V19
+	REG_LOONG64_V20 = loong64.REG_V20
+	REG_LOONG64_V21 = loong64.REG_V21
+	REG_LOONG64_V22 = loong64.REG_V22
+	REG_LOONG64_V23 = loong64.REG_V23
+	REG_LOONG64_V24 = loong64.REG_V24
+	REG_LOONG64_V25 = loong64.REG_V25
+	REG_LOONG64_V26 = loong64.REG_V26
+	REG_LOONG64_V27 = loong64.REG_V27
+	REG_LOONG64_V28 = loong64.REG_V28
+	REG_LOONG64_V29 = loong64.REG_V29
+	REG_LOONG64_V30 = loong64.REG_V30
+	REG_LOONG64_V31 = loong64.REG_V31
+
+	REG_LOONG64_X0  = loong64.REG_X0
+	REG_LOONG64_X1  = loong64.REG_X1
+	REG_LOONG64_X2  = loong64.REG_X2
+	REG_LOONG64_X3  = loong64.REG_X3
+	REG_LOONG64_X4  = loong64.REG_X4
+	REG_LOONG64_X5  = loong64.REG_X5
+	REG_LOONG64_X6  = loong64.REG_X6
+	REG_LOONG64_X7  = loong64.REG_X7
+	REG_LOONG64_X8  = loong64.REG_X8
+	REG_LOONG64_X9  = loong64.REG_X9
+	REG_LOONG64_X10 = loong64.REG_X10
+	REG_LOONG64_X11 = loong64.REG_X11
+	REG_LOONG64_X12 = loong64.REG_X12
+	REG_LOONG64_X13 = loong64.REG_X13
+	REG_LOONG64_X14 = loong64.REG_X14
+	REG_LOONG64_X15 = loong64.REG_X15
+	REG_LOONG64_X16 = loong64.REG_X16
+	REG_LOONG64_X17 = loong64.REG_X17
+	REG_LOONG64_X18 = loong64.REG_X18
+	REG_LOONG64_X19 = loong64.REG_X19
+	REG_LOONG64_X20 = loong64.REG_X20
+	REG_LOONG64_X21 = loong64.REG_X21
+	REG_LOONG64_X22 = loong64.REG_X22
+	REG_LOONG64_X23 = loong64.REG_X23
+	REG_LOONG64_X24 = loong64.REG_X24
+	REG_LOONG64_X25 = loong64.REG_X25
+	REG_LOONG64_X26 = loong64.REG_X26
+	REG_LOONG64_X27 = loong64.REG_X27
+	REG_LOONG64_X28 = loong64.REG_X28
+	REG_LOONG64_X29 = loong64.REG_X29
+	REG_LOONG64_X30 = loong64.REG_X30
+	REG_LOONG64_X31 = loong64.REG_X31
 )
 
 // ── IBM s390x ─────────────────────────────────────────────────────────────────
@@ -677,7 +813,7 @@ const (
 	REG_WASM_R15 = wasm.REG_R15
 )
 
-// Wasm FP registers.
+// Wasm FP registers (F0..F15 are f32 locals; F16..F31 are f64 locals).
 const (
 	REG_WASM_F0  = wasm.REG_F0
 	REG_WASM_F1  = wasm.REG_F1
@@ -695,4 +831,23 @@ const (
 	REG_WASM_F13 = wasm.REG_F13
 	REG_WASM_F14 = wasm.REG_F14
 	REG_WASM_F15 = wasm.REG_F15
+	REG_WASM_F16 = wasm.REG_F16
+	REG_WASM_F17 = wasm.REG_F17
+	REG_WASM_F18 = wasm.REG_F18
+	REG_WASM_F19 = wasm.REG_F19
+	REG_WASM_F20 = wasm.REG_F20
+	REG_WASM_F21 = wasm.REG_F21
+	REG_WASM_F22 = wasm.REG_F22
+	REG_WASM_F23 = wasm.REG_F23
+	REG_WASM_F24 = wasm.REG_F24
+	REG_WASM_F25 = wasm.REG_F25
+	REG_WASM_F26 = wasm.REG_F26
+	REG_WASM_F27 = wasm.REG_F27
+	REG_WASM_F28 = wasm.REG_F28
+	REG_WASM_F29 = wasm.REG_F29
+	REG_WASM_F30 = wasm.REG_F30
+	REG_WASM_F31 = wasm.REG_F31
 )
+
+// Wasm basic-block PC register (target of indirect branches).
+const REG_WASM_PC_B = wasm.REG_PC_B

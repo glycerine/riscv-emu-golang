@@ -223,30 +223,6 @@ func (ctxt *Link) GCLocalsSym(data []byte) *LSym {
 	})
 }
 
-// isNonPkgSym — kept for traversal logic only (not called from removed NumberSyms).
-func isNonPkgSym(ctxt *Link, s *LSym) bool {
-	if ctxt.IsAsm && !s.Static() {
-		// asm symbols are referenced by name only, except static symbols
-		// which are file-local and can be referenced by index.
-		return true
-	}
-	if ctxt.Flag_linkshared {
-		// The referenced symbol may be in a different shared library so
-		// the linker cannot see its index.
-		return true
-	}
-	if s.Pkg == "_" {
-		// The frontend uses package "_" to mark symbols that should not
-		// be referenced by index, e.g. linkname'd symbols.
-		return true
-	}
-	if s.DuplicateOK() {
-		// Dupok symbol needs to be dedup'd by name.
-		return true
-	}
-	return false
-}
-
 // StaticNamePrefix is the prefix the front end applies to static temporary
 // variables. When turned into LSyms, these can be tagged as static so
 // as to avoid inserting them into the linker's name lookup tables.
