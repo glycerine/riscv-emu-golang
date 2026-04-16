@@ -1,0 +1,592 @@
+<!DOCTYPE html>
+<!-- read from https://aaronbalke.com/posts/gojit/ on 2026 April 16 -->
+<html lang="en"><head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+
+    <style>
+        :root {
+            --accent-color: #65dbf0;
+            --font-size: 1.1rem;
+        }
+    </style>
+
+    <title>aabalke/gojit: Revived Jit Compiler in Go</title>
+    <meta name="description" content="aabalke/gojit is a revival of nelhage/gojit, providing JIT compilation for Go version 1.17&#43;. The major functionality this fork adds is the ability for Go …">
+    <meta name="keywords" content='go, jit'>
+
+    <meta property="og:url" content="https://aaronbalke.com/posts/gojit/">
+    <meta property="og:type" content="website">
+    <meta property="og:title" content="aabalke/gojit: Revived Jit Compiler in Go">
+    <meta property="og:description" content="aabalke/gojit is a revival of nelhage/gojit, providing JIT compilation for Go version 1.17&#43;. The major functionality this fork adds is the ability for Go …">
+    <meta property="og:image" content="https://avatars.githubusercontent.com/u/22086435">
+    <meta property="og:image:secure_url" content="https://avatars.githubusercontent.com/u/22086435">
+
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="aabalke/gojit: Revived Jit Compiler in Go">
+    <meta name="twitter:description" content="aabalke/gojit is a revival of nelhage/gojit, providing JIT compilation for Go version 1.17&#43;. The major functionality this fork adds is the ability for Go …">
+    <meta property="twitter:domain" content="https://aaronbalke.com/posts/gojit/">
+    <meta property="twitter:url" content="https://aaronbalke.com/posts/gojit/">
+    <meta name="twitter:image" content="https://avatars.githubusercontent.com/u/22086435">
+
+    
+    <link rel="canonical" href="https://aaronbalke.com/posts/gojit/">
+
+    
+    <link rel="stylesheet" type="text/css" href="/css/normalize.min.css" media="print">
+
+    
+    <link rel="stylesheet" type="text/css" href="/css/main.min.css">
+
+    
+    <link id="dark-theme" rel="stylesheet" href="/css/dark.min.css">
+
+    
+    <script src="/js/bundle.min.fdbfba1e074acb7e4abbf4c94eb19abb7702489c9689a27ee5e24a2bd481e4b7.js" integrity="sha256-/b&#43;6HgdKy35Ku/TJTrGau3cCSJyWiaJ&#43;5eJKK9SB5Lc="></script>
+
+    
+    
+</head>
+<body>
+        <script>
+            
+            setThemeByUserPref();
+        </script><header class="header">
+    <nav class="header-nav">
+
+        
+        <div class="avatar">
+            <a href="https://aaronbalke.com/">
+                <img src='https://avatars.githubusercontent.com/u/22086435' alt="avatar">
+            </a>
+        </div>
+        
+
+        <div class="nav-title">
+            <a class="nav-brand" href="https://aaronbalke.com/">Aaron Balke</a>
+        </div>
+
+        <div class="nav-links">
+            
+            <div class="nav-link">
+                <a href="https://github.com/aabalke" aria-label="a_github" ><span data-feather='github'></span>  </a>
+            </div>
+            
+            <div class="nav-link">
+                <a href="https://www.youtube.com/@whatnotdev" aria-label="b_youtube" ><span data-feather='youtube'></span>  </a>
+            </div>
+            
+            <div class="nav-link">
+                <a href="mailto:aabalke33@gmail.com" aria-label="c_mail" ><span data-feather='mail'></span>  </a>
+            </div>
+            
+
+            <span class="nav-icons-divider"></span>
+            <div class="nav-link dark-theme-toggle">
+                <span class="sr-only dark-theme-toggle-screen-reader-target">theme</span>
+                <a aria-hidden="true" role="switch">
+                    <span class="theme-toggle-icon" data-feather="moon"></span>
+                </a>
+            </div>
+
+            <div class="nav-link" id="hamburger-menu-toggle">
+                <span class="sr-only hamburger-menu-toggle-screen-reader-target">menu</span>
+                <a aria-checked="false" aria-labelledby="hamburger-menu-toggle" id="hamburger-menu-toggle-target" role="switch">
+                    <span data-feather="menu"></span>
+                </a>
+            </div>
+
+            
+            <ul class="nav-hamburger-list visibility-hidden">
+                
+                <li class="nav-item">
+                    <a href="https://github.com/aabalke" ><span data-feather='github'></span>  </a>
+                </li>
+                
+                <li class="nav-item">
+                    <a href="https://www.youtube.com/@whatnotdev" ><span data-feather='youtube'></span>  </a>
+                </li>
+                
+                <li class="nav-item">
+                    <a href="mailto:aabalke33@gmail.com" ><span data-feather='mail'></span>  </a>
+                </li>
+                
+                <li class="nav-item dark-theme-toggle">
+                    <span class="sr-only dark-theme-toggle-screen-reader-target">theme</span>
+                    <a role="switch">
+                        <span class="theme-toggle-icon" data-feather="moon"></span>
+                    </a>
+                </li>
+            </ul>
+
+        </div>
+    </nav>
+</header>
+<main id="content">
+    <div class="post container">
+    <div class="post-header-section">
+        <h1>aabalke/gojit: Revived Jit Compiler in Go</h1>
+
+        
+
+        
+	
+	
+	
+	
+        
+
+	
+
+	
+
+	
+          <small role="doc-subtitle">aabalke/gojit is a revival of nelhage/gojit, providing JIT compilation for Go version 1.17&#43;. The major functionality this fork adds is the ability for Go functions to be called from jit code, without causing errors from stack checks during garbage collection or stack growth.</small>
+	
+
+	
+          <p class="post-date">
+              
+
+              March 18, 2026
+
+              
+          </p>
+	
+
+        <ul class="post-tags">
+          
+           
+             <li class="post-tag"><a href="https://aaronbalke.com/tags/go">go</a></li>
+           
+         
+           
+             <li class="post-tag"><a href="https://aaronbalke.com/tags/jit">jit</a></li>
+           
+         
+        </ul>
+    </div>
+
+    <div class="post-content">
+        <h1 id="important-links">Important Links</h1>
+<p><a href="https://github.com/aabalke/gojit">aabalke/gojit</a></p>
+<p><a href="https://github.com/aabalke/guac">aabalke/guac</a></p>
+<p><a href="https://github.com/aabalke/jit-proof-of-concept">aabalke/jit-proof-of-concept</a></p>
+<h1 id="just-in-time-compilation">Just-in-Time Compilation</h1>
+<p>Most programs use Ahead-of-time (AOT) compilation, the creation of an entire binary or executable before runtime. Often, you compile or build an exe file in your programming language of choice, and all instructions that the program will run are included in that binary. Just-in-Time (JIT) Compilation differs in that the instructions and executable code are created and compiled at runtime, after the program has started. For most situations, this is overly complicated and not necessary; however, for programs that require high performance and have code paths that change significantly based on input files, it is a massive speed improvement. The two main places Jit compilation is used are language interpreters and emulators.</p>
+<p>In these programs, constant analysis is made, looking for common code paths, either through emulated instruction blocks or interpreted token blocks. If certain thresholds are met, often a block of instructions or tokens is run hundreds of times, then this block is compiled into machine code. In the future, when the program reaches this block, the compiled machine code is run in place of the original version. This is faster because the new compiled version only decodes the instruction or token block at compilation and handles a majority of conditional statements at compilation. A block of instructions or tokens that is run 10,000 times using the original, not jitted version, would require the block to be decoded and all conditional statements run 10,000 times. While a jitted version would only require the decoding and conditional statements to be run once at compilation. When this is extrapolated to emulating billions of instructions or tokens per second, there is usually a 2-5x speed improvement.</p>
+<p><img src="https://aaronbalke.com/images/jit-basics.gif" alt="jit-basics"></p>
+<h1 id="go">Go</h1>
+<p>Go differs from lower-level languages such as C, C++, and Zig in that it includes a garbage collector, limits direct memory management, and has a strict Application Binary Interface (ABI). There is support for Plan9 Assembly and C interop through Cgo; however, these are limited. Go assembly specifically requires AOT compilation to maintain the Go internal ABI specification. This specification is rigid because of the garbage collector. For the garbage collector to function, the stack must maintain a specific shape and alignment, for argument spill space, stack-assigned results, stack-assigned arguments, and a receiver. This is important during garbage collection and when stack growth occurs. If the stack shape is not maintained, then the program will crash.</p>
+<p><img src="https://aaronbalke.com/images/why-call-go-functions.png" alt="why-call-go-functions"></p>
+<p>An additional reason Go is difficult for JIT compilation is that it has 2 ABIs. ABI0 is the original ABI, and ABIInternal (ABI1) is the updated one. The major difference between the 2 is that ABI0 uses the stack for all function arguments and results. In contrast, ABIInternal uses registers for most arguments and results, using the stack only when arguments and/or results exceed the available registers. This difference makes ABIInternal 5% faster, since it is not required to reach out to memory for starting or finishing functions. As the name suggests, ABIInternal is used internally within the language, appearing in the Go executable since Go 1.17; however, ABI0 is still the public-facing ABI, appearing in the “hand-rolled” Go assembly that a Go user would interact with. If an ABI0 assembly function needs to interact with an ABIInternal assembly function, Go will insert a transparent ABI wrapper, converting one ABI into the other.</p>
+<h1 id="purpose">Purpose</h1>
+<p>The overlap between JIT compilation and the Go ABIs is why building a JIT in Go is difficult, and why proper handling of Go functions called by JIT code has not been implemented in modern versions. This is important because, when emulating instructions or parsing tokens, the jitted code sometimes must call unjitted functions. For example, in an emulator, with simulated memory, a load from memory address (LDR, or MOV) instruction would need to call a “read memory” function inside the emulator, which is usually a separate function or method.</p>
+<p>The following is a proof of concept to demonstrate the solution to this problem. It is broken into 3 sections: a basic JIT compiler, a JIT compiler demonstrating improper ABI handling, and a JIT compiler with proper ABI handling. This section is heavily based on “Calling Go funcs from asm and JITed code” by Iskander Sharipov; however, Sharipov’s version was built for Go &lt;1.17 and does not work with the modern ABI0 and ABIInternal situation. All 3 sections are written in version 1.26; however, they should work from 1.17+, when the ABI0 and ABIInternal specifications were introduced. This demonstration is also only written for x86/amd64 instruction set systems, as gojit only supports x86/amd64 at the time of writing.</p>
+<h1 id="proof-of-concept-part-1">Proof of Concept: Part 1</h1>
+<p>The major steps to build a Jit compiler in Go are:</p>
+<ol>
+<li>Get heap memory for the Jit instructions to exist outside of the current program, through syscalls directly or a package such as edsrzf/mmap-go.</li>
+<li>Insert the desired JIT instructions into that memory.</li>
+<li>Call a Go Assembly trampoline that jumps to the JIT instructions. After the JIT instructions are executed, the trampoline returns to the initializing Go program.</li>
+</ol>
+<p>This is a basic example, where the JIT code moves 0xDEADBEEF into the location of the “c” variable.</p>
+<div class="highlight"><pre tabindex="0" style="color:#c8d3f5;background-color:#222436;-moz-tab-size:4;-o-tab-size:4;tab-size:4;"><code class="language-go" data-lang="go"><span style="display:flex;"><span><span style="color:#444a73;font-style:italic">// main.go</span>
+</span></span><span style="display:flex;"><span><span style="color:#86e1fc">package</span> main
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span><span style="color:#86e1fc">import</span> (
+</span></span><span style="display:flex;"><span>	<span style="color:#c3e88d">&#34;fmt&#34;</span>
+</span></span><span style="display:flex;"><span>	<span style="color:#c3e88d">&#34;unsafe&#34;</span>
+</span></span><span style="display:flex;"><span>)
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span><span style="color:#c099ff">func</span> <span style="color:#82aaff">main</span>() {
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span>	c <span style="color:#c3e88d;font-weight:bold">:=</span> <span style="color:#c3e88d">uint64</span>(<span style="color:#ffc777">0</span>)
+</span></span><span style="display:flex;"><span>	addr <span style="color:#c3e88d;font-weight:bold">:=</span> <span style="color:#c3e88d">uint64</span>(<span style="color:#c3e88d">uintptr</span>(unsafe.<span style="color:#82aaff">Pointer</span>(<span style="color:#c3e88d;font-weight:bold">&amp;</span>c)))
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span>	code <span style="color:#c3e88d;font-weight:bold">:=</span> []<span style="color:#4fd6be">byte</span>{
+</span></span><span style="display:flex;"><span>		<span style="color:#444a73;font-style:italic">// MOVABSQ &amp;c, RCX  — load the address of c into RCX</span>
+</span></span><span style="display:flex;"><span>		<span style="color:#ffc777">0x48</span>, <span style="color:#ffc777">0xB9</span>,
+</span></span><span style="display:flex;"><span>		<span style="color:#c3e88d">byte</span>(addr),
+</span></span><span style="display:flex;"><span>		<span style="color:#c3e88d">byte</span>(addr <span style="color:#c3e88d;font-weight:bold">&gt;&gt;</span> <span style="color:#ffc777">8</span>),
+</span></span><span style="display:flex;"><span>		<span style="color:#c3e88d">byte</span>(addr <span style="color:#c3e88d;font-weight:bold">&gt;&gt;</span> <span style="color:#ffc777">16</span>),
+</span></span><span style="display:flex;"><span>		<span style="color:#c3e88d">byte</span>(addr <span style="color:#c3e88d;font-weight:bold">&gt;&gt;</span> <span style="color:#ffc777">24</span>),
+</span></span><span style="display:flex;"><span>		<span style="color:#c3e88d">byte</span>(addr <span style="color:#c3e88d;font-weight:bold">&gt;&gt;</span> <span style="color:#ffc777">32</span>),
+</span></span><span style="display:flex;"><span>		<span style="color:#c3e88d">byte</span>(addr <span style="color:#c3e88d;font-weight:bold">&gt;&gt;</span> <span style="color:#ffc777">40</span>),
+</span></span><span style="display:flex;"><span>		<span style="color:#c3e88d">byte</span>(addr <span style="color:#c3e88d;font-weight:bold">&gt;&gt;</span> <span style="color:#ffc777">48</span>),
+</span></span><span style="display:flex;"><span>		<span style="color:#c3e88d">byte</span>(addr <span style="color:#c3e88d;font-weight:bold">&gt;&gt;</span> <span style="color:#ffc777">56</span>),
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span>		<span style="color:#444a73;font-style:italic">// MOVL $0xDEADBEEF, [RCX]  — move imm32 into memory at addr in RCX</span>
+</span></span><span style="display:flex;"><span>		<span style="color:#ffc777">0xC7</span>, <span style="color:#ffc777">0x01</span>,
+</span></span><span style="display:flex;"><span>		<span style="color:#ffc777">0xEF</span>, <span style="color:#ffc777">0xBE</span>, <span style="color:#ffc777">0xAD</span>, <span style="color:#ffc777">0xDE</span>, <span style="color:#444a73;font-style:italic">// 0xDEADBEEF in little-endian</span>
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span>		<span style="color:#444a73;font-style:italic">// RET</span>
+</span></span><span style="display:flex;"><span>		<span style="color:#ffc777">0xC3</span>,
+</span></span><span style="display:flex;"><span>	}
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span>	executable, err <span style="color:#c3e88d;font-weight:bold">:=</span> <span style="color:#82aaff">mmapExecutable</span>(<span style="color:#c3e88d">len</span>(code))
+</span></span><span style="display:flex;"><span>	<span style="color:#c099ff">if</span> err <span style="color:#c3e88d;font-weight:bold">!=</span> <span style="color:#ffc777">nil</span> {
+</span></span><span style="display:flex;"><span>		<span style="color:#c3e88d">panic</span>(err)
+</span></span><span style="display:flex;"><span>	}
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span>	<span style="color:#c099ff">defer</span> <span style="color:#82aaff">munmapExecutable</span>(executable)
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span>	<span style="color:#c3e88d">copy</span>(executable, code)
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span>	<span style="color:#82aaff">callJIT</span>(<span style="color:#c3e88d;font-weight:bold">&amp;</span>executable[<span style="color:#ffc777">0</span>])
+</span></span><span style="display:flex;"><span>	fmt.<span style="color:#82aaff">Printf</span>(<span style="color:#c3e88d">&#34;C %08X\n&#34;</span>, c)
+</span></span><span style="display:flex;"><span>}
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span><span style="color:#444a73;font-style:italic">// asm stub</span>
+</span></span><span style="display:flex;"><span><span style="color:#c099ff">func</span> <span style="color:#82aaff">callJIT</span>(code <span style="color:#c3e88d;font-weight:bold">*</span><span style="color:#4fd6be">byte</span>)
+</span></span></code></pre></div><div class="highlight"><pre tabindex="0" style="color:#c8d3f5;background-color:#222436;-moz-tab-size:4;-o-tab-size:4;tab-size:4;"><code class="language-asm" data-lang="asm"><span style="display:flex;"><span><span style="color:#444a73;font-style:italic">// jit_amd64.s
+</span></span></span><span style="display:flex;"><span><span style="color:#444a73;font-style:italic"></span><span style="color:#82aaff">TEXT</span> <span style="color:#c53b53">·</span><span style="color:#ff966c">callJIT</span>(<span style="color:#ff966c">SB</span>), <span style="color:#ffc777">0</span>, <span style="color:#ff966c">$0-8</span>
+</span></span><span style="display:flex;"><span>    <span style="color:#82aaff">MOVQ</span> <span style="color:#ff966c">code</span><span style="color:#c53b53">+</span><span style="color:#ffc777">0</span>(<span style="color:#ff966c">FP</span>), <span style="color:#ff966c">AX</span>
+</span></span><span style="display:flex;"><span>    <span style="color:#82aaff">JMP</span> <span style="color:#ff966c">AX</span>
+</span></span></code></pre></div><p>First, variables are initialized.</p>
+<ul>
+<li>“c” will be the variable we want mutated by the JIT code.</li>
+<li>“addr” will be the pointer to “c”, converted into a uint64. This is required to strip away golang safety requirements. “uintptr” is equivalent to C void pointers.</li>
+<li>“code” will be the actual assembly code we will place in the executable JIT memory. For this demonstration, we have 3 instructions.
+<ul>
+<li>MOVABSQ &amp;c, RCX: Moves the ptr of “c” into the RCX register</li>
+<li>MOVL $0xDEADBEEF, [RCX]: Moves 0xDEADBEEF into the memory location addressed by RCX</li>
+<li>RET: returns from the current Call</li>
+</ul>
+</li>
+</ul>
+<p>Secondly, the executable memory where our JIT code will live is created. And the releasing of that memory is deferred at this time: at any end to this function, the memory will be released. Then the instructions we built in the “code” variable are copied into the executable JIT memory.</p>
+<p>The final step is to call the JIT code, which requires a piece of Go Assembly to act as a trampoline between the Go code and the JIT code. The “jit_amd64.s” assembly code is this trampoline; it connects to Go through the “function callJIT(code *byte)” stub, which acts as an alias for the Go assembly code. callJIT does 2 things: it moves the first argument of the callJIT function into AX. This is a pointer to the first byte of the JIT code. Then it jumps to the location in AX, starting our JIT code.</p>
+<p>The additional assembly declarations are:</p>
+<ul>
+<li>TEXT: declares a function</li>
+<li>(SB): a pseudo-register for the base address of the program</li>
+<li>0: no flags</li>
+<li>$0-8: bytes required for the local stack frame and bytes required for arguments and return values. 8 is required for our single uint64 argument.</li>
+</ul>
+<p>Below are simple boilerplate functions to receive the heap memory for JIT instructions in both Windows and Linux.</p>
+<div class="highlight"><pre tabindex="0" style="color:#c8d3f5;background-color:#222436;-moz-tab-size:4;-o-tab-size:4;tab-size:4;"><code class="language-go" data-lang="go"><span style="display:flex;"><span><span style="color:#444a73;font-style:italic">// unix.go</span>
+</span></span><span style="display:flex;"><span><span style="color:#444a73;font-style:italic">//go:build linux</span>
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span><span style="color:#86e1fc">package</span> main
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span><span style="color:#86e1fc">import</span> (
+</span></span><span style="display:flex;"><span>	<span style="color:#c3e88d">&#34;syscall&#34;</span>
+</span></span><span style="display:flex;"><span>	<span style="color:#c3e88d">&#34;unsafe&#34;</span>
+</span></span><span style="display:flex;"><span>)
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span><span style="color:#c099ff">func</span> <span style="color:#82aaff">mmapExecutable</span>(length <span style="color:#4fd6be">int</span>) ([]<span style="color:#4fd6be">byte</span>, <span style="color:#4fd6be">error</span>) {
+</span></span><span style="display:flex;"><span>	<span style="color:#c099ff">const</span> (
+</span></span><span style="display:flex;"><span>		addr  = <span style="color:#ffc777">0</span>
+</span></span><span style="display:flex;"><span>		prot  = syscall.PROT_READ | syscall.PROT_WRITE | syscall.PROT_EXEC
+</span></span><span style="display:flex;"><span>		flags = syscall.MAP_PRIVATE | syscall.MAP_ANON
+</span></span><span style="display:flex;"><span>		fd    = <span style="color:#ffc777">0</span>
+</span></span><span style="display:flex;"><span>		off   = <span style="color:#ffc777">0</span>
+</span></span><span style="display:flex;"><span>	)
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span>	ptr, _, err <span style="color:#c3e88d;font-weight:bold">:=</span> syscall.<span style="color:#82aaff">Syscall6</span>(
+</span></span><span style="display:flex;"><span>		syscall.SYS_MMAP,
+</span></span><span style="display:flex;"><span>		addr, <span style="color:#c3e88d">uintptr</span>(length), prot, flags, fd, off)
+</span></span><span style="display:flex;"><span>	<span style="color:#c099ff">if</span> err <span style="color:#c3e88d;font-weight:bold">!=</span> <span style="color:#ffc777">0</span> {
+</span></span><span style="display:flex;"><span>		<span style="color:#c099ff">return</span> <span style="color:#ffc777">nil</span>, err
+</span></span><span style="display:flex;"><span>	}
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span>	<span style="color:#444a73;font-style:italic">// Build a Go slice backed by the allocated memory</span>
+</span></span><span style="display:flex;"><span>	slice <span style="color:#c3e88d;font-weight:bold">:=</span> unsafe.<span style="color:#82aaff">Slice</span>((<span style="color:#c3e88d;font-weight:bold">*</span><span style="color:#4fd6be">byte</span>)(unsafe.<span style="color:#82aaff">Pointer</span>(ptr)), length)
+</span></span><span style="display:flex;"><span>	<span style="color:#c099ff">return</span> slice, <span style="color:#ffc777">nil</span>
+</span></span><span style="display:flex;"><span>}
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span><span style="color:#c099ff">func</span> <span style="color:#82aaff">munmapExecutable</span>(_ []<span style="color:#4fd6be">byte</span>) <span style="color:#4fd6be">error</span> {
+</span></span><span style="display:flex;"><span>	<span style="color:#c099ff">return</span> <span style="color:#ffc777">nil</span>
+</span></span><span style="display:flex;"><span>}
+</span></span></code></pre></div><div class="highlight"><pre tabindex="0" style="color:#c8d3f5;background-color:#222436;-moz-tab-size:4;-o-tab-size:4;tab-size:4;"><code class="language-go" data-lang="go"><span style="display:flex;"><span><span style="color:#444a73;font-style:italic">// win.go</span>
+</span></span><span style="display:flex;"><span><span style="color:#444a73;font-style:italic">//go:build windows</span>
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span><span style="color:#86e1fc">package</span> main
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span><span style="color:#86e1fc">import</span> (
+</span></span><span style="display:flex;"><span>	<span style="color:#c3e88d">&#34;fmt&#34;</span>
+</span></span><span style="display:flex;"><span>	<span style="color:#c3e88d">&#34;syscall&#34;</span>
+</span></span><span style="display:flex;"><span>	<span style="color:#c3e88d">&#34;unsafe&#34;</span>
+</span></span><span style="display:flex;"><span>)
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span><span style="color:#c099ff">var</span> (
+</span></span><span style="display:flex;"><span>	kernel32         = syscall.<span style="color:#82aaff">NewLazyDLL</span>(<span style="color:#c3e88d">&#34;kernel32.dll&#34;</span>)
+</span></span><span style="display:flex;"><span>	procVirtualAlloc = kernel32.<span style="color:#82aaff">NewProc</span>(<span style="color:#c3e88d">&#34;VirtualAlloc&#34;</span>)
+</span></span><span style="display:flex;"><span>	procVirtualFree  = kernel32.<span style="color:#82aaff">NewProc</span>(<span style="color:#c3e88d">&#34;VirtualFree&#34;</span>)
+</span></span><span style="display:flex;"><span>)
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span><span style="color:#c099ff">const</span> (
+</span></span><span style="display:flex;"><span>	MEM_COMMIT  = <span style="color:#ffc777">0x1000</span>
+</span></span><span style="display:flex;"><span>	MEM_RESERVE = <span style="color:#ffc777">0x2000</span>
+</span></span><span style="display:flex;"><span>	MEM_RELEASE = <span style="color:#ffc777">0x8000</span>
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span>	PAGE_EXECUTE_READWRITE = <span style="color:#ffc777">0x40</span>
+</span></span><span style="display:flex;"><span>)
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span><span style="color:#c099ff">func</span> <span style="color:#82aaff">mmapExecutable</span>(length <span style="color:#4fd6be">int</span>) ([]<span style="color:#4fd6be">byte</span>, <span style="color:#4fd6be">error</span>) {
+</span></span><span style="display:flex;"><span>	ptr, _, err <span style="color:#c3e88d;font-weight:bold">:=</span> procVirtualAlloc.<span style="color:#82aaff">Call</span>(
+</span></span><span style="display:flex;"><span>		<span style="color:#ffc777">0</span>,
+</span></span><span style="display:flex;"><span>		<span style="color:#c3e88d">uintptr</span>(length),
+</span></span><span style="display:flex;"><span>		MEM_COMMIT|MEM_RESERVE,
+</span></span><span style="display:flex;"><span>		PAGE_EXECUTE_READWRITE,
+</span></span><span style="display:flex;"><span>	)
+</span></span><span style="display:flex;"><span>	<span style="color:#c099ff">if</span> ptr <span style="color:#c3e88d;font-weight:bold">==</span> <span style="color:#ffc777">0</span> {
+</span></span><span style="display:flex;"><span>		<span style="color:#c099ff">return</span> <span style="color:#ffc777">nil</span>, fmt.<span style="color:#82aaff">Errorf</span>(<span style="color:#c3e88d">&#34;VirtualAlloc failed: %w&#34;</span>, err)
+</span></span><span style="display:flex;"><span>	}
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span>	<span style="color:#444a73;font-style:italic">// Build a Go slice backed by the allocated memory</span>
+</span></span><span style="display:flex;"><span>	slice <span style="color:#c3e88d;font-weight:bold">:=</span> unsafe.<span style="color:#82aaff">Slice</span>((<span style="color:#c3e88d;font-weight:bold">*</span><span style="color:#4fd6be">byte</span>)(unsafe.<span style="color:#82aaff">Pointer</span>(ptr)), length)
+</span></span><span style="display:flex;"><span>	<span style="color:#c099ff">return</span> slice, <span style="color:#ffc777">nil</span>
+</span></span><span style="display:flex;"><span>}
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span><span style="color:#c099ff">func</span> <span style="color:#82aaff">munmapExecutable</span>(b []<span style="color:#4fd6be">byte</span>) <span style="color:#4fd6be">error</span> {
+</span></span><span style="display:flex;"><span>	<span style="color:#c099ff">if</span> <span style="color:#c3e88d">len</span>(b) <span style="color:#c3e88d;font-weight:bold">==</span> <span style="color:#ffc777">0</span> {
+</span></span><span style="display:flex;"><span>		<span style="color:#c099ff">return</span> <span style="color:#ffc777">nil</span>
+</span></span><span style="display:flex;"><span>	}
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span>	addr <span style="color:#c3e88d;font-weight:bold">:=</span> <span style="color:#c3e88d">uintptr</span>(unsafe.<span style="color:#82aaff">Pointer</span>(<span style="color:#c3e88d;font-weight:bold">&amp;</span>b[<span style="color:#ffc777">0</span>]))
+</span></span><span style="display:flex;"><span>	r, _, err <span style="color:#c3e88d;font-weight:bold">:=</span> procVirtualFree.<span style="color:#82aaff">Call</span>(
+</span></span><span style="display:flex;"><span>		addr,
+</span></span><span style="display:flex;"><span>		<span style="color:#ffc777">0</span>,
+</span></span><span style="display:flex;"><span>		MEM_RELEASE,
+</span></span><span style="display:flex;"><span>	)
+</span></span><span style="display:flex;"><span>	<span style="color:#c099ff">if</span> r <span style="color:#c3e88d;font-weight:bold">==</span> <span style="color:#ffc777">0</span> {
+</span></span><span style="display:flex;"><span>		<span style="color:#c099ff">return</span> fmt.<span style="color:#82aaff">Errorf</span>(<span style="color:#c3e88d">&#34;VirtualFree failed: %w&#34;</span>, err)
+</span></span><span style="display:flex;"><span>	}
+</span></span><span style="display:flex;"><span>	<span style="color:#c099ff">return</span> <span style="color:#ffc777">nil</span>
+</span></span><span style="display:flex;"><span>}
+</span></span></code></pre></div><h1 id="proof-of-concept-part-2">Proof of Concept: Part 2</h1>
+<p>In languages that do not have to adhere to a strict ABI, the following implementation would work for calling JIT compilation code that calls native language code. However, as mentioned previously, this does not work in Go when garbage collection occurs or other stack-related functions.</p>
+<div class="highlight"><pre tabindex="0" style="color:#c8d3f5;background-color:#222436;-moz-tab-size:4;-o-tab-size:4;tab-size:4;"><code class="language-go" data-lang="go"><span style="display:flex;"><span><span style="color:#444a73;font-style:italic">// main.go</span>
+</span></span><span style="display:flex;"><span><span style="color:#86e1fc">package</span> main
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span><span style="color:#86e1fc">import</span> (
+</span></span><span style="display:flex;"><span>	<span style="color:#c3e88d">&#34;reflect&#34;</span>
+</span></span><span style="display:flex;"><span>	<span style="color:#c3e88d">&#34;runtime&#34;</span>
+</span></span><span style="display:flex;"><span>)
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span><span style="color:#c099ff">func</span> <span style="color:#82aaff">main</span>() {
+</span></span><span style="display:flex;"><span>	a <span style="color:#c3e88d;font-weight:bold">:=</span> <span style="color:#82aaff">funcAddr</span>(goFunction)
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span>	code <span style="color:#c3e88d;font-weight:bold">:=</span> []<span style="color:#4fd6be">byte</span>{
+</span></span><span style="display:flex;"><span>		<span style="color:#444a73;font-style:italic">// MOVABSQ a, RAX</span>
+</span></span><span style="display:flex;"><span>		<span style="color:#ffc777">0x48</span>, <span style="color:#ffc777">0xB8</span>,
+</span></span><span style="display:flex;"><span>		<span style="color:#c3e88d">byte</span>(a),
+</span></span><span style="display:flex;"><span>		<span style="color:#c3e88d">byte</span>(a <span style="color:#c3e88d;font-weight:bold">&gt;&gt;</span> <span style="color:#ffc777">8</span>),
+</span></span><span style="display:flex;"><span>		<span style="color:#c3e88d">byte</span>(a <span style="color:#c3e88d;font-weight:bold">&gt;&gt;</span> <span style="color:#ffc777">16</span>),
+</span></span><span style="display:flex;"><span>		<span style="color:#c3e88d">byte</span>(a <span style="color:#c3e88d;font-weight:bold">&gt;&gt;</span> <span style="color:#ffc777">24</span>),
+</span></span><span style="display:flex;"><span>		<span style="color:#c3e88d">byte</span>(a <span style="color:#c3e88d;font-weight:bold">&gt;&gt;</span> <span style="color:#ffc777">32</span>),
+</span></span><span style="display:flex;"><span>		<span style="color:#c3e88d">byte</span>(a <span style="color:#c3e88d;font-weight:bold">&gt;&gt;</span> <span style="color:#ffc777">40</span>),
+</span></span><span style="display:flex;"><span>		<span style="color:#c3e88d">byte</span>(a <span style="color:#c3e88d;font-weight:bold">&gt;&gt;</span> <span style="color:#ffc777">48</span>),
+</span></span><span style="display:flex;"><span>		<span style="color:#c3e88d">byte</span>(a <span style="color:#c3e88d;font-weight:bold">&gt;&gt;</span> <span style="color:#ffc777">56</span>),
+</span></span><span style="display:flex;"><span>		<span style="color:#444a73;font-style:italic">// CALL AX</span>
+</span></span><span style="display:flex;"><span>		<span style="color:#ffc777">0xff</span>, <span style="color:#ffc777">0xd0</span>,
+</span></span><span style="display:flex;"><span>		<span style="color:#444a73;font-style:italic">// RET</span>
+</span></span><span style="display:flex;"><span>		<span style="color:#ffc777">0xc3</span>,
+</span></span><span style="display:flex;"><span>	}
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span>	executable, err <span style="color:#c3e88d;font-weight:bold">:=</span> <span style="color:#82aaff">mmapExecutable</span>(<span style="color:#c3e88d">len</span>(code))
+</span></span><span style="display:flex;"><span>	<span style="color:#c099ff">if</span> err <span style="color:#c3e88d;font-weight:bold">!=</span> <span style="color:#ffc777">nil</span> {
+</span></span><span style="display:flex;"><span>		<span style="color:#c3e88d">panic</span>(err)
+</span></span><span style="display:flex;"><span>	}
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span>	<span style="color:#c099ff">defer</span> <span style="color:#82aaff">munmapExecutable</span>(executable)
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span>	<span style="color:#c3e88d">copy</span>(executable, code)
+</span></span><span style="display:flex;"><span>	<span style="color:#82aaff">callJIT</span>(<span style="color:#c3e88d;font-weight:bold">&amp;</span>executable[<span style="color:#ffc777">0</span>])
+</span></span><span style="display:flex;"><span>}
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span><span style="color:#c099ff">func</span> <span style="color:#82aaff">goFunction</span>() {
+</span></span><span style="display:flex;"><span>	<span style="color:#c3e88d">println</span>(<span style="color:#c3e88d">&#34;called from jit code&#34;</span>)
+</span></span><span style="display:flex;"><span>	runtime.<span style="color:#82aaff">GC</span>() <span style="color:#444a73;font-style:italic">// the line that causes the stack functions which break the jit</span>
+</span></span><span style="display:flex;"><span>}
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span><span style="color:#444a73;font-style:italic">// asm stubs</span>
+</span></span><span style="display:flex;"><span><span style="color:#c099ff">func</span> <span style="color:#82aaff">callJIT</span>(code <span style="color:#c3e88d;font-weight:bold">*</span><span style="color:#4fd6be">byte</span>)
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span><span style="color:#c099ff">func</span> <span style="color:#82aaff">funcAddr</span>(f <span style="color:#4fd6be">any</span>) <span style="color:#4fd6be">uintptr</span> {
+</span></span><span style="display:flex;"><span>	v <span style="color:#c3e88d;font-weight:bold">:=</span> reflect.<span style="color:#82aaff">ValueOf</span>(f)
+</span></span><span style="display:flex;"><span>	<span style="color:#c099ff">if</span> v.<span style="color:#82aaff">Kind</span>() <span style="color:#c3e88d;font-weight:bold">!=</span> reflect.Func {
+</span></span><span style="display:flex;"><span>		<span style="color:#c3e88d">panic</span>(<span style="color:#c3e88d">&#34;funcAddr: not a func&#34;</span>)
+</span></span><span style="display:flex;"><span>	}
+</span></span><span style="display:flex;"><span>	<span style="color:#c099ff">return</span> v.<span style="color:#82aaff">Pointer</span>()
+</span></span><span style="display:flex;"><span>}
+</span></span></code></pre></div><p>This implementation has 3 main parts: the JIT code being updated, goFunction being called, and funcAddr, a helper for finding the location of goFunction in memory.</p>
+<p>At initial compilation, goFunction is compiled into the program. At runtime, funcAddr is called. funcAddr uses reflection to get the function pointer to goFunction and sets “a” to the pointer.</p>
+<p>The “code” variable has been changed from our previous version. Previously, we used our JIT code to update a variable value; this time, we will use it to call a Go function - goFunction. Since we have the pointer to goFunction, we will use “MOVABSQ a, RAX” to move it into register RAX. Then we will jump into it by calling RAX.</p>
+<p>At this time, goFunction runs. If a stack-related function is not called, it will return with no errors. However, if a stack-related function like runtime.GC(), which forces garbage collection, is called; it will crash with an error, usually “fatal error: unexpected signal during runtime execution” or “unexpected return pc”.</p>
+<h1 id="proof-of-concept-part-3">Proof of Concept: Part 3</h1>
+<p>Fixing this problem requires a few changes; most importantly, we will need to call Go functions from locations the Go program will recognize, not arbitrary JIT code. We can tack onto our Go assembly a label for handling Go function calls. This will trick the Go runtime into believing we are calling from a valid Go function. This will occur after the JMP instruction for entering the JIT code, which will always have a RET within it. This means the label for handling Go function calls will never be implicitly called; just explicitly called when we want to trick the runtime.</p>
+<div class="highlight"><pre tabindex="0" style="color:#c8d3f5;background-color:#222436;-moz-tab-size:4;-o-tab-size:4;tab-size:4;"><code class="language-asm" data-lang="asm"><span style="display:flex;"><span><span style="color:#444a73;font-style:italic">#include &#34;funcdata.h&#34;
+</span></span></span><span style="display:flex;"><span><span style="color:#444a73;font-style:italic"></span>
+</span></span><span style="display:flex;"><span><span style="color:#444a73;font-style:italic">//jit_amd64.s
+</span></span></span><span style="display:flex;"><span><span style="color:#444a73;font-style:italic"></span><span style="color:#82aaff">TEXT</span> <span style="color:#c53b53">·</span><span style="color:#ff966c">callJIT</span>(<span style="color:#ff966c">SB</span>), <span style="color:#ffc777">0</span>, <span style="color:#ff966c">$8-8</span>
+</span></span><span style="display:flex;"><span>    <span style="color:#82aaff">NO_LOCAL_POINTERS</span>
+</span></span><span style="display:flex;"><span>    <span style="color:#82aaff">MOVQ</span> <span style="color:#ff966c">code</span><span style="color:#c53b53">+</span><span style="color:#ffc777">0</span>(<span style="color:#ff966c">FP</span>), <span style="color:#ff966c">AX</span>
+</span></span><span style="display:flex;"><span>    <span style="color:#82aaff">JMP</span> <span style="color:#ff966c">AX</span>
+</span></span><span style="display:flex;"><span><span style="color:#c3e88d">gocall:</span>
+</span></span><span style="display:flex;"><span>    <span style="color:#82aaff">CALL</span> <span style="color:#ff966c">CX</span>
+</span></span><span style="display:flex;"><span>    <span style="color:#82aaff">JMP</span> (<span style="color:#ff966c">SP</span>)
+</span></span></code></pre></div><ul>
+<li>$8-8 is changed, since we need 8 frame bytes to write the origin return address.</li>
+<li>NO_LOCAL_POINTERS is due to the CALL and non-zero frame size (requires funcdata.h import)</li>
+</ul>
+<p>In versions of Go &lt;1.17, this would be the point at which things begin to simplify. Using the funcAddr function, a pointer to callJIT can be found, and the offset of the gocall label can be added; however, in modern versions of Go with both ABIs, there is an additional twist. As mentioned previously, Go ABI0 will have a wrapper inserted for it to interop with ABIInternal; this occurs with our callJIT function. If you attempt to get a pointer at runtime to callJIT using our funcAddr, it will actually return the wrapper&rsquo;s pointer, not the original callJIT function pointer. To remedy this, another assembly function is added:</p>
+<div class="highlight"><pre tabindex="0" style="color:#c8d3f5;background-color:#222436;-moz-tab-size:4;-o-tab-size:4;tab-size:4;"><code class="language-asm" data-lang="asm"><span style="display:flex;"><span><span style="color:#444a73;font-style:italic">// Helper: func callJITImplAddr() uintptr
+</span></span></span><span style="display:flex;"><span><span style="color:#444a73;font-style:italic">// Returns the address of the ABI0 implementation symbol.
+</span></span></span><span style="display:flex;"><span><span style="color:#444a73;font-style:italic"></span><span style="color:#82aaff">TEXT</span> <span style="color:#c53b53">·</span><span style="color:#ff966c">callJITImplAddr</span>(<span style="color:#ff966c">SB</span>), <span style="color:#ffc777">0</span>, <span style="color:#ff966c">$0-8</span>
+</span></span><span style="display:flex;"><span>    <span style="color:#82aaff">NO_LOCAL_POINTERS</span>
+</span></span><span style="display:flex;"><span>    <span style="color:#82aaff">MOVQ</span> <span style="color:#ff966c">$</span><span style="color:#c53b53">·</span><span style="color:#ff966c">callJIT</span>(<span style="color:#ff966c">SB</span>), <span style="color:#ff966c">AX</span>  <span style="color:#444a73;font-style:italic">// address of ABI0 impl, not trampoline
+</span></span></span><span style="display:flex;"><span><span style="color:#444a73;font-style:italic"></span>    <span style="color:#82aaff">MOVQ</span> <span style="color:#ff966c">AX</span>, <span style="color:#ff966c">ret</span><span style="color:#c53b53">+</span><span style="color:#ffc777">0</span>(<span style="color:#ff966c">FP</span>)
+</span></span><span style="display:flex;"><span>    <span style="color:#82aaff">RET</span>
+</span></span></code></pre></div><p>This function pulls the pointer to the original ABI0 callJIT, not the ABIInternal wrapper. It then returns this on register AX, the first and only return value. From this point, we have a pointer to callJIT, and need to add an offset for the gocall label.</p>
+<div class="highlight"><pre tabindex="0" style="color:#c8d3f5;background-color:#222436;-moz-tab-size:4;-o-tab-size:4;tab-size:4;"><code class="language-go" data-lang="go"><span style="display:flex;"><span><span style="color:#444a73;font-style:italic">// asm stub</span>
+</span></span><span style="display:flex;"><span><span style="color:#c099ff">func</span> <span style="color:#82aaff">callJITImplAddr</span>() <span style="color:#4fd6be">uintptr</span>
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span><span style="color:#c099ff">func</span> <span style="color:#82aaff">getCallAddr</span>() <span style="color:#4fd6be">uintptr</span> {
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span>	impl <span style="color:#c3e88d;font-weight:bold">:=</span> <span style="color:#82aaff">callJITImplAddr</span>()
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span>	<span style="color:#444a73;font-style:italic">// most offsets seem to be between 30 - 40</span>
+</span></span><span style="display:flex;"><span>	b <span style="color:#c3e88d;font-weight:bold">:=</span> unsafe.<span style="color:#82aaff">Slice</span>((<span style="color:#c3e88d;font-weight:bold">*</span><span style="color:#4fd6be">byte</span>)(unsafe.<span style="color:#82aaff">Pointer</span>(impl)), <span style="color:#ffc777">0x60</span>)
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span>	<span style="color:#444a73;font-style:italic">// equal to call cx</span>
+</span></span><span style="display:flex;"><span>	label <span style="color:#c3e88d;font-weight:bold">:=</span> []<span style="color:#4fd6be">byte</span>{<span style="color:#ffc777">0xFF</span>, <span style="color:#ffc777">0xD1</span>}
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span>	<span style="color:#444a73;font-style:italic">// get index of CALL CX</span>
+</span></span><span style="display:flex;"><span>	offset <span style="color:#c3e88d;font-weight:bold">:=</span> bytes.<span style="color:#82aaff">Index</span>(b, label)
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span>	<span style="color:#c099ff">return</span> impl <span style="color:#c3e88d;font-weight:bold">+</span> <span style="color:#c3e88d">uintptr</span>(offset)
+</span></span><span style="display:flex;"><span>}
+</span></span></code></pre></div><p>The gocall label will be offset a different amount based on the Go version and OS. So when getCallAddr is called, we need to calculate the offset.</p>
+<ul>
+<li>“impl” is the address of callJIT as mentioned previously</li>
+<li>“b” is an array of the first few bytes in callJIT</li>
+<li>“label” is the gocall label, in our case CALL CX</li>
+<li>“offset” is the calculated offset from “impl”, calculated by searching for the first CALL CX</li>
+<li>getCallAddr return callJIT + offset of gocall</li>
+</ul>
+<div class="highlight"><pre tabindex="0" style="color:#c8d3f5;background-color:#222436;-moz-tab-size:4;-o-tab-size:4;tab-size:4;"><code class="language-go" data-lang="go"><span style="display:flex;"><span><span style="color:#c099ff">func</span> <span style="color:#82aaff">main</span>() {
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span>	a <span style="color:#c3e88d;font-weight:bold">:=</span> <span style="color:#82aaff">funcAddr</span>(goFunction)
+</span></span><span style="display:flex;"><span>	j <span style="color:#c3e88d;font-weight:bold">:=</span> <span style="color:#82aaff">getCallAddr</span>()
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span>	code <span style="color:#c3e88d;font-weight:bold">:=</span> []<span style="color:#4fd6be">byte</span>{
+</span></span><span style="display:flex;"><span>		<span style="color:#444a73;font-style:italic">// MOVABSQ funcAddr(f), CX</span>
+</span></span><span style="display:flex;"><span>		<span style="color:#ffc777">0x48</span>, <span style="color:#ffc777">0xB9</span>,
+</span></span><span style="display:flex;"><span>		<span style="color:#c3e88d">byte</span>(a),
+</span></span><span style="display:flex;"><span>		<span style="color:#c3e88d">byte</span>(a <span style="color:#c3e88d;font-weight:bold">&gt;&gt;</span> <span style="color:#ffc777">8</span>),
+</span></span><span style="display:flex;"><span>		<span style="color:#c3e88d">byte</span>(a <span style="color:#c3e88d;font-weight:bold">&gt;&gt;</span> <span style="color:#ffc777">16</span>),
+</span></span><span style="display:flex;"><span>		<span style="color:#c3e88d">byte</span>(a <span style="color:#c3e88d;font-weight:bold">&gt;&gt;</span> <span style="color:#ffc777">24</span>),
+</span></span><span style="display:flex;"><span>		<span style="color:#c3e88d">byte</span>(a <span style="color:#c3e88d;font-weight:bold">&gt;&gt;</span> <span style="color:#ffc777">32</span>),
+</span></span><span style="display:flex;"><span>		<span style="color:#c3e88d">byte</span>(a <span style="color:#c3e88d;font-weight:bold">&gt;&gt;</span> <span style="color:#ffc777">40</span>),
+</span></span><span style="display:flex;"><span>		<span style="color:#c3e88d">byte</span>(a <span style="color:#c3e88d;font-weight:bold">&gt;&gt;</span> <span style="color:#ffc777">48</span>),
+</span></span><span style="display:flex;"><span>		<span style="color:#c3e88d">byte</span>(a <span style="color:#c3e88d;font-weight:bold">&gt;&gt;</span> <span style="color:#ffc777">56</span>),
+</span></span><span style="display:flex;"><span>		<span style="color:#444a73;font-style:italic">// MOVABSQ funcAddr(callJIT)+offset (gocall label), DI</span>
+</span></span><span style="display:flex;"><span>		<span style="color:#ffc777">0x48</span>, <span style="color:#ffc777">0xBF</span>,
+</span></span><span style="display:flex;"><span>		<span style="color:#c3e88d">byte</span>(j),
+</span></span><span style="display:flex;"><span>		<span style="color:#c3e88d">byte</span>(j <span style="color:#c3e88d;font-weight:bold">&gt;&gt;</span> <span style="color:#ffc777">8</span>),
+</span></span><span style="display:flex;"><span>		<span style="color:#c3e88d">byte</span>(j <span style="color:#c3e88d;font-weight:bold">&gt;&gt;</span> <span style="color:#ffc777">16</span>),
+</span></span><span style="display:flex;"><span>		<span style="color:#c3e88d">byte</span>(j <span style="color:#c3e88d;font-weight:bold">&gt;&gt;</span> <span style="color:#ffc777">24</span>),
+</span></span><span style="display:flex;"><span>		<span style="color:#c3e88d">byte</span>(j <span style="color:#c3e88d;font-weight:bold">&gt;&gt;</span> <span style="color:#ffc777">32</span>),
+</span></span><span style="display:flex;"><span>		<span style="color:#c3e88d">byte</span>(j <span style="color:#c3e88d;font-weight:bold">&gt;&gt;</span> <span style="color:#ffc777">40</span>),
+</span></span><span style="display:flex;"><span>		<span style="color:#c3e88d">byte</span>(j <span style="color:#c3e88d;font-weight:bold">&gt;&gt;</span> <span style="color:#ffc777">48</span>),
+</span></span><span style="display:flex;"><span>		<span style="color:#c3e88d">byte</span>(j <span style="color:#c3e88d;font-weight:bold">&gt;&gt;</span> <span style="color:#ffc777">56</span>),
+</span></span><span style="display:flex;"><span>		<span style="color:#444a73;font-style:italic">// LEAQ 6(PC), SI</span>
+</span></span><span style="display:flex;"><span>		<span style="color:#ffc777">0x48</span>, <span style="color:#ffc777">0x8d</span>, <span style="color:#ffc777">0x35</span>, (<span style="color:#ffc777">4</span> <span style="color:#c3e88d;font-weight:bold">+</span> <span style="color:#ffc777">2</span>), <span style="color:#ffc777">0</span>, <span style="color:#ffc777">0</span>, <span style="color:#ffc777">0</span>,
+</span></span><span style="display:flex;"><span>		<span style="color:#444a73;font-style:italic">// MOVQ SI, (SP)</span>
+</span></span><span style="display:flex;"><span>		<span style="color:#ffc777">0x48</span>, <span style="color:#ffc777">0x89</span>, <span style="color:#ffc777">0x34</span>, <span style="color:#ffc777">0x24</span>,
+</span></span><span style="display:flex;"><span>		<span style="color:#444a73;font-style:italic">// JMP DI</span>
+</span></span><span style="display:flex;"><span>		<span style="color:#ffc777">0xff</span>, <span style="color:#ffc777">0xe7</span>,
+</span></span><span style="display:flex;"><span>		<span style="color:#444a73;font-style:italic">// ADDQ $framesize, SP</span>
+</span></span><span style="display:flex;"><span>		<span style="color:#ffc777">0x48</span>, <span style="color:#ffc777">0x83</span>, <span style="color:#ffc777">0xc4</span>, (<span style="color:#ffc777">8</span> <span style="color:#c3e88d;font-weight:bold">+</span> <span style="color:#ffc777">8</span>),
+</span></span><span style="display:flex;"><span>		<span style="color:#444a73;font-style:italic">// RET</span>
+</span></span><span style="display:flex;"><span>		<span style="color:#ffc777">0xc3</span>,
+</span></span><span style="display:flex;"><span>	}
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span>	executable, err <span style="color:#c3e88d;font-weight:bold">:=</span> <span style="color:#82aaff">mmapExecutable</span>(<span style="color:#c3e88d">len</span>(code))
+</span></span><span style="display:flex;"><span>	<span style="color:#c099ff">if</span> err <span style="color:#c3e88d;font-weight:bold">!=</span> <span style="color:#ffc777">nil</span> {
+</span></span><span style="display:flex;"><span>		<span style="color:#c3e88d">panic</span>(err)
+</span></span><span style="display:flex;"><span>	}
+</span></span><span style="display:flex;"><span>	<span style="color:#c3e88d">copy</span>(executable, code)
+</span></span><span style="display:flex;"><span>	<span style="color:#82aaff">callJIT</span>(<span style="color:#c3e88d;font-weight:bold">&amp;</span>executable[<span style="color:#ffc777">0</span>])
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span>	<span style="color:#82aaff">munmapExecutable</span>(executable)
+</span></span><span style="display:flex;"><span>}
+</span></span></code></pre></div><p>With a pointer to the gocall label, we can now build our CallFunction logic within the JIT code.</p>
+<ol>
+<li>MOVABS *goFunction, CX: move the pointer to goFunction in RCX</li>
+<li>MOVABS *gocall, DI: move the pointer to the gocall label into RDI</li>
+<li>LEAQ 6(PC), SI: the address PC+6 is temporarily placed into SI (PC+6 is the address after the jump to gocall label)</li>
+<li>MOVQ SI, (SP): the previous address is then placed onto SP</li>
+<li>JMP DI: we jump to the gocall label, which will have a CALL to CX and run our goFunction</li>
+<li>ADDQ $framesize, SP: On return from the goFunction and gocall label handler, we need to return the frame to memory. 8 + 8 is used for the previous BP value stored by Go, and the location where the return address of CALL CX is stored from earlier.</li>
+<li>Finally, we return.</li>
+</ol>
+<p><img src="https://aaronbalke.com/images/calling-go-functions-from-jit-code-in-go.png" alt="calling go functions from jit code in go"></p>
+<h1 id="conclusion">Conclusion</h1>
+<p>This proof of concept is built upon in gojit. Gojit has been refactored to include a CallFunc(f func) method that supports the assembly code above and the required stack frame handling. The JIT compiler has been used in the guac emulator for GB, GBA, and NDS emulation. It leads to a 2-4x speed increase in CPU emulation. I do recommend checking out the guac emulator if you are interested in a real-life example. It includes the setup of multiple JIT pages, analysis and metrics for JIT compilation thresholds, invalidation, and an LRU cache for invalidating dead JIT compiler blocks.</p>
+<p><img src="https://aaronbalke.com/images/guac-performance.png" alt="guac-performance"></p>
+<h1 id="references">References</h1>
+<p><a href="https://go.dev/src/cmd/compile/abi-internal">Go internal ABI specification</a></p>
+<p><a href="https://github.com/golang/go/issues/20123">runtime: &ldquo;unexpected return pc&rdquo; with JIT-generated code #20123</a></p>
+<p><a href="https://go.googlesource.com/proposal/+/master/design/27539-internal-abi.md">Proposal: Create an undefined internal calling convention</a></p>
+<p><a href="https://www.quasilyte.dev/blog/post/call-go-from-jit/">Calling Go funcs from asm and JITed code</a></p>
+
+        
+    </div>
+
+    <div class="prev-next">
+        
+    </div>
+
+    
+    
+        <svg id="btt-button" class="arrow-logo" xmlns="http://www.w3.org/2000/svg" height="1em" viewBox="0 0 384 512" onclick="scrollToTop()" title="Go to top">
+    
+    <path d="M177 159.7l136 136c9.4 9.4 9.4 24.6 0 33.9l-22.6 22.6c-9.4 9.4-24.6 9.4-33.9 0L160 255.9l-96.4 96.4c-9.4 9.4-24.6 9.4-33.9 0L7 329.7c-9.4-9.4-9.4-24.6 0-33.9l136-136c9.4-9.5 24.6-9.5 34-.1z"/>
+</svg>
+<script>
+    let backToTopButton = document.getElementById("btt-button");
+
+    window.onscroll = function() {
+        scrollFunction()
+    };
+
+    function scrollFunction() {
+        if (document.body.scrollTop > 20 || document.documentElement.scrollTop > 20) {
+            backToTopButton.style.display = "block";
+        } else {
+            backToTopButton.style.display = "none";
+        }
+    }
+
+    function scrollToTop() {
+        window.scrollTo(0, 0);
+    }
+</script>
+
+    
+    
+</div>
+
+
+
+    
+
+        </main><footer class="footer">
+    
+    
+
+    
+
+    
+
+    
+
+    <span>
+    </span>
+</footer>
+</body>
+</html>
