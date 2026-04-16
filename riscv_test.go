@@ -245,3 +245,291 @@ func TestRISCVTests_UC(t *testing.T) {
 		t.Run(name, func(t *testing.T) { runRISCVTest(t, path) })
 	}
 }
+
+// ══════════════════════════════════════════════════════════════════════════
+// JIT: run riscv-tests through JIT (exit-code only)
+// ══════════════════════════════════════════════════════════════════════════
+
+func runRISCVTestJIT(t *testing.T, elfPath string) {
+	t.Helper()
+	data, err := os.ReadFile(elfPath)
+	if err != nil {
+		t.Skipf("ELF not found: %s", elfPath)
+		return
+	}
+
+	mem, merr := NewGuestMemory(Size32KB)
+	if merr != nil {
+		t.Fatal(merr)
+	}
+	defer mem.Free()
+
+	entry, lerr := LoadELFBytes(mem, data)
+	if lerr != nil {
+		t.Fatalf("LoadELF: %v", lerr)
+	}
+
+	cpu := NewCPU(*mem)
+	cpu.SetPC(entry)
+
+	exitCode, err := runJITWithOS(cpu)
+	if err != nil {
+		t.Fatalf("JIT run error: %v", err)
+	}
+	if exitCode != 0 {
+		testNum := exitCode >> 1
+		t.Errorf("JIT FAILED: test %d (exit code %d)", testNum, exitCode)
+	}
+}
+
+func TestRISCVTests_UI_JIT(t *testing.T) {
+	entries, err := filepath.Glob(filepath.Join(rvTestsDir, "rv64ui-p-*"))
+	if err != nil || len(entries) == 0 {
+		t.Skip("rv64ui ELFs not found")
+	}
+	for _, path := range entries {
+		name := strings.TrimPrefix(filepath.Base(path), "rv64ui-p-")
+		t.Run(name, func(t *testing.T) { runRISCVTestJIT(t, path) })
+	}
+}
+
+func TestRISCVTests_UM_JIT(t *testing.T) {
+	entries, err := filepath.Glob(filepath.Join(rvTestsDir, "rv64um-p-*"))
+	if err != nil || len(entries) == 0 {
+		t.Skip("rv64um ELFs not found")
+	}
+	for _, path := range entries {
+		name := strings.TrimPrefix(filepath.Base(path), "rv64um-p-")
+		t.Run(name, func(t *testing.T) { runRISCVTestJIT(t, path) })
+	}
+}
+
+func TestRISCVTests_UA_JIT(t *testing.T) {
+	entries, err := filepath.Glob(filepath.Join(rvTestsDir, "rv64ua-p-*"))
+	if err != nil || len(entries) == 0 {
+		t.Skip("rv64ua ELFs not found")
+	}
+	for _, path := range entries {
+		name := strings.TrimPrefix(filepath.Base(path), "rv64ua-p-")
+		t.Run(name, func(t *testing.T) { runRISCVTestJIT(t, path) })
+	}
+}
+
+func TestRISCVTests_UF_JIT(t *testing.T) {
+	entries, err := filepath.Glob(filepath.Join(rvTestsDir, "rv64uf-p-*"))
+	if err != nil || len(entries) == 0 {
+		t.Skip("rv64uf ELFs not found")
+	}
+	for _, path := range entries {
+		name := strings.TrimPrefix(filepath.Base(path), "rv64uf-p-")
+		t.Run(name, func(t *testing.T) { runRISCVTestJIT(t, path) })
+	}
+}
+
+func TestRISCVTests_UD_JIT(t *testing.T) {
+	entries, err := filepath.Glob(filepath.Join(rvTestsDir, "rv64ud-p-*"))
+	if err != nil || len(entries) == 0 {
+		t.Skip("rv64ud ELFs not found")
+	}
+	for _, path := range entries {
+		name := strings.TrimPrefix(filepath.Base(path), "rv64ud-p-")
+		t.Run(name, func(t *testing.T) { runRISCVTestJIT(t, path) })
+	}
+}
+
+func TestRISCVTests_UC_JIT(t *testing.T) {
+	entries, err := filepath.Glob(filepath.Join(rvTestsDir, "rv64uc-p-*"))
+	if err != nil || len(entries) == 0 {
+		t.Skip("rv64uc ELFs not found")
+	}
+	for _, path := range entries {
+		name := strings.TrimPrefix(filepath.Base(path), "rv64uc-p-")
+		t.Run(name, func(t *testing.T) { runRISCVTestJIT(t, path) })
+	}
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// LOCKSTEP: per-block JIT vs interpreter with full register + memory compare
+// ══════════════════════════════════════════════════════════════════════════
+
+const lockstepMemSize = Size32KB
+
+func runLockstep(t *testing.T, elfPath string) {
+	t.Helper()
+	data, err := os.ReadFile(elfPath)
+	if err != nil {
+		t.Skipf("ELF not found: %s", elfPath)
+		return
+	}
+
+	// JIT side
+	jitMem, err := NewGuestMemory(lockstepMemSize)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer jitMem.Free()
+	jitEntry, err := LoadELFBytes(jitMem, data)
+	if err != nil {
+		t.Fatalf("LoadELF (jit): %v", err)
+	}
+	jitCPU := NewCPU(*jitMem)
+	jitCPU.SetPC(jitEntry)
+
+	// Interpreter side
+	interpMem, err := NewGuestMemory(lockstepMemSize)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer interpMem.Free()
+	interpEntry, err := LoadELFBytes(interpMem, data)
+	if err != nil {
+		t.Fatalf("LoadELF (interp): %v", err)
+	}
+	interpCPU := NewCPU(*interpMem)
+	interpCPU.SetPC(interpEntry)
+
+	jit := NewJIT()
+	maxCycles := uint64(10_000_000)
+	blockNum := 0
+
+	for jitCPU.Cycle() < maxCycles {
+		if jitCPU.pc != interpCPU.pc {
+			t.Fatalf("block %d: PC desync BEFORE dispatch: jit=0x%x interp=0x%x",
+				blockNum, jitCPU.pc, interpCPU.pc)
+		}
+
+		startPC := jitCPU.pc
+
+		// JIT: one dispatch cycle
+		jitIC, jitErr := jit.StepBlock(jitCPU)
+
+		if blockNum < 5 {
+			t.Logf("block %d: startPC=0x%x jitIC=%d jitPC=0x%x jitErr=%v",
+				blockNum, startPC, jitIC, jitCPU.pc, jitErr)
+		}
+
+		// Interpreter: same number of instructions
+		var interpErr error
+		for i := uint64(0); i < jitIC; i++ {
+			interpErr = interpCPU.step()
+			interpCPU.cycle++
+			if interpErr != nil {
+				break
+			}
+		}
+
+		// Check exit
+		jitExit := isExitEcall(jitCPU, jitErr)
+		interpExit := isExitEcall(interpCPU, interpErr)
+		if jitExit || interpExit {
+			if jitExit != interpExit {
+				t.Errorf("block %d: exit mismatch: jit=%v interp=%v",
+					blockNum, jitExit, interpExit)
+			}
+			break
+		}
+
+		// Handle non-exit exceptions
+		if jitErr != nil {
+			advancePastException(jitCPU, jitErr)
+		}
+		if interpErr != nil {
+			advancePastException(interpCPU, interpErr)
+		}
+
+		// Compare ALL registers
+		for r := 0; r < 32; r++ {
+			if jitCPU.x[r] != interpCPU.x[r] {
+				t.Errorf("block %d (pc=0x%x): x[%d] mismatch: jit=0x%x interp=0x%x",
+					blockNum, jitCPU.pc, r, jitCPU.x[r], interpCPU.x[r])
+			}
+		}
+		for r := 0; r < 32; r++ {
+			if jitCPU.f[r] != interpCPU.f[r] {
+				t.Errorf("block %d: f[%d] mismatch: jit=0x%x interp=0x%x",
+					blockNum, r, jitCPU.f[r], interpCPU.f[r])
+			}
+		}
+		if jitCPU.pc != interpCPU.pc {
+			t.Fatalf("block %d: PC mismatch AFTER dispatch: jit=0x%x interp=0x%x",
+				blockNum, jitCPU.pc, interpCPU.pc)
+		}
+		if jitCPU.fcsr != interpCPU.fcsr {
+			t.Errorf("block %d: FCSR mismatch: jit=0x%x interp=0x%x",
+				blockNum, jitCPU.fcsr, interpCPU.fcsr)
+		}
+
+		// Compare ALL memory
+		compareFullMemory(t, jitMem, interpMem, blockNum)
+
+		blockNum++
+	}
+
+	t.Logf("lockstep complete: %d blocks, %d instructions", blockNum, jitCPU.Cycle())
+}
+
+func TestRISCVTests_Lockstep_UI(t *testing.T) {
+	entries, err := filepath.Glob(filepath.Join(rvTestsDir, "rv64ui-p-*"))
+	if err != nil || len(entries) == 0 {
+		t.Skip("rv64ui ELFs not found")
+	}
+	for _, path := range entries {
+		name := strings.TrimPrefix(filepath.Base(path), "rv64ui-p-")
+		t.Run(name, func(t *testing.T) { runLockstep(t, path) })
+	}
+}
+
+func TestRISCVTests_Lockstep_UM(t *testing.T) {
+	entries, err := filepath.Glob(filepath.Join(rvTestsDir, "rv64um-p-*"))
+	if err != nil || len(entries) == 0 {
+		t.Skip("rv64um ELFs not found")
+	}
+	for _, path := range entries {
+		name := strings.TrimPrefix(filepath.Base(path), "rv64um-p-")
+		t.Run(name, func(t *testing.T) { runLockstep(t, path) })
+	}
+}
+
+func TestRISCVTests_Lockstep_UA(t *testing.T) {
+	entries, err := filepath.Glob(filepath.Join(rvTestsDir, "rv64ua-p-*"))
+	if err != nil || len(entries) == 0 {
+		t.Skip("rv64ua ELFs not found")
+	}
+	for _, path := range entries {
+		name := strings.TrimPrefix(filepath.Base(path), "rv64ua-p-")
+		t.Run(name, func(t *testing.T) { runLockstep(t, path) })
+	}
+}
+
+func TestRISCVTests_Lockstep_UF(t *testing.T) {
+	entries, err := filepath.Glob(filepath.Join(rvTestsDir, "rv64uf-p-*"))
+	if err != nil || len(entries) == 0 {
+		t.Skip("rv64uf ELFs not found")
+	}
+	for _, path := range entries {
+		name := strings.TrimPrefix(filepath.Base(path), "rv64uf-p-")
+		t.Run(name, func(t *testing.T) { runLockstep(t, path) })
+	}
+}
+
+func TestRISCVTests_Lockstep_UD(t *testing.T) {
+	entries, err := filepath.Glob(filepath.Join(rvTestsDir, "rv64ud-p-*"))
+	if err != nil || len(entries) == 0 {
+		t.Skip("rv64ud ELFs not found")
+	}
+	for _, path := range entries {
+		name := strings.TrimPrefix(filepath.Base(path), "rv64ud-p-")
+		t.Run(name, func(t *testing.T) { runLockstep(t, path) })
+	}
+}
+
+func TestRISCVTests_Lockstep_UC(t *testing.T) {
+	entries, err := filepath.Glob(filepath.Join(rvTestsDir, "rv64uc-p-*"))
+	if err != nil || len(entries) == 0 {
+		t.Skip("rv64uc ELFs not found")
+	}
+	for _, path := range entries {
+		name := strings.TrimPrefix(filepath.Base(path), "rv64uc-p-")
+		t.Run(name, func(t *testing.T) { runLockstep(t, path) })
+	}
+}

@@ -58,6 +58,9 @@ import (
 
 // Guest memory size constants — all powers of two.
 const (
+	Size16KB  uint64 = 1 << 14
+	Size32KB  uint64 = 1 << 15
+	Size64KB  uint64 = 1 << 16
 	Size64MB  uint64 = 1 << 26
 	Size128MB uint64 = 1 << 27
 	Size256MB uint64 = 1 << 28
