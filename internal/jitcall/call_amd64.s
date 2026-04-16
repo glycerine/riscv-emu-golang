@@ -28,7 +28,7 @@
 // NOSPLIT limit is 792, so 768 is the practical maximum.
 // The sret buffer occupies bytes [0,32), callee-saved regs at [32,80).
 // TCC code uses the remainder via RSP after its own prologue.
-TEXT ·Call(SB), NOSPLIT, $768-80
+TEXT ·Call(SB), $65536-80
 
 	// Save callee-saved registers that TCC-compiled code may clobber.
 	MOVQ	BX,  32(SP)

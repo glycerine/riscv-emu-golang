@@ -10,14 +10,24 @@ package riscv
 #include <libtcc.h>
 #include <stdlib.h>
 #include <stdint.h>
-#include <stdio.h>
+#include <unistd.h>
 #include <math.h>
 
 // jit_trace — callable from TCC-compiled blocks for debugging.
-// Prints a label, an address, and a value to stderr.
+// Uses raw write() syscall to avoid deep fprintf stack usage.
 static void jit_trace(const char *label, uint64_t addr, uint64_t val) {
-    fprintf(stderr, "[JIT] %s addr=0x%llx val=0x%llx\n",
-        label, (unsigned long long)addr, (unsigned long long)val);
+    char buf[128];
+    // Manual hex formatting to avoid fprintf stack depth.
+    static const char hex[] = "0123456789abcdef";
+    int i = 0;
+    buf[i++] = '['; buf[i++] = 'J'; buf[i++] = 'I'; buf[i++] = 'T'; buf[i++] = ']'; buf[i++] = ' ';
+    while (*label) buf[i++] = *label++;
+    buf[i++] = ' '; buf[i++] = 'a'; buf[i++] = '='; buf[i++] = '0'; buf[i++] = 'x';
+    for (int s = 60; s >= 0; s -= 4) buf[i++] = hex[(addr >> s) & 0xF];
+    buf[i++] = ' '; buf[i++] = 'v'; buf[i++] = '='; buf[i++] = '0'; buf[i++] = 'x';
+    for (int s = 60; s >= 0; s -= 4) buf[i++] = hex[(val >> s) & 0xF];
+    buf[i++] = '\n';
+    write(2, buf, i);
 }
 
 // compile_block compiles C source to native code in memory.

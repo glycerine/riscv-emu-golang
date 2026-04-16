@@ -828,18 +828,40 @@ func (e *emitter) emitLoad(rd, rs1 uint32, imm int64, funct3 uint32) {
 	}
 
 	e.emit("    { uint64_t addr = %s + %dLL;\n", e.rs(rs1), imm)
-	e.emit("      if (__builtin_expect((addr & %d) | ((addr | (addr+%d)) & ~mem_mask), 0)) {\n",
-		width-1, width-1)
+	// OOB check only (NOT alignment) — misaligned loads are handled below.
+	e.emit("      if (__builtin_expect((addr | (addr+%d)) & ~mem_mask, 0)) {\n", width-1)
 	e.emitWriteBackAll()
 	e.emit("        return (JITResult){0x%xULL, ic, %d, addr}; }\n", e.pc, jitLoadFault)
 
 	if rd != 0 {
-		if signed_ {
-			e.emit("      %s = (int64_t)(*(%s*)(mem_base + (addr & mem_mask)));\n",
-				e.rd(rd), ctype)
+		if width == 1 {
+			// Byte loads never misalign.
+			if signed_ {
+				e.emit("      %s = (int64_t)(*(%s*)(mem_base + (addr & mem_mask)));\n", e.rd(rd), ctype)
+			} else {
+				e.emit("      %s = (uint64_t)(*(%s*)(mem_base + (addr & mem_mask)));\n", e.rd(rd), ctype)
+			}
 		} else {
-			e.emit("      %s = (uint64_t)(*(%s*)(mem_base + (addr & mem_mask)));\n",
-				e.rd(rd), ctype)
+			d := e.rd(rd)
+			// Fast path: aligned access.
+			e.emit("      if (__builtin_expect(addr & %d, 0)) {\n", width-1)
+			// Slow path: misaligned — byte-by-byte little-endian load.
+			e.emit("        uint64_t v_ = 0;\n")
+			e.emit("        for (int i_ = 0; i_ < %d; i_++) v_ |= (uint64_t)*(uint8_t*)(mem_base + ((addr+i_) & mem_mask)) << (i_*8);\n", width)
+			if signed_ {
+				// Sign-extend from width to 64 bits.
+				shift := 64 - width*8
+				e.emit("        %s = (int64_t)(v_ << %d) >> %d;\n", d, shift, shift)
+			} else {
+				e.emit("        %s = v_;\n", d)
+			}
+			e.emit("      } else {\n")
+			if signed_ {
+				e.emit("        %s = (int64_t)(*(%s*)(mem_base + (addr & mem_mask)));\n", d, ctype)
+			} else {
+				e.emit("        %s = (uint64_t)(*(%s*)(mem_base + (addr & mem_mask)));\n", d, ctype)
+			}
+			e.emit("      }\n")
 		}
 	}
 	e.emit("    }\n")
@@ -874,14 +896,24 @@ func (e *emitter) emitStore(rs1, rs2 uint32, imm int64, funct3 uint32) {
 		return
 	}
 
+	s := e.rs(rs2)
 	e.emit("    { uint64_t addr = %s + %dLL;\n", e.rs(rs1), imm)
-	e.emit("      if (__builtin_expect((addr & %d) | ((addr | (addr+%d)) & ~mem_mask), 0)) {\n",
-		width-1, width-1)
+	// OOB check only — misaligned stores handled below.
+	e.emit("      if (__builtin_expect((addr | (addr+%d)) & ~mem_mask, 0)) {\n", width-1)
 	e.emitWriteBackAll()
 	e.emit("        return (JITResult){0x%xULL, ic, %d, addr}; }\n", e.pc, jitStoreFault)
-	e.emit("      jit_trace(\"ST\", (uint64_t)(mem_base + (addr & mem_mask)), (uint64_t)(%s));\n", e.rsC(rs2, 0))
-	e.emit("      *(%s*)(mem_base + (addr & mem_mask)) = (%s)%s; }\n",
-		ctype, ctype, e.rs(rs2))
+
+	if width == 1 {
+		e.emit("      *(uint8_t*)(mem_base + (addr & mem_mask)) = (uint8_t)%s; }\n", s)
+	} else {
+		e.emit("      if (__builtin_expect(addr & %d, 0)) {\n", width-1)
+		// Misaligned: byte-by-byte little-endian store.
+		e.emit("        uint64_t v_ = (uint64_t)(%s)%s;\n", ctype, s)
+		e.emit("        for (int i_ = 0; i_ < %d; i_++) *(uint8_t*)(mem_base + ((addr+i_) & mem_mask)) = (uint8_t)(v_ >> (i_*8));\n", width)
+		e.emit("      } else {\n")
+		e.emit("        *(%s*)(mem_base + (addr & mem_mask)) = (%s)%s;\n", ctype, ctype, s)
+		e.emit("      } }\n")
+	}
 }
 
 func storeInfo(funct3 uint32) (width uint64, ctype string) {
