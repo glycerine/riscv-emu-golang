@@ -196,12 +196,12 @@ func irStoreWidth(funct3 uint32) int {
 // ── finalize ───────────────────────────────────────────────────────────
 
 func (e *emitter) finalize() *emitResult {
-	// Fall-through return (dead code if block ended with explicit return).
-	if !e.terminated {
-		e.irEm.WriteBackAll()
-
-		e.irEm.Ret(e.pc, jitOK, ir.VRegZero)
-	}
+	// Fall-through return. Always emitted — for blocks that already have an
+	// explicit Ret (ECALL, EBREAK, JAL) this is dead code. For blocks that
+	// terminated due to untranslatable instructions (CSR, unknown opcode),
+	// this IS the return path.
+	e.irEm.WriteBackAll()
+	e.irEm.Ret(e.pc, jitOK, ir.VRegZero)
 
 	// Bail labels: goto targets not emitted.
 	for target := range e.gotoTargets {
@@ -290,17 +290,41 @@ func scanUsedRegs(mem *GuestMemory, startPC, endPC uint64, used *[32]bool) {
 					break
 				}
 			}
+			opcode := insn & 0x7F
 			rd := (insn >> 7) & 0x1F
 			rs1 := (insn >> 15) & 0x1F
 			rs2 := (insn >> 20) & 0x1F
-			opcode := insn & 0x7F
-			if rd != 0 { used[rd] = true }
-			if rs1 != 0 { used[rs1] = true }
-			// rs2 is used by R-type, STORE, BRANCH, FP-STORE
+			// Mark rd for opcodes that have a destination register.
+			// BRANCH (0x63), STORE (0x23), FP-STORE (0x27) use bits[11:7] for
+			// immediate, not rd.
 			switch opcode {
-			case 0x33, 0x3B, 0x63, 0x23, 0x27: // OP, OP-32, BRANCH, STORE, FP-STORE
+			case 0x63, 0x23, 0x27:
+				// no rd
+			default:
+				if rd != 0 { used[rd] = true }
+			}
+			// Mark rs1 (most formats use bits[19:15] for rs1).
+			// FENCE (0x0F), LUI (0x37), AUIPC (0x17), JAL (0x6F) don't have rs1.
+			switch opcode {
+			case 0x0F, 0x37, 0x17, 0x6F:
+				// no rs1
+			default:
+				if rs1 != 0 { used[rs1] = true }
+			}
+			// Mark rs2 for formats that use it.
+			switch opcode {
+			case 0x33, 0x3B: // OP, OP-32
 				if rs2 != 0 { used[rs2] = true }
-			case 0x43, 0x47, 0x4B, 0x4F: // FMA: rs2 + rs3
+			case 0x63: // BRANCH
+				if rs1 != 0 { used[rs1] = true }
+				if rs2 != 0 { used[rs2] = true }
+			case 0x23: // STORE
+				if rs1 != 0 { used[rs1] = true }
+				if rs2 != 0 { used[rs2] = true }
+			case 0x27: // FP-STORE
+				if rs1 != 0 { used[rs1] = true }
+				// rs2 is FP register index, not int
+			case 0x43, 0x47, 0x4B, 0x4F: // FMA
 				if rs2 != 0 { used[rs2] = true }
 				rs3 := insn >> 27
 				if rs3 != 0 { used[rs3] = true }
@@ -509,10 +533,12 @@ func (e *emitter) emit32(insn uint32) {
 			e.emitReturn(e.pc, jitEbreak)
 			e.terminated = true
 		default:
+			// CSR or unknown — end block before this instruction.
 			e.terminated = true
 		}
 
 	default:
+		// Unknown opcode — end block before this instruction.
 		e.terminated = true
 	}
 }
