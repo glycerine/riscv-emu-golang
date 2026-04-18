@@ -229,6 +229,14 @@ func RunWithChain(cpu *CPU, nc *NoteChain) error {
 	for {
 		err := cpu.step()
 		cpu.cycle++
+		// Tohost polling: check after every instruction.
+		// When watchAddr == 0 (the common case), this is a single
+		// predicted-not-taken branch — negligible overhead.
+		if cpu.watchAddr != 0 {
+			if v, _ := (&cpu.mem).Load64(cpu.watchAddr); v != 0 {
+				panic(&ExitError{Code: tohostExitCode(v)})
+			}
+		}
 		if err == nil {
 			continue
 		}

@@ -83,3 +83,39 @@ func TestLoadELF_Errors(t *testing.T) {
 		})
 	}
 }
+
+func TestFindSymbolAddr(t *testing.T) {
+	data, err := os.ReadFile("riscv-elf-tests/rv64ui-p-add")
+	if err != nil {
+		t.Skip("riscv-elf-tests not present")
+	}
+
+	// tohost must be found
+	addr, ok := FindSymbolAddr(data, "tohost")
+	if !ok {
+		t.Fatal("tohost symbol not found")
+	}
+	if addr == 0 {
+		t.Fatal("tohost address is 0")
+	}
+	t.Logf("tohost = 0x%x", addr)
+
+	// fromhost should also exist
+	addr2, ok2 := FindSymbolAddr(data, "fromhost")
+	if !ok2 {
+		t.Error("fromhost not found")
+	}
+	t.Logf("fromhost = 0x%x", addr2)
+
+	// nonexistent symbol returns false
+	_, ok3 := FindSymbolAddr(data, "no_such_symbol_xyz")
+	if ok3 {
+		t.Error("unexpected match for nonexistent symbol")
+	}
+
+	// empty/garbage data returns false
+	_, ok4 := FindSymbolAddr([]byte{}, "tohost")
+	if ok4 {
+		t.Error("expected false for empty data")
+	}
+}

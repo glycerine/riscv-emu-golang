@@ -224,6 +224,16 @@ func RunWithOS(cpu *CPU) (exitCode int, err error) {
 	return
 }
 
+// tohostExitCode converts a tohost value to an exit code matching the
+// riscv-tests convention: tohost==1 means PASS (exit code 0),
+// any other non-zero value is the raw fail code.
+func tohostExitCode(v uint64) int {
+	if v == 1 {
+		return 0
+	}
+	return int(v)
+}
+
 // ── Fault personality — optional fault note formatting ────────────────────
 
 // FaultHandler returns a NoteHandler that formats memory fault notes as

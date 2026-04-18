@@ -16,6 +16,7 @@ const (
 	elfTypeExec  = 2  // ET_EXEC
 	elfMachRISCV = 0xF3
 	ptLoad       = 1  // PT_LOAD
+	shtSymtab    = 2  // SHT_SYMTAB
 )
 
 // ELF64Header is the 64-byte ELF file header.
@@ -34,6 +35,30 @@ type elf64Header struct {
 	ShEntSize uint16
 	ShNum     uint16
 	ShStrNdx  uint16
+}
+
+// ELF64 section header (64 bytes).
+type elf64Shdr struct {
+	Name      uint32
+	Type      uint32
+	Flags     uint64
+	Addr      uint64
+	Offset    uint64
+	Size      uint64
+	Link      uint32
+	Info      uint32
+	AddrAlign uint64
+	EntSize   uint64
+}
+
+// ELF64 symbol table entry (24 bytes).
+type elf64Sym struct {
+	Name  uint32
+	Info  uint8
+	Other uint8
+	Shndx uint16
+	Value uint64
+	Size  uint64
 }
 
 // ELF64 program header (56 bytes).
@@ -175,6 +200,96 @@ func (b *byteReader) Seek(offset int64, whence int) (int64, error) {
 	}
 	b.pos = abs
 	return abs, nil
+}
+
+// FindSymbolAddr parses the ELF symbol table in data and returns the
+// address (st_value) of the named symbol. Returns (0, false) if the
+// symbol is not found or the binary has no symbol table.
+func FindSymbolAddr(data []byte, name string) (uint64, bool) {
+	le := binary.LittleEndian
+
+	// Validate ELF header minimally.
+	if len(data) < 64 {
+		return 0, false
+	}
+	if string(data[:4]) != elfMagic || data[4] != elfClass64 {
+		return 0, false
+	}
+
+	shOff := le.Uint64(data[40:])     // e_shoff
+	shEntSize := le.Uint16(data[58:]) // e_shentsize
+	shNum := le.Uint16(data[60:])     // e_shnum
+
+	if shOff == 0 || shNum == 0 || shEntSize < 64 {
+		return 0, false
+	}
+
+	// Find SHT_SYMTAB section.
+	var symtab elf64Shdr
+	found := false
+	for i := 0; i < int(shNum); i++ {
+		off := int(shOff) + i*int(shEntSize)
+		if off+64 > len(data) {
+			return 0, false
+		}
+		if err := binary.Read(&byteReader{data: data[off:]}, le, &symtab); err != nil {
+			return 0, false
+		}
+		if symtab.Type == shtSymtab {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return 0, false
+	}
+
+	// Read the associated string table (sh_link points to STRTAB index).
+	strtabOff := int(shOff) + int(symtab.Link)*int(shEntSize)
+	if strtabOff+64 > len(data) {
+		return 0, false
+	}
+	var strtab elf64Shdr
+	if err := binary.Read(&byteReader{data: data[strtabOff:]}, le, &strtab); err != nil {
+		return 0, false
+	}
+	strData := data[strtab.Offset:]
+	if uint64(len(data)) < strtab.Offset+strtab.Size {
+		return 0, false
+	}
+	strData = strData[:strtab.Size]
+
+	// Iterate symbol entries.
+	entSize := int(symtab.EntSize)
+	if entSize < 24 {
+		entSize = 24 // Elf64_Sym is 24 bytes
+	}
+	nSyms := int(symtab.Size) / entSize
+	for i := 0; i < nSyms; i++ {
+		off := int(symtab.Offset) + i*entSize
+		if off+24 > len(data) {
+			break
+		}
+		var sym elf64Sym
+		if err := binary.Read(&byteReader{data: data[off:]}, le, &sym); err != nil {
+			break
+		}
+		// Look up name in string table.
+		nameOff := int(sym.Name)
+		if nameOff >= len(strData) {
+			continue
+		}
+		// Find null terminator.
+		end := nameOff
+		for end < len(strData) && strData[end] != 0 {
+			end++
+		}
+		symName := string(strData[nameOff:end])
+		if symName == name {
+			return sym.Value, true
+		}
+	}
+	return 0, false
 }
 
 // BuildELF constructs a minimal RV64 executable ELF with one PT_LOAD

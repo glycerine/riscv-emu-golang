@@ -226,6 +226,13 @@ func (j *JIT) stepBlockResult(_ *CPU, res jitcall.Result) (uint64, error) {
 // falling back to the interpreter for untranslatable instructions.
 func (j *JIT) RunJIT(cpu *CPU) error {
 	for {
+		// Tohost polling — once per dispatch cycle (block granularity).
+		if cpu.watchAddr != 0 {
+			if v, _ := cpu.mem.Load64(cpu.watchAddr); v != 0 {
+				panic(&ExitError{Code: tohostExitCode(v)})
+			}
+		}
+
 		pc := cpu.pc
 
 		blk := j.lookupBlock(pc)

@@ -155,6 +155,10 @@ func runRISCVTest(t *testing.T, elfPath string) {
 
 	cpu := NewCPU(*mem)
 	cpu.SetPC(entry)
+	// Standard tohost exit detection: poll this address for non-zero writes.
+	if addr, ok := FindSymbolAddr(data, "tohost"); ok {
+		cpu.SetWatchAddr(addr)
+	}
 
 	exitCode, err := RunWithOS(cpu)
 	if err != nil {
@@ -271,6 +275,10 @@ func runRISCVTestJIT(t *testing.T, elfPath string) {
 
 	cpu := NewCPU(*mem)
 	cpu.SetPC(entry)
+	// Standard tohost exit detection: poll this address for non-zero writes.
+	if addr, ok := FindSymbolAddr(data, "tohost"); ok {
+		cpu.SetWatchAddr(addr)
+	}
 
 	exitCode, err := runJITWithOS(cpu)
 	if err != nil {

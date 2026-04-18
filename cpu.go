@@ -24,6 +24,10 @@ type CPU struct {
 	// LR/SC reservation
 	resvAddr  uint64
 	resvValid bool
+	// tohost watch: if non-zero, dispatch loops poll this guest address
+	// for a non-zero value and exit when detected. Standard riscv-tests
+	// exit mechanism: tohost==1 means PASS, other values mean FAIL.
+	watchAddr uint64
 }
 
 func NewCPU(mem GuestMemory) *CPU { return &CPU{mem: mem} }
@@ -38,6 +42,8 @@ func (c *CPU) FCSR() uint32              { return c.fcsr }
 func (c *CPU) SetFCSR(v uint32)          { c.fcsr = v }
 func (c *CPU) Cycle() uint64             { return c.cycle }
 func (c *CPU) ResetCycle()               { c.cycle = 0 }
+func (c *CPU) SetWatchAddr(addr uint64)  { c.watchAddr = addr }
+func (c *CPU) WatchAddr() uint64         { return c.watchAddr }
 
 // Run executes instructions until an unhandled note or fatal exception.
 // Exceptions are delivered through cpu.Notes; see NoteChain and RunWithChain.
