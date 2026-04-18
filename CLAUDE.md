@@ -74,8 +74,8 @@ make mem                      # memory profile
 - **`internal/fenv`**: Host FP exception flag access (MXCSR on x86-64)
 - **`bench/`**: Benchmarks (CPU throughput, memory ops, JIT). Guest ELF in `bench/libriscv_guest/`
 - **`fuzzoracle/`**: Oracle fuzzing against libriscv — requires `make bench-setup`
-- **`vendor/tcc`**: Precompiled TinyCC library (libtcc.a)
-- **`vendor/libriscv`**: Reference emulator (cloned by `make bench-setup`, ~400MB)
+- **`xendor/tcc`**: Precompiled TinyCC library (libtcc.a)
+- **`xendor/libriscv`**: Reference emulator (cloned by `make bench-setup`, ~400MB)
 - **`riscv-elf-tests/`**: Official RISC-V test suite ELFs
 
 ### Test Organization
@@ -87,7 +87,7 @@ make mem                      # memory profile
 
 ### CGO Build Tags
 
-- Default build: JIT + TCC (vendor/tcc must be present)
+- Default build: JIT + TCC (xendor/tcc must be present)
 - `libriscv` build tag: Required for `bench/libriscv/`
 - `fuzzoracle/` no longer needs any build tag.
 
