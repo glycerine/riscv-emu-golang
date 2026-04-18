@@ -258,6 +258,28 @@ func (lc *lowerCtx) lowerInstr(ins *IRInstr) error {
 	case IRNot:
 		lc.lowerUnary(ins, x86.ANOTQ)
 
+	// Bit manipulation
+	case IRClz:
+		if ins.T == I32 {
+			lc.lowerUnary(ins, x86.ALZCNTL)
+		} else {
+			lc.lowerUnary(ins, x86.ALZCNTQ)
+		}
+	case IRCtz:
+		if ins.T == I32 {
+			lc.lowerUnary(ins, x86.ATZCNTL)
+		} else {
+			lc.lowerUnary(ins, x86.ATZCNTQ)
+		}
+	case IRPopcount:
+		if ins.T == I32 {
+			lc.lowerUnary(ins, x86.APOPCNTL)
+		} else {
+			lc.lowerUnary(ins, x86.APOPCNTQ)
+		}
+	case IRBswap:
+		lc.lowerUnary(ins, x86.ABSWAPQ)
+
 	// Comparison
 	case IRSet:
 		lc.lowerSet(ins)

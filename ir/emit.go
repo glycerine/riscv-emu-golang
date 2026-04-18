@@ -111,6 +111,10 @@ func (e *Emitter) OrImm(dst, a VReg, imm int64)  { e.op2i(IROrImm, I64, dst, a, 
 func (e *Emitter) Xor(dst, a, b VReg)            { e.op3(IRXor, I64, dst, a, b) }
 func (e *Emitter) XorImm(dst, a VReg, imm int64) { e.op2i(IRXorImm, I64, dst, a, imm) }
 func (e *Emitter) Not(dst, a VReg)               { e.op2(IRNot, I64, dst, a) }
+func (e *Emitter) Clz(dst, a VReg, t Type)       { e.op2(IRClz, t, dst, a) }
+func (e *Emitter) Ctz(dst, a VReg, t Type)       { e.op2(IRCtz, t, dst, a) }
+func (e *Emitter) Popcount(dst, a VReg, t Type)  { e.op2(IRPopcount, t, dst, a) }
+func (e *Emitter) Bswap(dst, a VReg)             { e.op2(IRBswap, I64, dst, a) }
 
 // ── Comparison ──
 

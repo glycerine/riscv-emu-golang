@@ -278,6 +278,52 @@ func (e *emitter) emitDivW(dst, a, b ir.VReg, signed, wantRem bool) {
 	em.PlaceLabel(doneLabel)
 }
 
+// emitFMinMax emits FMIN or FMAX with NaN handling per RISC-V spec:
+// if either operand is NaN, return the other (canonical NaN if both are NaN).
+// For FMIN: return the smaller; for FMAX: return the larger.
+func (e *emitter) emitFMinMax(dst, a, b ir.VReg, t ir.Type, isMax bool) {
+	em := e.irEm
+	// Check if a is NaN: a != a
+	aNaN := em.Tmp()
+	em.FCmp(aNaN, a, a, ir.EQ, t) // 0 if NaN, 1 if not
+	// Check if b is NaN: b != b
+	bNaN := em.Tmp()
+	em.FCmp(bNaN, b, b, ir.EQ, t) // 0 if NaN, 1 if not
+
+	doneLabel := em.NewLabel()
+	aIsNaN := em.NewLabel()
+	bIsNaN := em.NewLabel()
+	pickA := em.NewLabel()
+
+	em.Branch(aNaN, ir.VRegZero, ir.EQ, aIsNaN)
+	em.Branch(bNaN, ir.VRegZero, ir.EQ, bIsNaN)
+
+	// Both are numbers — compare.
+	cmp := em.Tmp()
+	if isMax {
+		em.FCmp(cmp, a, b, ir.GT, t)
+	} else {
+		em.FCmp(cmp, a, b, ir.LT, t)
+	}
+	em.Branch(cmp, ir.VRegZero, ir.NE, pickA)
+	// Pick b.
+	em.Mov(dst, b)
+	em.Jump(doneLabel)
+
+	em.PlaceLabel(pickA)
+	em.Mov(dst, a)
+	em.Jump(doneLabel)
+
+	em.PlaceLabel(aIsNaN)
+	em.Mov(dst, b) // a is NaN → return b
+	em.Jump(doneLabel)
+
+	em.PlaceLabel(bIsNaN)
+	em.Mov(dst, a) // b is NaN → return a
+
+	em.PlaceLabel(doneLabel)
+}
+
 func branchPred(funct3 uint32) (ir.Pred, bool) {
 	switch funct3 {
 	case 0:
@@ -757,8 +803,15 @@ func (e *emitter) emitOpImm(rd, rs1 uint32, imm int64, funct3, funct7 uint32) {
 			e.irEm.Xor(e.xregDst(rd), src, t)
 		case 0x30: // CLZ/CTZ/CPOP/SEXT.B/SEXT.H
 			switch shamt {
-			case 0, 1, 2: // CLZ/CTZ/CPOP — bail
-				e.terminated = true
+			case 0: // CLZ
+				src := e.xreg(rs1)
+				e.irEm.Clz(e.xregDst(rd), src, ir.I64)
+			case 1: // CTZ
+				src := e.xreg(rs1)
+				e.irEm.Ctz(e.xregDst(rd), src, ir.I64)
+			case 2: // CPOP
+				src := e.xreg(rs1)
+				e.irEm.Popcount(e.xregDst(rd), src, ir.I64)
 			case 0x22: // SEXT.B
 				src := e.xreg(rs1)
 				e.irEm.Sext(e.xregDst(rd), src, ir.I8)
@@ -799,10 +852,26 @@ func (e *emitter) emitOpImm(rd, rs1 uint32, imm int64, funct3, funct7 uint32) {
 			t2 := e.irEm.Tmp()
 			e.irEm.ShlImm(t2, e.xreg(rs1), 64-shamt)
 			e.irEm.Or(e.xregDst(rd), t1, t2)
-		case 0x0A: // ORC.B — bail (complex bit manipulation)
-			e.terminated = true
-		case 0x1A: // REV8 — bail (complex byte-swap)
-			e.terminated = true
+		case 0x0A: // ORC.B — each byte becomes 0xFF if nonzero, 0x00 if zero
+			src := e.xreg(rs1)
+			dst := e.xregDst(rd)
+			e.irEm.Const(dst, 0)
+			for i := 0; i < 8; i++ {
+				byteVal := e.irEm.Tmp()
+				e.irEm.ShrImm(byteVal, src, int64(i*8))
+				e.irEm.AndImm(byteVal, byteVal, 0xFF)
+				mask := e.irEm.Tmp()
+				// mask = (byteVal != 0) ? 0xFF : 0
+				ne := e.irEm.Tmp()
+				e.irEm.Set(ne, byteVal, ir.VRegZero, ir.NE)
+				e.irEm.Neg(mask, ne)           // 0→0, 1→-1 (0xFFFF...)
+				e.irEm.AndImm(mask, mask, 0xFF) // keep only low byte = 0xFF or 0
+				e.irEm.ShlImm(mask, mask, int64(i*8))
+				e.irEm.Or(dst, dst, mask)
+			}
+		case 0x1A: // REV8 — byte-swap via BSWAP
+			src := e.xreg(rs1)
+			e.irEm.Bswap(e.xregDst(rd), src)
 		case 0x02: // ZEXT.H
 			src := e.xreg(rs1)
 			e.irEm.Zext(e.xregDst(rd), src, ir.I16)
@@ -860,8 +929,16 @@ func (e *emitter) emitOpImm32(rd, rs1 uint32, imm int64, funct3, funct7 uint32) 
 			e.irEm.Sext(t, e.xreg(rs1), ir.I32) // sign-extend to get int32
 			e.irEm.SarImm(t, t, shamt)
 			e.irEm.Sext(e.xregDst(rd), t, ir.I32)
-		case 0x30: // RORIW — bail for now
-			e.terminated = true
+		case 0x30: // RORIW — word rotate right immediate
+			src := e.xreg(rs1)
+			t := e.irEm.Tmp()
+			e.irEm.Zext(t, src, ir.I32)
+			t1 := e.irEm.Tmp()
+			e.irEm.ShrImm(t1, t, shamt)
+			t2 := e.irEm.Tmp()
+			e.irEm.ShlImm(t2, t, 32-shamt)
+			e.irEm.Or(t1, t1, t2)
+			e.irEm.Sext(e.xregDst(rd), t1, ir.I32)
 		default:
 			e.terminated = true
 		}
@@ -1161,6 +1238,56 @@ func (e *emitter) emitOp32(rd, rs1, rs2, funct3, funct7 uint32) {
 		t := e.irEm.Tmp()
 		e.irEm.Zext(t, a, ir.I32)
 		e.irEm.Add(dst, b, t)
+	case 0x30: // Zbb: ROLW/RORW
+		switch funct3 {
+		case 1: // ROLW
+			t := e.irEm.Tmp()
+			e.irEm.Zext(t, a, ir.I32)
+			t1 := e.irEm.Tmp()
+			shamt := e.irEm.Tmp()
+			e.irEm.AndImm(shamt, b, 31)
+			e.irEm.Shl(t1, t, shamt)
+			sub := e.irEm.Tmp()
+			e.irEm.Const(sub, 32)
+			e.irEm.Sub(sub, sub, shamt)
+			t2 := e.irEm.Tmp()
+			e.irEm.Shr(t2, t, sub)
+			e.irEm.Or(t1, t1, t2)
+			e.irEm.Sext(dst, t1, ir.I32)
+		case 5: // RORW
+			t := e.irEm.Tmp()
+			e.irEm.Zext(t, a, ir.I32)
+			t1 := e.irEm.Tmp()
+			shamt := e.irEm.Tmp()
+			e.irEm.AndImm(shamt, b, 31)
+			e.irEm.Shr(t1, t, shamt)
+			sub := e.irEm.Tmp()
+			e.irEm.Const(sub, 32)
+			e.irEm.Sub(sub, sub, shamt)
+			t2 := e.irEm.Tmp()
+			e.irEm.Shl(t2, t, sub)
+			e.irEm.Or(t1, t1, t2)
+			e.irEm.Sext(dst, t1, ir.I32)
+		default:
+			e.terminated = true
+		}
+	case 0x60: // Zbb: CLZW/CTZW/CPOPW
+		switch funct3 {
+		case 0: // CLZW (rs2 encoding = 0)
+			t := e.irEm.Tmp()
+			e.irEm.Zext(t, a, ir.I32)
+			e.irEm.Clz(dst, t, ir.I32)
+		case 1: // CTZW
+			t := e.irEm.Tmp()
+			e.irEm.Zext(t, a, ir.I32)
+			e.irEm.Ctz(dst, t, ir.I32)
+		case 2: // CPOPW
+			t := e.irEm.Tmp()
+			e.irEm.Zext(t, a, ir.I32)
+			e.irEm.Popcount(dst, t, ir.I32)
+		default:
+			e.terminated = true
+		}
 	case 0x10: // Zba: SH1ADD.UW / SH2ADD.UW / SH3ADD.UW
 		switch funct3 {
 		case 2:
@@ -1411,8 +1538,12 @@ func (e *emitter) emitFPOpS(rd, rs1, rs2, funct3, funct5 uint32) {
 		e.boxF32(rd, result)
 	case 0x04: // FSGNJ.S / FSGNJN.S / FSGNJX.S
 		e.emitFsgnjS(rd, rs1, rs2, funct3)
-	case 0x05: // FMIN.S / FMAX.S — bail
-		e.terminated = true
+	case 0x05: // FMIN.S / FMAX.S
+		a := e.unboxF32(rs1)
+		b := e.unboxF32(rs2)
+		result := e.irEm.Tmp()
+		e.emitFMinMax(result, a, b, ir.F32, funct3 == 1) // funct3=0: MIN, 1: MAX
+		e.boxF32(rd, result)
 	case 0x08: // FCVT.S.D
 		a := e.freg(rs1)
 		result := e.irEm.Tmp()
@@ -1463,8 +1594,10 @@ func (e *emitter) emitFPOpD(rd, rs1, rs2, funct3, funct5 uint32) {
 		e.irEm.FSqrt(e.fregDst(rd), a, ir.F64)
 	case 0x04: // FSGNJ.D
 		e.emitFsgnjD(rd, rs1, rs2, funct3)
-	case 0x05: // FMIN.D / FMAX.D — bail
-		e.terminated = true
+	case 0x05: // FMIN.D / FMAX.D
+		a := e.freg(rs1)
+		b := e.freg(rs2)
+		e.emitFMinMax(e.fregDst(rd), a, b, ir.F64, funct3 == 1)
 	case 0x08: // FCVT.D.S
 		a := e.unboxF32(rs1)
 		e.irEm.FCvtFF(e.fregDst(rd), a, ir.F32, ir.F64)

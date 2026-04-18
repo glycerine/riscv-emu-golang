@@ -165,6 +165,12 @@ const (
 	IRXorImm // Dst = A ^ Imm
 	IRNot    // Dst = ~A
 
+	// Bit manipulation
+	IRClz      // Dst = count leading zeros of A (type T: I32 or I64)
+	IRCtz      // Dst = count trailing zeros of A (type T: I32 or I64)
+	IRPopcount // Dst = population count of A (type T: I32 or I64)
+	IRBswap    // Dst = byte-reverse of A (64-bit)
+
 	// Comparison (produces 0/1 in Dst)
 	IRSet    // Dst = (A pred B) ? 1 : 0
 	IRSetImm // Dst = (A pred Imm) ? 1 : 0
@@ -235,6 +241,10 @@ var irOpNames = [...]string{
 	IRMulHU:     "mulhu",
 	IRMulHSU:    "mulhsu",
 	IRNeg:       "neg",
+	IRClz:       "clz",
+	IRCtz:       "ctz",
+	IRPopcount:  "popcnt",
+	IRBswap:     "bswap",
 	IRShl:       "shl",
 	IRShlImm:    "shl_imm",
 	IRShr:       "shr",
