@@ -4,6 +4,7 @@ package riscv
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"riscv/internal/jitcall"
 	"riscv/ir"
@@ -1793,6 +1794,55 @@ func TestDumpBlock_ld_st_0x1a0(t *testing.T) {
 // where the divergence occurs.
 func TestNativeTrace_sraw(t *testing.T) {
 	testNativeTraceW(t, "riscv-elf-tests/rv64ui-p-sraw", 39)
+}
+
+// TestDispatchTrace_sraw traces the RunJIT dispatch loop to diagnose
+// why sraw hangs — logs first 100 dispatch cycles with PC/IC/status.
+func TestDispatchTrace_sraw(t *testing.T) {
+	data, err := os.ReadFile("riscv-elf-tests/rv64ui-p-sraw")
+	if err != nil {
+		t.Skip("ELF not found")
+	}
+	mem, merr := NewGuestMemory(Size32KB)
+	if merr != nil {
+		t.Fatal(merr)
+	}
+	defer mem.Free()
+	entry, lerr := LoadELFBytes(mem, data)
+	if lerr != nil {
+		t.Fatalf("LoadELF: %v", lerr)
+	}
+	cpu := NewCPU(*mem)
+	cpu.SetPC(entry)
+	if addr, ok := FindSymbolAddr(data, "tohost"); ok {
+		cpu.SetWatchAddr(addr)
+		t.Logf("tohost=0x%x", addr)
+	}
+	cpu.Notes.Push(func(c *CPU, n Note) NoteDisposition {
+		if IsEcall(n) {
+			t.Logf("ECALL at pc=0x%x a7=%d a0=%d", n.PC, c.Reg(17), c.Reg(10))
+			return NoteFatal
+		}
+		return NoteForward
+	})
+	jit := NewJIT()
+	maxCycles := 200
+	for i := 0; i < maxCycles; i++ {
+		pc := cpu.pc
+		ic, serr := jit.StepBlock(cpu)
+		t.Logf("cycle %d: pc=0x%x -> pc=0x%x ic=%d err=%v", i, pc, cpu.pc, ic, serr)
+		if serr != nil {
+			t.Logf("  stopped: %v", serr)
+			break
+		}
+		// Check tohost
+		if cpu.WatchAddr() != 0 {
+			if v, _ := (&cpu.mem).Load64(cpu.WatchAddr()); v != 0 {
+				t.Logf("  tohost=0x%x at cycle %d", v, i)
+				break
+			}
+		}
+	}
 }
 
 func TestNativeTrace_srlw(t *testing.T) {
