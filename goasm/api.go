@@ -230,9 +230,13 @@ func (c *Ctx) Assemble() (out []byte, err error) {
 }
 
 // DumpProgs returns a human-readable listing of all appended Progs.
+// Skips the ATEXT pseudo-instruction (which may not be fully initialized).
 func (c *Ctx) DumpProgs() string {
 	var sb strings.Builder
 	for p := c.firstProg; p != nil; p = p.Link {
+		if p.As == obj.ATEXT {
+			continue
+		}
 		fmt.Fprintf(&sb, "%s\n", p.InstructionString())
 	}
 	return sb.String()
