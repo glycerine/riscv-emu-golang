@@ -455,11 +455,13 @@ func (e *emitter) emitOpImm(rd, rs1 uint32, imm int64, funct3, funct7 uint32) {
 		if imm == 0 && rs1 == 0 {
 			e.irEm.Const(e.xregDst(rd), 0)
 		} else if imm == 0 {
-			e.irEm.Mov(e.xregDst(rd), e.xreg(rs1))
+			src := e.xreg(rs1) // read before write (aliasing!)
+			e.irEm.Mov(e.xregDst(rd), src)
 		} else if rs1 == 0 {
 			e.irEm.Const(e.xregDst(rd), imm)
 		} else {
-			e.irEm.AddImm(e.xregDst(rd), e.xreg(rs1), imm)
+			src := e.xreg(rs1) // read before write (aliasing!)
+			e.irEm.AddImm(e.xregDst(rd), src, imm)
 		}
 	case 1: // SLLI / BSETI / BCLRI / BINVI / CLZ/CTZ/CPOP/SEXT
 		funct6 := funct7 >> 1
@@ -1446,9 +1448,12 @@ func (e *emitter) emitBranch(rs1, rs2, funct3 uint32, offset int64) {
 		targetLabel := e.getOrCreateLabel(target)
 		if target < e.pc {
 			takenLabel := e.irEm.NewLabel()
+			continueLabel := e.irEm.NewLabel()
 			e.irEm.Branch(a, b, pred, takenLabel)
+			e.irEm.Jump(continueLabel) // not taken: skip budget check
 			e.irEm.PlaceLabel(takenLabel)
 			e.irEm.BudgetCheck(targetLabel, target)
+			e.irEm.PlaceLabel(continueLabel)
 		} else {
 			e.irEm.Branch(a, b, pred, targetLabel)
 		}
