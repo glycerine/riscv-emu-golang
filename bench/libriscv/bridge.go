@@ -5,7 +5,7 @@
 package libriscv_bench
 
 /*
-#cgo CFLAGS: -I${SRCDIR}/../../vendor/libriscv/c
+#cgo CFLAGS: -I${SRCDIR}/../../xendor/libriscv/c
 
 #include <libriscv.h>
 #include <stdlib.h>

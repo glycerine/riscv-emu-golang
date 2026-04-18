@@ -6,8 +6,8 @@ package riscv
 // This is the COLD path: called once per basic block (~1ms), then cached.
 
 /*
-#cgo CFLAGS: -I${SRCDIR}/vendor/tcc
-#cgo LDFLAGS: -L${SRCDIR}/vendor/tcc -ltcc
+#cgo CFLAGS: -I${SRCDIR}/xendor/tcc
+#cgo LDFLAGS: -L${SRCDIR}/xendor/tcc -ltcc
 
 #include <libtcc.h>
 #include <stdlib.h>
