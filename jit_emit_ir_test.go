@@ -422,4 +422,63 @@ func TestSubELF_Block39(t *testing.T) {
 	}
 }
 
+// TestCLI_NoCorruption verifies C.LI x7, 3 doesn't corrupt other registers.
+func TestCLI_NoCorruption(t *testing.T) {
+	mem, err := NewGuestMemory(Size64MB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mem.Free()
+
+	// C.LI x7, 3
+	mem.Store16(0x1000, 0x438d)
+	// ECALL
+	mem.Store32(0x1002, instrECALL)
+
+	cpu := NewCPU(*mem)
+	cpu.SetPC(0x1000)
+	// Set x12 to a known value
+	cpu.SetReg(12, 999)
+	cpu.Notes.Push(ecallStop)
+
+	jit := NewJIT()
+	jit.RunJIT(cpu)
+
+	if cpu.Reg(7) != 3 {
+		t.Errorf("x7 = %d, want 3", cpu.Reg(7))
+	}
+	if cpu.Reg(12) != 999 {
+		t.Errorf("x12 = %d, want 999 (should be untouched)", cpu.Reg(12))
+	}
+	// Check all other registers are 0 (except x7)
+	for i := 1; i < 32; i++ {
+		if i == 7 || i == 12 {
+			continue
+		}
+		if cpu.Reg(uint8(i)) != 0 {
+			t.Errorf("x%d = %d, want 0 (should be untouched)", i, cpu.Reg(uint8(i)))
+		}
+	}
+}
+
+// TestSLLW_ShiftZero tests SLLW with shift amount 0 (via x12=-32, masked to 0).
+func TestSLLW_ShiftZero(t *testing.T) {
+	cpu, mem := newTestCPU(t, Size64MB, 0x1000, []uint32{
+		renc(0x3B, 1, 0x00, 14, 11, 12), // SLLW x14, x11, x12
+		instrECALL,
+	})
+	defer mem.Free()
+	cpu.SetReg(11, 0x21212121)
+	cpu.SetReg(12, ^uint64(31)) // 0xFFFFFFFFFFFFFFE0 = -32, & 31 = 0
+	cpu.Notes.Push(ecallStop)
+
+	jit := NewJIT()
+	jit.RunJIT(cpu)
+
+	want := uint64(0x21212121)
+	if cpu.Reg(14) != want {
+		t.Errorf("SLLW: x14 = 0x%x, want 0x%x", cpu.Reg(14), want)
+	}
+}
+
 // Encoding helpers are in jit_test.go (senc, ienc, renc, benc).

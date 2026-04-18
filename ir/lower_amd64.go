@@ -657,10 +657,23 @@ func (lc *lowerCtx) lowerBinop(ins *IRInstr, op obj.As, commutative bool) {
 	b := lc.use(ins.B, 1)
 
 	if dst == a {
+		// dst = dst OP b
 		lc.emitRR(op, b, dst)
 	} else if commutative && dst == b {
+		// dst = dst OP a (commutative, so a OP b == b OP a)
 		lc.emitRR(op, a, dst)
+	} else if dst == b {
+		// Non-commutative and dst == b: MOV a,dst would destroy b.
+		// Use scratch: MOV b,scratch; MOV a,dst; OP scratch,dst.
+		scr := lc.scratch(0)
+		if scr == a {
+			scr = lc.scratch(1)
+		}
+		lc.emitRR(x86.AMOVQ, b, scr)
+		lc.emitRR(x86.AMOVQ, a, dst)
+		lc.emitRR(op, scr, dst)
 	} else {
+		// dst != a, dst != b: MOV a,dst; OP b,dst
 		lc.emitRR(x86.AMOVQ, a, dst)
 		lc.emitRR(op, b, dst)
 	}
@@ -813,29 +826,44 @@ func (lc *lowerCtx) lowerShift(ins *IRInstr, op obj.As) {
 	a := lc.use(ins.A, 0)
 	b := lc.use(ins.B, 1)
 
-	// x86 variable shifts require count in CL.
+	// x86 variable shifts require count in CL. Two hazards:
+	//   1. Moving b→CX clobbers a if a==CX.
+	//   2. Moving a→dst clobbers b if b==dst.
+	// Strategy: handle both via ordering and scratch.
 	needCXSave := b != goasm.REG_AMD64_CX && lc.isCXLive()
 
-	if needCXSave {
-		// If b is in R11 (scratch2), moving CX to R11 would clobber b.
-		// Handle by moving b to CX first, then saving old CX to R11.
-		if b == amd64Scratch2 {
-			// XCHG avoids the temp problem entirely.
-			lc.emitRR(x86.AXCHGQ, goasm.REG_AMD64_CX, amd64Scratch2)
-			// Now CX = old b, R11 = old CX. Both preserved.
-		} else {
-			lc.emitRR(x86.AMOVQ, goasm.REG_AMD64_CX, amd64Scratch2) // save CX to R11
-			lc.emitRR(x86.AMOVQ, b, goasm.REG_AMD64_CX)             // b → CX
+	if b == goasm.REG_AMD64_CX {
+		// b is already in CX — just move a to dst.
+		if dst != a {
+			lc.emitRR(x86.AMOVQ, a, dst)
 		}
-	} else if b != goasm.REG_AMD64_CX {
+	} else if a == goasm.REG_AMD64_CX {
+		// a is in CX. Move a→dst FIRST (saves it), then b→CX.
+		if needCXSave {
+			lc.emitRR(x86.AMOVQ, goasm.REG_AMD64_CX, amd64Scratch2) // save CX (=a)
+		}
+		if dst != a {
+			lc.emitRR(x86.AMOVQ, a, dst) // a→dst (before CX is clobbered)
+		}
+		lc.emitRR(x86.AMOVQ, b, goasm.REG_AMD64_CX) // b→CX
+	} else if b == dst {
+		// b is in dst. Move b→CX FIRST (saves it), then a→dst.
+		if needCXSave {
+			lc.emitRR(x86.AMOVQ, goasm.REG_AMD64_CX, amd64Scratch2)
+		}
+		lc.emitRR(x86.AMOVQ, b, goasm.REG_AMD64_CX) // b→CX (before dst is clobbered)
+		lc.emitRR(x86.AMOVQ, a, dst)                  // a→dst
+	} else {
+		// No conflicts. Either order works.
+		if needCXSave {
+			lc.emitRR(x86.AMOVQ, goasm.REG_AMD64_CX, amd64Scratch2)
+		}
 		lc.emitRR(x86.AMOVQ, b, goasm.REG_AMD64_CX)
+		if dst != a {
+			lc.emitRR(x86.AMOVQ, a, dst)
+		}
 	}
 
-	if dst != a {
-		lc.emitRR(x86.AMOVQ, a, dst)
-	}
-
-	// SHLQ CL, dst (Go asm encodes this as: op CX, dst)
 	lc.emitRR(op, goasm.REG_AMD64_CX, dst)
 
 	if needCXSave {

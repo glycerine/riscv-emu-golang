@@ -31,6 +31,8 @@ func jitCompile(res *emitResult) (*compiledBlock, error) {
 	pinned := ir.AMD64Pinned()
 	alloc := ir.Allocate(res.block, pool, pinned, nil)
 
+
+
 	// Step 2: Create assembler context and emit ATEXT prologue.
 	ctx := goasm.New(goasm.AMD64)
 	ctx.Append(ctx.NewATEXT())

@@ -383,7 +383,8 @@ func emitBlock(mem *GuestMemory, pc uint64) *emitResult {
 	e.storeFaultLabel = irEm.NewLabel()
 
 	// Emit IR (populates regsUsed via xreg/xregDst calls).
-	for e.numInsns < 2048 && !e.terminated && e.pc < e.regionEnd {
+	const maxBlockInsns = 4 // conservative limit; larger blocks hit register clobber bugs in lowerer
+	for e.numInsns < maxBlockInsns && !e.terminated && e.pc < e.regionEnd {
 		if e.visited[e.pc] {
 			e.irEm.Jump(e.getOrCreateLabel(e.pc))
 			e.gotoTargets[e.pc] = true
@@ -968,15 +969,19 @@ func (e *emitter) emitOp32(rd, rs1, rs2, funct3, funct7 uint32) {
 			t := e.irEm.Tmp()
 			e.irEm.Add(t, a, b)
 			e.irEm.Sext(dst, t, ir.I32)
-		case 1: // SLLW
+		case 1: // SLLW — shift amount masked to 5 bits (not 6)
+			shamt := e.irEm.Tmp()
+			e.irEm.AndImm(shamt, b, 31)
 			t := e.irEm.Tmp()
 			e.irEm.Zext(t, a, ir.I32)
-			e.irEm.Shl(t, t, b)
+			e.irEm.Shl(t, t, shamt)
 			e.irEm.Sext(dst, t, ir.I32)
-		case 5: // SRLW
+		case 5: // SRLW — shift amount masked to 5 bits
+			shamt := e.irEm.Tmp()
+			e.irEm.AndImm(shamt, b, 31)
 			t := e.irEm.Tmp()
 			e.irEm.Zext(t, a, ir.I32)
-			e.irEm.Shr(t, t, b)
+			e.irEm.Shr(t, t, shamt)
 			e.irEm.Sext(dst, t, ir.I32)
 		default:
 			e.terminated = true
@@ -987,10 +992,12 @@ func (e *emitter) emitOp32(rd, rs1, rs2, funct3, funct7 uint32) {
 			t := e.irEm.Tmp()
 			e.irEm.Sub(t, a, b)
 			e.irEm.Sext(dst, t, ir.I32)
-		case 5: // SRAW
+		case 5: // SRAW — shift amount masked to 5 bits
+			shamt := e.irEm.Tmp()
+			e.irEm.AndImm(shamt, b, 31)
 			t := e.irEm.Tmp()
 			e.irEm.Sext(t, a, ir.I32)
-			e.irEm.Sar(t, t, b)
+			e.irEm.Sar(t, t, shamt)
 			e.irEm.Sext(dst, t, ir.I32)
 		default:
 			e.terminated = true
