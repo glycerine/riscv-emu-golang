@@ -226,6 +226,8 @@ func (lc *lowerCtx) lowerInstr(ins *IRInstr) error {
 		lc.lowerDiv(ins, false, false)
 	case IRRem:
 		lc.lowerDiv(ins, true, true)
+	case IRRemU:
+		lc.lowerDiv(ins, false, true)
 	case IRMulHS:
 		lc.lowerMulHigh(ins, true)
 	case IRMulHU:
@@ -290,6 +292,8 @@ func (lc *lowerCtx) lowerInstr(ins *IRInstr) error {
 		lc.lowerJump(ins)
 	case IRRet:
 		lc.lowerRet(ins)
+	case IRRetDyn:
+		lc.lowerRetDyn(ins)
 	case IRCall:
 		lc.lowerCall(ins)
 
@@ -1158,6 +1162,44 @@ func (lc *lowerCtx) lowerRet(ins *IRInstr) {
 	// Offset 24: faultAddr (from VReg A)
 	if ins.A != VRegZero {
 		fa := lc.use(ins.A, 0)
+		lc.emitMR(x86.AMOVQ, fa, amd64RegSret, 24)
+	} else {
+		lc.emitMI(x86.AMOVQ, 0, amd64RegSret, 24)
+	}
+
+	lc.emitEpilogue()
+}
+
+// lowerRetDyn handles IRRetDyn: return with runtime-computed PC from VReg A.
+// Layout: {pc=A, status=Imm, faultAddr=B}.
+func (lc *lowerCtx) lowerRetDyn(ins *IRInstr) {
+	// Offset 0: pc (from VReg A)
+	if ins.A != VRegZero {
+		pcReg := lc.use(ins.A, 0)
+		lc.emitMR(x86.AMOVQ, pcReg, amd64RegSret, 0)
+	} else {
+		lc.emitMI(x86.AMOVQ, 0, amd64RegSret, 0)
+	}
+
+	// Offset 8: ic
+	icReg := lc.hostRegFor(VRIC, lc.idx)
+	if icReg >= 0 {
+		lc.emitMR(x86.AMOVQ, icReg, amd64RegSret, 8)
+	} else {
+		if int(VRIC) < len(lc.alloc.Kind) && lc.alloc.Kind[VRIC] == AllocStack {
+			lc.spillLoad(lc.alloc.SpillSlot[VRIC], amd64Scratch1)
+			lc.emitMR(x86.AMOVQ, amd64Scratch1, amd64RegSret, 8)
+		} else {
+			lc.emitMI(x86.AMOVQ, 0, amd64RegSret, 8)
+		}
+	}
+
+	// Offset 16: status (from Imm)
+	lc.emitMI(x86.AMOVQ, ins.Imm, amd64RegSret, 16)
+
+	// Offset 24: faultAddr (from VReg B)
+	if ins.B != VRegZero {
+		fa := lc.use(ins.B, 1)
 		lc.emitMR(x86.AMOVQ, fa, amd64RegSret, 24)
 	} else {
 		lc.emitMI(x86.AMOVQ, 0, amd64RegSret, 24)

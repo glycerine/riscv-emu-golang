@@ -78,7 +78,7 @@ func (j *JIT) StepBlock(cpu *CPU) (ic uint64, err error) {
 	if !j.InterpOnly && !j.noJIT[pc] {
 		res := emitBlock(&cpu.mem, pc)
 		if res != nil && res.numInsns > 0 {
-			compiled, cerr := tccCompile(res.csrc)
+			compiled, cerr := jitCompile(res)
 			if cerr == nil {
 				j.blocks[pc] = compiled
 				j.lastPC = pc
@@ -181,7 +181,7 @@ func (j *JIT) RunJIT(cpu *CPU) error {
 		if !j.InterpOnly && !j.noJIT[pc] {
 			res := emitBlock(&cpu.mem, pc)
 			if res != nil && res.numInsns > 0 {
-				blk, err := tccCompile(res.csrc)
+				blk, err := jitCompile(res)
 				if err == nil {
 					j.blocks[pc] = blk
 					continue

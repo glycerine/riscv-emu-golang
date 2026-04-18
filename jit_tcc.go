@@ -1,3 +1,5 @@
+//go:build tcc
+
 package riscv
 
 // jit_tcc.go — cgo bridge to TCC for compiling C source to native code.
@@ -92,4 +94,9 @@ func tccCompile(csrc string) (*compiledBlock, error) {
 		fn:    uintptr(fn),
 		state: unsafe.Pointer(state),
 	}, nil
+}
+
+// jitCompile dispatches to tccCompile under the tcc build tag.
+func jitCompile(res *emitResult) (*compiledBlock, error) {
+	return tccCompile(res.csrc)
 }

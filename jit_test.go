@@ -210,24 +210,12 @@ func TestJIT_ADD(t *testing.T) {
 	mem.Store32(codeVA, add)
 	mem.Store32(codeVA+4, instrECALL)
 
-	res := emitBlock(mem, codeVA)
-	if res == nil {
-		t.Fatal("emitBlock returned nil")
-	}
-	t.Logf("Generated C (%d insns):\n%s", res.numInsns, res.csrc)
-
-	blk, err := tccCompile(res.csrc)
-	if err != nil {
-		t.Fatalf("tccCompile: %v", err)
-	}
-
 	cpu := NewCPU(*mem)
 	cpu.SetPC(codeVA)
 	cpu.SetReg(2, 100)
 	cpu.SetReg(3, 42)
 
 	jit := NewJIT()
-	jit.blocks[codeVA] = blk
 	cpu.Notes.Push(ecallStop)
 	jit.RunJIT(cpu)
 

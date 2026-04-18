@@ -142,6 +142,7 @@ const (
 	IRDivS   // Dst = (int64)A / (int64)B
 	IRDivU   // Dst = (uint64)A / (uint64)B
 	IRRem    // Dst = (int64)A % (int64)B
+	IRRemU   // Dst = (uint64)A % (uint64)B
 	IRMulHS  // Dst = signed high-64 of 128-bit A*B
 	IRMulHU  // Dst = unsigned high-64 of 128-bit A*B
 	IRMulHSU // Dst = signed×unsigned high-64
@@ -181,6 +182,7 @@ const (
 	IRJump      // goto label(Imm)
 	IRCall      // call external symbol; Imm = CTab index
 	IRRet       // return {pc=Imm, status=Imm2, faultAddr=A}
+	IRRetDyn    // return {pc=A, status=Imm, faultAddr=B}  — dynamic PC from VReg
 
 	// Floating point
 	IRFAdd      // Dst = A + B       (FP, type T)
@@ -228,6 +230,7 @@ var irOpNames = [...]string{
 	IRDivS:      "divs",
 	IRDivU:      "divu",
 	IRRem:       "rem",
+	IRRemU:      "remu",
 	IRMulHS:     "mulhs",
 	IRMulHU:     "mulhu",
 	IRMulHSU:    "mulhsu",
@@ -257,6 +260,7 @@ var irOpNames = [...]string{
 	IRJump:      "jump",
 	IRCall:      "call",
 	IRRet:       "ret",
+	IRRetDyn:    "ret_dyn",
 	IRFAdd:      "fadd",
 	IRFSub:      "fsub",
 	IRFMul:      "fmul",
@@ -319,6 +323,8 @@ func (ins IRInstr) String() string {
 		return fmt.Sprintf("%s [%d]", ins.Op, ins.Imm)
 	case IRRet:
 		return fmt.Sprintf("%s pc=%d status=%d fault=%s", ins.Op, ins.Imm, ins.Imm2, ins.A)
+	case IRRetDyn:
+		return fmt.Sprintf("%s pc=%s status=%d fault=%s", ins.Op, ins.A, ins.Imm, ins.B)
 	default:
 		if ins.B != VRegZero {
 			return fmt.Sprintf("%s.%s %s = %s, %s", ins.Op, ins.T, ins.Dst, ins.A, ins.B)

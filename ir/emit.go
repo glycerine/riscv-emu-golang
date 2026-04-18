@@ -87,6 +87,7 @@ func (e *Emitter) Mul(dst, a, b VReg)            { e.op3(IRMul, I64, dst, a, b) 
 func (e *Emitter) DivS(dst, a, b VReg)           { e.op3(IRDivS, I64, dst, a, b) }
 func (e *Emitter) DivU(dst, a, b VReg)           { e.op3(IRDivU, I64, dst, a, b) }
 func (e *Emitter) Rem(dst, a, b VReg)            { e.op3(IRRem, I64, dst, a, b) }
+func (e *Emitter) RemU(dst, a, b VReg)           { e.op3(IRRemU, I64, dst, a, b) }
 func (e *Emitter) MulHS(dst, a, b VReg)          { e.op3(IRMulHS, I64, dst, a, b) }
 func (e *Emitter) MulHU(dst, a, b VReg)          { e.op3(IRMulHU, I64, dst, a, b) }
 func (e *Emitter) MulHSU(dst, a, b VReg)         { e.op3(IRMulHSU, I64, dst, a, b) }
@@ -221,6 +222,12 @@ func (e *Emitter) Call(sym string, addr uintptr) int {
 // Ret emits a block return: {pc=pc, status=status, faultAddr=faultAddr}.
 func (e *Emitter) Ret(pc uint64, status int, faultAddr VReg) {
 	e.emit(IRInstr{Op: IRRet, Imm: int64(pc), Imm2: int64(status), A: faultAddr})
+}
+
+// RetDyn emits a block return with a runtime-computed PC from a VReg.
+// Used by JALR where the target address is computed at runtime.
+func (e *Emitter) RetDyn(pcVReg VReg, status int, faultAddr VReg) {
+	e.emit(IRInstr{Op: IRRetDyn, A: pcVReg, Imm: int64(status), B: faultAddr})
 }
 
 // ── Floating point ──

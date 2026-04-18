@@ -256,7 +256,7 @@ func instrDefs(ins *IRInstr) VReg {
 	switch ins.Op {
 	case IRStore, IRStoreX,
 		IRLabel, IRBranch, IRBranchImm, IRJump,
-		IRCall, IRRet,
+		IRCall, IRRet, IRRetDyn,
 		IRMarkLive, IRMarkDead, IRWriteback:
 		return VRegZero
 	default:
@@ -287,6 +287,13 @@ func instrUses(ins *IRInstr) []VReg {
 	case IRRet:
 		if ins.A != VRegZero {
 			uses = append(uses, ins.A)
+		}
+	case IRRetDyn:
+		if ins.A != VRegZero {
+			uses = append(uses, ins.A)
+		}
+		if ins.B != VRegZero {
+			uses = append(uses, ins.B)
 		}
 	case IRMarkLive, IRMarkDead:
 		if ins.A != VRegZero {
@@ -539,7 +546,7 @@ func classifyVRegs(b *Block, intervals []intervalSet) []bool {
 func BlockHasDivMul(b *Block) bool {
 	for i := range b.Instrs {
 		switch b.Instrs[i].Op {
-		case IRDivS, IRDivU, IRRem, IRMulHS, IRMulHU, IRMulHSU:
+		case IRDivS, IRDivU, IRRem, IRRemU, IRMulHS, IRMulHU, IRMulHSU:
 			return true
 		}
 	}
