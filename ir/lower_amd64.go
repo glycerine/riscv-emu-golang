@@ -699,7 +699,11 @@ func (lc *lowerCtx) lowerBinopImm(ins *IRInstr, op obj.As, incOp, decOp obj.As) 
 		lc.emitRI(op, imm, dst)
 	default:
 		// Large immediate: load into scratch, then op.
+		// If A was spilled, use(A,1) returned R11; dst may be R11 too.
 		scr := amd64Scratch2
+		if dst == amd64Scratch2 {
+			scr = amd64Scratch1
+		}
 		lc.loadImm64(imm, scr)
 		lc.emitRR(op, scr, dst)
 	}
@@ -836,7 +840,7 @@ func (lc *lowerCtx) lowerShift(ins *IRInstr, op obj.As) {
 	//   3. SHL/SHR/SAR CL, dst.
 	//   4. Restore CX if saved.
 
-	needCXSave := b != goasm.REG_AMD64_CX && lc.isCXLive()
+	needCXSave := b != goasm.REG_AMD64_CX && dst != goasm.REG_AMD64_CX && lc.isCXLive()
 	if needCXSave {
 		lc.emitRR(x86.AMOVQ, goasm.REG_AMD64_CX, amd64Scratch2)
 	}
@@ -1403,14 +1407,16 @@ func (lc *lowerCtx) lowerFCmp(ins *IRInstr) {
 	switch ins.Pred {
 	case EQ:
 		// a == b: ZF=1 AND PF=0 (exclude NaN).
-		// SETE + SETNP → AND result.
+		// SETE + SETNP → AND result. Must use distinct byte regs.
 		p1 := lc.c.NewProg()
 		p1.As = x86.ASETEQ
 		p1.To.Type = obj.TYPE_REG
 		p1.To.Reg = bReg
 		lc.c.Append(p1)
-		// Use scratch byte reg for SETNP.
 		scrByte := byteReg(amd64Scratch1)
+		if dst == amd64Scratch1 {
+			scrByte = byteReg(amd64Scratch2)
+		}
 		p2 := lc.c.NewProg()
 		p2.As = x86.ASETPC // SETNP = SETPC (parity clear)
 		p2.To.Type = obj.TYPE_REG
@@ -1425,6 +1431,9 @@ func (lc *lowerCtx) lowerFCmp(ins *IRInstr) {
 		p1.To.Reg = bReg
 		lc.c.Append(p1)
 		scrByte := byteReg(amd64Scratch1)
+		if dst == amd64Scratch1 {
+			scrByte = byteReg(amd64Scratch2)
+		}
 		p2 := lc.c.NewProg()
 		p2.As = x86.ASETPS // SETP = SETPS (parity set)
 		p2.To.Type = obj.TYPE_REG
