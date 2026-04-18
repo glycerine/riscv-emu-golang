@@ -420,13 +420,27 @@ func runLockstep(t *testing.T, elfPath string) {
 			}
 		}
 
+		// Compare ALL registers FIRST (before exit check)
+		regMismatch := false
+		for r := 0; r < 32; r++ {
+			if jitCPU.x[r] != interpCPU.x[r] {
+				t.Errorf("block %d (pc=0x%x, IC=%d): x[%d] mismatch: jit=0x%x interp=0x%x",
+					blockNum, jitCPU.pc, jitIC, r, jitCPU.x[r], interpCPU.x[r])
+				regMismatch = true
+			}
+		}
+		if regMismatch {
+			t.Fatalf("STOP at first register mismatch (block %d, jitPC=0x%x interpPC=0x%x)",
+				blockNum, jitCPU.pc, interpCPU.pc)
+		}
+
 		// Check exit
 		jitExit := isExitEcall(jitCPU, jitErr)
 		interpExit := isExitEcall(interpCPU, interpErr)
 		if jitExit || interpExit {
 			if jitExit != interpExit {
-				t.Errorf("block %d: exit mismatch: jit=%v interp=%v",
-					blockNum, jitExit, interpExit)
+				t.Errorf("block %d (pc=0x%x): exit mismatch: jit=%v interp=%v jitIC=%d",
+					blockNum, jitCPU.pc, jitExit, interpExit, jitIC)
 			}
 			break
 		}
@@ -439,7 +453,7 @@ func runLockstep(t *testing.T, elfPath string) {
 			advancePastException(interpCPU, interpErr)
 		}
 
-		// Compare ALL registers
+		// Also compare after exception handling
 		for r := 0; r < 32; r++ {
 			if jitCPU.x[r] != interpCPU.x[r] {
 				t.Errorf("block %d (pc=0x%x): x[%d] mismatch: jit=0x%x interp=0x%x",

@@ -571,3 +571,34 @@ func TestSRL_ZeroSrc(t *testing.T) {
 }
 
 // Encoding helpers are in jit_test.go (senc, ienc, renc, benc).
+
+// TestLUI_SRLI_TwoInsn verifies LUI + SRLI in a 2-instruction block.
+// Regression: MarkDirty was missing, causing writeback to skip modified regs.
+func TestLUI_SRLI_TwoInsn(t *testing.T) {
+	mem, err := NewGuestMemory(Size64MB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mem.Free()
+
+	pc := uint64(0x1000)
+	// LUI x7, 0x80000 => x7 = 0xFFFFFFFF80000000
+	mem.Store32(pc, 0x800003B7) // LUI x7, 0x80000
+	// SRLI x7, x7, 7 => x7 = 0x01FFFFFFFF000000
+	mem.Store32(pc+4, 0x0073D393) // SRLI x7, x7, 7
+	// ECALL
+	mem.Store32(pc+8, 0x00000073)
+
+	cpu := NewCPU(*mem)
+	cpu.SetPC(pc)
+
+	jit := NewJIT()
+	_, jitErr := jit.StepBlock(cpu)
+
+	want := uint64(0x01FFFFFFFF000000)
+	got := cpu.x[7]
+	t.Logf("x7 = 0x%x (want 0x%x), jitErr=%v, pc=0x%x", got, want, jitErr, cpu.pc)
+	if got != want {
+		t.Fatalf("x7 = 0x%x, want 0x%x", got, want)
+	}
+}

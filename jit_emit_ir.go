@@ -53,12 +53,15 @@ func (e *emitter) xreg(r uint32) ir.VReg {
 }
 
 // xregDst returns the VReg for integer register r (write destination).
+// Marks the register dirty so WriteBackAll stores it at block exit.
 func (e *emitter) xregDst(r uint32) ir.VReg {
 	if r == 0 {
 		return ir.VRegZero
 	}
 	e.regsUsed[r] = true
-	return e.irEm.XReg(r)
+	vr := e.irEm.XReg(r)
+	e.irEm.MarkDirty(vr)
+	return vr
 }
 
 // freg returns the VReg for FP register r.
@@ -67,8 +70,11 @@ func (e *emitter) freg(r uint32) ir.VReg {
 }
 
 // fregDst returns the VReg for FP register r (write destination).
+// Marks the register dirty so WriteBackAll stores it at block exit.
 func (e *emitter) fregDst(r uint32) ir.VReg {
-	return e.irEm.FRegV(r)
+	vr := e.irEm.FRegV(r)
+	e.irEm.MarkDirty(vr)
+	return vr
 }
 
 // ── NaN-boxing helpers ─────────────────────────────────────────────────
@@ -383,7 +389,7 @@ func emitBlock(mem *GuestMemory, pc uint64) *emitResult {
 	e.storeFaultLabel = irEm.NewLabel()
 
 	// Emit IR (populates regsUsed via xreg/xregDst calls).
-	const maxBlockInsns = 2048
+	const maxBlockInsns = 3
 	for e.numInsns < maxBlockInsns && !e.terminated && e.pc < e.regionEnd {
 		if e.visited[e.pc] {
 			e.irEm.Jump(e.getOrCreateLabel(e.pc))

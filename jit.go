@@ -23,6 +23,7 @@ type JIT struct {
 	blocks     map[uint64]*compiledBlock
 	noJIT      map[uint64]bool // PCs where translation failed — don't retry
 	InterpOnly bool            // debug: force all-interpreter mode
+	UseV2      bool            // bench: use V2 lowerer for comparison
 	lastPC     uint64          // last-block cache: skip map lookup for tight loops
 	lastBlk    *compiledBlock
 	trace      bool            // debug: log block executions to stderr
@@ -87,7 +88,7 @@ func (j *JIT) StepBlock(cpu *CPU) (ic uint64, err error) {
 	if !j.InterpOnly && !j.noJIT[pc] {
 		res := emitBlock(&cpu.mem, pc)
 		if res != nil && res.numInsns > 0 {
-			compiled, cerr := jitCompile(res)
+			compiled, cerr := jitCompileWith(res, j.UseV2)
 			if cerr == nil {
 				j.blocks[pc] = compiled
 				j.lastPC = pc
@@ -190,7 +191,7 @@ func (j *JIT) RunJIT(cpu *CPU) error {
 		if !j.InterpOnly && !j.noJIT[pc] {
 			res := emitBlock(&cpu.mem, pc)
 			if res != nil && res.numInsns > 0 {
-				blk, err := jitCompile(res)
+				blk, err := jitCompileWith(res, j.UseV2)
 				if err == nil {
 					j.blocks[pc] = blk
 					continue

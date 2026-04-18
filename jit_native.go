@@ -22,12 +22,25 @@ type compiledBlock struct {
 
 // jitCompile compiles an IR block to native code and returns a compiledBlock.
 func jitCompile(res *emitResult) (*compiledBlock, error) {
+	return jitCompileWith(res, false)
+}
+
+func jitCompileV2(res *emitResult) (*compiledBlock, error) {
+	return jitCompileWith(res, true)
+}
+
+func jitCompileWith(res *emitResult, useV2 bool) (*compiledBlock, error) {
 	if res.block == nil {
 		return nil, fmt.Errorf("jit: nil block")
 	}
 
 	// Step 1: Register allocation.
-	pool := ir.AMD64Pool(res.block)
+	var pool ir.RegPool
+	if useV2 {
+		pool = ir.AMD64Pool_V2(res.block)
+	} else {
+		pool = ir.AMD64Pool(res.block)
+	}
 	pinned := ir.AMD64Pinned()
 	alloc := ir.Allocate(res.block, pool, pinned, nil)
 
@@ -38,8 +51,14 @@ func jitCompile(res *emitResult) (*compiledBlock, error) {
 	ctx.Append(ctx.NewATEXT())
 
 	// Step 3: Lower IR to x86-64 Progs.
-	if err := ir.LowerAMD64(ctx, res.block, alloc); err != nil {
-		return nil, fmt.Errorf("jit lower: %w", err)
+	var lowerErr error
+	if useV2 {
+		lowerErr = ir.LowerAMD64_V2(ctx, res.block, alloc)
+	} else {
+		lowerErr = ir.LowerAMD64(ctx, res.block, alloc)
+	}
+	if lowerErr != nil {
+		return nil, fmt.Errorf("jit lower: %w", lowerErr)
 	}
 
 	// Step 4: Assemble to native bytes.

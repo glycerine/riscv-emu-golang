@@ -160,6 +160,64 @@ func BenchmarkLower_V2(b *testing.B) {
 	b.ReportMetric(float64(len(items)), "blocks")
 }
 
+// ── Execution throughput: V1 vs V2 on bench_guest.elf ──
+
+func BenchmarkExec_V1(b *testing.B) {
+	elfData := loadCPUELF(b)
+	b.ReportAllocs()
+	b.ResetTimer()
+	totalInsns := uint64(0)
+	for i := 0; i < b.N; i++ {
+		cpu, mem := newBenchCPU(b, elfData)
+		jit := riscv.NewJIT()
+		// V1 is the default
+		_, insns := runJITBenchGuestWith(cpu, jit)
+		totalInsns += insns
+		mem.Free()
+	}
+	b.StopTimer()
+	elapsed := b.Elapsed().Seconds()
+	if elapsed > 0 && totalInsns > 0 {
+		b.ReportMetric(float64(totalInsns)/elapsed/1e6, "MIPS")
+	}
+}
+
+func BenchmarkExec_V2(b *testing.B) {
+	elfData := loadCPUELF(b)
+	b.ReportAllocs()
+	b.ResetTimer()
+	totalInsns := uint64(0)
+	for i := 0; i < b.N; i++ {
+		cpu, mem := newBenchCPU(b, elfData)
+		jit := riscv.NewJIT()
+		jit.UseV2 = true
+		_, insns := runJITBenchGuestWith(cpu, jit)
+		totalInsns += insns
+		mem.Free()
+	}
+	b.StopTimer()
+	elapsed := b.Elapsed().Seconds()
+	if elapsed > 0 && totalInsns > 0 {
+		b.ReportMetric(float64(totalInsns)/elapsed/1e6, "MIPS")
+	}
+}
+
+func runJITBenchGuestWith(cpu *riscv.CPU, jit *riscv.JIT) (exitCode int, insns uint64) {
+	defer func() {
+		if r := recover(); r != nil {
+			if ex, ok := r.(*riscv.ExitError); ok {
+				exitCode = ex.Code
+				insns = cpu.Cycle()
+				return
+			}
+			panic(r)
+		}
+	}()
+	_ = jit.RunJIT(cpu)
+	insns = cpu.Cycle()
+	return
+}
+
 // ── Code size comparison ──
 
 func TestLower_CodeSize_V1_vs_V2(t *testing.T) {
