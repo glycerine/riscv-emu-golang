@@ -82,6 +82,62 @@ func jitCompileWith(res *emitResult, useV2 bool) (*compiledBlock, error) {
 	}, nil
 }
 
+// compileDebugInfo holds debug artifacts from compilation.
+type compileDebugInfo struct {
+	code  []byte // assembled native bytes
+	progs string // symbolic Prog listing (Go asm syntax)
+}
+
+// jitCompileDebug compiles an IR block and returns debug info (Prog listing + assembled bytes).
+func jitCompileDebug(res *emitResult, useV2 bool) (*compiledBlock, *compileDebugInfo, error) {
+	if res.block == nil {
+		return nil, nil, fmt.Errorf("jit: nil block")
+	}
+
+	var pool ir.RegPool
+	if useV2 {
+		pool = ir.AMD64Pool_V2(res.block)
+	} else {
+		pool = ir.AMD64Pool(res.block)
+	}
+	pinned := ir.AMD64Pinned()
+	alloc := ir.Allocate(res.block, pool, pinned, nil)
+
+	ctx := goasm.New(goasm.AMD64)
+	ctx.Append(ctx.NewATEXT())
+
+	var lowerErr error
+	if useV2 {
+		lowerErr = ir.LowerAMD64_V2(ctx, res.block, alloc)
+	} else {
+		lowerErr = ir.LowerAMD64(ctx, res.block, alloc)
+	}
+	if lowerErr != nil {
+		return nil, nil, fmt.Errorf("jit lower: %w", lowerErr)
+	}
+
+	// Capture Prog listing before assembly.
+	progDump := ctx.DumpProgs()
+
+	code, err := ctx.Assemble()
+	if err != nil {
+		return nil, nil, fmt.Errorf("jit assemble: %w", err)
+	}
+	if len(code) == 0 {
+		return nil, nil, fmt.Errorf("jit: assembler produced empty output")
+	}
+
+	execMem, err := allocExec(len(code))
+	if err != nil {
+		return nil, nil, fmt.Errorf("jit mmap: %w", err)
+	}
+	copy(execMem, code)
+
+	blk := &compiledBlock{fn: uintptr(unsafe.Pointer(&execMem[0]))}
+	dbg := &compileDebugInfo{code: code, progs: progDump}
+	return blk, dbg, nil
+}
+
 // allocExec allocates executable memory via mmap.
 func allocExec(size int) ([]byte, error) {
 	pageSize := syscall.Getpagesize()

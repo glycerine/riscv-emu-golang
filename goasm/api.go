@@ -229,6 +229,15 @@ func (c *Ctx) Assemble() (out []byte, err error) {
 	return out, nil
 }
 
+// DumpProgs returns a human-readable listing of all appended Progs.
+func (c *Ctx) DumpProgs() string {
+	var sb strings.Builder
+	for p := c.firstProg; p != nil; p = p.Link {
+		fmt.Fprintf(&sb, "%s\n", p.InstructionString())
+	}
+	return sb.String()
+}
+
 // Sym returns the text LSym (for setting up ATEXT manually if needed).
 func (c *Ctx) Sym() *obj.LSym { return c.sym }
 

@@ -1588,3 +1588,128 @@ func TestDumpBlock_0x34e_v3(t *testing.T) {
 		t.Logf("  [%d] %v", i, res.block.Instrs[i])
 	}
 }
+
+// TestNativeTrace_0x34e dumps V1 vs V2 Prog listings and disassembled
+// native code for the block at pc=0x34e that triggers the R11 clobber bug.
+func TestNativeTrace_0x34e(t *testing.T) {
+	mem, err := NewGuestMemory(Size64MB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mem.Free()
+	_, err = LoadELF(mem, "riscv-elf-tests/rv64ui-p-srl")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	maxBlockInsns = 15
+	defer func() { maxBlockInsns = 2048 }()
+
+	// Find the block covering 0x34e.
+	var res *emitResult
+	for pc := uint64(0x340); pc <= 0x360; pc += 2 {
+		r := emitBlock(mem, pc)
+		if r != nil && r.startPC <= 0x34e && r.endPC > 0x34e {
+			res = r
+			break
+		}
+	}
+	if res == nil {
+		t.Fatal("could not find block covering 0x34e")
+	}
+	t.Logf("block: start=0x%x end=0x%x insns=%d irLen=%d",
+		res.startPC, res.endPC, res.numInsns, len(res.block.Instrs))
+
+	// Print IR for the block.
+	t.Logf("=== IR ===")
+	for i, ins := range res.block.Instrs {
+		t.Logf("  [%2d] %v", i, ins)
+	}
+
+	// Compile with V1.
+	_, v1dbg, err := jitCompileDebug(res, false)
+	if err != nil {
+		t.Fatalf("V1 compile: %v", err)
+	}
+
+	// Compile with V2.
+	_, v2dbg, err := jitCompileDebug(res, true)
+	if err != nil {
+		t.Fatalf("V2 compile: %v", err)
+	}
+
+	// Dump Prog listings.
+	t.Logf("=== V1 Progs ===")
+	for _, line := range strings.Split(v1dbg.progs, "\n") {
+		if line != "" {
+			t.Logf("  %s", line)
+		}
+	}
+	t.Logf("=== V2 Progs ===")
+	for _, line := range strings.Split(v2dbg.progs, "\n") {
+		if line != "" {
+			t.Logf("  %s", line)
+		}
+	}
+
+	// Dump hex of assembled bytes.
+	t.Logf("=== V1 code (%d bytes) ===", len(v1dbg.code))
+	t.Logf("  % x", v1dbg.code)
+	t.Logf("=== V2 code (%d bytes) ===", len(v2dbg.code))
+	t.Logf("  % x", v2dbg.code)
+
+	// Now actually execute both and compare results.
+	cpu := NewCPU(*mem)
+	cpu.SetPC(0)
+	cpu.Notes.Push(func(c *CPU, note Note) NoteDisposition { return NoteHandled })
+	jit := NewJIT()
+
+	// Run until we reach 0x34e.
+	for i := 0; i < 500; i++ {
+		if cpu.pc == 0x34e {
+			break
+		}
+		jit.StepBlock(cpu)
+	}
+	if cpu.pc != 0x34e {
+		t.Fatalf("did not reach 0x34e, stopped at 0x%x", cpu.pc)
+	}
+
+	// Snapshot register state.
+	var xSnap [32]uint64
+	copy(xSnap[:], cpu.x[:])
+
+	// Execute with V1.
+	blkV1, _, err := jitCompileDebug(res, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r1 := jitcallCall(blkV1.fn, &cpu.x, &cpu.f, &cpu.fcsr, cpu.mem.Base(), cpu.mem.Mask())
+
+	var x1 [32]uint64
+	copy(x1[:], cpu.x[:])
+
+	// Restore and execute with V2.
+	copy(cpu.x[:], xSnap[:])
+	blkV2, _, err := jitCompileDebug(res, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r2 := jitcallCall(blkV2.fn, &cpu.x, &cpu.f, &cpu.fcsr, cpu.mem.Base(), cpu.mem.Mask())
+
+	// Compare.
+	t.Logf("V1: pc=0x%x ic=%d status=%d", r1.PC, r1.IC, r1.Status)
+	t.Logf("V2: pc=0x%x ic=%d status=%d", r2.PC, r2.IC, r2.Status)
+	mismatch := false
+	for i := 0; i < 32; i++ {
+		if x1[i] != cpu.x[i] {
+			t.Logf("  x[%d] V1=0x%x V2=0x%x", i, x1[i], cpu.x[i])
+			mismatch = true
+		}
+	}
+	if mismatch {
+		t.Error("V1/V2 register mismatch!")
+	} else {
+		t.Log("V1/V2 registers match.")
+	}
+}

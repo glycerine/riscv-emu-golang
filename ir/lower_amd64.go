@@ -880,47 +880,56 @@ func (lc *lowerCtx) lowerShift(ins *IRInstr, op obj.As) {
 
 	// x86 variable shifts require count in CL.
 	//
-	// Algorithm:
-	//   1. Save CX if it holds a live VReg (not b, not dst).
-	//   2. Move count (b) into CX.
-	//   3. Move value (a) into dst.
-	//   4. SHL/SHR/SAR CL, dst.
-	//   5. Restore CX if saved.
-	//
-	// Hazards handled:
-	//   - dst==CX: shift into scratch, then move to dst.
-	//   - a==CX and needCXSave: read a from save location (R11).
-	//   - b==dst: move b to CX before moving a to dst.
+	// Hazard: use(B,1) may return R11 (scratch2) for a spill-loaded count.
+	// If we then save CX to R11 with a plain MOV, we clobber the count.
+	// Fix: use XCHG when b occupies a scratch register — this atomically
+	// swaps the CX save and count load without destroying either value.
 
 	needCXSave := b != goasm.REG_AMD64_CX && dst != goasm.REG_AMD64_CX && lc.isCXLive()
+	bInScratch := (b == amd64Scratch1 || b == amd64Scratch2)
 
-	// If a is in CX, we must save it BEFORE anything writes to CX.
-	// This covers both the needCXSave case (save for later restore)
-	// and the a==CX case (save so we can read the value after b→CX).
 	aSavedToR11 := false
+	cxSaveReg := int16(-1) // where old CX is saved (-1 = not saved)
+
 	if a == goasm.REG_AMD64_CX && b != goasm.REG_AMD64_CX {
-		// CX holds 'a'; moving b→CX will destroy it. Save to R11.
-		lc.emitRR(x86.AMOVQ, goasm.REG_AMD64_CX, amd64Scratch2)
-		aSavedToR11 = true
+		// CX holds 'a'; moving b→CX will destroy it.
+		if bInScratch {
+			// b is in a scratch reg (from spill). XCHG swaps: CX→scratch (save a),
+			// scratch→CX (load count). One instruction, no clobber.
+			lc.emitRR(x86.AXCHGQ, b, goasm.REG_AMD64_CX)
+			cxSaveReg = b
+			aSavedToR11 = true
+			b = goasm.REG_AMD64_CX // count is now in CX
+		} else {
+			// b is in a regular allocated register. Safe to save a to R11.
+			lc.emitRR(x86.AMOVQ, goasm.REG_AMD64_CX, amd64Scratch2)
+			aSavedToR11 = true
+			cxSaveReg = amd64Scratch2
+		}
 	} else if needCXSave {
-		// CX holds a live VReg (not a, not b, not dst). Save it.
-		lc.emitRR(x86.AMOVQ, goasm.REG_AMD64_CX, amd64Scratch2)
+		// CX holds a live VReg (not a, not b, not dst). Must save it.
+		if bInScratch {
+			// b is in a scratch reg (from spill). XCHG saves CX and loads
+			// count into CX in one step.
+			lc.emitRR(x86.AXCHGQ, b, goasm.REG_AMD64_CX)
+			cxSaveReg = b
+			b = goasm.REG_AMD64_CX // count is now in CX
+		} else {
+			// b is in a regular register. Safe to save CX to R11.
+			lc.emitRR(x86.AMOVQ, goasm.REG_AMD64_CX, amd64Scratch2)
+			cxSaveReg = amd64Scratch2
+		}
 	}
 
-	// Move count (b) into CX.
-	if b == goasm.REG_AMD64_CX {
-		// Already there.
-	} else if b == dst && dst != a && !aSavedToR11 {
-		// b lives in dst; moving a→dst later would clobber b.
-		lc.emitRR(x86.AMOVQ, b, goasm.REG_AMD64_CX)
-	} else {
+	// Move count (b) into CX if not already there.
+	if b != goasm.REG_AMD64_CX {
 		lc.emitRR(x86.AMOVQ, b, goasm.REG_AMD64_CX)
 	}
 
-	// Effective location of 'a': R11 if we saved it, else original register.
+	// Effective location of 'a': saved location if we saved it, else original.
 	aEff := a
 	if aSavedToR11 {
-		aEff = amd64Scratch2
+		aEff = cxSaveReg // wherever the XCHG/MOV put it
 	}
 
 	// Move value (a) into dst and shift.
@@ -940,21 +949,14 @@ func (lc *lowerCtx) lowerShift(ins *IRInstr, op obj.As) {
 		lc.emitRR(op, goasm.REG_AMD64_CX, dst)
 	}
 
-	// Restore CX if it held a live VReg we need to preserve.
-	// Don't restore if we only saved CX because a was there (aSavedToR11)
-	// and dst==CX (the new value belongs in CX).
-	if needCXSave && !aSavedToR11 {
-		lc.emitRR(x86.AMOVQ, amd64Scratch2, goasm.REG_AMD64_CX)
-	} else if needCXSave && aSavedToR11 {
-		// Both: CX held 'a' (which we saved) AND CX was live for restore.
-		// After the shift, dst has the result. CX needs the live value restored.
-		// But aSavedToR11 already consumed R11. The original live CX value was 'a',
-		// and 'a' was the only thing in CX (needCXSave says CX is live, but
-		// dst!=CX was already checked). This case means a==CX and there's
-		// ANOTHER VReg also in CX at this instruction — which can't happen
-		// (allocator assigns one VReg per register). So this branch is unreachable.
-		lc.emitRR(x86.AMOVQ, amd64Scratch2, goasm.REG_AMD64_CX)
+	// Restore CX if we saved it and it wasn't just 'a' (which we consumed).
+	if cxSaveReg >= 0 && !aSavedToR11 {
+		lc.emitRR(x86.AMOVQ, cxSaveReg, goasm.REG_AMD64_CX)
 	}
+	// If aSavedToR11 && needCXSave: CX held 'a' AND was live. But the
+	// allocator assigns one VReg per register, so a==CX means the live
+	// VReg IS 'a'. No separate restore needed — the shift consumed it.
+
 	lc.defCommit(ins.Dst, dst)
 }
 
