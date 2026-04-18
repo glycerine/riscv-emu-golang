@@ -347,4 +347,79 @@ func TestMixedExecution_FullSequence(t *testing.T) {
 		cpu.PC(), ic3, err3, cpu.Reg(4), cpu.Reg(5))
 }
 
+// TestSrc1EqDest tests SUB x1, x1, x2 (rd==rs1 aliasing).
+func TestSrc1EqDest(t *testing.T) {
+	cpu, mem := newTestCPU(t, Size64MB, 0x1000, []uint32{
+		ienc(opOPIMM, 0, 1, 0, 13),       // ADDI x1, x0, 13
+		ienc(opOPIMM, 0, 2, 0, 11),       // ADDI x2, x0, 11
+		renc(opOP, 0, 0x20, 1, 1, 2),     // SUB x1, x1, x2  (rd==rs1)
+		instrECALL,
+	})
+	defer mem.Free()
+	cpu.Notes.Push(ecallStop)
+
+	jit := NewJIT()
+	jit.RunJIT(cpu)
+
+	if cpu.Reg(1) != 2 {
+		t.Errorf("x1 = %d, want 2 (13 - 11)", cpu.Reg(1))
+	}
+}
+
+// TestSubELF_Block39 runs the sub ELF to block 39 and checks what happens.
+func TestSubELF_Block39(t *testing.T) {
+	mem, err := NewGuestMemory(Size64MB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mem.Free()
+	entry, err := LoadELF(mem, "riscv-elf-tests/rv64ui-p-sub")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cpu := NewCPU(*mem)
+	cpu.SetPC(entry)
+	cpu.Notes.Push(ecallStop)
+
+	jit := NewJIT()
+	// Run blocks 0-38
+	for block := 0; block < 39; block++ {
+		pc := cpu.PC()
+		ic, err := jit.StepBlock(cpu)
+		if err != nil {
+			t.Logf("block %d: pc=0x%x ic=%d err=%v gp=%d", block, pc, ic, err, cpu.Reg(3))
+			break
+		}
+	}
+
+	// Now at block 39
+	t.Logf("block 39 starts at PC=0x%x, gp=%d", cpu.PC(), cpu.Reg(3))
+
+	// Dump next instructions
+	pc := cpu.PC()
+	for i := 0; i < 20; i++ {
+		half, _ := mem.Fetch16(pc)
+		if half&3 != 3 {
+			t.Logf("  0x%04x: %04x (RVC)", pc, half)
+			pc += 2
+		} else {
+			insn, _ := mem.Fetch32(pc)
+			t.Logf("  0x%04x: %08x", pc, insn)
+			pc += 4
+		}
+	}
+
+	// Run block 39 with JIT
+	pc39 := cpu.PC()
+	res := emitBlock(mem, pc39)
+	if res == nil {
+		t.Fatal("emitBlock returned nil for block 39")
+	}
+	t.Logf("block 39 IR: %d instructions", len(res.block.Instrs))
+	for i, ins := range res.block.Instrs {
+		t.Logf("  [%d] %s", i, ins.String())
+	}
+}
+
 // Encoding helpers are in jit_test.go (senc, ienc, renc, benc).

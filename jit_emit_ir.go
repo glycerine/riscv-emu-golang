@@ -43,12 +43,12 @@ type emitter struct {
 
 // ── Register access helpers ────────────────────────────────────────────
 
-// xreg returns the VReg for integer register r.
-// All used registers are pre-loaded at block start by emitBlock's two-pass scan.
+// xreg returns the VReg for integer register r and marks it as used.
 func (e *emitter) xreg(r uint32) ir.VReg {
 	if r == 0 {
 		return ir.VRegZero
 	}
+	e.regsUsed[r] = true
 	return e.irEm.XReg(r)
 }
 
@@ -57,6 +57,7 @@ func (e *emitter) xregDst(r uint32) ir.VReg {
 	if r == 0 {
 		return ir.VRegZero
 	}
+	e.regsUsed[r] = true
 	return e.irEm.XReg(r)
 }
 
@@ -231,9 +232,10 @@ func (e *emitter) finalize() *emitResult {
 }
 
 // scanUsedRegs does a lightweight decode pass to identify which integer
-// registers are referenced (read or written) in the block. This allows
-// emitBlock to emit loads only for used registers, matching the C path's
-// efficiency (where only used registers get local variables).
+// registers are referenced (read or written) in the block. Stops at
+// terminator instructions (SYSTEM/JALR/JAL-with-link) to match the
+// emitter's termination points — scanning past them would mark registers
+// from instructions the emitter never emits.
 func scanUsedRegs(mem *GuestMemory, startPC, endPC uint64, used *[32]bool) {
 	pc := startPC
 	for pc < endPC {
@@ -280,6 +282,16 @@ func scanUsedRegs(mem *GuestMemory, startPC, endPC uint64, used *[32]bool) {
 				if rd != 0 { used[rd] = true }
 				if rs2 != 0 { used[rs2] = true }
 				used[2] = true // sp used by LWSP/LDSP/SWSP/SDSP
+				// C.JR / C.JALR / C.EBREAK terminate the block
+				if funct3 == 0b100 {
+					bit12 := (insn >> 12) & 1
+					if bit12 == 0 && rs2 == 0 { // C.JR
+						return
+					}
+					if bit12 == 1 && rs2 == 0 { // C.JALR or C.EBREAK
+						return
+					}
+				}
 			}
 			pc += 2
 		} else {
@@ -329,6 +341,17 @@ func scanUsedRegs(mem *GuestMemory, startPC, endPC uint64, used *[32]bool) {
 				rs3 := insn >> 27
 				if rs3 != 0 { used[rs3] = true }
 			}
+			// Stop at instructions the emitter terminates on.
+			switch opcode {
+			case 0x73: // SYSTEM (ECALL, EBREAK, CSR) — emitter terminates
+				return
+			case 0x67: // JALR — emitter terminates
+				return
+			case 0x6F: // JAL — emitter terminates if rd != 0
+				if rd != 0 {
+					return
+				}
+			}
 			pc += 4
 		}
 	}
@@ -359,17 +382,7 @@ func emitBlock(mem *GuestMemory, pc uint64) *emitResult {
 	e.loadFaultLabel = irEm.NewLabel()
 	e.storeFaultLabel = irEm.NewLabel()
 
-	// Pass 1: scan which registers are used (like the C path's regsUsed).
-	scanUsedRegs(mem, pc, region.endPC, &e.regsUsed)
-
-	// Emit loads only for referenced registers at block start.
-	for i := uint32(1); i < 32; i++ {
-		if e.regsUsed[i] {
-			irEm.Load(irEm.XReg(i), irEm.XBase(), int64(i)*8, ir.I64, false)
-		}
-	}
-
-	// Pass 2: walk PCs and emit IR.
+	// Emit IR (populates regsUsed via xreg/xregDst calls).
 	for e.numInsns < 2048 && !e.terminated && e.pc < e.regionEnd {
 		if e.visited[e.pc] {
 			e.irEm.Jump(e.getOrCreateLabel(e.pc))
@@ -402,6 +415,26 @@ func emitBlock(mem *GuestMemory, pc uint64) *emitResult {
 
 	if e.numInsns == 0 {
 		return nil
+	}
+
+	// Prepend loads for registers that were actually used during emission.
+	// This must happen AFTER emission so regsUsed is fully populated.
+	var loads []ir.IRInstr
+	for i := uint32(1); i < 32; i++ {
+		if e.regsUsed[i] {
+			loads = append(loads, ir.IRInstr{
+				Op: ir.IRLoad, T: ir.I64,
+				Dst: ir.VReg(i), A: irEm.XBase(),
+				Imm: int64(i) * 8,
+			})
+		}
+	}
+	if len(loads) > 0 {
+		e.irEm.Block.Instrs = append(loads, e.irEm.Block.Instrs...)
+		// Fix label indices (they shifted by len(loads)).
+		for lab, idx := range e.irEm.Block.Labels {
+			e.irEm.Block.Labels[lab] = idx + len(loads)
+		}
 	}
 
 	return e.finalize()
