@@ -539,7 +539,7 @@ func TestLW_ELF_Block39(t *testing.T) {
 	cpu.SetPC(entry)
 	cpu.Notes.Push(ecallStop)
 	jit := NewJIT()
-	jit.trace = true
+	// jit.trace = true // uncomment to debug
 
 	for block := 0; block < 50; block++ {
 		pc := cpu.PC()

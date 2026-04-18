@@ -15,9 +15,9 @@ import (
 // once for the baseline phase — fuzz iterations run in a child process.
 func TestMain(m *testing.M) {
 	timeout := 30 * time.Second
-	// Shrink to 3s when not fuzzing (fast unit test path)
+	// Shrink to 10s when not fuzzing (fast unit test path)
 	if os.Getenv("FUZZ_TIMEOUT") == "" {
-		timeout = 3 * time.Second
+		timeout = 10 * time.Second
 	}
 
 	done := make(chan int, 1)

@@ -797,14 +797,14 @@ func (e *emitter) emitOp(rd, rs1, rs2, funct3, funct7 uint32) {
 			e.irEm.MulHSU(dst, a, b)
 		case 3:
 			e.irEm.MulHU(dst, a, b)
-		case 4:
-			e.irEm.DivS(dst, a, b)
-		case 5:
-			e.irEm.DivU(dst, a, b)
-		case 6:
-			e.irEm.Rem(dst, a, b)
-		case 7:
-			e.irEm.RemU(dst, a, b)
+		case 4: // DIV — bail, x86 faults on divide-by-zero but RISC-V returns -1
+			e.terminated = true
+		case 5: // DIVU — bail
+			e.terminated = true
+		case 6: // REM — bail
+			e.terminated = true
+		case 7: // REMU — bail
+			e.terminated = true
 		}
 	case 0x04: // Zbb: ZEXT.H (R-type encoding funct7=0x04, funct3 can vary)
 		e.irEm.Zext(dst, a, ir.I16)
