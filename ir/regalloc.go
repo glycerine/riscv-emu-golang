@@ -109,16 +109,39 @@ func Allocate(b *Block, pool RegPool, pinned map[VReg]int16, freq []float64) *Al
 	mv := maxVReg(b)
 	isFP := classifyVRegs(b, intervals)
 
-	// Step 3: compute count[P] at each program point.
-	count := computeCount(intervals, len(b.Instrs))
+	// Step 3: compute separate int and FP counts, excluding pinned VRegs.
+	// Pinned VRegs have pre-assigned host registers that are already removed
+	// from the pool, so they don't compete for pool registers.
+	pinnedSet := make(map[VReg]bool, len(pinned))
+	for vr := range pinned {
+		pinnedSet[vr] = true
+	}
 
-	// Determine k (number of registers) per class.
+	n := len(b.Instrs)
+	countInt := make([]int, n)
+	countFP := make([]int, n)
+	for _, is := range intervals {
+		vr := is.VReg
+		if vr == VRegZero || pinnedSet[vr] {
+			continue
+		}
+		fp := int(vr) < len(isFP) && isFP[vr]
+		for _, iv := range is.Intervals {
+			for p := iv.Start; p <= iv.End && p < n; p++ {
+				if fp {
+					countFP[p]++
+				} else {
+					countInt[p]++
+				}
+			}
+		}
+	}
+
 	kInt := len(pool.IntRegs)
 	kFP := len(pool.FPRegs)
 
 	// Build allocState.
 	st := &allocState{
-		count:     count,
 		availInt:  make([]int16, 0, kInt),
 		availFP:   make([]int16, 0, kFP),
 		isFP:      isFP,
@@ -139,24 +162,22 @@ func Allocate(b *Block, pool RegPool, pinned map[VReg]int16, freq []float64) *Al
 
 	// Step 4: compute spill costs.
 	if freq == nil {
-		freq = make([]float64, len(b.Instrs))
+		freq = make([]float64, n)
 		for i := range freq {
 			freq[i] = 1.0
 		}
 	}
 	st.spillCost = computeSpillCosts(b, intervals, freq)
 
-	// Step 5: ELS_1 spill identification — spill until count[P] <= k everywhere.
-	// We handle int and FP separately, using their respective k values.
-	// For now, use the combined maximum. This will be refined.
-	k := kInt
-	if kFP > k {
-		k = kFP
-	}
-	spillIdentify(st, k, count, freq)
+	// Step 5: ELS_1 spill identification — handle int and FP separately.
+	// Pinned VRegs are never spill candidates (they're excluded from counts
+	// and marked in pinnedSet).
+	spillIdentify(st, kInt, countInt, freq, isFP, false, pinnedSet)
+	spillIdentify(st, kFP, countFP, freq, isFP, true, pinnedSet)
 
-	// Step 6: spill resurrection.
-	spillResurrect(st, k, count)
+	// Step 6: spill resurrection — also per-class.
+	spillResurrect(st, kInt, countInt, isFP, false)
+	spillResurrect(st, kFP, countFP, isFP, true)
 
 	// Step 7: ELS_0 register assignment for non-spilled VRegs.
 	assignRegisters(st, pool, pinned)
@@ -535,7 +556,13 @@ func computeSpillCosts(b *Block, intervals []intervalSet, freq []float64) []floa
 
 // ── ELS_1: Spill Identification (paper Figure 6, step 1) ──
 
-func spillIdentify(st *allocState, k int, count []int, freq []float64) {
+// spillIdentify performs ELS_1 step 1 for one register class.
+// isFP and wantFP filter which VRegs this call considers.
+// pinnedSet marks VRegs that must never be spilled.
+func spillIdentify(st *allocState, k int, count []int, freq []float64, isFP []bool, wantFP bool, pinnedSet map[VReg]bool) {
+	if k <= 0 {
+		return
+	}
 	for {
 		// Find program point with count[P] > k and largest freq[P].
 		maxP := -1
@@ -553,10 +580,9 @@ func spillIdentify(st *allocState, k int, count []int, freq []float64) {
 			}
 		}
 		if maxP == -1 {
-			break // No pressure point exceeds k.
+			break
 		}
 
-		// Find the live VReg at P with smallest totalSpillCost(s)/iDegree(s,P).
 		iDegree := count[maxP] - 1
 		if iDegree <= 0 {
 			iDegree = 1
@@ -566,10 +592,17 @@ func spillIdentify(st *allocState, k int, count []int, freq []float64) {
 		bestScore := -1.0
 		for _, is := range st.intervals {
 			vr := is.VReg
-			if vr == VRegZero || int(vr) >= len(st.spilled) || st.spilled[vr] {
+			if vr == VRegZero || pinnedSet[vr] {
 				continue
 			}
-			// Check if vr is live at maxP.
+			if int(vr) >= len(st.spilled) || st.spilled[vr] {
+				continue
+			}
+			// Filter by class.
+			vrIsFP := int(vr) < len(isFP) && isFP[vr]
+			if vrIsFP != wantFP {
+				continue
+			}
 			for _, iv := range is.Intervals {
 				if iv.Start <= maxP && maxP <= iv.End {
 					score := st.spillCost[vr] / float64(iDegree)
@@ -583,14 +616,12 @@ func spillIdentify(st *allocState, k int, count []int, freq []float64) {
 		}
 
 		if bestVReg == VRegZero {
-			break // No candidates to spill.
+			break
 		}
 
-		// Spill bestVReg.
 		st.spilled[bestVReg] = true
 		st.spillStack = append(st.spillStack, bestVReg)
 
-		// Decrement count at all points where bestVReg is live.
 		for _, is := range st.intervals {
 			if is.VReg != bestVReg {
 				continue
@@ -606,13 +637,21 @@ func spillIdentify(st *allocState, k int, count []int, freq []float64) {
 
 // ── ELS_1: Spill Resurrection (paper Figure 6, step 2) ──
 
-func spillResurrect(st *allocState, k int, count []int) {
-	for len(st.spillStack) > 0 {
-		// Pop from stack (LIFO).
-		vr := st.spillStack[len(st.spillStack)-1]
-		st.spillStack = st.spillStack[:len(st.spillStack)-1]
+// spillResurrect performs ELS_1 step 2 for one register class.
+func spillResurrect(st *allocState, k int, count []int, isFP []bool, wantFP bool) {
+	if k <= 0 {
+		return
+	}
+	// Process spill stack in LIFO order, but only for the matching class.
+	remaining := st.spillStack[:0]
+	for i := len(st.spillStack) - 1; i >= 0; i-- {
+		vr := st.spillStack[i]
+		vrIsFP := int(vr) < len(isFP) && isFP[vr]
+		if vrIsFP != wantFP {
+			remaining = append(remaining, vr)
+			continue
+		}
 
-		// Check if resurrecting vr would cause count[Q] > k at any point.
 		canResurrect := true
 		for _, is := range st.intervals {
 			if is.VReg != vr {
@@ -633,7 +672,6 @@ func spillResurrect(st *allocState, k int, count []int) {
 
 		if canResurrect {
 			st.spilled[vr] = false
-			// Increment count at all live points.
 			for _, is := range st.intervals {
 				if is.VReg != vr {
 					continue
@@ -645,7 +683,9 @@ func spillResurrect(st *allocState, k int, count []int) {
 				}
 			}
 		}
+		// If not resurrected, don't put back on stack (it stays spilled).
 	}
+	st.spillStack = remaining
 }
 
 // ── ELS_0: Register Assignment (paper Figure 4, steps 4-5) ──
