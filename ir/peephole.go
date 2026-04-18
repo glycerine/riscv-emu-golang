@@ -26,6 +26,11 @@ func (e *Emitter) tryPeephole() bool {
 		return e.simplifyIdentity(n)
 	}
 
+	// Pattern 2b: IRSubImm dst, a, 0 -> simplify.
+	if last.Op == IRSubImm && last.Imm == 0 {
+		return e.simplifyIdentity(n)
+	}
+
 	// Pattern 3: IRShlImm dst, a, 0 -> simplify.
 	if last.Op == IRShlImm && last.Imm == 0 {
 		return e.simplifyIdentity(n)

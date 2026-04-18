@@ -302,6 +302,25 @@ func TestMarkDirty_GrowsSlice(t *testing.T) {
 	}
 }
 
+func TestWriteBackAll_ClearsDirty(t *testing.T) {
+	e := NewEmitter()
+	e.MarkDirty(VReg(5))
+	e.MarkDirty(VReg(33))
+	e.WriteBackAll()
+	if e.IsDirty(VReg(5)) {
+		t.Error("VReg(5) should be clean after WriteBackAll")
+	}
+	if e.IsDirty(VReg(33)) {
+		t.Error("VReg(33) should be clean after WriteBackAll")
+	}
+	// Second call should emit zero stores.
+	before := len(e.Block.Instrs)
+	e.WriteBackAll()
+	if len(e.Block.Instrs) != before {
+		t.Errorf("second WriteBackAll emitted %d stores, want 0", len(e.Block.Instrs)-before)
+	}
+}
+
 func TestMaxIC(t *testing.T) {
 	if MaxIC != 4096 {
 		t.Errorf("MaxIC = %d, want 4096", MaxIC)

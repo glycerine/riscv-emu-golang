@@ -215,6 +215,25 @@ func TestVregUsedLater_Temp(t *testing.T) {
 	}
 }
 
+func TestPeephole_SubImm0_DstEqualsA_Deleted(t *testing.T) {
+	e := newTestEmitter()
+	e.emit(IRInstr{Op: IRSubImm, T: I64, Dst: VReg(5), A: VReg(5), Imm: 0})
+	if len(e.Block.Instrs) != 0 {
+		t.Errorf("SubImm 0 with dst==a should be deleted, got %d", len(e.Block.Instrs))
+	}
+}
+
+func TestPeephole_SubImm0_DstDiffA_BecomeMov(t *testing.T) {
+	e := newTestEmitter()
+	e.emit(IRInstr{Op: IRSubImm, T: I64, Dst: VReg(5), A: VReg(6), Imm: 0})
+	if len(e.Block.Instrs) != 1 {
+		t.Fatalf("expected 1 instr, got %d", len(e.Block.Instrs))
+	}
+	if e.Block.Instrs[0].Op != IRMov {
+		t.Errorf("expected Mov, got %v", e.Block.Instrs[0].Op)
+	}
+}
+
 func TestPeepholeSz_Value(t *testing.T) {
 	if PeepholeSz != 4 {
 		t.Errorf("PeepholeSz = %d, want 4", PeepholeSz)

@@ -107,7 +107,7 @@ func FuzzPeepholeTermination(f *testing.F) {
 
 func FuzzEmitterSequences(f *testing.F) {
 	f.Add([]byte{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15})
-	f.Add([]byte{0, 0, 0, 0}) // all-zero dst (VRegZero discard)
+	f.Add([]byte{0, 0, 0, 0})                     // all-zero dst (VRegZero discard)
 	f.Add([]byte{20, 20, 20, 20, 20, 20, 20, 20}) // repeated same op
 
 	f.Fuzz(func(t *testing.T, data []byte) {
@@ -353,9 +353,9 @@ func FuzzBlockStructure(f *testing.F) {
 
 func FuzzHighLevelHelpers(f *testing.F) {
 	// Seeds: (offset int64 as uint64, widthIdx byte, signed bool byte, doStore bool byte)
-	f.Add(uint64(0), byte(0), byte(1), byte(0))     // off=0, width=1, signed, load
-	f.Add(uint64(16), byte(1), byte(0), byte(1))     // off=16, width=2, unsigned, store
-	f.Add(uint64(0xFFFF), byte(2), byte(1), byte(0)) // large off, width=4, signed, load
+	f.Add(uint64(0), byte(0), byte(1), byte(0))             // off=0, width=1, signed, load
+	f.Add(uint64(16), byte(1), byte(0), byte(1))            // off=16, width=2, unsigned, store
+	f.Add(uint64(0xFFFF), byte(2), byte(1), byte(0))        // large off, width=4, signed, load
 	f.Add(uint64(math.MaxInt64), byte(3), byte(0), byte(0)) // max off, width=8, unsigned, load
 
 	f.Fuzz(func(t *testing.T, offBits uint64, widthIdx byte, signedByte byte, doStoreByte byte) {

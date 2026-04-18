@@ -524,6 +524,17 @@ func TestEmitter_Call_Dedup(t *testing.T) {
 	}
 }
 
+func TestEmitter_Call_InconsistentAddr_Panics(t *testing.T) {
+	e := NewEmitter()
+	e.Call("jit_sqrt", 0x1)
+	defer func() {
+		if r := recover(); r == nil {
+			t.Error("Call with different addr should panic")
+		}
+	}()
+	e.Call("jit_sqrt", 0x2)
+}
+
 func TestEmitter_Ret(t *testing.T) {
 	e := NewEmitter()
 	e.Ret(0x80001000, 3, VReg(64))

@@ -78,50 +78,50 @@ func (e *Emitter) MemMask() VReg { return e.memMask }
 
 // ── Integer ALU ──
 
-func (e *Emitter) Add(dst, a, b VReg)              { e.op3(IRAdd, I64, dst, a, b) }
-func (e *Emitter) AddT(dst, a, b VReg, t Type)     { e.op3(IRAdd, t, dst, a, b) }
-func (e *Emitter) AddImm(dst, a VReg, imm int64)   { e.op2i(IRAddImm, I64, dst, a, imm) }
-func (e *Emitter) Sub(dst, a, b VReg)              { e.op3(IRSub, I64, dst, a, b) }
-func (e *Emitter) SubImm(dst, a VReg, imm int64)   { e.op2i(IRSubImm, I64, dst, a, imm) }
-func (e *Emitter) Mul(dst, a, b VReg)              { e.op3(IRMul, I64, dst, a, b) }
-func (e *Emitter) DivS(dst, a, b VReg)             { e.op3(IRDivS, I64, dst, a, b) }
-func (e *Emitter) DivU(dst, a, b VReg)             { e.op3(IRDivU, I64, dst, a, b) }
-func (e *Emitter) Rem(dst, a, b VReg)              { e.op3(IRRem, I64, dst, a, b) }
-func (e *Emitter) MulHS(dst, a, b VReg)            { e.op3(IRMulHS, I64, dst, a, b) }
-func (e *Emitter) MulHU(dst, a, b VReg)            { e.op3(IRMulHU, I64, dst, a, b) }
-func (e *Emitter) MulHSU(dst, a, b VReg)           { e.op3(IRMulHSU, I64, dst, a, b) }
-func (e *Emitter) Neg(dst, a VReg)                 { e.op2(IRNeg, I64, dst, a) }
+func (e *Emitter) Add(dst, a, b VReg)            { e.op3(IRAdd, I64, dst, a, b) }
+func (e *Emitter) AddT(dst, a, b VReg, t Type)   { e.op3(IRAdd, t, dst, a, b) }
+func (e *Emitter) AddImm(dst, a VReg, imm int64) { e.op2i(IRAddImm, I64, dst, a, imm) }
+func (e *Emitter) Sub(dst, a, b VReg)            { e.op3(IRSub, I64, dst, a, b) }
+func (e *Emitter) SubImm(dst, a VReg, imm int64) { e.op2i(IRSubImm, I64, dst, a, imm) }
+func (e *Emitter) Mul(dst, a, b VReg)            { e.op3(IRMul, I64, dst, a, b) }
+func (e *Emitter) DivS(dst, a, b VReg)           { e.op3(IRDivS, I64, dst, a, b) }
+func (e *Emitter) DivU(dst, a, b VReg)           { e.op3(IRDivU, I64, dst, a, b) }
+func (e *Emitter) Rem(dst, a, b VReg)            { e.op3(IRRem, I64, dst, a, b) }
+func (e *Emitter) MulHS(dst, a, b VReg)          { e.op3(IRMulHS, I64, dst, a, b) }
+func (e *Emitter) MulHU(dst, a, b VReg)          { e.op3(IRMulHU, I64, dst, a, b) }
+func (e *Emitter) MulHSU(dst, a, b VReg)         { e.op3(IRMulHSU, I64, dst, a, b) }
+func (e *Emitter) Neg(dst, a VReg)               { e.op2(IRNeg, I64, dst, a) }
 
 // ── Shifts ──
 
-func (e *Emitter) Shl(dst, a, b VReg)              { e.op3(IRShl, I64, dst, a, b) }
-func (e *Emitter) ShlImm(dst, a VReg, imm int64)   { e.op2i(IRShlImm, I64, dst, a, imm) }
-func (e *Emitter) Shr(dst, a, b VReg)              { e.op3(IRShr, I64, dst, a, b) }
-func (e *Emitter) ShrImm(dst, a VReg, imm int64)   { e.op2i(IRShrImm, I64, dst, a, imm) }
-func (e *Emitter) Sar(dst, a, b VReg)              { e.op3(IRSar, I64, dst, a, b) }
-func (e *Emitter) SarImm(dst, a VReg, imm int64)   { e.op2i(IRSarImm, I64, dst, a, imm) }
+func (e *Emitter) Shl(dst, a, b VReg)            { e.op3(IRShl, I64, dst, a, b) }
+func (e *Emitter) ShlImm(dst, a VReg, imm int64) { e.op2i(IRShlImm, I64, dst, a, imm) }
+func (e *Emitter) Shr(dst, a, b VReg)            { e.op3(IRShr, I64, dst, a, b) }
+func (e *Emitter) ShrImm(dst, a VReg, imm int64) { e.op2i(IRShrImm, I64, dst, a, imm) }
+func (e *Emitter) Sar(dst, a, b VReg)            { e.op3(IRSar, I64, dst, a, b) }
+func (e *Emitter) SarImm(dst, a VReg, imm int64) { e.op2i(IRSarImm, I64, dst, a, imm) }
 
 // ── Bitwise ──
 
-func (e *Emitter) And(dst, a, b VReg)              { e.op3(IRAnd, I64, dst, a, b) }
-func (e *Emitter) AndImm(dst, a VReg, imm int64)   { e.op2i(IRAndImm, I64, dst, a, imm) }
-func (e *Emitter) Or(dst, a, b VReg)               { e.op3(IROr, I64, dst, a, b) }
-func (e *Emitter) OrImm(dst, a VReg, imm int64)    { e.op2i(IROrImm, I64, dst, a, imm) }
-func (e *Emitter) Xor(dst, a, b VReg)              { e.op3(IRXor, I64, dst, a, b) }
-func (e *Emitter) XorImm(dst, a VReg, imm int64)   { e.op2i(IRXorImm, I64, dst, a, imm) }
-func (e *Emitter) Not(dst, a VReg)                 { e.op2(IRNot, I64, dst, a) }
+func (e *Emitter) And(dst, a, b VReg)            { e.op3(IRAnd, I64, dst, a, b) }
+func (e *Emitter) AndImm(dst, a VReg, imm int64) { e.op2i(IRAndImm, I64, dst, a, imm) }
+func (e *Emitter) Or(dst, a, b VReg)             { e.op3(IROr, I64, dst, a, b) }
+func (e *Emitter) OrImm(dst, a VReg, imm int64)  { e.op2i(IROrImm, I64, dst, a, imm) }
+func (e *Emitter) Xor(dst, a, b VReg)            { e.op3(IRXor, I64, dst, a, b) }
+func (e *Emitter) XorImm(dst, a VReg, imm int64) { e.op2i(IRXorImm, I64, dst, a, imm) }
+func (e *Emitter) Not(dst, a VReg)               { e.op2(IRNot, I64, dst, a) }
 
 // ── Comparison ──
 
-func (e *Emitter) Set(dst, a, b VReg, p Pred)             { e.opSet(IRSet, dst, a, b, p) }
-func (e *Emitter) SetImm(dst, a VReg, imm int64, p Pred)  { e.opSetImm(IRSetImm, dst, a, imm, p) }
+func (e *Emitter) Set(dst, a, b VReg, p Pred)            { e.opSet(IRSet, dst, a, b, p) }
+func (e *Emitter) SetImm(dst, a VReg, imm int64, p Pred) { e.opSetImm(IRSetImm, dst, a, imm, p) }
 
 // ── Data movement ──
 
-func (e *Emitter) Mov(dst, a VReg)                 { e.op2(IRMov, I64, dst, a) }
-func (e *Emitter) Const(dst VReg, imm int64)       { e.opConst(dst, imm) }
-func (e *Emitter) Sext(dst, a VReg, fromT Type)    { e.opExt(IRSext, dst, a, fromT) }
-func (e *Emitter) Zext(dst, a VReg, fromT Type)    { e.opExt(IRZext, dst, a, fromT) }
+func (e *Emitter) Mov(dst, a VReg)              { e.op2(IRMov, I64, dst, a) }
+func (e *Emitter) Const(dst VReg, imm int64)    { e.opConst(dst, imm) }
+func (e *Emitter) Sext(dst, a VReg, fromT Type) { e.opExt(IRSext, dst, a, fromT) }
+func (e *Emitter) Zext(dst, a VReg, fromT Type) { e.opExt(IRZext, dst, a, fromT) }
 
 // ── Memory ──
 
@@ -134,7 +134,7 @@ func (e *Emitter) Load(dst, base VReg, imm int64, t Type, signed bool) {
 	}
 	e.emit(IRInstr{Op: IRLoad, T: t, Dst: dst, A: base, Imm: imm})
 	// Sub-I64 integer loads need sign/zero extension to 64 bits.
-	if t < I64 && t <= I32 {
+	if t <= I32 {
 		if signed {
 			e.emit(IRInstr{Op: IRSext, T: t, Dst: dst, A: dst})
 		} else {
@@ -155,7 +155,7 @@ func (e *Emitter) LoadX(dst, base, idx VReg, scale uint8, t Type, signed bool) {
 		return
 	}
 	e.emit(IRInstr{Op: IRLoadX, T: t, Dst: dst, A: base, B: idx, Scale: scale})
-	if t < I64 && t <= I32 {
+	if t <= I32 {
 		if signed {
 			e.emit(IRInstr{Op: IRSext, T: t, Dst: dst, A: dst})
 		} else {
@@ -205,6 +205,9 @@ func (e *Emitter) Call(sym string, addr uintptr) int {
 	// Check if already registered.
 	for i, cs := range e.Block.CTab {
 		if cs.Name == sym {
+			if cs.Addr != addr {
+				panic("ir.Emitter.Call: symbol " + sym + " registered with different address")
+			}
 			e.emit(IRInstr{Op: IRCall, Imm: int64(i)})
 			return i
 		}

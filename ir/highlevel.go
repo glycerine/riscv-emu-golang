@@ -68,12 +68,14 @@ func (e *Emitter) WriteBackAll() {
 	for vr := VReg(1); vr < 32; vr++ {
 		if int(vr) < len(e.dirty) && e.dirty[vr] {
 			e.Store(e.xBase, int64(vr)*8, vr, I64)
+			e.dirty[vr] = false
 		}
 	}
 	// FP registers f0..f31 (VRegs 32..63).
 	for vr := VReg(32); vr < 64; vr++ {
 		if int(vr) < len(e.dirty) && e.dirty[vr] {
 			e.Store(e.fBase, int64(vr-32)*8, vr, I64)
+			e.dirty[vr] = false
 		}
 	}
 }

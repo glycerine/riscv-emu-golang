@@ -157,6 +157,30 @@ func TestEmit_RecordsLabelIndex(t *testing.T) {
 	}
 }
 
+func TestOp2i_AddImm0_SameDst_NoDirty(t *testing.T) {
+	e := newTestEmitter()
+	e.op2i(IRAddImm, I64, VReg(5), VReg(5), 0)
+	if e.dirty[5] {
+		t.Error("AddImm(x5, x5, 0) should not mark x5 dirty (peephole deletes identity)")
+	}
+}
+
+func TestOp2i_AddImm0_DiffDst_Dirty(t *testing.T) {
+	e := newTestEmitter()
+	e.op2i(IRAddImm, I64, VReg(5), VReg(6), 0)
+	if !e.dirty[5] {
+		t.Error("AddImm(x5, x6, 0) should mark x5 dirty (rewritten to Mov)")
+	}
+}
+
+func TestOp2_MovSelf_NoDirty(t *testing.T) {
+	e := newTestEmitter()
+	e.op2(IRMov, I64, VReg(5), VReg(5))
+	if e.dirty[5] {
+		t.Error("Mov(x5, x5) should not mark x5 dirty (peephole deletes self-move)")
+	}
+}
+
 func TestEmit_TriggersPeephole(t *testing.T) {
 	e := newTestEmitter()
 	// Emit a self-move which peephole should delete.
