@@ -6,7 +6,10 @@ package riscv
 // Replaces TCC: emitBlock produces ir.Block, which is lowered and assembled
 // to native code via the goasm package (no cgo).
 
-import "unsafe"
+import (
+	"fmt"
+	"unsafe"
+)
 
 // compiledBlock holds a natively-compiled function pointer.
 type compiledBlock struct {
@@ -17,9 +20,9 @@ type compiledBlock struct {
 // jitCompile compiles an IR block to native code and returns a compiledBlock.
 func jitCompile(res *emitResult) (*compiledBlock, error) {
 	// TODO: Phase 5 Step 8 — wire up ir.Allocate → ir.LowerAMD64 → goasm.Assemble
-	// For now, return nil to fall back to interpreter.
+	// For now, return error to fall back to interpreter.
 	_ = res
-	return nil, nil
+	return nil, fmt.Errorf("jit: native compilation not yet implemented")
 }
 
 // allocExec allocates executable memory via mmap.

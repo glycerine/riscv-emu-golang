@@ -5,25 +5,1666 @@ package riscv
 // jit_emit_ir.go — Translates RISC-V basic blocks to IR (ir.Block).
 // This replaces jit_emit.go's C source generation with IR emission.
 
-// emitResult holds the generated IR block and metadata about the block.
+import "riscv/ir"
+
+// emitResult holds the generated IR block and metadata.
 type emitResult struct {
-	startPC  uint64   // first instruction PC
-	endPC    uint64   // PC past the last instruction
-	numInsns int      // number of RISC-V instructions translated
-	regsUsed [32]bool // which registers are read or written
+	block    *ir.Block
+	startPC  uint64
+	endPC    uint64
+	numInsns int
+	regsUsed [32]bool
 }
 
-// emitBlock translates a basic block starting at pc into an IR block.
-// Uses a two-phase approach: scan the region, then emit all instructions.
+// deferredExit holds an external branch exit to emit at finalize time.
+type deferredExit struct {
+	label    ir.Label
+	targetPC uint64
+}
+
+// emitter accumulates IR for a basic block.
+type emitter struct {
+	mem        *GuestMemory
+	startPC    uint64
+	pc         uint64
+	irEm       *ir.Emitter
+	numInsns   int
+	regsUsed   [32]bool
+	terminated bool
+	visited    map[uint64]bool
+	regionEnd  uint64
+	gotoTargets map[uint64]bool
+	pcLabels   map[uint64]ir.Label
+	icEmitted  bool
+	intLoaded  [32]bool
+	fpLoaded   [32]bool
+	loadFaultLabel  ir.Label
+	storeFaultLabel ir.Label
+	loadFaultPC     uint64 // set before each load for the fault handler
+	storeFaultPC    uint64
+	deferredExits []deferredExit
+}
+
+// ── Register access helpers ────────────────────────────────────────────
+
+// xreg returns the VReg for integer register r, lazily loading from x[].
+func (e *emitter) xreg(r uint32) ir.VReg {
+	if r == 0 {
+		return ir.VRegZero
+	}
+	e.regsUsed[r] = true
+	vr := e.irEm.XReg(r)
+	if !e.intLoaded[r] {
+		e.irEm.Load(vr, e.irEm.XBase(), int64(r)*8, ir.I64, false)
+		e.intLoaded[r] = true
+	}
+	return vr
+}
+
+// xregDst returns the VReg for integer register r for writing.
+// Does NOT load — the value will be overwritten.
+func (e *emitter) xregDst(r uint32) ir.VReg {
+	if r == 0 {
+		return ir.VRegZero
+	}
+	e.regsUsed[r] = true
+	e.intLoaded[r] = true
+	return e.irEm.XReg(r)
+}
+
+// freg returns the VReg for FP register r, lazily loading from f[].
+func (e *emitter) freg(r uint32) ir.VReg {
+	vr := e.irEm.FRegV(r)
+	if !e.fpLoaded[r] {
+		e.irEm.Load(vr, e.irEm.FBase(), int64(r)*8, ir.I64, false)
+		e.fpLoaded[r] = true
+	}
+	return vr
+}
+
+// fregDst returns the VReg for FP register r for writing.
+func (e *emitter) fregDst(r uint32) ir.VReg {
+	e.fpLoaded[r] = true
+	return e.irEm.FRegV(r)
+}
+
+// ── NaN-boxing helpers ─────────────────────────────────────────────────
+
+// boxF32 NaN-boxes a 32-bit value into f[rd].
+func (e *emitter) boxF32(rd uint32, val ir.VReg) {
+	dst := e.fregDst(rd)
+	masked := e.irEm.Tmp()
+	e.irEm.AndImm(masked, val, 0xFFFFFFFF)
+	hi := e.irEm.Tmp()
+	e.irEm.Const(hi, -4294967296) // 0xFFFFFFFF00000000 as int64
+	e.irEm.Or(dst, masked, hi)
+}
+
+// unboxF32 extracts 32-bit float bits; canonical NaN if improperly boxed.
+func (e *emitter) unboxF32(rs uint32) ir.VReg {
+	src := e.freg(rs)
+	upper := e.irEm.Tmp()
+	e.irEm.ShrImm(upper, src, 32)
+	check := e.irEm.Tmp()
+	e.irEm.Const(check, 0xFFFFFFFF)
+	result := e.irEm.Tmp()
+	okLabel := e.irEm.NewLabel()
+	doneLabel := e.irEm.NewLabel()
+	e.irEm.Branch(upper, check, ir.EQ, okLabel)
+	e.irEm.Const(result, 0x7FC00000) // canonical NaN
+	e.irEm.Jump(doneLabel)
+	e.irEm.PlaceLabel(okLabel)
+	e.irEm.Zext(result, src, ir.I32)
+	e.irEm.PlaceLabel(doneLabel)
+	return result
+}
+
+// ── Control flow helpers ───────────────────────────────────────────────
+
+func (e *emitter) getOrCreateLabel(pc uint64) ir.Label {
+	if l, ok := e.pcLabels[pc]; ok {
+		return l
+	}
+	l := e.irEm.NewLabel()
+	e.pcLabels[pc] = l
+	return l
+}
+
+func (e *emitter) emitLabel() {
+	e.irEm.PlaceLabel(e.getOrCreateLabel(e.pc))
+}
+
+func (e *emitter) emitIC() {
+	e.irEm.AddImm(e.irEm.IC(), e.irEm.IC(), 1)
+}
+
+func (e *emitter) advancePC(size uint64) {
+	e.numInsns++
+	e.pc += size
+	if e.icEmitted {
+		e.icEmitted = false
+	} else {
+		e.emitIC()
+	}
+}
+
+func (e *emitter) emitReturn(pc uint64, status int) {
+	e.irEm.WriteBackAll()
+	e.irEm.Ret(pc, status, ir.VRegZero)
+}
+
+func (e *emitter) emitWriteBackAll() {
+	e.irEm.WriteBackAll()
+}
+
+func branchPred(funct3 uint32) (ir.Pred, bool) {
+	switch funct3 {
+	case 0:
+		return ir.EQ, true
+	case 1:
+		return ir.NE, true
+	case 4:
+		return ir.LT, true
+	case 5:
+		return ir.GE, true
+	case 6:
+		return ir.LTU, true
+	case 7:
+		return ir.GEU, true
+	}
+	return 0, false
+}
+
+// irLoadInfo returns width and signed for integer loads.
+func irLoadInfo(funct3 uint32) (width int, signed bool) {
+	switch funct3 {
+	case 0:
+		return 1, true // LB
+	case 1:
+		return 2, true // LH
+	case 2:
+		return 4, true // LW
+	case 3:
+		return 8, false // LD
+	case 4:
+		return 1, false // LBU
+	case 5:
+		return 2, false // LHU
+	case 6:
+		return 4, false // LWU
+	}
+	return 0, false
+}
+
+// irStoreWidth returns width for integer stores.
+func irStoreWidth(funct3 uint32) int {
+	switch funct3 {
+	case 0:
+		return 1
+	case 1:
+		return 2
+	case 2:
+		return 4
+	case 3:
+		return 8
+	}
+	return 0
+}
+
+// ── finalize ───────────────────────────────────────────────────────────
+
+func (e *emitter) finalize() *emitResult {
+	// Fall-through return (dead code if block ended with explicit return).
+	if !e.terminated {
+		e.irEm.WriteBackAll()
+		e.irEm.Ret(e.pc, jitOK, ir.VRegZero)
+	}
+
+	// Bail labels: goto targets not emitted.
+	for target := range e.gotoTargets {
+		if !e.visited[target] {
+			e.irEm.PlaceLabel(e.getOrCreateLabel(target))
+			e.irEm.WriteBackAll()
+			e.irEm.Ret(target, jitOK, ir.VRegZero)
+		}
+	}
+
+	// Deferred external exits.
+	for _, de := range e.deferredExits {
+		e.irEm.PlaceLabel(de.label)
+		e.irEm.WriteBackAll()
+		e.irEm.Ret(de.targetPC, jitOK, ir.VRegZero)
+	}
+
+	return &emitResult{
+		block:    e.irEm.Block,
+		startPC:  e.startPC,
+		endPC:    e.pc,
+		numInsns: e.numInsns,
+		regsUsed: e.regsUsed,
+	}
+}
+
+// ── emitBlock ──────────────────────────────────────────────────────────
+
 func emitBlock(mem *GuestMemory, pc uint64) *emitResult {
-	// Phase 1: pre-scan the region to determine block extent.
 	region := scanRegion(mem, pc)
 	if region.pcCount == 0 {
 		return nil
 	}
 
-	// TODO: Phase 5 Steps 1-7 — create IR emitter, walk PCs, emit IR
-	// For now, return nil to fall back to interpreter.
-	_ = region
-	return nil
+	irEm := ir.NewEmitter()
+
+	e := &emitter{
+		mem:         mem,
+		startPC:     pc,
+		pc:          pc,
+		irEm:        irEm,
+		visited:     make(map[uint64]bool),
+		regionEnd:   region.endPC,
+		gotoTargets: make(map[uint64]bool),
+		pcLabels:    make(map[uint64]ir.Label),
+	}
+
+	// Pre-allocate fault labels.
+	e.loadFaultLabel = irEm.NewLabel()
+	e.storeFaultLabel = irEm.NewLabel()
+
+	// Walk PCs and emit IR.
+	for e.numInsns < 2048 && !e.terminated && e.pc < e.regionEnd {
+		if e.visited[e.pc] {
+			e.irEm.Jump(e.getOrCreateLabel(e.pc))
+			e.gotoTargets[e.pc] = true
+			e.terminated = true
+			break
+		}
+		e.visited[e.pc] = true
+
+		half, fh := mem.Fetch16(e.pc)
+		if fh != nil {
+			break
+		}
+
+		if half&0x3 != 0x3 {
+			e.emitRVC(uint16(half))
+		} else {
+			insn, f := mem.Fetch32(e.pc)
+			if f != nil {
+				if f.Kind == FaultMisalign {
+					insn, f = mem.Fetch32U(e.pc)
+				}
+				if f != nil {
+					break
+				}
+			}
+			e.emit32(insn)
+		}
+	}
+
+	if e.numInsns == 0 {
+		return nil
+	}
+
+	return e.finalize()
+}
+
+// ── 32-bit instruction emitter ─────────────────────────────────────────
+
+func (e *emitter) emit32(insn uint32) {
+	opcode := insn & 0x7F
+	rd := (insn >> 7) & 0x1F
+	funct3 := (insn >> 12) & 0x7
+	rs1 := (insn >> 15) & 0x1F
+	rs2 := (insn >> 20) & 0x1F
+	funct7 := insn >> 25
+	iimm := int64(int32(insn)) >> 20
+
+	e.emitLabel()
+
+	switch opcode {
+	case 0x37: // LUI
+		uimm := int64(int32(insn & 0xFFFFF000))
+		if rd != 0 {
+			e.irEm.Const(e.xregDst(rd), uimm)
+		}
+		e.advancePC(4)
+
+	case 0x17: // AUIPC
+		uimm := int64(int32(insn & 0xFFFFF000))
+		if rd != 0 {
+			e.irEm.Const(e.xregDst(rd), int64(e.pc)+uimm)
+		}
+		e.advancePC(4)
+
+	case 0x6F: // JAL
+		jimm := jImm(insn)
+		e.emitJAL(rd, jimm, 4)
+
+	case 0x67: // JALR
+		e.emitJALR(rd, rs1, iimm, 4)
+
+	case 0x63: // BRANCH
+		bimm := bImm(insn)
+		_, ok := branchPred(funct3)
+		if !ok {
+			e.terminated = true
+			e.advancePC(4)
+			break
+		}
+		e.emitBranch(rs1, rs2, funct3, bimm)
+		e.advancePC(4)
+
+	case 0x03: // LOAD
+		e.emitLoad(rd, rs1, iimm, funct3)
+		if !e.terminated {
+			e.advancePC(4)
+		}
+
+	case 0x23: // STORE
+		simm := sImm(insn)
+		e.emitStore(rs1, rs2, simm, funct3)
+		if !e.terminated {
+			e.advancePC(4)
+		}
+
+	case 0x13: // OP-IMM
+		e.emitOpImm(rd, rs1, iimm, funct3, funct7)
+		if !e.terminated {
+			e.advancePC(4)
+		}
+
+	case 0x1B: // OP-IMM-32
+		e.emitOpImm32(rd, rs1, iimm, funct3, funct7)
+		if !e.terminated {
+			e.advancePC(4)
+		}
+
+	case 0x33: // OP
+		e.emitOp(rd, rs1, rs2, funct3, funct7)
+		if !e.terminated {
+			e.advancePC(4)
+		}
+
+	case 0x3B: // OP-32
+		e.emitOp32(rd, rs1, rs2, funct3, funct7)
+		if !e.terminated {
+			e.advancePC(4)
+		}
+
+	case 0x07: // FP LOAD
+		e.emitFPLoad(rd, rs1, iimm, funct3)
+		if !e.terminated {
+			e.advancePC(4)
+		}
+
+	case 0x27: // FP STORE
+		simm := sImm(insn)
+		e.emitFPStore(rs1, rs2, simm, funct3)
+		if !e.terminated {
+			e.advancePC(4)
+		}
+
+	case 0x43, 0x47, 0x4B, 0x4F: // FMA
+		rs3 := insn >> 27
+		fpfmt := (insn >> 25) & 0x3
+		e.emitFMA(opcode, rd, rs1, rs2, rs3, fpfmt)
+		if !e.terminated {
+			e.advancePC(4)
+		}
+
+	case 0x53: // FP-OP
+		funct5 := insn >> 27
+		fpfmt := (insn >> 25) & 0x3
+		e.emitFPOp(rd, rs1, rs2, funct3, funct5, fpfmt)
+		if !e.terminated {
+			e.advancePC(4)
+		}
+
+	case 0x0F: // FENCE
+		e.advancePC(4)
+
+	case 0x73: // SYSTEM
+		switch insn {
+		case 0x00000073: // ECALL
+			e.advancePC(4)
+			e.emitReturn(e.pc, jitEcall)
+			e.terminated = true
+		case 0x00100073: // EBREAK
+			e.advancePC(4)
+			e.emitReturn(e.pc, jitEbreak)
+			e.terminated = true
+		default:
+			e.terminated = true
+		}
+
+	default:
+		e.terminated = true
+	}
+}
+
+// ── OP-IMM ─────────────────────────────────────────────────────────────
+
+func (e *emitter) emitOpImm(rd, rs1 uint32, imm int64, funct3, funct7 uint32) {
+	if rd == 0 {
+		return
+	}
+	shamt := imm & 63
+
+	switch funct3 {
+	case 0: // ADDI
+		if imm == 0 && rs1 == 0 {
+			e.irEm.Const(e.xregDst(rd), 0)
+		} else if imm == 0 {
+			e.irEm.Mov(e.xregDst(rd), e.xreg(rs1))
+		} else if rs1 == 0 {
+			e.irEm.Const(e.xregDst(rd), imm)
+		} else {
+			e.irEm.AddImm(e.xregDst(rd), e.xreg(rs1), imm)
+		}
+	case 1: // SLLI / BSETI / BCLRI / BINVI / CLZ/CTZ/CPOP/SEXT
+		funct6 := funct7 >> 1
+		switch funct6 {
+		case 0x00: // SLLI
+			e.irEm.ShlImm(e.xregDst(rd), e.xreg(rs1), shamt)
+		case 0x0A: // BSETI
+			t := e.irEm.Tmp()
+			e.irEm.Const(t, int64(1)<<shamt)
+			e.irEm.Or(e.xregDst(rd), e.xreg(rs1), t)
+		case 0x12: // BCLRI
+			e.irEm.AndImm(e.xregDst(rd), e.xreg(rs1), ^(int64(1) << shamt))
+		case 0x1A: // BINVI
+			t := e.irEm.Tmp()
+			e.irEm.Const(t, int64(1)<<shamt)
+			e.irEm.Xor(e.xregDst(rd), e.xreg(rs1), t)
+		case 0x30: // CLZ/CTZ/CPOP/SEXT.B/SEXT.H
+			switch shamt {
+			case 0, 1, 2: // CLZ/CTZ/CPOP — bail
+				e.terminated = true
+			case 0x22: // SEXT.B
+				e.irEm.Sext(e.xregDst(rd), e.xreg(rs1), ir.I8)
+			case 0x23: // SEXT.H
+				e.irEm.Sext(e.xregDst(rd), e.xreg(rs1), ir.I16)
+			default:
+				e.terminated = true
+			}
+		default:
+			e.terminated = true
+		}
+	case 2: // SLTI
+		e.irEm.SetImm(e.xregDst(rd), e.xreg(rs1), imm, ir.LT)
+	case 3: // SLTIU
+		e.irEm.SetImm(e.xregDst(rd), e.xreg(rs1), imm, ir.LTU)
+	case 4: // XORI
+		e.irEm.XorImm(e.xregDst(rd), e.xreg(rs1), imm)
+	case 5: // SRLI/SRAI / BEXTI / RORI / ORC.B / REV8 / ZEXT.H
+		funct6 := funct7 >> 1
+		switch funct6 {
+		case 0x00: // SRLI
+			e.irEm.ShrImm(e.xregDst(rd), e.xreg(rs1), shamt)
+		case 0x10: // SRAI
+			e.irEm.SarImm(e.xregDst(rd), e.xreg(rs1), shamt)
+		case 0x12: // BEXTI
+			t := e.irEm.Tmp()
+			e.irEm.ShrImm(t, e.xreg(rs1), shamt)
+			e.irEm.AndImm(e.xregDst(rd), t, 1)
+		case 0x18: // RORI
+			t1 := e.irEm.Tmp()
+			e.irEm.ShrImm(t1, e.xreg(rs1), shamt)
+			t2 := e.irEm.Tmp()
+			e.irEm.ShlImm(t2, e.xreg(rs1), 64-shamt)
+			e.irEm.Or(e.xregDst(rd), t1, t2)
+		case 0x0A: // ORC.B — bail (complex bit manipulation)
+			e.terminated = true
+		case 0x1A: // REV8 — bail (complex byte-swap)
+			e.terminated = true
+		case 0x02: // ZEXT.H
+			e.irEm.Zext(e.xregDst(rd), e.xreg(rs1), ir.I16)
+		default:
+			e.terminated = true
+		}
+	case 6: // ORI
+		e.irEm.OrImm(e.xregDst(rd), e.xreg(rs1), imm)
+	case 7: // ANDI
+		e.irEm.AndImm(e.xregDst(rd), e.xreg(rs1), imm)
+	}
+}
+
+// ── OP-IMM-32 ──────────────────────────────────────────────────────────
+
+func (e *emitter) emitOpImm32(rd, rs1 uint32, imm int64, funct3, funct7 uint32) {
+	if rd == 0 {
+		return
+	}
+	shamt := imm & 31
+
+	switch funct3 {
+	case 0: // ADDIW
+		src := e.xreg(rs1)
+		dst := e.xregDst(rd)
+		if imm == 0 {
+			// SEXT.W
+			e.irEm.Sext(dst, src, ir.I32)
+		} else {
+			t := e.irEm.Tmp()
+			e.irEm.AddImm(t, src, imm)
+			e.irEm.Sext(dst, t, ir.I32)
+		}
+	case 1: // SLLIW / SLLI.UW
+		if funct7 == 0x04 { // SLLI.UW
+			t := e.irEm.Tmp()
+			e.irEm.Zext(t, e.xreg(rs1), ir.I32)
+			e.irEm.ShlImm(e.xregDst(rd), t, shamt)
+		} else { // SLLIW
+			t := e.irEm.Tmp()
+			e.irEm.ShlImm(t, e.xreg(rs1), shamt)
+			e.irEm.Sext(e.xregDst(rd), t, ir.I32)
+		}
+	case 5: // SRLIW / SRAIW / RORIW
+		switch funct7 >> 1 {
+		case 0x00: // SRLIW
+			t := e.irEm.Tmp()
+			e.irEm.Zext(t, e.xreg(rs1), ir.I32) // zero-extend to get uint32
+			e.irEm.ShrImm(t, t, shamt)
+			e.irEm.Sext(e.xregDst(rd), t, ir.I32)
+		case 0x10: // SRAIW
+			t := e.irEm.Tmp()
+			e.irEm.Sext(t, e.xreg(rs1), ir.I32) // sign-extend to get int32
+			e.irEm.SarImm(t, t, shamt)
+			e.irEm.Sext(e.xregDst(rd), t, ir.I32)
+		case 0x30: // RORIW — bail for now
+			e.terminated = true
+		default:
+			e.terminated = true
+		}
+	default:
+		e.terminated = true
+	}
+}
+
+// ── OP (R-type) ────────────────────────────────────────────────────────
+
+func (e *emitter) emitOp(rd, rs1, rs2, funct3, funct7 uint32) {
+	if rd == 0 {
+		return
+	}
+	a := e.xreg(rs1)
+	b := e.xreg(rs2)
+	dst := e.xregDst(rd)
+
+	switch funct7 {
+	case 0x00: // base RV64I
+		switch funct3 {
+		case 0:
+			e.irEm.Add(dst, a, b)
+		case 1:
+			e.irEm.Shl(dst, a, b)
+		case 2:
+			e.irEm.Set(dst, a, b, ir.LT)
+		case 3:
+			e.irEm.Set(dst, a, b, ir.LTU)
+		case 4:
+			e.irEm.Xor(dst, a, b)
+		case 5:
+			e.irEm.Shr(dst, a, b)
+		case 6:
+			e.irEm.Or(dst, a, b)
+		case 7:
+			e.irEm.And(dst, a, b)
+		}
+	case 0x20: // SUB / SRA / Zbb
+		switch funct3 {
+		case 0:
+			e.irEm.Sub(dst, a, b) // SUB
+		case 5:
+			e.irEm.Sar(dst, a, b) // SRA
+		case 4: // XNOR
+			t := e.irEm.Tmp()
+			e.irEm.Xor(t, a, b)
+			e.irEm.Not(dst, t)
+		case 6: // ORN
+			t := e.irEm.Tmp()
+			e.irEm.Not(t, b)
+			e.irEm.Or(dst, a, t)
+		case 7: // ANDN
+			t := e.irEm.Tmp()
+			e.irEm.Not(t, b)
+			e.irEm.And(dst, a, t)
+		}
+	case 0x01: // M extension
+		switch funct3 {
+		case 0:
+			e.irEm.Mul(dst, a, b)
+		case 1:
+			e.irEm.MulHS(dst, a, b) // no longer bails!
+		case 2:
+			e.irEm.MulHSU(dst, a, b)
+		case 3:
+			e.irEm.MulHU(dst, a, b)
+		case 4:
+			e.irEm.DivS(dst, a, b)
+		case 5:
+			e.irEm.DivU(dst, a, b)
+		case 6:
+			e.irEm.Rem(dst, a, b)
+		case 7:
+			e.irEm.RemU(dst, a, b)
+		}
+	case 0x04: // Zbb: ZEXT.H (R-type encoding funct7=0x04, funct3 can vary)
+		e.irEm.Zext(dst, a, ir.I16)
+	case 0x05: // MIN/MAX (Zbb) + CLMUL (Zbc)
+		switch funct3 {
+		case 4: // MIN
+			takeA := e.irEm.NewLabel()
+			done := e.irEm.NewLabel()
+			t := e.irEm.Tmp()
+			e.irEm.Set(t, a, b, ir.LT)
+			e.irEm.Branch(t, ir.VRegZero, ir.NE, takeA)
+			e.irEm.Mov(dst, b)
+			e.irEm.Jump(done)
+			e.irEm.PlaceLabel(takeA)
+			e.irEm.Mov(dst, a)
+			e.irEm.PlaceLabel(done)
+		case 5: // MINU
+			takeA := e.irEm.NewLabel()
+			done := e.irEm.NewLabel()
+			t := e.irEm.Tmp()
+			e.irEm.Set(t, a, b, ir.LTU)
+			e.irEm.Branch(t, ir.VRegZero, ir.NE, takeA)
+			e.irEm.Mov(dst, b)
+			e.irEm.Jump(done)
+			e.irEm.PlaceLabel(takeA)
+			e.irEm.Mov(dst, a)
+			e.irEm.PlaceLabel(done)
+		case 6: // MAX
+			takeA := e.irEm.NewLabel()
+			done := e.irEm.NewLabel()
+			t := e.irEm.Tmp()
+			e.irEm.Set(t, a, b, ir.GT)
+			e.irEm.Branch(t, ir.VRegZero, ir.NE, takeA)
+			e.irEm.Mov(dst, b)
+			e.irEm.Jump(done)
+			e.irEm.PlaceLabel(takeA)
+			e.irEm.Mov(dst, a)
+			e.irEm.PlaceLabel(done)
+		case 7: // MAXU
+			takeA := e.irEm.NewLabel()
+			done := e.irEm.NewLabel()
+			t := e.irEm.Tmp()
+			e.irEm.Set(t, a, b, ir.GTU)
+			e.irEm.Branch(t, ir.VRegZero, ir.NE, takeA)
+			e.irEm.Mov(dst, b)
+			e.irEm.Jump(done)
+			e.irEm.PlaceLabel(takeA)
+			e.irEm.Mov(dst, a)
+			e.irEm.PlaceLabel(done)
+		default:
+			e.terminated = true
+		}
+	case 0x07: // Zicond
+		switch funct3 {
+		case 5: // CZERO.EQZ: d = (b == 0) ? 0 : a
+			skip := e.irEm.NewLabel()
+			done := e.irEm.NewLabel()
+			e.irEm.Branch(b, ir.VRegZero, ir.NE, skip)
+			e.irEm.Const(dst, 0)
+			e.irEm.Jump(done)
+			e.irEm.PlaceLabel(skip)
+			e.irEm.Mov(dst, a)
+			e.irEm.PlaceLabel(done)
+		case 7: // CZERO.NEZ: d = (b != 0) ? 0 : a
+			skip := e.irEm.NewLabel()
+			done := e.irEm.NewLabel()
+			e.irEm.Branch(b, ir.VRegZero, ir.EQ, skip)
+			e.irEm.Const(dst, 0)
+			e.irEm.Jump(done)
+			e.irEm.PlaceLabel(skip)
+			e.irEm.Mov(dst, a)
+			e.irEm.PlaceLabel(done)
+		default:
+			e.terminated = true
+		}
+	case 0x10: // Zba: SH1ADD/SH2ADD/SH3ADD
+		switch funct3 {
+		case 2: // SH1ADD
+			t := e.irEm.Tmp()
+			e.irEm.ShlImm(t, a, 1)
+			e.irEm.Add(dst, b, t)
+		case 4: // SH2ADD
+			t := e.irEm.Tmp()
+			e.irEm.ShlImm(t, a, 2)
+			e.irEm.Add(dst, b, t)
+		case 6: // SH3ADD
+			t := e.irEm.Tmp()
+			e.irEm.ShlImm(t, a, 3)
+			e.irEm.Add(dst, b, t)
+		default:
+			e.terminated = true
+		}
+	case 0x14: // Zbs: BSET
+		switch funct3 {
+		case 1: // BSET
+			t := e.irEm.Tmp()
+			one := e.irEm.Tmp()
+			e.irEm.Const(one, 1)
+			e.irEm.Shl(t, one, b)
+			e.irEm.Or(dst, a, t)
+		default:
+			e.terminated = true
+		}
+	case 0x24: // Zbs: BCLR/BEXT
+		switch funct3 {
+		case 1: // BCLR
+			t := e.irEm.Tmp()
+			one := e.irEm.Tmp()
+			e.irEm.Const(one, 1)
+			e.irEm.Shl(t, one, b)
+			e.irEm.Not(t, t)
+			e.irEm.And(dst, a, t)
+		case 5: // BEXT
+			t := e.irEm.Tmp()
+			e.irEm.Shr(t, a, b)
+			e.irEm.AndImm(dst, t, 1)
+		default:
+			e.terminated = true
+		}
+	case 0x30: // Zbb: ROL/ROR
+		switch funct3 {
+		case 1: // ROL
+			t1 := e.irEm.Tmp()
+			e.irEm.Shl(t1, a, b)
+			sub := e.irEm.Tmp()
+			e.irEm.Const(sub, 64)
+			e.irEm.Sub(sub, sub, b)
+			t2 := e.irEm.Tmp()
+			e.irEm.Shr(t2, a, sub)
+			e.irEm.Or(dst, t1, t2)
+		case 5: // ROR
+			t1 := e.irEm.Tmp()
+			e.irEm.Shr(t1, a, b)
+			sub := e.irEm.Tmp()
+			e.irEm.Const(sub, 64)
+			e.irEm.Sub(sub, sub, b)
+			t2 := e.irEm.Tmp()
+			e.irEm.Shl(t2, a, sub)
+			e.irEm.Or(dst, t1, t2)
+		default:
+			e.terminated = true
+		}
+	case 0x34: // Zbs: BINV
+		t := e.irEm.Tmp()
+		one := e.irEm.Tmp()
+		e.irEm.Const(one, 1)
+		e.irEm.Shl(t, one, b)
+		e.irEm.Xor(dst, a, t)
+	default:
+		e.terminated = true
+	}
+}
+
+// ── OP-32 ──────────────────────────────────────────────────────────────
+
+func (e *emitter) emitOp32(rd, rs1, rs2, funct3, funct7 uint32) {
+	if rd == 0 {
+		return
+	}
+	a := e.xreg(rs1)
+	b := e.xreg(rs2)
+	dst := e.xregDst(rd)
+
+	switch funct7 {
+	case 0x00:
+		switch funct3 {
+		case 0: // ADDW
+			t := e.irEm.Tmp()
+			e.irEm.Add(t, a, b)
+			e.irEm.Sext(dst, t, ir.I32)
+		case 1: // SLLW
+			t := e.irEm.Tmp()
+			e.irEm.Zext(t, a, ir.I32)
+			e.irEm.Shl(t, t, b)
+			e.irEm.Sext(dst, t, ir.I32)
+		case 5: // SRLW
+			t := e.irEm.Tmp()
+			e.irEm.Zext(t, a, ir.I32)
+			e.irEm.Shr(t, t, b)
+			e.irEm.Sext(dst, t, ir.I32)
+		default:
+			e.terminated = true
+		}
+	case 0x20:
+		switch funct3 {
+		case 0: // SUBW
+			t := e.irEm.Tmp()
+			e.irEm.Sub(t, a, b)
+			e.irEm.Sext(dst, t, ir.I32)
+		case 5: // SRAW
+			t := e.irEm.Tmp()
+			e.irEm.Sext(t, a, ir.I32)
+			e.irEm.Sar(t, t, b)
+			e.irEm.Sext(dst, t, ir.I32)
+		default:
+			e.terminated = true
+		}
+	case 0x01: // M extension (word)
+		switch funct3 {
+		case 0: // MULW
+			t := e.irEm.Tmp()
+			e.irEm.Mul(t, a, b)
+			e.irEm.Sext(dst, t, ir.I32)
+		case 4: // DIVW — bail, complex overflow semantics
+			e.terminated = true
+		case 5: // DIVUW — bail
+			e.terminated = true
+		case 6: // REMW — bail
+			e.terminated = true
+		case 7: // REMUW — bail
+			e.terminated = true
+		default:
+			e.terminated = true
+		}
+	case 0x04: // Zba: ADD.UW
+		t := e.irEm.Tmp()
+		e.irEm.Zext(t, a, ir.I32)
+		e.irEm.Add(dst, b, t)
+	case 0x10: // Zba: SH1ADD.UW / SH2ADD.UW / SH3ADD.UW
+		switch funct3 {
+		case 2:
+			t := e.irEm.Tmp()
+			e.irEm.Zext(t, a, ir.I32)
+			e.irEm.ShlImm(t, t, 1)
+			e.irEm.Add(dst, b, t)
+		case 4:
+			t := e.irEm.Tmp()
+			e.irEm.Zext(t, a, ir.I32)
+			e.irEm.ShlImm(t, t, 2)
+			e.irEm.Add(dst, b, t)
+		case 6:
+			t := e.irEm.Tmp()
+			e.irEm.Zext(t, a, ir.I32)
+			e.irEm.ShlImm(t, t, 3)
+			e.irEm.Add(dst, b, t)
+		default:
+			e.terminated = true
+		}
+	default:
+		e.terminated = true
+	}
+}
+
+// ── LOAD ───────────────────────────────────────────────────────────────
+
+func (e *emitter) emitLoad(rd, rs1 uint32, imm int64, funct3 uint32) {
+	width, signed := irLoadInfo(funct3)
+	if width == 0 {
+		e.terminated = true
+		return
+	}
+	if rd == 0 {
+		return // load to x0 is a NOP
+	}
+	base := e.xreg(rs1)
+	dst := e.xregDst(rd)
+
+	if width > 1 {
+		addr := e.irEm.Tmp()
+		e.irEm.AddImm(addr, base, imm)
+		misalignLabel := e.irEm.NewLabel()
+		alignBits := e.irEm.Tmp()
+		e.irEm.AndImm(alignBits, addr, int64(width-1))
+		e.irEm.Branch(alignBits, ir.VRegZero, ir.NE, misalignLabel)
+		e.irEm.MaskedLoad(dst, base, e.irEm.MemBase(), e.irEm.MemMask(), imm, width, signed, e.loadFaultLabel)
+		doneLabel := e.irEm.NewLabel()
+		e.irEm.Jump(doneLabel)
+		e.irEm.PlaceLabel(misalignLabel)
+		e.irEm.WriteBackAll()
+		e.irEm.Ret(e.pc, jitOK, ir.VRegZero) // bail to interp
+		e.irEm.PlaceLabel(doneLabel)
+	} else {
+		e.irEm.MaskedLoad(dst, base, e.irEm.MemBase(), e.irEm.MemMask(), imm, 1, signed, e.loadFaultLabel)
+	}
+}
+
+// ── STORE ──────────────────────────────────────────────────────────────
+
+func (e *emitter) emitStore(rs1, rs2 uint32, imm int64, funct3 uint32) {
+	width := irStoreWidth(funct3)
+	if width == 0 {
+		e.terminated = true
+		return
+	}
+	base := e.xreg(rs1)
+	src := e.xreg(rs2)
+
+	if width > 1 {
+		addr := e.irEm.Tmp()
+		e.irEm.AddImm(addr, base, imm)
+		misalignLabel := e.irEm.NewLabel()
+		alignBits := e.irEm.Tmp()
+		e.irEm.AndImm(alignBits, addr, int64(width-1))
+		e.irEm.Branch(alignBits, ir.VRegZero, ir.NE, misalignLabel)
+		e.irEm.GuestStore(base, e.irEm.MemBase(), e.irEm.MemMask(), imm, src, width, e.storeFaultLabel)
+		doneLabel := e.irEm.NewLabel()
+		e.irEm.Jump(doneLabel)
+		e.irEm.PlaceLabel(misalignLabel)
+		e.irEm.WriteBackAll()
+		e.irEm.Ret(e.pc, jitOK, ir.VRegZero)
+		e.irEm.PlaceLabel(doneLabel)
+	} else {
+		e.irEm.GuestStore(base, e.irEm.MemBase(), e.irEm.MemMask(), imm, src, 1, e.storeFaultLabel)
+	}
+}
+
+// ── FP LOAD ────────────────────────────────────────────────────────────
+
+func (e *emitter) emitFPLoad(rd, rs1 uint32, imm int64, funct3 uint32) {
+	var width int
+	switch funct3 {
+	case 2:
+		width = 4
+	case 3:
+		width = 8
+	default:
+		e.terminated = true
+		return
+	}
+
+	base := e.xreg(rs1)
+	// FP loads fault on misalignment — combine alignment + OOB into one check.
+	addr := e.irEm.Tmp()
+	e.irEm.AddImm(addr, base, imm)
+	alignBits := e.irEm.Tmp()
+	e.irEm.AndImm(alignBits, addr, int64(width-1))
+	e.irEm.Branch(alignBits, ir.VRegZero, ir.NE, e.loadFaultLabel)
+
+	if funct3 == 2 { // FLW — load 32 bits, NaN-box
+		tmp := e.irEm.Tmp()
+		e.irEm.MaskedLoad(tmp, base, e.irEm.MemBase(), e.irEm.MemMask(), imm, 4, false, e.loadFaultLabel)
+		e.boxF32(rd, tmp)
+	} else { // FLD
+		e.irEm.MaskedLoad(e.fregDst(rd), base, e.irEm.MemBase(), e.irEm.MemMask(), imm, 8, false, e.loadFaultLabel)
+	}
+}
+
+// ── FP STORE ───────────────────────────────────────────────────────────
+
+func (e *emitter) emitFPStore(rs1, rs2 uint32, imm int64, funct3 uint32) {
+	var width int
+	switch funct3 {
+	case 2:
+		width = 4
+	case 3:
+		width = 8
+	default:
+		e.terminated = true
+		return
+	}
+
+	base := e.xreg(rs1)
+	addr := e.irEm.Tmp()
+	e.irEm.AddImm(addr, base, imm)
+	alignBits := e.irEm.Tmp()
+	e.irEm.AndImm(alignBits, addr, int64(width-1))
+	e.irEm.Branch(alignBits, ir.VRegZero, ir.NE, e.storeFaultLabel)
+
+	if funct3 == 2 { // FSW — extract low 32 bits
+		tmp := e.irEm.Tmp()
+		e.irEm.Zext(tmp, e.freg(rs2), ir.I32)
+		e.irEm.GuestStore(base, e.irEm.MemBase(), e.irEm.MemMask(), imm, tmp, 4, e.storeFaultLabel)
+	} else { // FSD
+		e.irEm.GuestStore(base, e.irEm.MemBase(), e.irEm.MemMask(), imm, e.freg(rs2), 8, e.storeFaultLabel)
+	}
+}
+
+// ── FMA family ─────────────────────────────────────────────────────────
+
+func (e *emitter) emitFMA(opcode, rd, rs1, rs2, rs3, fpfmt uint32) {
+	if fpfmt > 1 {
+		e.terminated = true
+		return
+	}
+
+	if fpfmt == 0 { // single
+		a := e.unboxF32(rs1)
+		b := e.unboxF32(rs2)
+		c := e.unboxF32(rs3)
+		mul := e.irEm.Tmp()
+		e.irEm.FMul(mul, a, b, ir.F32)
+
+		var result ir.VReg
+		switch opcode {
+		case 0x43: // FMADD: a*b + c
+			result = e.irEm.Tmp()
+			e.irEm.FAdd(result, mul, c, ir.F32)
+		case 0x47: // FMSUB: a*b - c
+			result = e.irEm.Tmp()
+			e.irEm.FSub(result, mul, c, ir.F32)
+		case 0x4B: // FNMSUB: -(a*b) + c = c - a*b
+			result = e.irEm.Tmp()
+			e.irEm.FSub(result, c, mul, ir.F32)
+		case 0x4F: // FNMADD: -(a*b) - c
+			neg := e.irEm.Tmp()
+			e.irEm.FNeg(neg, mul, ir.F32)
+			result = e.irEm.Tmp()
+			e.irEm.FSub(result, neg, c, ir.F32)
+		}
+		e.boxF32(rd, result)
+	} else { // double
+		a := e.freg(rs1)
+		b := e.freg(rs2)
+		c := e.freg(rs3)
+		mul := e.irEm.Tmp()
+		e.irEm.FMul(mul, a, b, ir.F64)
+		dst := e.fregDst(rd)
+
+		switch opcode {
+		case 0x43:
+			e.irEm.FAdd(dst, mul, c, ir.F64)
+		case 0x47:
+			e.irEm.FSub(dst, mul, c, ir.F64)
+		case 0x4B:
+			e.irEm.FSub(dst, c, mul, ir.F64)
+		case 0x4F:
+			neg := e.irEm.Tmp()
+			e.irEm.FNeg(neg, mul, ir.F64)
+			e.irEm.FSub(dst, neg, c, ir.F64)
+		}
+	}
+}
+
+// ── FP-OP ──────────────────────────────────────────────────────────────
+
+func (e *emitter) emitFPOp(rd, rs1, rs2, funct3, funct5, fpfmt uint32) {
+	if fpfmt == 0 {
+		e.emitFPOpS(rd, rs1, rs2, funct3, funct5)
+	} else if fpfmt == 1 {
+		e.emitFPOpD(rd, rs1, rs2, funct3, funct5)
+	} else {
+		e.terminated = true
+	}
+}
+
+func (e *emitter) emitFPOpS(rd, rs1, rs2, funct3, funct5 uint32) {
+	switch funct5 {
+	case 0x00: // FADD.S
+		a := e.unboxF32(rs1)
+		b := e.unboxF32(rs2)
+		result := e.irEm.Tmp()
+		e.irEm.FAdd(result, a, b, ir.F32)
+		e.boxF32(rd, result)
+	case 0x01: // FSUB.S
+		a := e.unboxF32(rs1)
+		b := e.unboxF32(rs2)
+		result := e.irEm.Tmp()
+		e.irEm.FSub(result, a, b, ir.F32)
+		e.boxF32(rd, result)
+	case 0x02: // FMUL.S
+		a := e.unboxF32(rs1)
+		b := e.unboxF32(rs2)
+		result := e.irEm.Tmp()
+		e.irEm.FMul(result, a, b, ir.F32)
+		e.boxF32(rd, result)
+	case 0x03: // FDIV.S
+		a := e.unboxF32(rs1)
+		b := e.unboxF32(rs2)
+		result := e.irEm.Tmp()
+		e.irEm.FDiv(result, a, b, ir.F32)
+		e.boxF32(rd, result)
+	case 0x0B: // FSQRT.S
+		a := e.unboxF32(rs1)
+		result := e.irEm.Tmp()
+		e.irEm.FSqrt(result, a, ir.F32)
+		e.boxF32(rd, result)
+	case 0x04: // FSGNJ.S / FSGNJN.S / FSGNJX.S
+		e.emitFsgnjS(rd, rs1, rs2, funct3)
+	case 0x05: // FMIN.S / FMAX.S — bail
+		e.terminated = true
+	case 0x08: // FCVT.S.D
+		a := e.freg(rs1)
+		result := e.irEm.Tmp()
+		e.irEm.FCvtFF(result, a, ir.F64, ir.F32)
+		e.boxF32(rd, result)
+	case 0x14: // FEQ.S / FLT.S / FLE.S
+		e.emitFcmpS(rd, rs1, rs2, funct3)
+	case 0x18: // FCVT.{W,WU,L,LU}.S
+		e.emitFcvtToIntS(rd, rs1, rs2)
+	case 0x1A: // FCVT.S.{W,WU,L,LU}
+		e.emitFcvtFromIntS(rd, rs1, rs2)
+	case 0x1C: // FMV.X.W / FCLASS.S
+		switch funct3 {
+		case 0: // FMV.X.W
+			if rd != 0 {
+				e.irEm.Sext(e.xregDst(rd), e.freg(rs1), ir.I32)
+			}
+		default:
+			e.terminated = true
+		}
+	case 0x1E: // FMV.W.X
+		e.boxF32(rd, e.xreg(rs1))
+	default:
+		e.terminated = true
+	}
+}
+
+func (e *emitter) emitFPOpD(rd, rs1, rs2, funct3, funct5 uint32) {
+	switch funct5 {
+	case 0x00: // FADD.D
+		e.irEm.FAdd(e.fregDst(rd), e.freg(rs1), e.freg(rs2), ir.F64)
+	case 0x01: // FSUB.D
+		e.irEm.FSub(e.fregDst(rd), e.freg(rs1), e.freg(rs2), ir.F64)
+	case 0x02: // FMUL.D
+		e.irEm.FMul(e.fregDst(rd), e.freg(rs1), e.freg(rs2), ir.F64)
+	case 0x03: // FDIV.D
+		e.irEm.FDiv(e.fregDst(rd), e.freg(rs1), e.freg(rs2), ir.F64)
+	case 0x0B: // FSQRT.D
+		e.irEm.FSqrt(e.fregDst(rd), e.freg(rs1), ir.F64)
+	case 0x04: // FSGNJ.D
+		e.emitFsgnjD(rd, rs1, rs2, funct3)
+	case 0x05: // FMIN.D / FMAX.D — bail
+		e.terminated = true
+	case 0x08: // FCVT.D.S
+		a := e.unboxF32(rs1)
+		e.irEm.FCvtFF(e.fregDst(rd), a, ir.F32, ir.F64)
+	case 0x14: // FEQ.D / FLT.D / FLE.D
+		e.emitFcmpD(rd, rs1, rs2, funct3)
+	case 0x18: // FCVT.{W,WU,L,LU}.D
+		e.emitFcvtToIntD(rd, rs1, rs2)
+	case 0x1A: // FCVT.D.{W,WU,L,LU}
+		e.emitFcvtFromIntD(rd, rs1, rs2)
+	case 0x1C: // FMV.X.D / FCLASS.D
+		switch funct3 {
+		case 0:
+			if rd != 0 {
+				e.irEm.Mov(e.xregDst(rd), e.freg(rs1))
+			}
+		default:
+			e.terminated = true
+		}
+	case 0x1E: // FMV.D.X
+		e.irEm.Mov(e.fregDst(rd), e.xreg(rs1))
+	default:
+		e.terminated = true
+	}
+}
+
+// ── FP sign injection ──────────────────────────────────────────────────
+
+func (e *emitter) emitFsgnjS(rd, rs1, rs2, funct3 uint32) {
+	s1 := e.unboxF32(rs1)
+	s2 := e.unboxF32(rs2)
+	switch funct3 {
+	case 0: // FSGNJ.S
+		t1 := e.irEm.Tmp()
+		e.irEm.AndImm(t1, s1, 0x7FFFFFFF)
+		t2 := e.irEm.Tmp()
+		e.irEm.AndImm(t2, s2, int64(0x80000000))
+		result := e.irEm.Tmp()
+		e.irEm.Or(result, t1, t2)
+		e.boxF32(rd, result)
+	case 1: // FSGNJN.S
+		t1 := e.irEm.Tmp()
+		e.irEm.AndImm(t1, s1, 0x7FFFFFFF)
+		t2 := e.irEm.Tmp()
+		e.irEm.Not(t2, s2)
+		e.irEm.AndImm(t2, t2, int64(0x80000000))
+		result := e.irEm.Tmp()
+		e.irEm.Or(result, t1, t2)
+		e.boxF32(rd, result)
+	case 2: // FSGNJX.S
+		result := e.irEm.Tmp()
+		t2 := e.irEm.Tmp()
+		e.irEm.AndImm(t2, s2, int64(0x80000000))
+		e.irEm.Xor(result, s1, t2)
+		e.boxF32(rd, result)
+	default:
+		e.terminated = true
+	}
+}
+
+func (e *emitter) emitFsgnjD(rd, rs1, rs2, funct3 uint32) {
+	a := e.freg(rs1)
+	b := e.freg(rs2)
+	dst := e.fregDst(rd)
+	signMask := e.irEm.Tmp()
+	e.irEm.Const(signMask, -9223372036854775808) // 0x8000000000000000 as int64 (math.MinInt64)
+	absMask := e.irEm.Tmp()
+	e.irEm.Const(absMask, 9223372036854775807) // 0x7FFFFFFFFFFFFFFF as int64 (math.MaxInt64)
+
+	switch funct3 {
+	case 0: // FSGNJ.D
+		t1 := e.irEm.Tmp()
+		e.irEm.And(t1, a, absMask)
+		t2 := e.irEm.Tmp()
+		e.irEm.And(t2, b, signMask)
+		e.irEm.Or(dst, t1, t2)
+	case 1: // FSGNJN.D
+		t1 := e.irEm.Tmp()
+		e.irEm.And(t1, a, absMask)
+		t2 := e.irEm.Tmp()
+		e.irEm.Not(t2, b)
+		e.irEm.And(t2, t2, signMask)
+		e.irEm.Or(dst, t1, t2)
+	case 2: // FSGNJX.D
+		t2 := e.irEm.Tmp()
+		e.irEm.And(t2, b, signMask)
+		e.irEm.Xor(dst, a, t2)
+	default:
+		e.terminated = true
+	}
+}
+
+// ── FP comparison ──────────────────────────────────────────────────────
+
+func (e *emitter) emitFcmpS(rd, rs1, rs2, funct3 uint32) {
+	if rd == 0 {
+		return
+	}
+	a := e.unboxF32(rs1)
+	b := e.unboxF32(rs2)
+	dst := e.xregDst(rd)
+	switch funct3 {
+	case 0:
+		e.irEm.FCmp(dst, a, b, ir.LE, ir.F32)
+	case 1:
+		e.irEm.FCmp(dst, a, b, ir.LT, ir.F32)
+	case 2:
+		e.irEm.FCmp(dst, a, b, ir.EQ, ir.F32)
+	default:
+		e.terminated = true
+	}
+}
+
+func (e *emitter) emitFcmpD(rd, rs1, rs2, funct3 uint32) {
+	if rd == 0 {
+		return
+	}
+	a := e.freg(rs1)
+	b := e.freg(rs2)
+	dst := e.xregDst(rd)
+	switch funct3 {
+	case 0:
+		e.irEm.FCmp(dst, a, b, ir.LE, ir.F64)
+	case 1:
+		e.irEm.FCmp(dst, a, b, ir.LT, ir.F64)
+	case 2:
+		e.irEm.FCmp(dst, a, b, ir.EQ, ir.F64)
+	default:
+		e.terminated = true
+	}
+}
+
+// ── FP conversions ─────────────────────────────────────────────────────
+
+func (e *emitter) emitFcvtToIntS(rd, rs1, rs2 uint32) {
+	if rd == 0 {
+		return
+	}
+	a := e.unboxF32(rs1)
+	dst := e.xregDst(rd)
+	switch rs2 {
+	case 0: // FCVT.W.S
+		t := e.irEm.Tmp()
+		e.irEm.FCvtToI(t, a, ir.F32, ir.I32)
+		e.irEm.Sext(dst, t, ir.I32)
+	case 1: // FCVT.WU.S
+		t := e.irEm.Tmp()
+		e.irEm.FCvtToU(t, a, ir.F32, ir.I32)
+		e.irEm.Sext(dst, t, ir.I32)
+	case 2: // FCVT.L.S
+		e.irEm.FCvtToI(dst, a, ir.F32, ir.I64)
+	case 3: // FCVT.LU.S
+		e.irEm.FCvtToU(dst, a, ir.F32, ir.I64)
+	default:
+		e.terminated = true
+	}
+}
+
+func (e *emitter) emitFcvtToIntD(rd, rs1, rs2 uint32) {
+	if rd == 0 {
+		return
+	}
+	a := e.freg(rs1)
+	dst := e.xregDst(rd)
+	switch rs2 {
+	case 0:
+		t := e.irEm.Tmp()
+		e.irEm.FCvtToI(t, a, ir.F64, ir.I32)
+		e.irEm.Sext(dst, t, ir.I32)
+	case 1:
+		t := e.irEm.Tmp()
+		e.irEm.FCvtToU(t, a, ir.F64, ir.I32)
+		e.irEm.Sext(dst, t, ir.I32)
+	case 2:
+		e.irEm.FCvtToI(dst, a, ir.F64, ir.I64)
+	case 3:
+		e.irEm.FCvtToU(dst, a, ir.F64, ir.I64)
+	default:
+		e.terminated = true
+	}
+}
+
+func (e *emitter) emitFcvtFromIntS(rd, rs1, rs2 uint32) {
+	s := e.xreg(rs1)
+	switch rs2 {
+	case 0: // FCVT.S.W
+		t := e.irEm.Tmp()
+		e.irEm.Sext(t, s, ir.I32)
+		result := e.irEm.Tmp()
+		e.irEm.FCvtFromI(result, t, ir.I32, ir.F32)
+		e.boxF32(rd, result)
+	case 1: // FCVT.S.WU
+		t := e.irEm.Tmp()
+		e.irEm.Zext(t, s, ir.I32)
+		result := e.irEm.Tmp()
+		e.irEm.FCvtFromU(result, t, ir.I32, ir.F32)
+		e.boxF32(rd, result)
+	case 2: // FCVT.S.L
+		result := e.irEm.Tmp()
+		e.irEm.FCvtFromI(result, s, ir.I64, ir.F32)
+		e.boxF32(rd, result)
+	case 3: // FCVT.S.LU
+		result := e.irEm.Tmp()
+		e.irEm.FCvtFromU(result, s, ir.I64, ir.F32)
+		e.boxF32(rd, result)
+	default:
+		e.terminated = true
+	}
+}
+
+func (e *emitter) emitFcvtFromIntD(rd, rs1, rs2 uint32) {
+	s := e.xreg(rs1)
+	dst := e.fregDst(rd)
+	switch rs2 {
+	case 0:
+		t := e.irEm.Tmp()
+		e.irEm.Sext(t, s, ir.I32)
+		e.irEm.FCvtFromI(dst, t, ir.I32, ir.F64)
+	case 1:
+		t := e.irEm.Tmp()
+		e.irEm.Zext(t, s, ir.I32)
+		e.irEm.FCvtFromU(dst, t, ir.I32, ir.F64)
+	case 2:
+		e.irEm.FCvtFromI(dst, s, ir.I64, ir.F64)
+	case 3:
+		e.irEm.FCvtFromU(dst, s, ir.I64, ir.F64)
+	default:
+		e.terminated = true
+	}
+}
+
+// ── JAL / JALR / BRANCH ───────────────────────────────────────────────
+
+func (e *emitter) emitJAL(rd uint32, offset int64, insnSize uint64) {
+	target := e.pc + uint64(offset)
+	if rd != 0 {
+		e.irEm.Const(e.xregDst(rd), int64(e.pc+insnSize))
+	}
+	e.advancePC(insnSize)
+
+	if rd == 0 {
+		origPC := e.pc - insnSize
+		targetLabel := e.getOrCreateLabel(target)
+		if target < origPC {
+			e.irEm.BudgetCheck(targetLabel, target)
+		} else {
+			e.irEm.Jump(targetLabel)
+		}
+		e.gotoTargets[target] = true
+		e.pc = target
+		return
+	}
+	e.emitReturn(target, jitOK)
+	e.terminated = true
+}
+
+func (e *emitter) emitJALR(rd, rs1 uint32, imm int64, insnSize uint64) {
+	tgt := e.irEm.Tmp()
+	e.irEm.AddImm(tgt, e.xreg(rs1), imm)
+	e.irEm.AndImm(tgt, tgt, ^int64(1))
+	if rd != 0 {
+		e.irEm.Const(e.xregDst(rd), int64(e.pc+insnSize))
+	}
+	e.advancePC(insnSize)
+	e.irEm.WriteBackAll()
+	e.irEm.RetDyn(tgt, jitOK, ir.VRegZero)
+	e.terminated = true
+}
+
+func (e *emitter) emitBranch(rs1, rs2, funct3 uint32, offset int64) {
+	target := e.pc + uint64(offset)
+	pred, _ := branchPred(funct3)
+
+	e.emitIC()
+	e.icEmitted = true
+
+	a := e.xreg(rs1)
+	b := e.xreg(rs2)
+
+	internal := e.visited[target] ||
+		(e.regionEnd > 0 && target >= e.startPC && target < e.regionEnd)
+
+	if internal {
+		targetLabel := e.getOrCreateLabel(target)
+		if target < e.pc {
+			takenLabel := e.irEm.NewLabel()
+			e.irEm.Branch(a, b, pred, takenLabel)
+			e.irEm.PlaceLabel(takenLabel)
+			e.irEm.BudgetCheck(targetLabel, target)
+		} else {
+			e.irEm.Branch(a, b, pred, targetLabel)
+		}
+		e.gotoTargets[target] = true
+	} else {
+		exitLabel := e.irEm.NewLabel()
+		e.irEm.Branch(a, b, pred, exitLabel)
+		e.deferredExits = append(e.deferredExits, deferredExit{exitLabel, target})
+	}
+}
+
+// ── RVC ────────────────────────────────────────────────────────────────
+
+func (e *emitter) emitRVC(insn uint16) {
+	e.emitLabel()
+	quad := insn & 0x3
+	funct3 := insn >> 13
+
+	switch quad {
+	case 0x0:
+		e.emitRVC_Q0(insn, funct3)
+	case 0x1:
+		e.emitRVC_Q1(insn, funct3)
+	case 0x2:
+		e.emitRVC_Q2(insn, funct3)
+	default:
+		e.terminated = true
+	}
+	if !e.terminated {
+		e.advancePC(2)
+	}
+}
+
+func (e *emitter) emitRVC_Q0(insn uint16, funct3 uint16) {
+	rd := uint32(8 + ((insn >> 2) & 7))
+	rs1 := uint32(8 + ((insn >> 7) & 7))
+
+	switch funct3 {
+	case 0b000: // C.ADDI4SPN
+		nzuimm := int64(((insn>>11)&3)<<4 | ((insn>>7)&0xF)<<6 |
+			((insn>>6)&1)<<2 | ((insn>>5)&1)<<3)
+		if nzuimm == 0 {
+			e.terminated = true
+			return
+		}
+		e.emitOpImm(rd, 2, nzuimm, 0, 0)
+	case 0b001: // C.FLD
+		uimm := int64(((insn>>10)&7)<<3 | ((insn>>5)&3)<<6)
+		e.emitFPLoad(rd, rs1, uimm, 3)
+	case 0b010: // C.LW
+		uimm := int64(((insn>>10)&7)<<3 | ((insn>>6)&1)<<2 | ((insn>>5)&1)<<6)
+		e.emitLoad(rd, rs1, uimm, 2)
+	case 0b011: // C.LD
+		uimm := int64(((insn>>10)&7)<<3 | ((insn>>5)&3)<<6)
+		e.emitLoad(rd, rs1, uimm, 3)
+	case 0b101: // C.FSD
+		rs2 := uint32(8 + ((insn >> 2) & 7))
+		uimm := int64(((insn>>10)&7)<<3 | ((insn>>5)&3)<<6)
+		e.emitFPStore(rs1, rs2, uimm, 3)
+	case 0b110: // C.SW
+		rs2 := uint32(8 + ((insn >> 2) & 7))
+		uimm := int64(((insn>>10)&7)<<3 | ((insn>>6)&1)<<2 | ((insn>>5)&1)<<6)
+		e.emitStore(rs1, rs2, uimm, 2)
+	case 0b111: // C.SD
+		rs2 := uint32(8 + ((insn >> 2) & 7))
+		uimm := int64(((insn>>10)&7)<<3 | ((insn>>5)&3)<<6)
+		e.emitStore(rs1, rs2, uimm, 3)
+	default:
+		e.terminated = true
+	}
+}
+
+func (e *emitter) emitRVC_Q1(insn uint16, funct3 uint16) {
+	switch funct3 {
+	case 0b000: // C.NOP / C.ADDI
+		rd := uint32((insn >> 7) & 0x1F)
+		imm := rvcSignedImm6(insn)
+		e.emitOpImm(rd, rd, imm, 0, 0)
+	case 0b001: // C.ADDIW
+		rd := uint32((insn >> 7) & 0x1F)
+		imm := rvcSignedImm6(insn)
+		e.emitOpImm32(rd, rd, imm, 0, 0)
+	case 0b010: // C.LI
+		rd := uint32((insn >> 7) & 0x1F)
+		imm := rvcSignedImm6(insn)
+		e.emitOpImm(rd, 0, imm, 0, 0)
+	case 0b011: // C.ADDI16SP / C.LUI
+		rd := uint32((insn >> 7) & 0x1F)
+		if rd == 2 {
+			nzimm := int64(((insn>>12)&1)<<9 | ((insn>>6)&1)<<4 |
+				((insn>>5)&1)<<6 | ((insn>>3)&3)<<7 | ((insn>>2)&1)<<5)
+			if (insn>>12)&1 != 0 {
+				nzimm |= -512
+			}
+			if nzimm == 0 {
+				e.terminated = true
+				return
+			}
+			e.emitOpImm(2, 2, nzimm, 0, 0)
+		} else if rd != 0 {
+			nzimm := int64(((insn>>12)&1)<<5 | (insn>>2)&0x1F)
+			if (insn>>12)&1 != 0 {
+				nzimm |= -32
+			}
+			if nzimm == 0 {
+				e.terminated = true
+				return
+			}
+			uimm := nzimm << 12
+			e.irEm.Const(e.xregDst(rd), uimm)
+		}
+	case 0b100: // C.MISC-ALU
+		rs1 := uint32(8 + ((insn >> 7) & 7))
+		rs2 := uint32(8 + ((insn >> 2) & 7))
+		funct2 := (insn >> 10) & 3
+		switch funct2 {
+		case 0b00:
+			shamt := int64(((insn>>12)&1)<<5 | (insn>>2)&0x1F)
+			e.emitOpImm(rs1, rs1, shamt, 5, 0)
+		case 0b01:
+			shamt := int64(((insn>>12)&1)<<5 | (insn>>2)&0x1F)
+			e.emitOpImm(rs1, rs1, shamt, 5, 0x20)
+		case 0b10:
+			imm := rvcSignedImm6(insn)
+			e.emitOpImm(rs1, rs1, imm, 7, 0)
+		case 0b11:
+			bit12 := (insn >> 12) & 1
+			op := (insn >> 5) & 3
+			if bit12 == 0 {
+				switch op {
+				case 0b00:
+					e.emitOp(rs1, rs1, rs2, 0, 0x20)
+				case 0b01:
+					e.emitOp(rs1, rs1, rs2, 4, 0)
+				case 0b10:
+					e.emitOp(rs1, rs1, rs2, 6, 0)
+				case 0b11:
+					e.emitOp(rs1, rs1, rs2, 7, 0)
+				}
+			} else {
+				switch op {
+				case 0b00:
+					e.emitOp32(rs1, rs1, rs2, 0, 0x20)
+				case 0b01:
+					e.emitOp32(rs1, rs1, rs2, 0, 0)
+				default:
+					e.terminated = true
+				}
+			}
+		}
+	case 0b101: // C.J
+		off := rvcJOffset(insn)
+		e.emitJAL(0, off, 2)
+	case 0b110: // C.BEQZ
+		rs1 := uint32(8 + ((insn >> 7) & 7))
+		off := rvcBOffset(insn)
+		e.emitBranch(rs1, 0, 0, off)
+	case 0b111: // C.BNEZ
+		rs1 := uint32(8 + ((insn >> 7) & 7))
+		off := rvcBOffset(insn)
+		e.emitBranch(rs1, 0, 1, off)
+	default:
+		e.terminated = true
+	}
+}
+
+func (e *emitter) emitRVC_Q2(insn uint16, funct3 uint16) {
+	rd := uint32((insn >> 7) & 0x1F)
+	rs2 := uint32((insn >> 2) & 0x1F)
+
+	switch funct3 {
+	case 0b000: // C.SLLI
+		shamt := int64(((insn>>12)&1)<<5 | (insn>>2)&0x1F)
+		e.emitOpImm(rd, rd, shamt, 1, 0)
+	case 0b001: // C.FLDSP
+		uimm := int64(((insn>>12)&1)<<5 | ((insn>>5)&3)<<3 | ((insn>>2)&7)<<6)
+		e.emitFPLoad(rd, 2, uimm, 3)
+	case 0b010: // C.LWSP
+		uimm := int64(((insn>>12)&1)<<5 | ((insn>>4)&7)<<2 | ((insn>>2)&3)<<6)
+		e.emitLoad(rd, 2, uimm, 2)
+	case 0b011: // C.LDSP
+		uimm := int64(((insn>>12)&1)<<5 | ((insn>>5)&3)<<3 | ((insn>>2)&7)<<6)
+		e.emitLoad(rd, 2, uimm, 3)
+	case 0b100:
+		bit12 := (insn >> 12) & 1
+		if bit12 == 0 {
+			if rs2 == 0 {
+				if rd == 0 {
+					e.terminated = true
+					return
+				}
+				e.emitJALR(0, rd, 0, 2)
+			} else {
+				e.emitOpImm(rd, rs2, 0, 0, 0)
+			}
+		} else {
+			if rd == 0 && rs2 == 0 {
+				e.advancePC(2)
+				e.emitReturn(e.pc, jitEbreak)
+				e.terminated = true
+			} else if rs2 == 0 {
+				e.emitJALR(1, rd, 0, 2)
+			} else {
+				e.emitOp(rd, rd, rs2, 0, 0)
+			}
+		}
+	case 0b101: // C.FSDSP
+		uimm := int64(((insn>>10)&7)<<3 | ((insn>>7)&7)<<6)
+		e.emitFPStore(2, rs2, uimm, 3)
+	case 0b110: // C.SWSP
+		uimm := int64(((insn>>9)&0xF)<<2 | ((insn>>7)&3)<<6)
+		e.emitStore(2, rs2, uimm, 2)
+	case 0b111: // C.SDSP
+		uimm := int64(((insn>>10)&7)<<3 | ((insn>>7)&7)<<6)
+		e.emitStore(2, rs2, uimm, 3)
+	default:
+		e.terminated = true
+	}
 }
