@@ -467,25 +467,31 @@ func (e *emitter) emitOpImm(rd, rs1 uint32, imm int64, funct3, funct7 uint32) {
 		funct6 := funct7 >> 1
 		switch funct6 {
 		case 0x00: // SLLI
-			e.irEm.ShlImm(e.xregDst(rd), e.xreg(rs1), shamt)
+			src := e.xreg(rs1)
+			e.irEm.ShlImm(e.xregDst(rd), src, shamt)
 		case 0x0A: // BSETI
+			src := e.xreg(rs1)
 			t := e.irEm.Tmp()
 			e.irEm.Const(t, int64(1)<<shamt)
-			e.irEm.Or(e.xregDst(rd), e.xreg(rs1), t)
+			e.irEm.Or(e.xregDst(rd), src, t)
 		case 0x12: // BCLRI
-			e.irEm.AndImm(e.xregDst(rd), e.xreg(rs1), ^(int64(1) << shamt))
+			src := e.xreg(rs1)
+			e.irEm.AndImm(e.xregDst(rd), src, ^(int64(1) << shamt))
 		case 0x1A: // BINVI
+			src := e.xreg(rs1)
 			t := e.irEm.Tmp()
 			e.irEm.Const(t, int64(1)<<shamt)
-			e.irEm.Xor(e.xregDst(rd), e.xreg(rs1), t)
+			e.irEm.Xor(e.xregDst(rd), src, t)
 		case 0x30: // CLZ/CTZ/CPOP/SEXT.B/SEXT.H
 			switch shamt {
 			case 0, 1, 2: // CLZ/CTZ/CPOP — bail
 				e.terminated = true
 			case 0x22: // SEXT.B
-				e.irEm.Sext(e.xregDst(rd), e.xreg(rs1), ir.I8)
+				src := e.xreg(rs1)
+				e.irEm.Sext(e.xregDst(rd), src, ir.I8)
 			case 0x23: // SEXT.H
-				e.irEm.Sext(e.xregDst(rd), e.xreg(rs1), ir.I16)
+				src := e.xreg(rs1)
+				e.irEm.Sext(e.xregDst(rd), src, ir.I16)
 			default:
 				e.terminated = true
 			}
@@ -493,9 +499,11 @@ func (e *emitter) emitOpImm(rd, rs1 uint32, imm int64, funct3, funct7 uint32) {
 			e.terminated = true
 		}
 	case 2: // SLTI
-		e.irEm.SetImm(e.xregDst(rd), e.xreg(rs1), imm, ir.LT)
+		src := e.xreg(rs1)
+		e.irEm.SetImm(e.xregDst(rd), src, imm, ir.LT)
 	case 3: // SLTIU
-		e.irEm.SetImm(e.xregDst(rd), e.xreg(rs1), imm, ir.LTU)
+		src := e.xreg(rs1)
+		e.irEm.SetImm(e.xregDst(rd), src, imm, ir.LTU)
 	case 4: // XORI
 		e.irEm.XorImm(e.xregDst(rd), e.xreg(rs1), imm)
 	case 5: // SRLI/SRAI / BEXTI / RORI / ORC.B / REV8 / ZEXT.H
