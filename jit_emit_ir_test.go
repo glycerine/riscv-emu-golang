@@ -501,4 +501,73 @@ func TestSLL_Src1EqDest(t *testing.T) {
 	}
 }
 
+// TestSRL_Src1EqDest tests SRL x1, x1, x2 (rd==rs1 aliasing with shift).
+func TestSRL_Src1EqDest(t *testing.T) {
+	cpu, mem := newTestCPU(t, Size64MB, 0x1000, []uint32{
+		renc(opOP, 5, 0x00, 1, 1, 2), // SRL x1, x1, x2
+		instrECALL,
+	})
+	defer mem.Free()
+	cpu.SetReg(1, 0x80000000)
+	cpu.SetReg(2, 7)
+	cpu.Notes.Push(ecallStop)
+
+	jit := NewJIT()
+	jit.RunJIT(cpu)
+
+	want := uint64(0x80000000 >> 7)
+	if cpu.Reg(1) != want {
+		t.Errorf("SRL: x1 = 0x%x, want 0x%x", cpu.Reg(1), want)
+	}
+}
+
+// TestLW_ELF_Block39 traces the lw ELF test around the divergence.
+func TestLW_ELF_Block39(t *testing.T) {
+	mem, err := NewGuestMemory(Size64MB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mem.Free()
+	entry, err := LoadELF(mem, "riscv-elf-tests/rv64ui-p-lw")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Run with JIT, tracing enabled
+	cpu := NewCPU(*mem)
+	cpu.SetPC(entry)
+	cpu.Notes.Push(ecallStop)
+	jit := NewJIT()
+	jit.trace = true
+
+	for block := 0; block < 50; block++ {
+		pc := cpu.PC()
+		ic, err := jit.StepBlock(cpu)
+		_ = ic
+		if err != nil {
+			t.Logf("block %d: pc=0x%x exit err=%v gp=%d", block, pc, err, cpu.Reg(3))
+			break
+		}
+	}
+	t.Logf("final: pc=0x%x gp=%d x10=%d", cpu.PC(), cpu.Reg(3), cpu.Reg(10))
+}
+
+// TestSRL_ZeroSrc tests SRL x2, x0, x1 (shifting zero).
+func TestSRL_ZeroSrc(t *testing.T) {
+	cpu, mem := newTestCPU(t, Size64MB, 0x1000, []uint32{
+		renc(opOP, 5, 0x00, 2, 0, 1), // SRL x2, x0, x1
+		instrECALL,
+	})
+	defer mem.Free()
+	cpu.SetReg(1, 31)
+	cpu.Notes.Push(ecallStop)
+
+	jit := NewJIT()
+	jit.RunJIT(cpu)
+
+	if cpu.Reg(2) != 0 {
+		t.Errorf("SRL x2, x0, x1: x2 = 0x%x, want 0 (0 >> 31 = 0)", cpu.Reg(2))
+	}
+}
+
 // Encoding helpers are in jit_test.go (senc, ienc, renc, benc).

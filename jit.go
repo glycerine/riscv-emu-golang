@@ -2,7 +2,11 @@ package riscv
 
 // jit.go — JIT manager: block cache, RunJIT dispatch loop.
 
-import "riscv/internal/jitcall"
+import (
+	"fmt"
+	"os"
+	"riscv/internal/jitcall"
+)
 
 // JIT status codes returned by compiled blocks.
 const (
@@ -21,6 +25,7 @@ type JIT struct {
 	InterpOnly bool            // debug: force all-interpreter mode
 	lastPC     uint64          // last-block cache: skip map lookup for tight loops
 	lastBlk    *compiledBlock
+	trace      bool            // debug: log block executions to stderr
 }
 
 // NewJIT creates a new JIT translation cache.
@@ -52,6 +57,10 @@ func (j *JIT) StepBlock(cpu *CPU) (ic uint64, err error) {
 	if blk != nil {
 		res := jitcall.Call(blk.fn, &cpu.x, &cpu.f, &cpu.fcsr,
 			cpu.mem.Base(), cpu.mem.Mask())
+		if j.trace {
+			fmt.Fprintf(os.Stderr, "JIT pc=0x%x -> PC=0x%x IC=%d status=%d\n",
+				pc, res.PC, res.IC, res.Status)
+		}
 		cpu.pc = res.PC
 		cpu.cycle += res.IC
 
