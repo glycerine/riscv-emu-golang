@@ -1331,3 +1331,260 @@ func TestMetaIterOrder_AllUI(t *testing.T) {
 	}
 	testIterStart = 0
 }
+
+// TestBisectBlockSize finds the smallest maxBlockInsns where V1 diverges from V2.
+func TestBisectBlockSize(t *testing.T) {
+	mem, err := NewGuestMemory(Size64MB)
+	if err != nil { t.Fatal(err) }
+	defer mem.Free()
+	_, err = LoadELF(mem, "riscv-elf-tests/rv64ui-p-srl")
+	if err != nil { t.Fatal(err) }
+
+	trySize := func(n int) bool {
+		maxBlockInsns = n
+		defer func() { maxBlockInsns = 2048 }()
+
+		cpu := NewCPU(*mem)
+		cpu.SetPC(0)
+		cpu.Notes.Push(func(c *CPU, note Note) NoteDisposition { return NoteHandled })
+		jit := NewJIT()
+		jit.DebugV1V2 = true
+
+		panicked := false
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					panicked = true
+				}
+			}()
+			for i := 0; i < 500; i++ {
+				_, err := jit.StepBlock(cpu)
+				if err != nil {
+					return
+				}
+			}
+		}()
+		return !panicked // true = PASS
+	}
+
+	for _, n := range []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 15, 20, 30, 50, 100, 200, 500, 2048} {
+		pass := trySize(n)
+		t.Logf("maxBlockInsns=%d: %v", n, map[bool]string{true: "PASS", false: "FAIL"}[pass])
+	}
+}
+
+func TestBisectBlockSize2(t *testing.T) {
+	mem, err := NewGuestMemory(Size64MB)
+	if err != nil { t.Fatal(err) }
+	defer mem.Free()
+	_, err = LoadELF(mem, "riscv-elf-tests/rv64ui-p-srl")
+	if err != nil { t.Fatal(err) }
+
+	trySize := func(n int) (pass bool, detail string) {
+		maxBlockInsns = n
+		defer func() { maxBlockInsns = 2048 }()
+
+		cpu := NewCPU(*mem)
+		cpu.SetPC(0)
+		cpu.Notes.Push(func(c *CPU, note Note) NoteDisposition { return NoteHandled })
+		jit := NewJIT()
+		jit.DebugV1V2 = true
+
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					pass = false
+					detail = fmt.Sprintf("%v", r)
+				}
+			}()
+			pass = true
+			for i := 0; i < 500; i++ {
+				_, err := jit.StepBlock(cpu)
+				if err != nil {
+					return
+				}
+			}
+		}()
+		return
+	}
+
+	for n := 11; n <= 14; n++ {
+		pass, detail := trySize(n)
+		if pass {
+			t.Logf("n=%d: PASS", n)
+		} else {
+			t.Logf("n=%d: FAIL %s", n, detail)
+		}
+	}
+}
+
+func TestBisectBlockSize3(t *testing.T) {
+	mem, err := NewGuestMemory(Size64MB)
+	if err != nil { t.Fatal(err) }
+	defer mem.Free()
+	_, err = LoadELF(mem, "riscv-elf-tests/rv64ui-p-srl")
+	if err != nil { t.Fatal(err) }
+
+	trySize := func(n int) (pass bool, pc uint64, detail string) {
+		maxBlockInsns = n
+		defer func() { maxBlockInsns = 2048 }()
+		cpu := NewCPU(*mem)
+		cpu.SetPC(0)
+		cpu.Notes.Push(func(c *CPU, note Note) NoteDisposition { return NoteHandled })
+		jit := NewJIT()
+		jit.DebugV1V2 = true
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					pass = false
+					pc = cpu.pc
+					detail = fmt.Sprintf("%v", r)
+				}
+			}()
+			pass = true
+			for i := 0; i < 500; i++ {
+				_, err := jit.StepBlock(cpu)
+				if err != nil { return }
+			}
+		}()
+		return
+	}
+
+	for n := 11; n <= 16; n++ {
+		pass, pc, detail := trySize(n)
+		if pass {
+			t.Logf("n=%d: PASS", n)
+		} else {
+			t.Logf("n=%d: FAIL at pc=0x%x: %s", n, pc, detail)
+		}
+	}
+}
+
+func TestDumpBlock_0x34e(t *testing.T) {
+	mem, err := NewGuestMemory(Size64MB)
+	if err != nil { t.Fatal(err) }
+	defer mem.Free()
+	_, err = LoadELF(mem, "riscv-elf-tests/rv64ui-p-srl")
+	if err != nil { t.Fatal(err) }
+
+	maxBlockInsns = 15
+	defer func() { maxBlockInsns = 2048 }()
+
+	// Run until we're about to compile the block at 0x34e
+	cpu := NewCPU(*mem)
+	cpu.SetPC(0)
+	cpu.Notes.Push(func(c *CPU, note Note) NoteDisposition { return NoteHandled })
+	jit := NewJIT()
+	for i := 0; i < 500; i++ {
+		if cpu.pc == 0x34e {
+			break
+		}
+		jit.StepBlock(cpu)
+	}
+	t.Logf("stopped at pc=0x%x", cpu.pc)
+	if cpu.pc != 0x34e {
+		// Search nearby
+		for pc := uint64(0x340); pc <= 0x360; pc += 2 {
+			res := emitBlock(&cpu.mem, pc)
+			if res != nil && res.startPC <= 0x34e && res.endPC > 0x34e {
+				t.Logf("block at 0x%x covers 0x34e: numInsns=%d irLen=%d", res.startPC, res.numInsns, len(res.block.Instrs))
+				pool := ir.AMD64Pool(res.block)
+				alloc := ir.Allocate(res.block, pool, ir.AMD64Pinned(), nil)
+				// Print IR and allocation for shift instructions
+				for i, ins := range res.block.Instrs {
+					if ins.Op == ir.IRShr || ins.Op == ir.IRShl || ins.Op == ir.IRSar {
+						aHost := findHost(alloc, ins.A, i)
+						bHost := findHost(alloc, ins.B, i)
+						dHost := findHost(alloc, ins.Dst, i)
+						t.Logf("  [%d] %v  a=VR%d→%s b=VR%d→%s dst=VR%d→%s",
+							i, ins, ins.A, regName(aHost), ins.B, regName(bHost), ins.Dst, regName(dHost))
+					}
+				}
+				break
+			}
+		}
+	}
+}
+
+func findHost(alloc *ir.Allocation, vr ir.VReg, idx int) int16 {
+	for _, ia := range alloc.IntervalMap {
+		if ia.Interval.VReg == vr && ia.Interval.Start <= idx && idx <= ia.Interval.End {
+			return ia.Host
+		}
+	}
+	return -1
+}
+
+func regName(r int16) string {
+	names := map[int16]string{
+		2064: "RAX", 2065: "RCX", 2066: "RDX", 2067: "RBX",
+		2068: "RSP", 2069: "RBP", 2070: "RSI", 2071: "RDI",
+		2072: "R8", 2073: "R9", 2074: "R10", 2075: "R11",
+		2076: "R12", 2077: "R13", 2078: "R14", 2079: "R15",
+	}
+	if n, ok := names[r]; ok { return n }
+	return fmt.Sprintf("?%d", r)
+}
+
+func TestDumpBlock_0x34e_v2(t *testing.T) {
+	mem, err := NewGuestMemory(Size64MB)
+	if err != nil { t.Fatal(err) }
+	defer mem.Free()
+	_, err = LoadELF(mem, "riscv-elf-tests/rv64ui-p-srl")
+	if err != nil { t.Fatal(err) }
+
+	maxBlockInsns = 15
+	defer func() { maxBlockInsns = 2048 }()
+
+	res := emitBlock(mem, 0x34e)
+	if res == nil { t.Fatal("emitBlock returned nil") }
+	t.Logf("block: start=0x%x end=0x%x insns=%d irLen=%d", res.startPC, res.endPC, res.numInsns, len(res.block.Instrs))
+
+	pool := ir.AMD64Pool(res.block)
+	alloc := ir.Allocate(res.block, pool, ir.AMD64Pinned(), nil)
+	for i, ins := range res.block.Instrs {
+		if ins.Op == ir.IRShr || ins.Op == ir.IRShl || ins.Op == ir.IRSar {
+			aHost := findHost(alloc, ins.A, i)
+			bHost := findHost(alloc, ins.B, i)
+			dHost := findHost(alloc, ins.Dst, i)
+			t.Logf("  [%d] %v  a=VR%d→%s b=VR%d→%s dst=VR%d→%s",
+				i, ins, ins.A, regName(aHost), ins.B, regName(bHost), ins.Dst, regName(dHost))
+		}
+	}
+}
+
+func TestDumpBlock_0x34e_v3(t *testing.T) {
+	mem, err := NewGuestMemory(Size64MB)
+	if err != nil { t.Fatal(err) }
+	defer mem.Free()
+	_, err = LoadELF(mem, "riscv-elf-tests/rv64ui-p-srl")
+	if err != nil { t.Fatal(err) }
+
+	maxBlockInsns = 15
+	defer func() { maxBlockInsns = 2048 }()
+
+	res := emitBlock(mem, 0x34e)
+	if res == nil { t.Fatal("nil") }
+
+	pool := ir.AMD64Pool(res.block)
+	alloc := ir.Allocate(res.block, pool, ir.AMD64Pinned(), nil)
+
+	t.Logf("StackSlots=%d", alloc.StackSlots)
+	for i := 0; i < len(alloc.Kind); i++ {
+		if alloc.Kind[i] != ir.AllocUnused {
+			t.Logf("  VReg(%d): kind=%d spill=%d", i, alloc.Kind[i], alloc.SpillSlot[i])
+		}
+	}
+	// Print ALL intervals for VReg 1 and 2
+	for _, ia := range alloc.IntervalMap {
+		vr := ia.Interval.VReg
+		if vr == ir.VReg(1) || vr == ir.VReg(2) || vr == ir.VReg(14) {
+			t.Logf("  interval VR%d [%d..%d] host=%s", vr, ia.Interval.Start, ia.Interval.End, regName(ia.Host))
+		}
+	}
+
+	// Print the IR around instruction 28
+	for i := 25; i <= 32 && i < len(res.block.Instrs); i++ {
+		t.Logf("  [%d] %v", i, res.block.Instrs[i])
+	}
+}

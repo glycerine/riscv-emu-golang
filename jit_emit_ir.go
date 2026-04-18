@@ -11,6 +11,10 @@ import "riscv/ir"
 // Zero means normal sorted order. Non-zero rotates by this offset.
 var testIterStart int
 
+// maxBlockInsns limits the number of RISC-V instructions per JIT block.
+// Variable so tests can adjust it without recompilation.
+var maxBlockInsns = 2048
+
 // emitResult holds the generated IR block and metadata.
 type emitResult struct {
 	block    *ir.Block
@@ -574,7 +578,6 @@ func emitBlock(mem *GuestMemory, pc uint64) *emitResult {
 	e.storeFaultLabel = irEm.NewLabel()
 
 	// Emit IR (populates regsUsed via xreg/xregDst calls).
-	const maxBlockInsns = 3
 	for e.numInsns < maxBlockInsns && !e.terminated && e.pc < e.regionEnd {
 		if e.visited.has(e.pc) {
 			e.irEm.Jump(e.getOrCreateLabel(e.pc))
