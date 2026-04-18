@@ -234,29 +234,37 @@ func FuzzEmitterSequences(f *testing.F) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 func FuzzBlockStructure(f *testing.F) {
-	f.Add(uint64(0xDEADBEEF12345678))
-	f.Add(uint64(0))
-	f.Add(uint64(0xFFFFFFFFFFFFFFFF))
-	f.Add(uint64(0x0102030405060708))
+	// Each seed is a []byte where byte[0] controls label count and
+	// each subsequent byte independently drives one operation step.
+	// This lets the coverage-guided fuzzer mutate steps independently.
+	f.Add([]byte{3, 0, 1, 4, 2, 0, 5, 3, 0, 6, 7, 0})             // mixed ops, 4 labels
+	f.Add([]byte{0, 1, 2, 3, 1, 2, 3})                              // 1 label, all branches
+	f.Add([]byte{7, 0, 0, 0, 0, 0, 0, 0, 0})                       // 8 labels, all placements
+	f.Add([]byte{1, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 0})  // 2 labels, mostly ALU
+	f.Add([]byte{2, 1, 1, 1, 3, 3, 3, 0, 0, 0})                    // branches then placements
+	f.Add([]byte{0, 0})                                              // minimal: 1 label, 1 op
 
-	f.Fuzz(func(t *testing.T, seed uint64) {
+	f.Fuzz(func(t *testing.T, data []byte) {
+		if len(data) < 2 || len(data) > 512 {
+			return
+		}
+
 		e := NewEmitter()
 
-		// Use seed bits to drive a deterministic sequence of operations.
-		// Allocate some labels up front for branches to target.
-		numLabels := int((seed>>0)&0x7) + 1 // 1..8 labels
+		// First byte: number of labels (1..8).
+		numLabels := int(data[0]%8) + 1
 		labels := make([]Label, numLabels)
 		for i := range labels {
 			labels[i] = e.NewLabel()
 		}
 
-		// Place labels at various points, interspersed with ops.
+		// Each subsequent byte independently drives one operation.
+		// action = byte % 12 (12 distinct operation types)
+		// param  = byte / 12 (0..21, selects registers/labels/predicates)
 		nextPlace := 0
-		bits := seed >> 3
-
-		for step := 0; step < 32; step++ {
-			action := bits & 0x7
-			bits >>= 3
+		for _, b := range data[1:] {
+			action := b % 12
+			param := b / 12
 
 			switch action {
 			case 0: // Place next unplaced label.
@@ -264,26 +272,37 @@ func FuzzBlockStructure(f *testing.F) {
 					e.PlaceLabel(labels[nextPlace])
 					nextPlace++
 				}
-			case 1: // Branch to a random label.
-				li := int(bits&0x7) % len(labels)
-				bits >>= 3
-				e.Branch(VReg(1), VReg(2), Pred(step%10), labels[li])
-			case 2: // BranchImm to a random label.
-				li := int(bits&0x7) % len(labels)
-				bits >>= 3
-				e.BranchImm(VReg(1), int64(step), Pred(step%10), labels[li])
-			case 3: // Jump to a random label.
-				li := int(bits&0x7) % len(labels)
-				bits >>= 3
+			case 1: // Branch to a label.
+				li := int(param) % len(labels)
+				e.Branch(VReg(1+uint16(param%30)), VReg(2), Pred(param%10), labels[li])
+			case 2: // BranchImm to a label.
+				li := int(param) % len(labels)
+				e.BranchImm(VReg(1+uint16(param%30)), int64(int8(b)), Pred(param%10), labels[li])
+			case 3: // Jump to a label.
+				li := int(param) % len(labels)
 				e.Jump(labels[li])
-			case 4: // Arithmetic op.
-				e.Add(VReg(1+uint16(step%30)), VReg(2), VReg(3))
-			case 5: // Const.
-				e.Const(VReg(1+uint16(step%30)), int64(step*42))
-			case 6: // Store.
-				e.Store(VReg(10), int64(step*8), VReg(5), I64)
-			default: // Mov.
-				e.Mov(VReg(1+uint16(step%30)), VReg(2))
+			case 4: // Add.
+				e.Add(VReg(1+uint16(param%30)), VReg(1+uint16((param+1)%31)), VReg(1+uint16((param+2)%31)))
+			case 5: // AddImm (may trigger peephole if imm=0).
+				e.AddImm(VReg(1+uint16(param%30)), VReg(1+uint16(param%30)), int64(int8(b)))
+			case 6: // Const.
+				e.Const(VReg(1+uint16(param%30)), int64(int8(b))*42)
+			case 7: // Store.
+				e.Store(VReg(1+uint16(param%10)), int64(param)*8, VReg(1+uint16((param+5)%30)), Type(param%4))
+			case 8: // Mov (may trigger peephole if self-move).
+				src := VReg(1 + uint16(param%30))
+				dst := VReg(1 + uint16((int(param)+int(b>>4))%30))
+				e.Mov(dst, src)
+			case 9: // SubImm (may trigger peephole if imm=0).
+				e.SubImm(VReg(1+uint16(param%30)), VReg(1+uint16(param%30)), int64(int8(b)))
+			case 10: // Set comparison.
+				e.Set(VReg(1+uint16(param%30)), VReg(1+uint16((param+1)%31)), VReg(1+uint16((param+2)%31)), Pred(param%10))
+			default: // Sext/Zext.
+				if param%2 == 0 {
+					e.Sext(VReg(1+uint16(param%30)), VReg(1+uint16((param+1)%31)), Type(param%3))
+				} else {
+					e.Zext(VReg(1+uint16(param%30)), VReg(1+uint16((param+1)%31)), Type(param%3))
+				}
 			}
 		}
 
@@ -295,7 +314,7 @@ func FuzzBlockStructure(f *testing.F) {
 
 		// ── Verify invariants ──
 
-		// 1. Every label in Block.Labels has a valid index.
+		// 1. Every label in Block.Labels has a valid index and points to the correct IRLabel.
 		for lbl, idx := range e.Block.Labels {
 			if idx < 0 || idx >= len(e.Block.Instrs) {
 				t.Fatalf("label %d has out-of-range index %d (len=%d)", lbl, idx, len(e.Block.Instrs))
@@ -332,7 +351,36 @@ func FuzzBlockStructure(f *testing.F) {
 			}
 		}
 
-		// 4. IRInstr.String() never panics.
+		// 4. Label map size matches number of IRLabel instructions.
+		if len(e.Block.Labels) != len(seenLabels) {
+			t.Fatalf("Block.Labels has %d entries but stream has %d IRLabel instrs",
+				len(e.Block.Labels), len(seenLabels))
+		}
+
+		// 5. VRegZero never appears as Dst in non-store/control instructions.
+		for i, ins := range e.Block.Instrs {
+			if ins.Dst == VRegZero && ins.Op != IRStore && ins.Op != IRStoreX &&
+				ins.Op != IRLabel && ins.Op != IRBranch && ins.Op != IRBranchImm &&
+				ins.Op != IRJump && ins.Op != IRCall && ins.Op != IRRet &&
+				ins.Op != IRMarkLive && ins.Op != IRMarkDead && ins.Op != IRWriteback {
+				t.Fatalf("VRegZero as Dst in instr[%d]: %v", i, ins)
+			}
+		}
+
+		// 6. Every dirty guest VReg (1..63) has a corresponding Dst write in the stream.
+		dstSeen := make(map[VReg]bool)
+		for _, ins := range e.Block.Instrs {
+			if ins.Dst != VRegZero {
+				dstSeen[ins.Dst] = true
+			}
+		}
+		for vr := VReg(1); vr < 64; vr++ {
+			if e.IsDirty(vr) && !dstSeen[vr] {
+				t.Fatalf("VReg %d is dirty but never appears as Dst", vr)
+			}
+		}
+
+		// 7. IRInstr.String() never panics.
 		for _, ins := range e.Block.Instrs {
 			_ = ins.String()
 		}
