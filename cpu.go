@@ -28,6 +28,14 @@ type CPU struct {
 	// for a non-zero value and exit when detected. Standard riscv-tests
 	// exit mechanism: tohost==1 means PASS, other values mean FAIL.
 	watchAddr uint64
+	// M-mode trap CSRs — minimal support for riscv-tests.
+	// When mtvec != 0, ECALL traps through the guest's own handler
+	// instead of returning ErrEcall to the NoteChain.
+	mtvec   uint64 // 0x305: trap vector base address
+	mepc    uint64 // 0x341: exception program counter
+	mcause  uint64 // 0x342: trap cause code
+	mstatus uint64 // 0x300: machine status
+	mtval   uint64 // 0x343: trap value
 }
 
 func NewCPU(mem GuestMemory) *CPU { return &CPU{mem: mem} }
@@ -512,9 +520,16 @@ func (c *CPU) step() error {
 		case insn == 0x00100073: // EBREAK
 			c.pc = nextPC; return ErrEbreak
 		case insn == 0x00000073: // ECALL
+			if c.mtvec != 0 {
+				c.mepc = c.pc  // save PC of ECALL instruction
+				c.mcause = 8   // CauseEcallU
+				c.mtval = 0
+				c.pc = c.mtvec // trap to handler
+				return nil
+			}
 			c.pc = nextPC; return ErrEcall
 		case insn == 0x30200073: // MRET
-			c.pc = nextPC; return nil
+			c.pc = c.mepc; return nil
 		case insn == 0x10500073: // WFI — no-op in user-mode emulation
 		case funct3 == 0 && insn>>25 == 0x09: // SFENCE.VMA — no-op in user-mode
 		case funct3 >= 1 && funct3 <= 7 && funct3 != 4: // Zicsr
@@ -973,6 +988,11 @@ func (c *CPU) readCSR(addr uint32) uint64 {
 	case 0x001: return uint64(c.fcsr & 0x1F)          // fflags
 	case 0x002: return uint64((c.fcsr >> 5) & 0x7)    // frm
 	case 0x003: return uint64(c.fcsr & 0xFF)           // fcsr
+	case 0x300: return c.mstatus                       // mstatus
+	case 0x305: return c.mtvec                         // mtvec
+	case 0x341: return c.mepc                          // mepc
+	case 0x342: return c.mcause                        // mcause
+	case 0x343: return c.mtval                         // mtval
 	case 0xC00, 0xC02: return c.cycle                  // cycle / instret
 	case 0xC01: return c.cycle                         // time (approx)
 	case 0xF14: return 0                               // mhartid = 0
@@ -986,6 +1006,21 @@ func (c *CPU) writeCSR(addr uint32, val uint64) {
 	case 0x001: c.fcsr = (c.fcsr &^ 0x1F) | uint32(val&0x1F)  // fflags
 	case 0x002: c.fcsr = (c.fcsr &^ 0xE0) | uint32((val&0x7)<<5) // frm
 	case 0x003: c.fcsr = uint32(val & 0xFF)                    // fcsr
+	// M-mode trap CSRs
+	case 0x300: c.mstatus = val                                // mstatus
+	case 0x305: c.mtvec = val                                  // mtvec
+	case 0x341: c.mepc = val                                   // mepc
+	case 0x342: c.mcause = val                                 // mcause
+	case 0x343: c.mtval = val                                  // mtval
+	// CSRs written by riscv-tests reset_vector — accept silently
+	case 0x105: // stvec
+	case 0x180: // satp
+	case 0x302: // medeleg
+	case 0x303: // mideleg
+	case 0x304: // mie
+	case 0x3A0: // pmpcfg0
+	case 0x3B0: // pmpaddr0
+	case 0x744: // mnstatus (non-standard)
 	// cycle/time/instret are read-only — silently ignore writes
 	}
 }

@@ -93,6 +93,13 @@ func (j *JIT) StepBlock(cpu *CPU) (ic uint64, err error) {
 		case jitOK:
 			return res.IC, nil
 		case jitEcall:
+			if cpu.mtvec != 0 {
+				cpu.mepc = cpu.pc
+				cpu.mcause = 8
+				cpu.mtval = 0
+				cpu.pc = cpu.mtvec
+				return res.IC, nil
+			}
 			return res.IC, ErrEcall
 		case jitEbreak:
 			return res.IC, ErrEbreak
@@ -247,6 +254,13 @@ func (j *JIT) RunJIT(cpu *CPU) error {
 				continue
 
 			case jitEcall:
+				if cpu.mtvec != 0 {
+					cpu.mepc = cpu.pc
+					cpu.mcause = 8
+					cpu.mtval = 0
+					cpu.pc = cpu.mtvec
+					continue
+				}
 				n := noteFromStepErr(ErrEcall, cpu.pc)
 				switch cpu.Notes.Deliver(cpu, n) {
 				case NoteHandled:
