@@ -102,7 +102,9 @@ func (e *Emitter) emit(ins IRInstr) {
 
 ## File 3: `ir/peephole.go` — Online Sliding-Window Optimizer
 
-Called by `emit()` after every append. Looks at last 1-2 instructions, rewrites if pattern matches.
+Called by `emit()` after every append. Looks at last N instructions, rewrites if pattern matches.
+
+**Tunable constant:** `const PeepholeSz = 4` — sliding window depth, exported so it can be tuned for performance vs compile speed tradeoff. Starts at 4.
 
 **Patterns (checked in order):**
 
