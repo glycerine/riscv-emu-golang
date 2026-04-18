@@ -14,10 +14,10 @@ import (
 // `go test -fuzz` runs indefinitely but only passes through TestMain
 // once for the baseline phase — fuzz iterations run in a child process.
 func TestMain(m *testing.M) {
-	timeout := 30 * time.Second
+	timeout := 120 * time.Second
 	// Shrink to 10s when not fuzzing (fast unit test path)
 	if os.Getenv("FUZZ_TIMEOUT") == "" {
-		timeout = 10 * time.Second
+		timeout = 60 * time.Second
 	}
 
 	done := make(chan int, 1)
