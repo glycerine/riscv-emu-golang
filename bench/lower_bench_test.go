@@ -1,3 +1,5 @@
+//go:build !tcc
+
 // bench/lower_bench_test.go — Benchmarks comparing V1 vs V2 lowering and execution.
 //
 // Uses a real RISC-V ELF (Go compiler cross-compiled to riscv64, ~30MB)
