@@ -356,6 +356,28 @@ func (lc *lowerCtx) hostRegFor(v VReg, idx int) int16 {
 	return -1
 }
 
+// isXMMReg returns true if the register constant is an XMM register.
+func isXMMReg(r int16) bool {
+	return r >= goasm.REG_AMD64_X0 && r <= goasm.REG_AMD64_X15
+}
+
+// isVRegFP returns true if the VReg is a floating-point register.
+// Guest FP regs are 32-63; temps are FP if their defining instruction is FP-typed.
+// We detect this by checking if the allocator assigned it an XMM register.
+func (lc *lowerCtx) isVRegFP(v VReg) bool {
+	if v >= 32 && v < 64 {
+		return true // guest FP register
+	}
+	// Check if any interval for this VReg is assigned to an XMM register.
+	for i := range lc.alloc.IntervalMap {
+		ia := &lc.alloc.IntervalMap[i]
+		if ia.Interval.VReg == v && isXMMReg(ia.Host) {
+			return true
+		}
+	}
+	return false
+}
+
 // use loads VReg v into a host register for reading. Returns the host register.
 // If v is in a register, returns it directly.
 // If v is on stack, emits a reload into the specified scratch register.
@@ -373,6 +395,11 @@ func (lc *lowerCtx) use(v VReg, scratchIdx int) int16 {
 		}
 	}
 	if int(v) < len(lc.alloc.Kind) && lc.alloc.Kind[v] == AllocStack {
+		if lc.isVRegFP(v) {
+			scr := lc.fpScratch(scratchIdx)
+			lc.fpSpillLoad(lc.alloc.SpillSlot[v], scr)
+			return scr
+		}
 		scr := lc.scratch(scratchIdx)
 		lc.spillLoad(lc.alloc.SpillSlot[v], scr)
 		return scr
@@ -394,6 +421,9 @@ func (lc *lowerCtx) def(v VReg) int16 {
 			return r
 		}
 	}
+	if lc.isVRegFP(v) {
+		return lc.fpScratch(0)
+	}
 	return lc.scratch(0)
 }
 
@@ -403,7 +433,11 @@ func (lc *lowerCtx) defCommit(v VReg, hostReg int16) {
 		return
 	}
 	if int(v) < len(lc.alloc.Kind) && lc.alloc.Kind[v] == AllocStack {
-		lc.spillStore(hostReg, lc.alloc.SpillSlot[v])
+		if isXMMReg(hostReg) {
+			lc.fpSpillStore(hostReg, lc.alloc.SpillSlot[v])
+		} else {
+			lc.spillStore(hostReg, lc.alloc.SpillSlot[v])
+		}
 	}
 }
 
@@ -412,6 +446,27 @@ func (lc *lowerCtx) scratch(idx int) int16 {
 		return amd64Scratch1
 	}
 	return amd64Scratch2
+}
+
+// fpScratch returns an XMM scratch register for FP spill/reload.
+// Uses XMM15 (scratch0) and XMM14 (scratch1). These are at the end of the
+// FP pool; the allocator should not assign them when they're needed for scratch.
+// TODO: formally reserve these from the FP pool.
+func (lc *lowerCtx) fpScratch(idx int) int16 {
+	if idx == 0 {
+		return goasm.REG_AMD64_X15
+	}
+	return goasm.REG_AMD64_X14
+}
+
+// fpSpillLoad loads from spill slot into an XMM register.
+func (lc *lowerCtx) fpSpillLoad(slot int16, dst int16) {
+	lc.emitRM(x86.AMOVSD, goasm.REG_AMD64_SP, int64(slot)*8, dst)
+}
+
+// fpSpillStore stores from an XMM register into a spill slot.
+func (lc *lowerCtx) fpSpillStore(src int16, slot int16) {
+	lc.emitMR(x86.AMOVSD, src, goasm.REG_AMD64_SP, int64(slot)*8)
 }
 
 // ── Prog emission helpers ──
@@ -476,6 +531,27 @@ func (lc *lowerCtx) emitUnary(op obj.As, dst int16) {
 	p.To.Type = obj.TYPE_REG
 	p.To.Reg = dst
 	lc.c.Append(p)
+}
+
+// emitCmpRI emits CMPQ reg, $imm. CMP has reversed operand convention
+// vs ADD/SUB in the Go assembler: ycmpl expects From=reg, To=const,
+// while yaddl expects From=const, To=reg.
+func (lc *lowerCtx) emitCmpRI(reg int16, imm int64) {
+	p := lc.c.NewProg()
+	p.As = x86.ACMPQ
+	p.From.Type = obj.TYPE_REG
+	p.From.Reg = reg
+	p.To.Type = obj.TYPE_CONST
+	p.To.Offset = imm
+	lc.c.Append(p)
+}
+
+// byteReg maps a 64-bit register constant to its byte variant.
+// In the Go assembler's x86 register numbering, byte registers (AL..R15B)
+// are at offset 0-15 from RBaseAMD64, and 64-bit registers (AX..R15) are
+// at offset 16-31. So byteReg = fullReg - 16.
+func byteReg(r int16) int16 {
+	return r - 16
 }
 
 // spillLoad loads from spill slot into dst.
@@ -709,15 +785,15 @@ func (lc *lowerCtx) lowerMulHSU(ins *IRInstr) {
 	b := lc.use(ins.B, 1)
 	dst := lc.def(ins.Dst)
 
-	// Save sign of a.
-	lc.emitRR(x86.AMOVQ, a, amd64Scratch1) // scratch1 = a
-	lc.emitRI(x86.ASARQ, 63, amd64Scratch1) // scratch1 = sign(a) replicated
-	lc.emitRR(x86.AANDQ, b, amd64Scratch1)  // scratch1 = (a<0) ? b : 0
-
-	// Unsigned multiply.
+	// Move a to RAX first (before computing sign mask, which clobbers scratch).
 	if a != goasm.REG_AMD64_AX {
 		lc.emitRR(x86.AMOVQ, a, goasm.REG_AMD64_AX)
 	}
+
+	// Compute sign correction: if a < 0, correction = b, else 0.
+	lc.emitRR(x86.AMOVQ, goasm.REG_AMD64_AX, amd64Scratch1) // R10 = a (from RAX)
+	lc.emitRI(x86.ASARQ, 63, amd64Scratch1)                  // R10 = sign(a) replicated
+	lc.emitRR(x86.AANDQ, b, amd64Scratch1)                   // R10 = (a<0) ? b : 0
 	p := lc.c.NewProg()
 	p.As = x86.AMULQ
 	p.From.Type = obj.TYPE_REG
@@ -744,11 +820,20 @@ func (lc *lowerCtx) lowerShift(ins *IRInstr, op obj.As) {
 	needCXSave := b != goasm.REG_AMD64_CX && lc.isCXLive()
 
 	if needCXSave {
-		lc.emitRR(x86.AMOVQ, goasm.REG_AMD64_CX, amd64Scratch2)
-	}
-	if b != goasm.REG_AMD64_CX {
+		// If b is in R11 (scratch2), moving CX to R11 would clobber b.
+		// Handle by moving b to CX first, then saving old CX to R11.
+		if b == amd64Scratch2 {
+			// XCHG avoids the temp problem entirely.
+			lc.emitRR(x86.AXCHGQ, goasm.REG_AMD64_CX, amd64Scratch2)
+			// Now CX = old b, R11 = old CX. Both preserved.
+		} else {
+			lc.emitRR(x86.AMOVQ, goasm.REG_AMD64_CX, amd64Scratch2) // save CX to R11
+			lc.emitRR(x86.AMOVQ, b, goasm.REG_AMD64_CX)             // b → CX
+		}
+	} else if b != goasm.REG_AMD64_CX {
 		lc.emitRR(x86.AMOVQ, b, goasm.REG_AMD64_CX)
 	}
+
 	if dst != a {
 		lc.emitRR(x86.AMOVQ, a, dst)
 	}
@@ -791,19 +876,19 @@ func (lc *lowerCtx) lowerSet(ins *IRInstr) {
 	a := lc.use(ins.A, 0)
 	b := lc.use(ins.B, 1)
 
-	// CMPQ b, a (AT&T order)
-	lc.emitRR(x86.ACMPQ, b, a)
+	// CMPQ a, b — Go asm CMPQ computes From - To, so From=a, To=b gives a - b.
+	lc.emitRR(x86.ACMPQ, a, b)
 
-	// SETcc dst
+	// SETcc into byte register, then zero-extend.
 	setOp := predToSETcc(ins.Pred)
+	bReg := byteReg(dst)
 	p := lc.c.NewProg()
 	p.As = setOp
 	p.To.Type = obj.TYPE_REG
-	p.To.Reg = dst
+	p.To.Reg = bReg
 	lc.c.Append(p)
 
-	// MOVZBQ to zero-extend the byte result to 64 bits
-	lc.emitRR(x86.AMOVBQZX, dst, dst)
+	lc.emitRR(x86.AMOVBQZX, bReg, dst)
 
 	lc.defCommit(ins.Dst, dst)
 }
@@ -812,17 +897,18 @@ func (lc *lowerCtx) lowerSetImm(ins *IRInstr) {
 	dst := lc.def(ins.Dst)
 	a := lc.use(ins.A, 0)
 
-	// CMPQ $imm, a
-	lc.emitRI(x86.ACMPQ, ins.Imm, a)
+	// CMP a, $imm — Go asm CMP expects From=reg, To=const for ycmpl.
+	lc.emitCmpRI(a, ins.Imm)
 
 	setOp := predToSETcc(ins.Pred)
+	bReg := byteReg(dst)
 	p := lc.c.NewProg()
 	p.As = setOp
 	p.To.Type = obj.TYPE_REG
-	p.To.Reg = dst
+	p.To.Reg = bReg
 	lc.c.Append(p)
 
-	lc.emitRR(x86.AMOVBQZX, dst, dst)
+	lc.emitRR(x86.AMOVBQZX, bReg, dst)
 	lc.defCommit(ins.Dst, dst)
 }
 
@@ -889,16 +975,47 @@ func (lc *lowerCtx) lowerLoadX(ins *IRInstr) {
 }
 
 func (lc *lowerCtx) lowerStoreX(ins *IRInstr) {
+	// In IRStoreX, Dst field is repurposed as the value to store.
+	// 3 operands (base, idx, src) but only 2 scratch regs.
+	// Strategy: load base(scratch0) and idx(scratch1), then collapse
+	// base+idx*scale via LEA into scratch1 before loading src.
 	base := lc.use(ins.A, 0)
 	idx := lc.use(ins.B, 1)
-	// In IRStoreX, Dst field is repurposed as the value to store.
-	src := lc.use(ins.Dst, 0)
-	op := storeOp(ins.T)
 
+	// Check if src needs a scratch register (i.e., is spilled).
+	src := ins.Dst // the VReg, not yet resolved
+	srcInReg := src != VRegZero &&
+		int(src) < len(lc.alloc.Kind) && lc.alloc.Kind[src] == AllocReg
+	srcReg := lc.hostRegFor(src, lc.idx)
+
+	if !srcInReg || srcReg < 0 {
+		// src is spilled (or VRegZero) — collapse base+idx into R11 via LEA,
+		// then load src into R10, then store R10 → 0(R11).
+		p := lc.c.NewProg()
+		p.As = x86.ALEAQ
+		p.From.Type = obj.TYPE_MEM
+		p.From.Reg = base
+		p.From.Index = idx
+		p.From.Scale = int16(ins.Scale)
+		p.To.Type = obj.TYPE_REG
+		p.To.Reg = amd64Scratch2
+		lc.c.Append(p)
+
+		if src == VRegZero {
+			lc.emitRR(x86.AXORQ, amd64Scratch1, amd64Scratch1)
+		} else {
+			lc.spillLoad(lc.alloc.SpillSlot[src], amd64Scratch1)
+		}
+		lc.emitMR(storeOp(ins.T), amd64Scratch1, amd64Scratch2, 0)
+		return
+	}
+
+	// src is in a register — no scratch conflict.
+	op := storeOp(ins.T)
 	p := lc.c.NewProg()
 	p.As = op
 	p.From.Type = obj.TYPE_REG
-	p.From.Reg = src
+	p.From.Reg = srcReg
 	p.To.Type = obj.TYPE_MEM
 	p.To.Reg = base
 	p.To.Index = idx
@@ -950,7 +1067,8 @@ func (lc *lowerCtx) lowerBranch(ins *IRInstr) {
 	a := lc.use(ins.A, 0)
 	b := lc.use(ins.B, 1)
 
-	lc.emitRR(x86.ACMPQ, b, a)
+	// CMPQ a, b — Go asm CMPQ computes From - To, so From=a, To=b gives a - b.
+	lc.emitRR(x86.ACMPQ, a, b)
 
 	jOp := predToJcc(ins.Pred)
 	p := lc.c.NewProg()
@@ -963,12 +1081,12 @@ func (lc *lowerCtx) lowerBranch(ins *IRInstr) {
 func (lc *lowerCtx) lowerBranchImm(ins *IRInstr) {
 	a := lc.use(ins.A, 0)
 
-	// CMP $imm2, a
+	// CMP a, $imm2 — Go asm CMP: From=reg, To=const.
 	if ins.Imm2 >= -(1<<31) && ins.Imm2 < (1<<31) {
-		lc.emitRI(x86.ACMPQ, ins.Imm2, a)
+		lc.emitCmpRI(a, ins.Imm2)
 	} else {
 		lc.loadImm64(ins.Imm2, amd64Scratch2)
-		lc.emitRR(x86.ACMPQ, amd64Scratch2, a)
+		lc.emitRR(x86.ACMPQ, a, amd64Scratch2)
 	}
 
 	jOp := predToJcc(ins.Pred)
@@ -1109,28 +1227,18 @@ func (lc *lowerCtx) lowerFNeg(ins *IRInstr) {
 		lc.emitRR(movOp, a, dst)
 	}
 
-	// Load sign bit mask into scratch GPR, move to XMM, XOR.
+	// Negate by flipping the sign bit via GPR round-trip.
+	// MOVQ xmm→gpr, XOR with sign mask, MOVQ gpr→xmm.
 	var mask int64
 	if ins.T == F32 {
 		mask = 1 << 31
 	} else {
 		mask = -1 << 63 // 0x8000000000000000
 	}
-	lc.loadImm64(mask, amd64Scratch1)
-	// MOVQ gpr → xmm scratch (use scratch2's XMM slot concept; simpler: use PXOR with memory)
-	// For now: MOVQ scratch1, XMM scratch (use X15 as temp? No, X15 may be allocated)
-	// Simplest: use integer XOR trick — not ideal for FP. Use XORPD/XORPS with in-register mask.
-	// Actually simplest: use BTCQ (bit test and complement) on the GPR representation.
-	// But that requires the value in a GPR...
-	// For Phase 4a, use the double-move approach:
-	//   MOVQ dst(xmm), scratch1(gpr)
-	//   XORQ mask, scratch1
-	//   MOVQ scratch1, dst(xmm)
-	lc.emitRR(x86.AMOVQ, dst, amd64Scratch1) // XMM → GPR
-	lc.emitRI(x86.AXORQ, mask, amd64Scratch1)
-	lc.emitRR(x86.AMOVQ, amd64Scratch1, dst) // GPR → XMM
-	// Note: MOVQ between XMM and GPR uses the same opcode with different operand types.
-	// The Go assembler handles this via register class detection.
+	lc.emitRR(x86.AMOVQ, dst, amd64Scratch1)                // XMM → GPR (R10)
+	lc.loadImm64(mask, amd64Scratch2)                        // R11 = sign mask
+	lc.emitRR(x86.AXORQ, amd64Scratch2, amd64Scratch1)      // R10 ^= R11
+	lc.emitRR(x86.AMOVQ, amd64Scratch1, dst)                // GPR → XMM
 
 	lc.defCommit(ins.Dst, dst)
 }
@@ -1167,22 +1275,79 @@ func (lc *lowerCtx) lowerFCmp(ins *IRInstr) {
 	a := lc.use(ins.A, 0)
 	b := lc.use(ins.B, 1)
 
+	// UCOMISD/UCOMISS sets CF/ZF/PF flags (unsigned-style), not SF/OF.
+	// Go asm UCOMISD From, To computes To vs From (To - From for flags).
+	// We want a vs b, so From=b, To=a → flags reflect a vs b.
 	cmpOp := x86.AUCOMISD
 	if ins.T == F32 {
 		cmpOp = x86.AUCOMISS
 	}
 	lc.emitRR(cmpOp, b, a)
 
-	// For IEEE correctness, EQ needs special handling (NaN).
-	// For now, use the basic SETcc. Full IEEE fixup can be refined.
-	setOp := predToSETcc(ins.Pred)
-	p := lc.c.NewProg()
-	p.As = setOp
-	p.To.Type = obj.TYPE_REG
-	p.To.Reg = dst
-	lc.c.Append(p)
-	lc.emitRR(x86.AMOVBQZX, dst, dst)
+	bReg := byteReg(dst)
+
+	// UCOMISD sets CF/ZF/PF. Must use unsigned condition codes.
+	// EQ/NE need special NaN handling (PF=1 when unordered).
+	switch ins.Pred {
+	case EQ:
+		// a == b: ZF=1 AND PF=0 (exclude NaN).
+		// SETE + SETNP → AND result.
+		p1 := lc.c.NewProg()
+		p1.As = x86.ASETEQ
+		p1.To.Type = obj.TYPE_REG
+		p1.To.Reg = bReg
+		lc.c.Append(p1)
+		// Use scratch byte reg for SETNP.
+		scrByte := byteReg(amd64Scratch1)
+		p2 := lc.c.NewProg()
+		p2.As = x86.ASETPC // SETNP = SETPC (parity clear)
+		p2.To.Type = obj.TYPE_REG
+		p2.To.Reg = scrByte
+		lc.c.Append(p2)
+		lc.emitRR(x86.AANDB, scrByte, bReg)
+	case NE:
+		// a != b: ZF=0 OR PF=1 (NaN → not equal).
+		p1 := lc.c.NewProg()
+		p1.As = x86.ASETNE
+		p1.To.Type = obj.TYPE_REG
+		p1.To.Reg = bReg
+		lc.c.Append(p1)
+		scrByte := byteReg(amd64Scratch1)
+		p2 := lc.c.NewProg()
+		p2.As = x86.ASETPS // SETP = SETPS (parity set)
+		p2.To.Type = obj.TYPE_REG
+		p2.To.Reg = scrByte
+		lc.c.Append(p2)
+		lc.emitRR(x86.AORB, scrByte, bReg)
+	default:
+		// LT/LE/GT/GE use unsigned cc after UCOMISD.
+		setOp := predToFPSETcc(ins.Pred)
+		p := lc.c.NewProg()
+		p.As = setOp
+		p.To.Type = obj.TYPE_REG
+		p.To.Reg = bReg
+		lc.c.Append(p)
+	}
+
+	lc.emitRR(x86.AMOVBQZX, bReg, dst)
 	lc.defCommit(ins.Dst, dst)
+}
+
+// predToFPSETcc maps comparison predicates to SETcc after UCOMISD/UCOMISS.
+// UCOMISD sets CF/ZF/PF (like unsigned integer compare), not SF/OF.
+func predToFPSETcc(p Pred) obj.As {
+	switch p {
+	case LT:
+		return x86.ASETCS // CF=1 → a < b (below)
+	case LE:
+		return x86.ASETLS // CF=1 || ZF=1 → a <= b (below or equal)
+	case GT:
+		return x86.ASETHI // CF=0 && ZF=0 → a > b (above)
+	case GE:
+		return x86.ASETCC // CF=0 → a >= b (above or equal)
+	default:
+		return x86.ASETEQ // fallback
+	}
 }
 
 // ── FP conversions ──
