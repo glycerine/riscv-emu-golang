@@ -949,13 +949,12 @@ func (lc *lowerCtx) lowerShift(ins *IRInstr, op obj.As) {
 		lc.emitRR(op, goasm.REG_AMD64_CX, dst)
 	}
 
-	// Restore CX if we saved it and it wasn't just 'a' (which we consumed).
-	if cxSaveReg >= 0 && !aSavedToR11 {
+	// Restore CX if we saved it. Even when aSavedToR11 (a was in CX), the
+	// VReg may still be live for future instructions — reading it now doesn't
+	// make it dead, so CX must be restored.
+	if cxSaveReg >= 0 && needCXSave {
 		lc.emitRR(x86.AMOVQ, cxSaveReg, goasm.REG_AMD64_CX)
 	}
-	// If aSavedToR11 && needCXSave: CX held 'a' AND was live. But the
-	// allocator assigns one VReg per register, so a==CX means the live
-	// VReg IS 'a'. No separate restore needed — the shift consumed it.
 
 	lc.defCommit(ins.Dst, dst)
 }
