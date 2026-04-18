@@ -519,3 +519,108 @@ func TestExhaustive_Seq_FullTestPattern(t *testing.T) {
 		}
 	}
 }
+
+// TestCMP_Convention verifies what CMPQ actually computes in the Go assembler.
+// We test: is CMPQ(From=a, To=b) computing a-b or b-a?
+// Method: CMPQ(3, 5) then SETLT. If LT is true, it computed 3-5<0 (From-To).
+// If LT is false, it computed 5-3>0 (To-From).
+func TestCMP_Convention(t *testing.T) {
+	// Build: load x1=3, x2=5, CMP x1,x2, SETLT x3, store x3, ret.
+	e := NewEmitter()
+	x1 := VReg(1)
+	x2 := VReg(2)
+	x3 := VReg(3)
+	e.Const(x1, 3)
+	e.Const(x2, 5)
+	e.Set(x3, x1, x2, LT) // x3 = (x1 < x2) ? 1 : 0 = (3 < 5) = 1
+	e.Store(e.XBase(), 24, x3, I64)
+	e.Ret(0x1000, 0, VRegZero)
+
+	var x [32]uint64
+
+	// V1
+	execBlock(t, e.Block, &x, false)
+	t.Logf("V1: SET(3 < 5) = %d", x[3])
+	if x[3] != 1 {
+		t.Errorf("V1: expected 1 (3 < 5 is true), got %d", x[3])
+	}
+
+	// V2
+	x = [32]uint64{}
+	execBlock(t, e.Block, &x, true)
+	t.Logf("V2: SET(3 < 5) = %d", x[3])
+	if x[3] != 1 {
+		t.Errorf("V2: expected 1 (3 < 5 is true), got %d", x[3])
+	}
+
+	// Also test the reverse: 5 < 3 should be 0.
+	e2 := NewEmitter()
+	e2.Const(x1, 5)
+	e2.Const(x2, 3)
+	e2.Set(x3, x1, x2, LT) // x3 = (5 < 3) ? 1 : 0 = 0
+	e2.Store(e2.XBase(), 24, x3, I64)
+	e2.Ret(0x1000, 0, VRegZero)
+
+	x = [32]uint64{}
+	execBlock(t, e2.Block, &x, false)
+	t.Logf("V1: SET(5 < 3) = %d", x[3])
+	if x[3] != 0 {
+		t.Errorf("V1: expected 0 (5 < 3 is false), got %d", x[3])
+	}
+
+	x = [32]uint64{}
+	execBlock(t, e2.Block, &x, true)
+	t.Logf("V2: SET(5 < 3) = %d", x[3])
+	if x[3] != 0 {
+		t.Errorf("V2: expected 0 (5 < 3 is false), got %d", x[3])
+	}
+}
+
+// TestSETImm_Convention tests SetImm (compare register against immediate).
+// SLTI x3, x1, 5 means x3 = (x1 < 5) ? 1 : 0
+func TestSETImm_Convention(t *testing.T) {
+	cases := []struct{
+		name string
+		val  int64
+		imm  int64
+		pred Pred
+		want uint64
+	}{
+		{"3<5", 3, 5, LT, 1},
+		{"5<3", 5, 3, LT, 0},
+		{"5<5", 5, 5, LT, 0},
+		{"-1<0", -1, 0, LT, 1},
+		{"0<-1", 0, -1, LT, 0},
+		// Unsigned
+		{"3u<5", 3, 5, LTU, 1},
+		{"5u<3", 5, 3, LTU, 0},
+		// -1 unsigned is MAX, so -1 <u 0 is false, 0 <u -1 is true
+		{"-1u<0", -1, 0, LTU, 0},
+		{"0u<-1", 0, -1, LTU, 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := NewEmitter()
+			x1 := VReg(1)
+			x3 := VReg(3)
+			e.Const(x1, tc.val)
+			e.SetImm(x3, x1, tc.imm, tc.pred)
+			e.Store(e.XBase(), 24, x3, I64)
+			e.Ret(0x1000, 0, VRegZero)
+
+			var xv1, xv2 [32]uint64
+			execBlock(t, e.Block, &xv1, false)
+			execBlock(t, e.Block, &xv2, true)
+			t.Logf("V1=%d V2=%d want=%d", xv1[3], xv2[3], tc.want)
+			if xv1[3] != tc.want {
+				t.Errorf("V1: got %d, want %d", xv1[3], tc.want)
+			}
+			if xv2[3] != tc.want {
+				t.Errorf("V2: got %d, want %d", xv2[3], tc.want)
+			}
+			if xv1[3] != xv2[3] {
+				t.Errorf("V1!=V2: %d vs %d", xv1[3], xv2[3])
+			}
+		})
+	}
+}
