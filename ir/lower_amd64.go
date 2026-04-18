@@ -852,51 +852,81 @@ func (lc *lowerCtx) lowerShift(ins *IRInstr, op obj.As) {
 	b := lc.use(ins.B, 1)
 	dst := lc.def(ins.Dst)
 
-	// x86 variable shifts require count in CL. Multiple aliasing hazards
-	// exist (a==CX, b==dst, dst==CX, etc.). Safe strategy: use scratch
-	// registers to break all conflicts.
+	// x86 variable shifts require count in CL.
 	//
 	// Algorithm:
-	//   1. Get shift count into CX (saving CX first if live).
-	//   2. Get shift value into dst.
-	//   3. SHL/SHR/SAR CL, dst.
-	//   4. Restore CX if saved.
-
-	// Strategy: stage both operands into scratch registers to avoid all
-	// CX aliasing hazards, then shift, then write result.
-	// This mirrors V2's "always-stage" for this one tricky case.
+	//   1. Save CX if it holds a live VReg (not b, not dst).
+	//   2. Move count (b) into CX.
+	//   3. Move value (a) into dst.
+	//   4. SHL/SHR/SAR CL, dst.
+	//   5. Restore CX if saved.
 	//
-	// 1. Move value (a) to R10.
-	// 2. Move count (b) to CX (saving CX first if live and not our dst).
-	// 3. SHL/SHR/SAR CL, R10.
-	// 4. Move R10 to dst.
-	// 5. Restore CX if saved.
+	// Hazards handled:
+	//   - dst==CX: shift into scratch, then move to dst.
+	//   - a==CX and needCXSave: read a from save location (R11).
+	//   - b==dst: move b to CX before moving a to dst.
 
 	needCXSave := b != goasm.REG_AMD64_CX && dst != goasm.REG_AMD64_CX && lc.isCXLive()
 
-	// Stage value into R10. Must happen before CX is clobbered.
-	if a != amd64Scratch1 {
-		lc.emitRR(x86.AMOVQ, a, amd64Scratch1)
-	}
-
-	// Save CX if needed, then move count to CX.
-	if needCXSave {
+	// If a is in CX, we must save it BEFORE anything writes to CX.
+	// This covers both the needCXSave case (save for later restore)
+	// and the a==CX case (save so we can read the value after b→CX).
+	aSavedToR11 := false
+	if a == goasm.REG_AMD64_CX && b != goasm.REG_AMD64_CX {
+		// CX holds 'a'; moving b→CX will destroy it. Save to R11.
+		lc.emitRR(x86.AMOVQ, goasm.REG_AMD64_CX, amd64Scratch2)
+		aSavedToR11 = true
+	} else if needCXSave {
+		// CX holds a live VReg (not a, not b, not dst). Save it.
 		lc.emitRR(x86.AMOVQ, goasm.REG_AMD64_CX, amd64Scratch2)
 	}
-	if b != goasm.REG_AMD64_CX {
+
+	// Move count (b) into CX.
+	if b == goasm.REG_AMD64_CX {
+		// Already there.
+	} else if b == dst && dst != a && !aSavedToR11 {
+		// b lives in dst; moving a→dst later would clobber b.
+		lc.emitRR(x86.AMOVQ, b, goasm.REG_AMD64_CX)
+	} else {
 		lc.emitRR(x86.AMOVQ, b, goasm.REG_AMD64_CX)
 	}
 
-	// Shift: R10 by CL.
-	lc.emitRR(op, goasm.REG_AMD64_CX, amd64Scratch1)
-
-	// Write result to dst.
-	if dst != amd64Scratch1 {
-		lc.emitRR(x86.AMOVQ, amd64Scratch1, dst)
+	// Effective location of 'a': R11 if we saved it, else original register.
+	aEff := a
+	if aSavedToR11 {
+		aEff = amd64Scratch2
 	}
 
-	// Restore CX if saved.
-	if needCXSave {
+	// Move value (a) into dst and shift.
+	if dst == goasm.REG_AMD64_CX {
+		// dst IS CX — we just put the count there. Use scratch for the
+		// shift, then move result back to CX.
+		scr := amd64Scratch1
+		if aEff != scr {
+			lc.emitRR(x86.AMOVQ, aEff, scr)
+		}
+		lc.emitRR(op, goasm.REG_AMD64_CX, scr)
+		lc.emitRR(x86.AMOVQ, scr, dst)
+	} else {
+		if dst != aEff {
+			lc.emitRR(x86.AMOVQ, aEff, dst)
+		}
+		lc.emitRR(op, goasm.REG_AMD64_CX, dst)
+	}
+
+	// Restore CX if it held a live VReg we need to preserve.
+	// Don't restore if we only saved CX because a was there (aSavedToR11)
+	// and dst==CX (the new value belongs in CX).
+	if needCXSave && !aSavedToR11 {
+		lc.emitRR(x86.AMOVQ, amd64Scratch2, goasm.REG_AMD64_CX)
+	} else if needCXSave && aSavedToR11 {
+		// Both: CX held 'a' (which we saved) AND CX was live for restore.
+		// After the shift, dst has the result. CX needs the live value restored.
+		// But aSavedToR11 already consumed R11. The original live CX value was 'a',
+		// and 'a' was the only thing in CX (needCXSave says CX is live, but
+		// dst!=CX was already checked). This case means a==CX and there's
+		// ANOTHER VReg also in CX at this instruction — which can't happen
+		// (allocator assigns one VReg per register). So this branch is unreachable.
 		lc.emitRR(x86.AMOVQ, amd64Scratch2, goasm.REG_AMD64_CX)
 	}
 	lc.defCommit(ins.Dst, dst)

@@ -1216,3 +1216,38 @@ func TestDebugV1V2_SRL(t *testing.T) {
 	}
 	t.Logf("passed %d blocks, pc=0x%x", 500, cpu.PC())
 }
+
+func TestDebugV1V2_SRL_DumpAlloc(t *testing.T) {
+	mem, err := NewGuestMemory(Size64MB)
+	if err != nil { t.Fatal(err) }
+	defer mem.Free()
+	_, err = LoadELF(mem, "riscv-elf-tests/rv64ui-p-srl")
+	if err != nil { t.Fatal(err) }
+
+	// The failing block is at pc=0x322. But emitBlock starts at a block
+	// boundary, not necessarily 0x322. Let me find it by running to that PC.
+	cpu := NewCPU(*mem)
+	cpu.SetPC(0)
+	cpu.Notes.Push(func(c *CPU, n Note) NoteDisposition { return NoteHandled })
+	jit := NewJIT()
+	for i := 0; i < 500; i++ {
+		if cpu.pc == 0x322 || (cpu.pc < 0x322 && cpu.pc+0x400 > 0x322) {
+			res := emitBlock(&cpu.mem, cpu.pc)
+			if res != nil && res.startPC <= 0x322 && res.endPC > 0x322 {
+				t.Logf("found block: startPC=0x%x endPC=0x%x numInsns=%d irLen=%d",
+					res.startPC, res.endPC, res.numInsns, len(res.block.Instrs))
+				pool := ir.AMD64Pool(res.block)
+				alloc := ir.Allocate(res.block, pool, ir.AMD64Pinned(), nil)
+				for _, ia := range alloc.IntervalMap {
+					vr := ia.Interval.VReg
+					if vr == ir.VReg(11) || vr == ir.VReg(12) {
+						t.Logf("  VReg(%d) [%d..%d] host=%d", vr, ia.Interval.Start, ia.Interval.End, ia.Host)
+					}
+				}
+				return
+			}
+		}
+		jit.StepBlock(cpu)
+	}
+	t.Fatal("did not find block covering 0x322")
+}
