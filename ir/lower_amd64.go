@@ -822,49 +822,54 @@ func (lc *lowerCtx) lowerMulHSU(ins *IRInstr) {
 // ── Shifts ──
 
 func (lc *lowerCtx) lowerShift(ins *IRInstr, op obj.As) {
-	dst := lc.def(ins.Dst)
 	a := lc.use(ins.A, 0)
 	b := lc.use(ins.B, 1)
+	dst := lc.def(ins.Dst)
 
-	// x86 variable shifts require count in CL. Two hazards:
-	//   1. Moving b→CX clobbers a if a==CX.
-	//   2. Moving a→dst clobbers b if b==dst.
-	// Strategy: handle both via ordering and scratch.
+	// x86 variable shifts require count in CL. Multiple aliasing hazards
+	// exist (a==CX, b==dst, dst==CX, etc.). Safe strategy: use scratch
+	// registers to break all conflicts.
+	//
+	// Algorithm:
+	//   1. Get shift count into CX (saving CX first if live).
+	//   2. Get shift value into dst.
+	//   3. SHL/SHR/SAR CL, dst.
+	//   4. Restore CX if saved.
+
 	needCXSave := b != goasm.REG_AMD64_CX && lc.isCXLive()
-
-	if b == goasm.REG_AMD64_CX {
-		// b is already in CX — just move a to dst.
-		if dst != a {
-			lc.emitRR(x86.AMOVQ, a, dst)
-		}
-	} else if a == goasm.REG_AMD64_CX {
-		// a is in CX. Move a→dst FIRST (saves it), then b→CX.
-		if needCXSave {
-			lc.emitRR(x86.AMOVQ, goasm.REG_AMD64_CX, amd64Scratch2) // save CX (=a)
-		}
-		if dst != a {
-			lc.emitRR(x86.AMOVQ, a, dst) // a→dst (before CX is clobbered)
-		}
-		lc.emitRR(x86.AMOVQ, b, goasm.REG_AMD64_CX) // b→CX
-	} else if b == dst {
-		// b is in dst. Move b→CX FIRST (saves it), then a→dst.
-		if needCXSave {
-			lc.emitRR(x86.AMOVQ, goasm.REG_AMD64_CX, amd64Scratch2)
-		}
-		lc.emitRR(x86.AMOVQ, b, goasm.REG_AMD64_CX) // b→CX (before dst is clobbered)
-		lc.emitRR(x86.AMOVQ, a, dst)                  // a→dst
-	} else {
-		// No conflicts. Either order works.
-		if needCXSave {
-			lc.emitRR(x86.AMOVQ, goasm.REG_AMD64_CX, amd64Scratch2)
-		}
-		lc.emitRR(x86.AMOVQ, b, goasm.REG_AMD64_CX)
-		if dst != a {
-			lc.emitRR(x86.AMOVQ, a, dst)
-		}
+	if needCXSave {
+		lc.emitRR(x86.AMOVQ, goasm.REG_AMD64_CX, amd64Scratch2)
 	}
 
-	lc.emitRR(op, goasm.REG_AMD64_CX, dst)
+	// Get count (b) into CX. Use scratch if b==dst would be clobbered
+	// by the subsequent a→dst move, or if b is already in CX.
+	if b == goasm.REG_AMD64_CX {
+		// Already there.
+	} else if b == dst && dst != a {
+		// b lives in dst. Moving a→dst later would clobber it.
+		// Save b to CX first.
+		lc.emitRR(x86.AMOVQ, b, goasm.REG_AMD64_CX)
+	} else {
+		// No conflict or b!=dst. Safe to move b→CX.
+		lc.emitRR(x86.AMOVQ, b, goasm.REG_AMD64_CX)
+	}
+
+	// Get value (a) into dst.
+	if dst == goasm.REG_AMD64_CX {
+		// dst IS CX. We just put count there. Use scratch for dst,
+		// shift, then move result to CX at the end.
+		scr := amd64Scratch1
+		if a != scr {
+			lc.emitRR(x86.AMOVQ, a, scr)
+		}
+		lc.emitRR(op, goasm.REG_AMD64_CX, scr)
+		lc.emitRR(x86.AMOVQ, scr, dst)
+	} else {
+		if dst != a {
+			lc.emitRR(x86.AMOVQ, a, dst)
+		}
+		lc.emitRR(op, goasm.REG_AMD64_CX, dst)
+	}
 
 	if needCXSave {
 		lc.emitRR(x86.AMOVQ, amd64Scratch2, goasm.REG_AMD64_CX)

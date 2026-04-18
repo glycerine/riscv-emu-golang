@@ -481,4 +481,24 @@ func TestSLLW_ShiftZero(t *testing.T) {
 	}
 }
 
+// TestSLL_Src1EqDest tests SLL x12, x11, x12 (rd==rs2 aliasing with shift).
+func TestSLL_Src1EqDest(t *testing.T) {
+	cpu, mem := newTestCPU(t, Size64MB, 0x1000, []uint32{
+		renc(opOP, 1, 0x00, 12, 11, 12), // SLL x12, x11, x12
+		instrECALL,
+	})
+	defer mem.Free()
+	cpu.SetReg(11, 2)
+	cpu.SetReg(12, 13)
+	cpu.Notes.Push(ecallStop)
+
+	jit := NewJIT()
+	jit.RunJIT(cpu)
+
+	want := uint64(2 << 13) // 16384
+	if cpu.Reg(12) != want {
+		t.Errorf("SLL: x12 = 0x%x, want 0x%x", cpu.Reg(12), want)
+	}
+}
+
 // Encoding helpers are in jit_test.go (senc, ienc, renc, benc).
