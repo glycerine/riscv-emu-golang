@@ -3,11 +3,14 @@ package riscv
 import "riscv/ir"
 
 // u64set is a deterministic set of uint64 values.
-// Iteration order is sorted by key. No generics.
+// Iteration order is sorted by key, rotated by iterStart.
+// iterStart allows testing all iteration orderings to flush out
+// order-dependent bugs.
 type u64set struct {
-	m     map[uint64]struct{}
-	keys  []uint64
-	dirty bool
+	m         map[uint64]struct{}
+	keys      []uint64
+	dirty     bool
+	IterStart int // rotate iteration by this offset (mod len)
 }
 
 func newU64set() u64set {
@@ -52,10 +55,22 @@ func (s *u64set) sortedKeys() []uint64 {
 	return s.keys
 }
 
-// each iterates in deterministic sorted order.
+// each iterates in deterministic order, rotated by IterStart.
 func (s *u64set) each(fn func(key uint64)) {
-	for _, k := range s.sortedKeys() {
-		fn(k)
+	keys := s.sortedKeys()
+	n := len(keys)
+	if n == 0 {
+		return
+	}
+	start := 0
+	if s.IterStart != 0 {
+		start = s.IterStart % n
+		if start < 0 {
+			start += n
+		}
+	}
+	for i := 0; i < n; i++ {
+		fn(keys[(start+i)%n])
 	}
 }
 

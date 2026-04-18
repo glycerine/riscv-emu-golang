@@ -7,6 +7,10 @@ package riscv
 
 import "riscv/ir"
 
+// testIterStart is set by tests to rotate gotoTargets iteration order.
+// Zero means normal sorted order. Non-zero rotates by this offset.
+var testIterStart int
+
 // emitResult holds the generated IR block and metadata.
 type emitResult struct {
 	block    *ir.Block
@@ -551,6 +555,9 @@ func emitBlock(mem *GuestMemory, pc uint64) *emitResult {
 
 	irEm := ir.NewEmitter()
 
+	gt := newU64set()
+	gt.IterStart = testIterStart
+
 	e := &emitter{
 		mem:         mem,
 		startPC:     pc,
@@ -558,7 +565,7 @@ func emitBlock(mem *GuestMemory, pc uint64) *emitResult {
 		irEm:        irEm,
 		visited:     newU64set(),
 		regionEnd:   region.endPC,
-		gotoTargets: newU64set(),
+		gotoTargets: gt,
 		pcLabels:    newU64labelmap(),
 	}
 

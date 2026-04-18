@@ -3,8 +3,11 @@
 package riscv
 
 import (
+	"fmt"
+	"path/filepath"
 	"riscv/internal/jitcall"
 	"riscv/ir"
+	"strings"
 	"testing"
 )
 
@@ -1250,4 +1253,81 @@ func TestDebugV1V2_SRL_DumpAlloc(t *testing.T) {
 		jit.StepBlock(cpu)
 	}
 	t.Fatal("did not find block covering 0x322")
+}
+
+// TestMetaIterOrder runs the V1-vs-V2 comparison across 100 different
+// gotoTargets iteration start offsets. This flushes out any remaining
+// order-dependent lowerer bugs that a single sorted order might hide.
+func TestMetaIterOrder_SRL(t *testing.T) {
+	mem, err := NewGuestMemory(Size64MB)
+	if err != nil { t.Fatal(err) }
+	defer mem.Free()
+	_, err = LoadELF(mem, "riscv-elf-tests/rv64ui-p-srl")
+	if err != nil { t.Fatal(err) }
+
+	for offset := 0; offset < 100; offset++ {
+		testIterStart = offset
+		t.Run(fmt.Sprintf("offset=%d", offset), func(t *testing.T) {
+			cpu := NewCPU(*mem)
+			cpu.SetPC(0)
+			cpu.Notes.Push(func(c *CPU, n Note) NoteDisposition { return NoteHandled })
+			jit := NewJIT()
+			jit.DebugV1V2 = true
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("V1/V2 mismatch at iterStart=%d: %v", offset, r)
+				}
+			}()
+			for i := 0; i < 500; i++ {
+				_, err := jit.StepBlock(cpu)
+				if err != nil {
+					return
+				}
+			}
+		})
+	}
+	testIterStart = 0 // reset
+}
+
+// TestMetaIterOrder_AllUI runs ALL rv64ui ELF tests across multiple
+// iteration orderings.
+func TestMetaIterOrder_AllUI(t *testing.T) {
+	entries, err := filepath.Glob(filepath.Join(rvTestsDir, "rv64ui-p-*"))
+	if err != nil || len(entries) == 0 {
+		t.Skip("rv64ui ELFs not found")
+	}
+
+	for offset := 0; offset < 20; offset++ {
+		testIterStart = offset
+		t.Run(fmt.Sprintf("offset=%d", offset), func(t *testing.T) {
+			for _, path := range entries {
+				name := strings.TrimPrefix(filepath.Base(path), "rv64ui-p-")
+				t.Run(name, func(t *testing.T) {
+					mem, err := NewGuestMemory(Size64MB)
+					if err != nil { t.Fatal(err) }
+					defer mem.Free()
+					_, err = LoadELF(mem, path)
+					if err != nil { t.Fatal(err) }
+
+					cpu := NewCPU(*mem)
+					cpu.SetPC(0)
+					cpu.Notes.Push(func(c *CPU, n Note) NoteDisposition { return NoteHandled })
+					jit := NewJIT()
+					jit.DebugV1V2 = true
+					defer func() {
+						if r := recover(); r != nil {
+							t.Fatalf("V1/V2 mismatch at iterStart=%d: %v", offset, r)
+						}
+					}()
+					for i := 0; i < 1000; i++ {
+						_, err := jit.StepBlock(cpu)
+						if err != nil {
+							return
+						}
+					}
+				})
+			}
+		})
+	}
+	testIterStart = 0
 }

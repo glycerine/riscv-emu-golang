@@ -749,6 +749,18 @@ func (lc *lowerCtx) lowerDiv(ins *IRInstr, signed, wantRem bool) {
 	b := lc.use(ins.B, 1)
 	dst := lc.def(ins.Dst)
 
+	// Guard: if b is in RAX or RDX, save it to scratch before we clobber
+	// those registers. (Currently the pool excludes RAX/RDX when DIV is
+	// present, but this is a safety net.)
+	bEff := b
+	if b == goasm.REG_AMD64_AX {
+		lc.emitRR(x86.AMOVQ, b, amd64Scratch1)
+		bEff = amd64Scratch1
+	} else if b == goasm.REG_AMD64_DX {
+		lc.emitRR(x86.AMOVQ, b, amd64Scratch1)
+		bEff = amd64Scratch1
+	}
+
 	// Move dividend to RAX.
 	if a != goasm.REG_AMD64_AX {
 		lc.emitRR(x86.AMOVQ, a, goasm.REG_AMD64_AX)
@@ -759,20 +771,20 @@ func (lc *lowerCtx) lowerDiv(ins *IRInstr, signed, wantRem bool) {
 		p := lc.c.NewProg()
 		p.As = x86.ACQO
 		lc.c.Append(p)
-		// IDIVQ b
+		// IDIVQ bEff
 		p = lc.c.NewProg()
 		p.As = x86.AIDIVQ
 		p.From.Type = obj.TYPE_REG
-		p.From.Reg = b
+		p.From.Reg = bEff
 		lc.c.Append(p)
 	} else {
 		// XORQ RDX, RDX
 		lc.emitRR(x86.AXORQ, goasm.REG_AMD64_DX, goasm.REG_AMD64_DX)
-		// DIVQ b
+		// DIVQ bEff
 		p := lc.c.NewProg()
 		p.As = x86.ADIVQ
 		p.From.Type = obj.TYPE_REG
-		p.From.Reg = b
+		p.From.Reg = bEff
 		lc.c.Append(p)
 	}
 
@@ -792,6 +804,13 @@ func (lc *lowerCtx) lowerMulHigh(ins *IRInstr, signed bool) {
 	b := lc.use(ins.B, 1)
 	dst := lc.def(ins.Dst)
 
+	// Guard: if b is in RAX, MOV a→RAX would clobber it.
+	bEff := b
+	if b == goasm.REG_AMD64_AX && a != goasm.REG_AMD64_AX {
+		lc.emitRR(x86.AMOVQ, b, amd64Scratch1)
+		bEff = amd64Scratch1
+	}
+
 	if a != goasm.REG_AMD64_AX {
 		lc.emitRR(x86.AMOVQ, a, goasm.REG_AMD64_AX)
 	}
@@ -804,7 +823,7 @@ func (lc *lowerCtx) lowerMulHigh(ins *IRInstr, signed bool) {
 		p.As = x86.AMULQ
 	}
 	p.From.Type = obj.TYPE_REG
-	p.From.Reg = b
+	p.From.Reg = bEff
 	lc.c.Append(p)
 
 	// High result is in RDX.
@@ -821,7 +840,14 @@ func (lc *lowerCtx) lowerMulHSU(ins *IRInstr) {
 	b := lc.use(ins.B, 1)
 	dst := lc.def(ins.Dst)
 
-	// Move a to RAX first (before computing sign mask, which clobbers scratch).
+	// Guard: if b is in RAX, MOV a→RAX would clobber it.
+	bEff := b
+	if b == goasm.REG_AMD64_AX && a != goasm.REG_AMD64_AX {
+		lc.emitRR(x86.AMOVQ, b, amd64Scratch2) // R11 = b
+		bEff = amd64Scratch2
+	}
+
+	// Move a to RAX.
 	if a != goasm.REG_AMD64_AX {
 		lc.emitRR(x86.AMOVQ, a, goasm.REG_AMD64_AX)
 	}
@@ -829,11 +855,11 @@ func (lc *lowerCtx) lowerMulHSU(ins *IRInstr) {
 	// Compute sign correction: if a < 0, correction = b, else 0.
 	lc.emitRR(x86.AMOVQ, goasm.REG_AMD64_AX, amd64Scratch1) // R10 = a (from RAX)
 	lc.emitRI(x86.ASARQ, 63, amd64Scratch1)                  // R10 = sign(a) replicated
-	lc.emitRR(x86.AANDQ, b, amd64Scratch1)                   // R10 = (a<0) ? b : 0
+	lc.emitRR(x86.AANDQ, bEff, amd64Scratch1)                // R10 = (a<0) ? b : 0
 	p := lc.c.NewProg()
 	p.As = x86.AMULQ
 	p.From.Type = obj.TYPE_REG
-	p.From.Reg = b
+	p.From.Reg = bEff
 	lc.c.Append(p)
 
 	// Adjust: if a was negative, subtract b from high result.
