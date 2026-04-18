@@ -887,14 +887,9 @@ func TestJIT_LastBlockCache(t *testing.T) {
 	if cpu.Reg(1) != 3 {
 		t.Errorf("x1 = %d, want 3 after 3 runs", cpu.Reg(1))
 	}
-	if jit.lastPC != 0x1000 {
-		t.Errorf("lastPC = 0x%x, want 0x1000", jit.lastPC)
-	}
-	if jit.lastBlk == nil {
-		t.Error("lastBlk is nil")
-	}
-	if len(jit.blocks) != 1 {
-		t.Errorf("len(blocks) = %d, want 1", len(jit.blocks))
+	// Verify the block was cached.
+	if jit.lookupBlock(0x1000) == nil {
+		t.Error("block at 0x1000 not cached")
 	}
 }
 

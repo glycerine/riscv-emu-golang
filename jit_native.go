@@ -16,8 +16,8 @@ import (
 
 // compiledBlock holds a natively-compiled function pointer.
 type compiledBlock struct {
-	fn      uintptr // native function pointer (mmap'd executable memory)
-	backing []byte  // prevents GC of mmap'd memory
+	fn     uintptr        // native function pointer (mmap'd executable memory)
+	shadow *compiledBlock // V2 shadow block for DebugV1V2 comparison
 }
 
 // jitCompile compiles an IR block to native code and returns a compiledBlock.
@@ -78,8 +78,7 @@ func jitCompileWith(res *emitResult, useV2 bool) (*compiledBlock, error) {
 	copy(execMem, code)
 
 	return &compiledBlock{
-		fn:      uintptr(unsafe.Pointer(&execMem[0])),
-		backing: execMem,
+		fn: uintptr(unsafe.Pointer(&execMem[0])),
 	}, nil
 }
 

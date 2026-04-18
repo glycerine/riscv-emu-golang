@@ -12,6 +12,18 @@ type EmitBlockResult struct {
 	EndPC    uint64
 }
 
+// ScanRegionResult holds scanRegion output for debugging.
+type ScanRegionResult struct {
+	EndPC   uint64
+	PCCount int
+}
+
+// ScanRegionForBench exposes scanRegion for debugging.
+func ScanRegionForBench(mem *GuestMemory, pc uint64) ScanRegionResult {
+	r := scanRegion(mem, pc)
+	return ScanRegionResult{r.endPC, r.pcCount}
+}
+
 // EmitBlockForBench exposes emitBlock for benchmarking.
 func EmitBlockForBench(mem *GuestMemory, pc uint64) *EmitBlockResult {
 	res := emitBlock(mem, pc)

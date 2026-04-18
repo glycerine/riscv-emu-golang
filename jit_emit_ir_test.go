@@ -301,7 +301,7 @@ func TestMixedExecution_Block1_Dump(t *testing.T) {
 	if err != nil {
 		t.Fatalf("jitCompile: %v", err)
 	}
-	t.Logf("compiled block fn=%x, backing=%d bytes", compiled.fn, len(compiled.backing))
+	t.Logf("compiled block fn=%x", compiled.fn)
 
 	// Run it
 	cpu := NewCPU(*mem)
@@ -854,4 +854,365 @@ func TestSRL_ExactIR_DumpAlloc(t *testing.T) {
 		t.Logf("  interval: VReg(%d) [%d..%d] -> host=%d",
 			ia.Interval.VReg, ia.Interval.Start, ia.Interval.End, ia.Host)
 	}
+}
+
+// TestSRL_Block61_V1vV2 reproduces the exact IR from the failing srl ELF block 61
+// and compares V1 vs V2 results.
+func TestSRL_Block61_V1vV2(t *testing.T) {
+	mem, err := NewGuestMemory(Size64MB)
+	if err != nil { t.Fatal(err) }
+	defer mem.Free()
+
+	e := ir.NewEmitter()
+	x1 := ir.VReg(1)
+	x2 := ir.VReg(2)
+	x3 := ir.VReg(3)
+	x4 := ir.VReg(4)
+	x5 := ir.VReg(5)
+	x6 := ir.VReg(6)
+	x7 := ir.VReg(7)
+	x14 := ir.VReg(14)
+
+	// Prepended loads
+	e.Load(x1, e.XBase(), 8, ir.I64, false)
+	e.Load(x2, e.XBase(), 16, ir.I64, false)
+	e.Load(x3, e.XBase(), 24, ir.I64, false)
+	e.Load(x4, e.XBase(), 32, ir.I64, false)
+	e.Load(x5, e.XBase(), 40, ir.I64, false)
+	e.Load(x6, e.XBase(), 48, ir.I64, false)
+	e.Load(x7, e.XBase(), 56, ir.I64, false)
+	e.Load(x14, e.XBase(), 112, ir.I64, false)
+
+	// SRL x14 = x1, x2
+	e.Shr(x14, x1, x2)
+	e.AddImm(e.IC(), e.IC(), 1)
+	// MOV x6 = x14
+	e.Mov(x6, x14)
+	e.AddImm(e.IC(), e.IC(), 1)
+	// ADDI x4 = x4, 1
+	e.AddImm(x4, x4, 1)
+	e.AddImm(e.IC(), e.IC(), 1)
+	// CONST x5 = 2
+	e.Const(x5, 2)
+	e.AddImm(e.IC(), e.IC(), 1)
+	e.AddImm(e.IC(), e.IC(), 1)
+	// BNE x4, x5 -> L7 (test count exit)
+	l7 := e.NewLabel()
+	e.Branch(x4, x5, ir.NE, l7)
+	// CONST x7 = 16777216 (0x1000000)
+	e.Const(x7, 16777216)
+	e.AddImm(e.IC(), e.IC(), 1)
+	e.AddImm(e.IC(), e.IC(), 1)
+	// BNE x6, x7 -> L10 (test fail)
+	l10 := e.NewLabel()
+	e.Branch(x6, x7, ir.NE, l10)
+	// Pass: const x3 = 26
+	e.Const(x3, 26)
+	e.AddImm(e.IC(), e.IC(), 1)
+	e.Const(x4, 0)
+	e.AddImm(e.IC(), e.IC(), 1)
+	// WriteBackAll + Ret (pass → pc=886)
+	e.Store(e.XBase(), 24, x3, ir.I64)
+	e.Store(e.XBase(), 32, x4, ir.I64)
+	e.Store(e.XBase(), 40, x5, ir.I64)
+	e.Store(e.XBase(), 48, x6, ir.I64)
+	e.Store(e.XBase(), 56, x7, ir.I64)
+	e.Store(e.XBase(), 112, x14, ir.I64)
+	e.Ret(886, 0, ir.VRegZero)
+	// L10: fail
+	e.PlaceLabel(l10)
+	e.Store(e.XBase(), 24, x3, ir.I64)
+	e.Store(e.XBase(), 32, x4, ir.I64)
+	e.Store(e.XBase(), 40, x5, ir.I64)
+	e.Store(e.XBase(), 48, x6, ir.I64)
+	e.Store(e.XBase(), 56, x7, ir.I64)
+	e.Store(e.XBase(), 112, x14, ir.I64)
+	e.Ret(1426, 0, ir.VRegZero)
+	// L7: count mismatch exit
+	e.PlaceLabel(l7)
+	e.Store(e.XBase(), 24, x3, ir.I64)
+	e.Store(e.XBase(), 32, x4, ir.I64)
+	e.Store(e.XBase(), 40, x5, ir.I64)
+	e.Store(e.XBase(), 48, x6, ir.I64)
+	e.Store(e.XBase(), 56, x7, ir.I64)
+	e.Store(e.XBase(), 112, x14, ir.I64)
+	e.Ret(854, 0, ir.VRegZero)
+
+	blk := e.Block
+
+	// Input: x[1]=0x80000000, x[2]=7, x[3]=25, x[4]=0, x[12]=0x20000
+	var x1v, x2v [32]uint64
+	var f1v, f2v [32]uint64
+	var fcsr1, fcsr2 uint32
+	x1v[1] = 0x80000000
+	x1v[2] = 7
+	x1v[3] = 25
+	x1v[4] = 0
+	x2v = x1v
+
+	// V1
+	c1, err := jitCompile(&emitResult{block: blk, numInsns: 9})
+	if err != nil { t.Fatalf("V1 compile: %v", err) }
+	r1 := jitcallCall(c1.fn, &x1v, &f1v, &fcsr1, mem.Base(), mem.Mask())
+
+	// V2
+	c2, err := jitCompileV2(&emitResult{block: blk, numInsns: 9})
+	if err != nil { t.Fatalf("V2 compile: %v", err) }
+	r2 := jitcallCall(c2.fn, &x2v, &f2v, &fcsr2, mem.Base(), mem.Mask())
+
+	t.Logf("V1: PC=0x%x IC=%d x[3]=%d x[6]=0x%x x[14]=0x%x", r1.PC, r1.IC, x1v[3], x1v[6], x1v[14])
+	t.Logf("V2: PC=0x%x IC=%d x[3]=%d x[6]=0x%x x[14]=0x%x", r2.PC, r2.IC, x2v[3], x2v[6], x2v[14])
+
+	if x1v[6] != x2v[6] {
+		t.Errorf("x[6] V1=0x%x V2=0x%x", x1v[6], x2v[6])
+	}
+	if x1v[14] != x2v[14] {
+		t.Errorf("x[14] V1=0x%x V2=0x%x", x1v[14], x2v[14])
+	}
+	if r1.PC != r2.PC {
+		t.Errorf("PC V1=0x%x V2=0x%x", r1.PC, r2.PC)
+	}
+
+	// Expected: SRL(0x80000000, 7) = 0x01000000
+	want := uint64(0x01000000)
+	if x2v[14] != want {
+		t.Errorf("V2 x[14]=0x%x want 0x%x", x2v[14], want)
+	}
+}
+
+// TestSRL_Block61_V1vV2b reproduces the exact IR from the failing srl block 61
+// with writeback helper.
+func TestSRL_Block61_V1vV2b(t *testing.T) {
+	mem, err := NewGuestMemory(Size64MB)
+	if err != nil { t.Fatal(err) }
+	defer mem.Free()
+
+	e := ir.NewEmitter()
+	x1, x2, x3, x4 := ir.VReg(1), ir.VReg(2), ir.VReg(3), ir.VReg(4)
+	x5, x6, x7, x14 := ir.VReg(5), ir.VReg(6), ir.VReg(7), ir.VReg(14)
+
+	// Prepended loads (8 guest regs)
+	for _, vr := range []ir.VReg{x1, x2, x3, x4, x5, x6, x7, x14} {
+		e.Load(vr, e.XBase(), int64(vr)*8, ir.I64, false)
+	}
+
+	e.Shr(x14, x1, x2)           // SRL x14 = x1, x2
+	e.AddImm(e.IC(), e.IC(), 1)
+	e.Mov(x6, x14)               // MOV x6 = x14
+	e.AddImm(e.IC(), e.IC(), 1)
+	e.AddImm(x4, x4, 1)          // ADDI x4 = x4 + 1
+	e.AddImm(e.IC(), e.IC(), 1)
+	e.Const(x5, 2)               // CONST x5 = 2
+	e.AddImm(e.IC(), e.IC(), 1)
+	e.AddImm(e.IC(), e.IC(), 1)
+
+	l7 := e.NewLabel()
+	e.Branch(x4, x5, ir.NE, l7)  // BNE x4, x5 → L7
+
+	e.Const(x7, 0x1000000)       // CONST x7 = 16777216
+	e.AddImm(e.IC(), e.IC(), 1)
+	e.AddImm(e.IC(), e.IC(), 1)
+
+	l10 := e.NewLabel()
+	e.Branch(x6, x7, ir.NE, l10) // BNE x6, x7 → L10
+
+	// Pass exit
+	e.Const(x3, 26)
+	e.AddImm(e.IC(), e.IC(), 1)
+	e.Const(x4, 0)
+	e.AddImm(e.IC(), e.IC(), 1)
+	wb := func() {
+		for _, vr := range []ir.VReg{x3, x4, x5, x6, x7, x14} {
+			e.Store(e.XBase(), int64(vr)*8, vr, ir.I64)
+		}
+	}
+	wb()
+	e.Ret(886, 0, ir.VRegZero)
+
+	// L10: fail
+	e.PlaceLabel(l10)
+	wb()
+	e.Ret(1426, 0, ir.VRegZero)
+
+	// L7: count exit
+	e.PlaceLabel(l7)
+	wb()
+	e.Ret(854, 0, ir.VRegZero)
+
+	blk := e.Block
+
+	// Input: x[1]=0x80000000, x[2]=7, x[3]=25, x[4]=0
+	setup := func(x *[32]uint64) {
+		x[1] = 0x80000000
+		x[2] = 7
+		x[3] = 25
+		x[4] = 0
+	}
+
+	// Expected: SRL(0x80000000, 7) = 0x01000000, test passes → PC=886
+	var xv1, xv2 [32]uint64
+	var fv1, fv2 [32]uint64
+	var fc1, fc2 uint32
+	setup(&xv1)
+	setup(&xv2)
+
+	c1, err := jitCompile(&emitResult{block: blk, numInsns: 9})
+	if err != nil { t.Fatalf("V1 compile: %v", err) }
+	r1 := jitcallCall(c1.fn, &xv1, &fv1, &fc1, mem.Base(), mem.Mask())
+
+	c2, err := jitCompileV2(&emitResult{block: blk, numInsns: 9})
+	if err != nil { t.Fatalf("V2 compile: %v", err) }
+	r2 := jitcallCall(c2.fn, &xv2, &fv2, &fc2, mem.Base(), mem.Mask())
+
+	t.Logf("V1: PC=0x%x IC=%d x[3]=%d x[6]=0x%x x[14]=0x%x", r1.PC, r1.IC, xv1[3], xv1[6], xv1[14])
+	t.Logf("V2: PC=0x%x IC=%d x[3]=%d x[6]=0x%x x[14]=0x%x", r2.PC, r2.IC, xv2[3], xv2[6], xv2[14])
+
+	if r1.PC != r2.PC {
+		t.Errorf("PC mismatch: V1=0x%x V2=0x%x", r1.PC, r2.PC)
+	}
+	if xv1[14] != xv2[14] {
+		t.Errorf("x[14] mismatch: V1=0x%x V2=0x%x", xv1[14], xv2[14])
+	}
+	if xv1[6] != xv2[6] {
+		t.Errorf("x[6] mismatch: V1=0x%x V2=0x%x", xv1[6], xv2[6])
+	}
+	if xv1[3] != xv2[3] {
+		t.Errorf("x[3] mismatch: V1=%d V2=%d", xv1[3], xv2[3])
+	}
+
+	want14 := uint64(0x01000000)
+	if xv2[14] != want14 {
+		t.Errorf("V2 x[14]=0x%x, want 0x%x", xv2[14], want14)
+	}
+}
+
+// TestSRL_RealBlock_V1vV2 uses the real emitBlock on the srl ELF binary,
+// then compiles the resulting IR block with both V1 and V2 to find divergences.
+func TestSRL_RealBlock_V1vV2(t *testing.T) {
+	mem, err := NewGuestMemory(Size64MB)
+	if err != nil { t.Fatal(err) }
+	defer mem.Free()
+
+	_, err = LoadELF(mem, "riscv-elf-tests/rv64ui-p-srl")
+	if err != nil { t.Fatal(err) }
+
+	// Block 61 starts at pc=0x35c with maxBlockInsns=9 (from earlier tracing).
+	// But with maxBlockInsns=2048, the failing block is block 39 starting
+	// much earlier. Let's find the first failing block by running lockstep.
+	cpu1 := NewCPU(*mem)
+	cpu1.SetPC(0)
+	cpu1.Notes.Push(func(c *CPU, n Note) NoteDisposition { return NoteHandled })
+
+	cpu2 := NewCPU(*mem)
+	cpu2.SetPC(0)
+	cpu2.Notes.Push(func(c *CPU, n Note) NoteDisposition { return NoteHandled })
+
+	jitV1 := NewJIT()
+	jitV2 := NewJIT()
+	jitV2.UseV2 = true
+
+	for block := 0; block < 200; block++ {
+		if cpu1.pc != cpu2.pc {
+			t.Fatalf("block %d: PC desync before dispatch: V1=0x%x V2=0x%x", block, cpu1.pc, cpu2.pc)
+		}
+
+		ic1, err1 := jitV1.StepBlock(cpu1)
+		ic2, err2 := jitV2.StepBlock(cpu2)
+		_, _ = ic2, err2
+
+		// Run interpreter for V2 CPU the same number of V1 steps
+		// Actually both should run independently via their own JIT.
+		_ = ic1
+		_ = err1
+
+		// Compare registers
+		for r := 0; r < 32; r++ {
+			if cpu1.x[r] != cpu2.x[r] {
+				t.Fatalf("block %d (pc=0x%x, ic1=%d): x[%d] V1=0x%x V2=0x%x",
+					block, cpu1.pc, ic1, r, cpu1.x[r], cpu2.x[r])
+			}
+		}
+		if cpu1.pc != cpu2.pc {
+			t.Fatalf("block %d: PC after: V1=0x%x V2=0x%x", block, cpu1.pc, cpu2.pc)
+		}
+
+		// Check for exit
+		if err1 != nil || err2 != nil {
+			break
+		}
+	}
+	t.Logf("V1 vs V2 lockstep passed, pc=0x%x cycles=%d", cpu1.pc, cpu1.Cycle())
+}
+
+// TestSRL_Block39_Alloc dumps the register allocation for the real block 39.
+func TestSRL_Block39_Alloc(t *testing.T) {
+	mem, err := NewGuestMemory(Size64MB)
+	if err != nil { t.Fatal(err) }
+	defer mem.Free()
+	_, err = LoadELF(mem, "riscv-elf-tests/rv64ui-p-srl")
+	if err != nil { t.Fatal(err) }
+
+	// Block 39 starts near the beginning of the test code.
+	// Find it by running StepBlock until we get a large block.
+	cpu := NewCPU(*mem)
+	cpu.SetPC(0)
+	cpu.Notes.Push(func(c *CPU, n Note) NoteDisposition { return NoteHandled })
+	jit := NewJIT()
+	for i := 0; i < 39; i++ {
+		jit.StepBlock(cpu)
+	}
+	// Now cpu.pc is at the start of block 39.
+	pc := cpu.pc
+	t.Logf("block 39 starts at pc=0x%x", pc)
+
+	res := emitBlock(&cpu.mem, pc)
+	if res == nil { t.Fatal("emitBlock returned nil") }
+	t.Logf("block: numInsns=%d, %d IR instrs", res.numInsns, len(res.block.Instrs))
+
+	pool := ir.AMD64Pool(res.block)
+	alloc := ir.Allocate(res.block, pool, ir.AMD64Pinned(), nil)
+
+	// Find all intervals for x1.
+	for _, ia := range alloc.IntervalMap {
+		if ia.Interval.VReg == ir.VReg(1) {
+			t.Logf("x1 interval: [%d..%d] host=%d", ia.Interval.Start, ia.Interval.End, ia.Host)
+		}
+	}
+	// Print first 30 IR instructions with their vreg uses/defs.
+	for i := 0; i < 30 && i < len(res.block.Instrs); i++ {
+		ins := &res.block.Instrs[i]
+		t.Logf("[%d] %v", i, ins)
+	}
+}
+
+// TestDebugV1V2_SRL runs the srl ELF test with the V1-vs-V2 debug machine
+// to find the exact block and registers where V1 diverges from V2.
+func TestDebugV1V2_SRL(t *testing.T) {
+	mem, err := NewGuestMemory(Size64MB)
+	if err != nil { t.Fatal(err) }
+	defer mem.Free()
+	_, err = LoadELF(mem, "riscv-elf-tests/rv64ui-p-srl")
+	if err != nil { t.Fatal(err) }
+
+	cpu := NewCPU(*mem)
+	cpu.SetPC(0)
+	cpu.Notes.Push(func(c *CPU, n Note) NoteDisposition { return NoteHandled })
+
+	jit := NewJIT()
+	jit.DebugV1V2 = true // compile every block with V1+V2, compare results
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("V1/V2 mismatch: %v", r)
+		}
+	}()
+
+	for i := 0; i < 500; i++ {
+		_, err := jit.StepBlock(cpu)
+		if err != nil {
+			t.Logf("exit at block %d pc=0x%x: %v", i, cpu.PC(), err)
+			return
+		}
+	}
+	t.Logf("passed %d blocks, pc=0x%x", 500, cpu.PC())
 }

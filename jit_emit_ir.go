@@ -567,7 +567,7 @@ func emitBlock(mem *GuestMemory, pc uint64) *emitResult {
 	e.storeFaultLabel = irEm.NewLabel()
 
 	// Emit IR (populates regsUsed via xreg/xregDst calls).
-	const maxBlockInsns = 3
+	const maxBlockInsns = 2048
 	for e.numInsns < maxBlockInsns && !e.terminated && e.pc < e.regionEnd {
 		if e.visited[e.pc] {
 			e.irEm.Jump(e.getOrCreateLabel(e.pc))
