@@ -1173,6 +1173,23 @@ func (lc *lowerCtx) lowerCall(ins *IRInstr) {
 	}
 	sym := lc.blk.CTab[ins.Imm]
 
+	// Save all live caller-saved registers. SysV ABI clobbers:
+	// RAX, RCX, RDX, RSI, RDI, R8, R9, R10, R11, XMM0-XMM15.
+	// Pinned callee-saved regs (R12-R15, RBX) survive the call naturally.
+	liveInt, liveFP := lc.liveCallerSaved()
+
+	// Push live int regs to stack (using SUB RSP + MOV sequence).
+	saveSize := int64(len(liveInt)+len(liveFP)) * 8
+	if saveSize > 0 {
+		lc.emitRI(x86.ASUBQ, saveSize, goasm.REG_AMD64_SP)
+	}
+	for i, r := range liveInt {
+		lc.emitMR(x86.AMOVQ, r, goasm.REG_AMD64_SP, int64(i)*8)
+	}
+	for i, r := range liveFP {
+		lc.emitMR(x86.AMOVSD, r, goasm.REG_AMD64_SP, int64(len(liveInt)+i)*8)
+	}
+
 	// Load symbol address into scratch and CALL.
 	lc.loadImm64(int64(sym.Addr), amd64Scratch1)
 	p := lc.c.NewProg()
@@ -1180,6 +1197,54 @@ func (lc *lowerCtx) lowerCall(ins *IRInstr) {
 	p.To.Type = obj.TYPE_REG
 	p.To.Reg = amd64Scratch1
 	lc.c.Append(p)
+
+	// Restore live regs.
+	for i, r := range liveInt {
+		lc.emitRM(x86.AMOVQ, goasm.REG_AMD64_SP, int64(i)*8, r)
+	}
+	for i, r := range liveFP {
+		lc.emitRM(x86.AMOVSD, goasm.REG_AMD64_SP, int64(len(liveInt)+i)*8, r)
+	}
+	if saveSize > 0 {
+		lc.emitRI(x86.AADDQ, saveSize, goasm.REG_AMD64_SP)
+	}
+}
+
+// liveCallerSaved returns the caller-saved registers that hold live VRegs
+// at the current instruction index. These must be saved/restored around CALLs.
+func (lc *lowerCtx) liveCallerSaved() (intRegs, fpRegs []int16) {
+	// Caller-saved integer registers (all pool regs are caller-saved).
+	callerSavedInt := []int16{
+		goasm.REG_AMD64_AX, goasm.REG_AMD64_CX, goasm.REG_AMD64_DX,
+		goasm.REG_AMD64_BP, goasm.REG_AMD64_SI, goasm.REG_AMD64_DI,
+		goasm.REG_AMD64_R8, goasm.REG_AMD64_R9,
+	}
+	for _, r := range callerSavedInt {
+		if lc.isRegLive(r) {
+			intRegs = append(intRegs, r)
+		}
+	}
+	// All XMM registers are caller-saved.
+	for i := int16(0); i < 16; i++ {
+		r := goasm.REG_AMD64_X0 + i
+		if lc.isRegLive(r) {
+			fpRegs = append(fpRegs, r)
+		}
+	}
+	return
+}
+
+// isRegLive returns true if a host register holds a live allocated VReg
+// at the current instruction index.
+func (lc *lowerCtx) isRegLive(hostReg int16) bool {
+	for i := range lc.alloc.IntervalMap {
+		ia := &lc.alloc.IntervalMap[i]
+		if ia.Host == hostReg &&
+			ia.Interval.Start <= lc.idx && lc.idx <= ia.Interval.End {
+			return true
+		}
+	}
+	return false
 }
 
 // ── FP ops ──
