@@ -505,14 +505,17 @@ func (e *emitter) emitOpImm(rd, rs1 uint32, imm int64, funct3, funct7 uint32) {
 		src := e.xreg(rs1)
 		e.irEm.SetImm(e.xregDst(rd), src, imm, ir.LTU)
 	case 4: // XORI
-		e.irEm.XorImm(e.xregDst(rd), e.xreg(rs1), imm)
+		src := e.xreg(rs1)
+		e.irEm.XorImm(e.xregDst(rd), src, imm)
 	case 5: // SRLI/SRAI / BEXTI / RORI / ORC.B / REV8 / ZEXT.H
 		funct6 := funct7 >> 1
 		switch funct6 {
 		case 0x00: // SRLI
-			e.irEm.ShrImm(e.xregDst(rd), e.xreg(rs1), shamt)
+			src := e.xreg(rs1)
+			e.irEm.ShrImm(e.xregDst(rd), src, shamt)
 		case 0x10: // SRAI
-			e.irEm.SarImm(e.xregDst(rd), e.xreg(rs1), shamt)
+			src := e.xreg(rs1)
+			e.irEm.SarImm(e.xregDst(rd), src, shamt)
 		case 0x12: // BEXTI
 			t := e.irEm.Tmp()
 			e.irEm.ShrImm(t, e.xreg(rs1), shamt)
@@ -528,14 +531,17 @@ func (e *emitter) emitOpImm(rd, rs1 uint32, imm int64, funct3, funct7 uint32) {
 		case 0x1A: // REV8 — bail (complex byte-swap)
 			e.terminated = true
 		case 0x02: // ZEXT.H
-			e.irEm.Zext(e.xregDst(rd), e.xreg(rs1), ir.I16)
+			src := e.xreg(rs1)
+			e.irEm.Zext(e.xregDst(rd), src, ir.I16)
 		default:
 			e.terminated = true
 		}
 	case 6: // ORI
-		e.irEm.OrImm(e.xregDst(rd), e.xreg(rs1), imm)
+		src := e.xreg(rs1)
+		e.irEm.OrImm(e.xregDst(rd), src, imm)
 	case 7: // ANDI
-		e.irEm.AndImm(e.xregDst(rd), e.xreg(rs1), imm)
+		src := e.xreg(rs1)
+		e.irEm.AndImm(e.xregDst(rd), src, imm)
 	}
 }
 
@@ -1158,15 +1164,24 @@ func (e *emitter) emitFPOpS(rd, rs1, rs2, funct3, funct5 uint32) {
 func (e *emitter) emitFPOpD(rd, rs1, rs2, funct3, funct5 uint32) {
 	switch funct5 {
 	case 0x00: // FADD.D
-		e.irEm.FAdd(e.fregDst(rd), e.freg(rs1), e.freg(rs2), ir.F64)
+		a := e.freg(rs1)
+		b := e.freg(rs2)
+		e.irEm.FAdd(e.fregDst(rd), a, b, ir.F64)
 	case 0x01: // FSUB.D
-		e.irEm.FSub(e.fregDst(rd), e.freg(rs1), e.freg(rs2), ir.F64)
+		a := e.freg(rs1)
+		b := e.freg(rs2)
+		e.irEm.FSub(e.fregDst(rd), a, b, ir.F64)
 	case 0x02: // FMUL.D
-		e.irEm.FMul(e.fregDst(rd), e.freg(rs1), e.freg(rs2), ir.F64)
+		a := e.freg(rs1)
+		b := e.freg(rs2)
+		e.irEm.FMul(e.fregDst(rd), a, b, ir.F64)
 	case 0x03: // FDIV.D
-		e.irEm.FDiv(e.fregDst(rd), e.freg(rs1), e.freg(rs2), ir.F64)
+		a := e.freg(rs1)
+		b := e.freg(rs2)
+		e.irEm.FDiv(e.fregDst(rd), a, b, ir.F64)
 	case 0x0B: // FSQRT.D
-		e.irEm.FSqrt(e.fregDst(rd), e.freg(rs1), ir.F64)
+		a := e.freg(rs1)
+		e.irEm.FSqrt(e.fregDst(rd), a, ir.F64)
 	case 0x04: // FSGNJ.D
 		e.emitFsgnjD(rd, rs1, rs2, funct3)
 	case 0x05: // FMIN.D / FMAX.D — bail
