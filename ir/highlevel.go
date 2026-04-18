@@ -62,20 +62,19 @@ func (e *Emitter) GuestStore(base, memBase, mask VReg, off int64, src VReg, widt
 }
 
 // WriteBackAll writes all dirty cached vregs back to the x[] and f[] arrays.
-// Used before block exits.
+// Used before block exits. Does NOT clear dirty flags — multiple exit points
+// in a block each need their own writeback sequence.
 func (e *Emitter) WriteBackAll() {
 	// Integer registers x1..x31 (VRegs 1..31).
 	for vr := VReg(1); vr < 32; vr++ {
 		if int(vr) < len(e.dirty) && e.dirty[vr] {
 			e.Store(e.xBase, int64(vr)*8, vr, I64)
-			e.dirty[vr] = false
 		}
 	}
 	// FP registers f0..f31 (VRegs 32..63).
 	for vr := VReg(32); vr < 64; vr++ {
 		if int(vr) < len(e.dirty) && e.dirty[vr] {
 			e.Store(e.fBase, int64(vr-32)*8, vr, I64)
-			e.dirty[vr] = false
 		}
 	}
 }

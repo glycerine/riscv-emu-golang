@@ -60,8 +60,8 @@ func TestAMD64Pool_NoDiv(t *testing.T) {
 		{Op: IRAdd, T: I64, Dst: VReg(1), A: VReg(2), B: VReg(3)},
 	}
 	pool := AMD64Pool(b)
-	if len(pool.IntRegs) != 8 {
-		t.Errorf("want 8 int regs, got %d", len(pool.IntRegs))
+	if len(pool.IntRegs) != 7 {
+		t.Errorf("want 7 int regs, got %d", len(pool.IntRegs))
 	}
 	if len(pool.FPRegs) != 16 {
 		t.Errorf("want 16 FP regs, got %d", len(pool.FPRegs))
@@ -87,8 +87,8 @@ func TestAMD64Pool_WithDiv(t *testing.T) {
 		{Op: IRDivS, T: I64, Dst: VReg(1), A: VReg(2), B: VReg(3)},
 	}
 	pool := AMD64Pool(b)
-	if len(pool.IntRegs) != 6 {
-		t.Errorf("want 6 int regs (no RAX/RDX), got %d", len(pool.IntRegs))
+	if len(pool.IntRegs) != 5 {
+		t.Errorf("want 5 int regs (no RAX/RDX/RBP), got %d", len(pool.IntRegs))
 	}
 	// Verify RAX and RDX are absent.
 	for _, r := range pool.IntRegs {
@@ -103,12 +103,13 @@ func TestAMD64Pool_WithDiv(t *testing.T) {
 
 func TestAMD64Pinned(t *testing.T) {
 	pinned := AMD64Pinned()
-	if len(pinned) != 4 {
-		t.Errorf("want 4 pinned VRegs, got %d", len(pinned))
+	if len(pinned) != 5 {
+		t.Errorf("want 5 pinned VRegs, got %d", len(pinned))
 	}
 	checks := map[VReg]int16{
 		VRXBase:   goasm.REG_AMD64_R12,
 		VRFBase:   goasm.REG_AMD64_R13,
+		VRIC:      goasm.REG_AMD64_BP,
 		VRMemBase: goasm.REG_AMD64_R14,
 		VRMemMask: goasm.REG_AMD64_R15,
 	}
@@ -121,10 +122,6 @@ func TestAMD64Pinned(t *testing.T) {
 		if got != wantReg {
 			t.Errorf("pinned[%v] = %d, want %d", vr, got, wantReg)
 		}
-	}
-	// Verify ic is NOT pinned.
-	if _, ok := pinned[VRIC]; ok {
-		t.Error("ic (t66) should not be pinned")
 	}
 }
 

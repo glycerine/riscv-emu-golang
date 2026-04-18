@@ -33,6 +33,7 @@ const (
 	amd64RegFBase   int16 = goasm.REG_AMD64_R13
 	amd64RegMemBase int16 = goasm.REG_AMD64_R14
 	amd64RegMemMask int16 = goasm.REG_AMD64_R15
+	amd64RegIC      int16 = goasm.REG_AMD64_BP
 	amd64RegSret    int16 = goasm.REG_AMD64_BX
 	amd64Scratch1   int16 = goasm.REG_AMD64_R10
 	amd64Scratch2   int16 = goasm.REG_AMD64_R11
@@ -42,7 +43,7 @@ const (
 const (
 	VRXBase   = VReg(VRegTempStart + 0) // t64
 	VRFBase   = VReg(VRegTempStart + 1) // t65
-	VRIC      = VReg(VRegTempStart + 2) // t66 — allocated, not pinned
+	VRIC      = VReg(VRegTempStart + 2) // t66 — pinned to RBP
 	VRMemBase = VReg(VRegTempStart + 3) // t67
 	VRMemMask = VReg(VRegTempStart + 4) // t68
 )
@@ -55,7 +56,6 @@ func AMD64Pool(b *Block) RegPool {
 		goasm.REG_AMD64_AX,
 		goasm.REG_AMD64_CX,
 		goasm.REG_AMD64_DX,
-		goasm.REG_AMD64_BP,
 		goasm.REG_AMD64_SI,
 		goasm.REG_AMD64_DI,
 		goasm.REG_AMD64_R8,
@@ -64,7 +64,6 @@ func AMD64Pool(b *Block) RegPool {
 	if BlockHasDivMul(b) {
 		intRegs = []int16{
 			goasm.REG_AMD64_CX,
-			goasm.REG_AMD64_BP,
 			goasm.REG_AMD64_SI,
 			goasm.REG_AMD64_DI,
 			goasm.REG_AMD64_R8,
@@ -82,12 +81,11 @@ func AMD64Pool(b *Block) RegPool {
 
 // AMD64Pinned returns the pinned VReg → host register map for parameter VRegs.
 // These are passed to Allocate() so the allocator fixes them in place.
-// Note: VRIC (t66, instruction counter) is NOT pinned — it is allocated
-// from the pool and initialized to 0 in the prologue.
 func AMD64Pinned() map[VReg]int16 {
 	return map[VReg]int16{
 		VRXBase:   amd64RegXBase,
 		VRFBase:   amd64RegFBase,
+		VRIC:      amd64RegIC,
 		VRMemBase: amd64RegMemBase,
 		VRMemMask: amd64RegMemMask,
 	}
@@ -170,13 +168,8 @@ func (lc *lowerCtx) emitPrologue() {
 		lc.emitMR(x86.AMOVQ, goasm.REG_AMD64_CX, goasm.REG_AMD64_SP, int64(lc.stackSlots)*8)
 	}
 
-	// Initialize ic VReg to 0 (if it's allocated to a register).
-	if int(VRIC) < len(lc.alloc.Kind) && lc.alloc.Kind[VRIC] == AllocReg {
-		icReg := lc.hostRegFor(VRIC, 0)
-		if icReg >= 0 {
-			lc.emitRR(x86.AXORQ, icReg, icReg) // XOR ic, ic → 0
-		}
-	}
+	// Initialize IC to 0 (pinned to RBP).
+	lc.emitRR(x86.AXORQ, amd64RegIC, amd64RegIC)
 }
 
 func (lc *lowerCtx) emitEpilogue() {
@@ -1142,19 +1135,8 @@ func (lc *lowerCtx) lowerRet(ins *IRInstr) {
 	lc.loadImm64(ins.Imm, amd64Scratch1)
 	lc.emitMR(x86.AMOVQ, amd64Scratch1, amd64RegSret, 0)
 
-	// Offset 8: ic
-	icReg := lc.hostRegFor(VRIC, lc.idx)
-	if icReg >= 0 {
-		lc.emitMR(x86.AMOVQ, icReg, amd64RegSret, 8)
-	} else {
-		// ic not in a register — try stack
-		if int(VRIC) < len(lc.alloc.Kind) && lc.alloc.Kind[VRIC] == AllocStack {
-			lc.spillLoad(lc.alloc.SpillSlot[VRIC], amd64Scratch1)
-			lc.emitMR(x86.AMOVQ, amd64Scratch1, amd64RegSret, 8)
-		} else {
-			lc.emitMI(x86.AMOVQ, 0, amd64RegSret, 8)
-		}
-	}
+	// Offset 8: ic (pinned to RBP)
+	lc.emitMR(x86.AMOVQ, amd64RegIC, amd64RegSret, 8)
 
 	// Offset 16: status (from Imm2)
 	lc.emitMI(x86.AMOVQ, ins.Imm2, amd64RegSret, 16)
@@ -1181,18 +1163,8 @@ func (lc *lowerCtx) lowerRetDyn(ins *IRInstr) {
 		lc.emitMI(x86.AMOVQ, 0, amd64RegSret, 0)
 	}
 
-	// Offset 8: ic
-	icReg := lc.hostRegFor(VRIC, lc.idx)
-	if icReg >= 0 {
-		lc.emitMR(x86.AMOVQ, icReg, amd64RegSret, 8)
-	} else {
-		if int(VRIC) < len(lc.alloc.Kind) && lc.alloc.Kind[VRIC] == AllocStack {
-			lc.spillLoad(lc.alloc.SpillSlot[VRIC], amd64Scratch1)
-			lc.emitMR(x86.AMOVQ, amd64Scratch1, amd64RegSret, 8)
-		} else {
-			lc.emitMI(x86.AMOVQ, 0, amd64RegSret, 8)
-		}
-	}
+	// Offset 8: ic (pinned to RBP)
+	lc.emitMR(x86.AMOVQ, amd64RegIC, amd64RegSret, 8)
 
 	// Offset 16: status (from Imm)
 	lc.emitMI(x86.AMOVQ, ins.Imm, amd64RegSret, 16)

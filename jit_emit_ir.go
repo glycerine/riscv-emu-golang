@@ -36,55 +36,37 @@ type emitter struct {
 	gotoTargets map[uint64]bool
 	pcLabels   map[uint64]ir.Label
 	icEmitted  bool
-	intLoaded  [32]bool
-	fpLoaded   [32]bool
 	loadFaultLabel  ir.Label
 	storeFaultLabel ir.Label
-	loadFaultPC     uint64 // set before each load for the fault handler
-	storeFaultPC    uint64
 	deferredExits []deferredExit
 }
 
 // ── Register access helpers ────────────────────────────────────────────
 
-// xreg returns the VReg for integer register r, lazily loading from x[].
+// xreg returns the VReg for integer register r.
+// All used registers are pre-loaded at block start by emitBlock's two-pass scan.
 func (e *emitter) xreg(r uint32) ir.VReg {
 	if r == 0 {
 		return ir.VRegZero
 	}
-	e.regsUsed[r] = true
-	vr := e.irEm.XReg(r)
-	if !e.intLoaded[r] {
-		e.irEm.Load(vr, e.irEm.XBase(), int64(r)*8, ir.I64, false)
-		e.intLoaded[r] = true
-	}
-	return vr
+	return e.irEm.XReg(r)
 }
 
-// xregDst returns the VReg for integer register r for writing.
-// Does NOT load — the value will be overwritten.
+// xregDst returns the VReg for integer register r (write destination).
 func (e *emitter) xregDst(r uint32) ir.VReg {
 	if r == 0 {
 		return ir.VRegZero
 	}
-	e.regsUsed[r] = true
-	e.intLoaded[r] = true
 	return e.irEm.XReg(r)
 }
 
-// freg returns the VReg for FP register r, lazily loading from f[].
+// freg returns the VReg for FP register r.
 func (e *emitter) freg(r uint32) ir.VReg {
-	vr := e.irEm.FRegV(r)
-	if !e.fpLoaded[r] {
-		e.irEm.Load(vr, e.irEm.FBase(), int64(r)*8, ir.I64, false)
-		e.fpLoaded[r] = true
-	}
-	return vr
+	return e.irEm.FRegV(r)
 }
 
-// fregDst returns the VReg for FP register r for writing.
+// fregDst returns the VReg for FP register r (write destination).
 func (e *emitter) fregDst(r uint32) ir.VReg {
-	e.fpLoaded[r] = true
 	return e.irEm.FRegV(r)
 }
 
@@ -217,6 +199,7 @@ func (e *emitter) finalize() *emitResult {
 	// Fall-through return (dead code if block ended with explicit return).
 	if !e.terminated {
 		e.irEm.WriteBackAll()
+
 		e.irEm.Ret(e.pc, jitOK, ir.VRegZero)
 	}
 
@@ -225,6 +208,7 @@ func (e *emitter) finalize() *emitResult {
 		if !e.visited[target] {
 			e.irEm.PlaceLabel(e.getOrCreateLabel(target))
 			e.irEm.WriteBackAll()
+	
 			e.irEm.Ret(target, jitOK, ir.VRegZero)
 		}
 	}
@@ -233,6 +217,7 @@ func (e *emitter) finalize() *emitResult {
 	for _, de := range e.deferredExits {
 		e.irEm.PlaceLabel(de.label)
 		e.irEm.WriteBackAll()
+
 		e.irEm.Ret(de.targetPC, jitOK, ir.VRegZero)
 	}
 
@@ -242,6 +227,86 @@ func (e *emitter) finalize() *emitResult {
 		endPC:    e.pc,
 		numInsns: e.numInsns,
 		regsUsed: e.regsUsed,
+	}
+}
+
+// scanUsedRegs does a lightweight decode pass to identify which integer
+// registers are referenced (read or written) in the block. This allows
+// emitBlock to emit loads only for used registers, matching the C path's
+// efficiency (where only used registers get local variables).
+func scanUsedRegs(mem *GuestMemory, startPC, endPC uint64, used *[32]bool) {
+	pc := startPC
+	for pc < endPC {
+		half, fh := mem.Fetch16(pc)
+		if fh != nil {
+			break
+		}
+		if half&0x3 != 0x3 {
+			// RVC: extract compressed register fields
+			insn := uint16(half)
+			quad := insn & 0x3
+			funct3 := insn >> 13
+			switch quad {
+			case 0x0:
+				rd := 8 + ((insn >> 2) & 7)
+				rs1 := 8 + ((insn >> 7) & 7)
+				used[rd] = true
+				used[rs1] = true
+				if funct3 >= 0b101 { // stores: rs2
+					rs2 := 8 + ((insn >> 2) & 7)
+					used[rs2] = true
+				}
+			case 0x1:
+				switch funct3 {
+				case 0b000, 0b001, 0b010: // ADDI/ADDIW/LI
+					rd := (insn >> 7) & 0x1F
+					if rd != 0 { used[rd] = true }
+				case 0b011: // ADDI16SP/LUI
+					rd := (insn >> 7) & 0x1F
+					if rd != 0 { used[rd] = true }
+					if rd == 2 { used[2] = true }
+				case 0b100: // MISC-ALU
+					rs1 := 8 + ((insn >> 7) & 7)
+					rs2 := 8 + ((insn >> 2) & 7)
+					used[rs1] = true
+					used[rs2] = true
+				case 0b110, 0b111: // BEQZ/BNEZ
+					rs1 := 8 + ((insn >> 7) & 7)
+					used[rs1] = true
+				}
+			case 0x2:
+				rd := (insn >> 7) & 0x1F
+				rs2 := (insn >> 2) & 0x1F
+				if rd != 0 { used[rd] = true }
+				if rs2 != 0 { used[rs2] = true }
+				used[2] = true // sp used by LWSP/LDSP/SWSP/SDSP
+			}
+			pc += 2
+		} else {
+			insn, f := mem.Fetch32(pc)
+			if f != nil {
+				insn, f = mem.Fetch32U(pc)
+				if f != nil {
+					break
+				}
+			}
+			rd := (insn >> 7) & 0x1F
+			rs1 := (insn >> 15) & 0x1F
+			rs2 := (insn >> 20) & 0x1F
+			opcode := insn & 0x7F
+			if rd != 0 { used[rd] = true }
+			if rs1 != 0 { used[rs1] = true }
+			// rs2 is used by R-type, STORE, BRANCH, FP-STORE
+			switch opcode {
+			case 0x33, 0x3B, 0x63, 0x23, 0x27: // OP, OP-32, BRANCH, STORE, FP-STORE
+				if rs2 != 0 { used[rs2] = true }
+			case 0x43, 0x47, 0x4B, 0x4F: // FMA: rs2 + rs3
+				if rs2 != 0 { used[rs2] = true }
+				rs3 := insn >> 27
+				if rs3 != 0 { used[rs3] = true }
+			}
+			pc += 4
+		}
 	}
 }
 
@@ -270,7 +335,17 @@ func emitBlock(mem *GuestMemory, pc uint64) *emitResult {
 	e.loadFaultLabel = irEm.NewLabel()
 	e.storeFaultLabel = irEm.NewLabel()
 
-	// Walk PCs and emit IR.
+	// Pass 1: scan which registers are used (like the C path's regsUsed).
+	scanUsedRegs(mem, pc, region.endPC, &e.regsUsed)
+
+	// Emit loads only for referenced registers at block start.
+	for i := uint32(1); i < 32; i++ {
+		if e.regsUsed[i] {
+			irEm.Load(irEm.XReg(i), irEm.XBase(), int64(i)*8, ir.I64, false)
+		}
+	}
+
+	// Pass 2: walk PCs and emit IR.
 	for e.numInsns < 2048 && !e.terminated && e.pc < e.regionEnd {
 		if e.visited[e.pc] {
 			e.irEm.Jump(e.getOrCreateLabel(e.pc))

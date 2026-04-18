@@ -302,22 +302,23 @@ func TestMarkDirty_GrowsSlice(t *testing.T) {
 	}
 }
 
-func TestWriteBackAll_ClearsDirty(t *testing.T) {
+func TestWriteBackAll_PreservesDirty(t *testing.T) {
 	e := NewEmitter()
 	e.MarkDirty(VReg(5))
 	e.MarkDirty(VReg(33))
 	e.WriteBackAll()
-	if e.IsDirty(VReg(5)) {
-		t.Error("VReg(5) should be clean after WriteBackAll")
+	// Dirty flags are preserved — multiple exit points each need writeback.
+	if !e.IsDirty(VReg(5)) {
+		t.Error("VReg(5) should remain dirty after WriteBackAll")
 	}
-	if e.IsDirty(VReg(33)) {
-		t.Error("VReg(33) should be clean after WriteBackAll")
+	if !e.IsDirty(VReg(33)) {
+		t.Error("VReg(33) should remain dirty after WriteBackAll")
 	}
-	// Second call should emit zero stores.
+	// Second call emits the same stores again (each exit needs writeback).
 	before := len(e.Block.Instrs)
 	e.WriteBackAll()
-	if len(e.Block.Instrs) != before {
-		t.Errorf("second WriteBackAll emitted %d stores, want 0", len(e.Block.Instrs)-before)
+	if len(e.Block.Instrs) == before {
+		t.Error("second WriteBackAll should also emit stores")
 	}
 }
 
