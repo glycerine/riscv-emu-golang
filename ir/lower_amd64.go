@@ -859,18 +859,23 @@ func (lc *lowerCtx) lowerShift(ins *IRInstr, op obj.As) {
 	}
 
 	// Get value (a) into dst.
+	// If a==CX and we saved CX, the original value is now in R11.
+	aEff := a
+	if needCXSave && a == goasm.REG_AMD64_CX {
+		aEff = amd64Scratch2 // R11 holds saved CX = original a
+	}
 	if dst == goasm.REG_AMD64_CX {
 		// dst IS CX. We just put count there. Use scratch for dst,
 		// shift, then move result to CX at the end.
 		scr := amd64Scratch1
-		if a != scr {
-			lc.emitRR(x86.AMOVQ, a, scr)
+		if aEff != scr {
+			lc.emitRR(x86.AMOVQ, aEff, scr)
 		}
 		lc.emitRR(op, goasm.REG_AMD64_CX, scr)
 		lc.emitRR(x86.AMOVQ, scr, dst)
 	} else {
-		if dst != a {
-			lc.emitRR(x86.AMOVQ, a, dst)
+		if dst != aEff {
+			lc.emitRR(x86.AMOVQ, aEff, dst)
 		}
 		lc.emitRR(op, goasm.REG_AMD64_CX, dst)
 	}

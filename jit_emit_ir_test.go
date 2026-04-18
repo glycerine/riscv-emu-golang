@@ -4,6 +4,7 @@ package riscv
 
 import (
 	"riscv/internal/jitcall"
+	"riscv/ir"
 	"testing"
 )
 
@@ -600,5 +601,257 @@ func TestLUI_SRLI_TwoInsn(t *testing.T) {
 	t.Logf("x7 = 0x%x (want 0x%x), jitErr=%v, pc=0x%x", got, want, jitErr, cpu.pc)
 	if got != want {
 		t.Fatalf("x7 = 0x%x, want 0x%x", got, want)
+	}
+}
+
+// TestSRL_LargeValue_Block verifies SRL with 0xFFFFFFFF80000000 >> 0 in a block.
+func TestSRL_LargeValue_Block(t *testing.T) {
+	mem, err := NewGuestMemory(Size64MB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mem.Free()
+
+	pc := uint64(0x1000)
+	// C.LI x11, -1  (0x55fd = C.LI x11, -1? Let's use full instructions)
+	// LUI x11, 0x80000  (x11 = 0xFFFFFFFF80000000)
+	mem.Store32(pc, 0x800005B7)   // LUI x11, 0x80000
+	// C.LI x12, 0  (x12 = 0)
+	mem.Store32(pc+4, 0x00000613) // ADDI x12, x0, 0
+	// SRL x14, x11, x12
+	mem.Store32(pc+8, 0x00C5D733) // SRL x14, x11, x12
+	// ECALL
+	mem.Store32(pc+12, 0x00000073)
+
+	cpu := NewCPU(*mem)
+	cpu.SetPC(pc)
+
+	jit := NewJIT()
+	_, _ = jit.StepBlock(cpu)
+
+	want := uint64(0xFFFFFFFF80000000)
+	got := cpu.x[14]
+	t.Logf("x[14]=0x%x (want 0x%x), x[11]=0x%x, x[12]=0x%x", got, want, cpu.x[11], cpu.x[12])
+	if got != want {
+		t.Fatalf("x[14]=0x%x, want 0x%x", got, want)
+	}
+}
+
+// TestSRL_CrossBlock_Writeback verifies that x[11] written in block 1
+// is correctly read in block 2.
+func TestSRL_CrossBlock_Writeback(t *testing.T) {
+	mem, err := NewGuestMemory(Size64MB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mem.Free()
+
+	pc := uint64(0x1000)
+	// Block 1: LUI x11, 0x80000 (sets x11 = 0xFFFFFFFF80000000)
+	mem.Store32(pc, 0x800005B7)   // LUI x11, 0x80000
+	// ECALL to end block 1
+	mem.Store32(pc+4, 0x00000073) // ECALL
+
+	// Block 2 starts at pc+8:
+	// ADDI x12, x0, 0 (x12 = 0)
+	mem.Store32(pc+8, 0x00000613)
+	// SRL x14, x11, x12 (x14 = x11 >> 0 = x11)
+	mem.Store32(pc+12, 0x00C5D733)
+	// ECALL
+	mem.Store32(pc+16, 0x00000073)
+
+	cpu := NewCPU(*mem)
+	cpu.SetPC(pc)
+
+	jit := NewJIT()
+
+	// Block 1
+	_, err1 := jit.StepBlock(cpu)
+	t.Logf("after block 1: x[11]=0x%x, pc=0x%x, err=%v", cpu.x[11], cpu.pc, err1)
+	if cpu.x[11] != 0xFFFFFFFF80000000 {
+		t.Fatalf("block 1: x[11]=0x%x, want 0xFFFFFFFF80000000", cpu.x[11])
+	}
+	// Advance past ECALL
+	cpu.SetPC(pc + 8)
+
+	// Block 2
+	_, err2 := jit.StepBlock(cpu)
+	t.Logf("after block 2: x[14]=0x%x, x[11]=0x%x, x[12]=0x%x, pc=0x%x, err=%v",
+		cpu.x[14], cpu.x[11], cpu.x[12], cpu.pc, err2)
+
+	want := uint64(0xFFFFFFFF80000000)
+	if cpu.x[14] != want {
+		t.Fatalf("block 2: x[14]=0x%x, want 0x%x", cpu.x[14], want)
+	}
+}
+
+// TestSRL_ExactIR reproduces the exact IR from the failing srl ELF block.
+func TestSRL_ExactIR(t *testing.T) {
+	mem, err := NewGuestMemory(Size64MB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mem.Free()
+
+	// Manually build the exact IR block from the dump:
+	e := ir.NewEmitter()
+	x7 := ir.VReg(7)
+	x11 := ir.VReg(11)
+	x12 := ir.VReg(12)
+	x14 := ir.VReg(14)
+
+	// Prepended loads
+	e.Load(x7, e.XBase(), 56, ir.I64, false)
+	e.Load(x11, e.XBase(), 88, ir.I64, false)
+	e.Load(x12, e.XBase(), 96, ir.I64, false)
+	e.Load(x14, e.XBase(), 112, ir.I64, false)
+
+	// SRL: shr x14 = x11, x12
+	e.Shr(x14, x11, x12)
+
+	// IC increment
+	e.AddImm(e.IC(), e.IC(), 1)
+
+	// Const x7 = -2147483648
+	e.Const(x7, -2147483648)
+
+	// IC increment
+	e.AddImm(e.IC(), e.IC(), 1)
+
+	// IC increment
+	e.AddImm(e.IC(), e.IC(), 1)
+
+	// Branch NE x14, x7 -> taken (to fail exit)
+	failLabel := e.NewLabel()
+	e.Branch(x14, x7, ir.NE, failLabel)
+
+	// Fall-through: writeback + ret (pass)
+	e.Store(e.XBase(), 56, x7, ir.I64)
+	e.Store(e.XBase(), 112, x14, ir.I64)
+	passPC := uint64(0x14c)
+	e.Ret(passPC, 0, ir.VRegZero)
+
+	// Taken: writeback + ret (fail)
+	e.PlaceLabel(failLabel)
+	e.Store(e.XBase(), 56, x7, ir.I64)
+	e.Store(e.XBase(), 112, x14, ir.I64)
+	failPC := uint64(0x592)
+	e.Ret(failPC, 0, ir.VRegZero)
+
+	// Compile and execute
+	blk := e.Block
+	compiled, cerr := jitCompile(&emitResult{block: blk, numInsns: 3})
+	if cerr != nil {
+		t.Fatalf("compile: %v", cerr)
+	}
+
+	var x [32]uint64
+	var f [32]uint64
+	var fcsr uint32
+	x[11] = 0xFFFFFFFF80000000
+	x[12] = 0
+
+	res := jitcallCall(compiled.fn, &x, &f, &fcsr, mem.Base(), mem.Mask())
+	t.Logf("PC=0x%x IC=%d Status=%d x[14]=0x%x x[7]=0x%x", res.PC, res.IC, res.Status, x[14], x[7])
+
+	if x[14] != 0xFFFFFFFF80000000 {
+		t.Fatalf("x[14]=0x%x, want 0xFFFFFFFF80000000", x[14])
+	}
+	if res.PC != uint64(passPC) {
+		t.Fatalf("PC=0x%x, want 0x%x (should have branched to pass, not fail)", res.PC, passPC)
+	}
+}
+
+func TestSRL_ExactIR_V2(t *testing.T) {
+	mem, err := NewGuestMemory(Size64MB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mem.Free()
+
+	e := ir.NewEmitter()
+	x7 := ir.VReg(7)
+	x11 := ir.VReg(11)
+	x12 := ir.VReg(12)
+	x14 := ir.VReg(14)
+
+	e.Load(x7, e.XBase(), 56, ir.I64, false)
+	e.Load(x11, e.XBase(), 88, ir.I64, false)
+	e.Load(x12, e.XBase(), 96, ir.I64, false)
+	e.Load(x14, e.XBase(), 112, ir.I64, false)
+	e.Shr(x14, x11, x12)
+	e.AddImm(e.IC(), e.IC(), 1)
+	e.Const(x7, -2147483648)
+	e.AddImm(e.IC(), e.IC(), 1)
+	e.AddImm(e.IC(), e.IC(), 1)
+	failLabel := e.NewLabel()
+	e.Branch(x14, x7, ir.NE, failLabel)
+	e.Store(e.XBase(), 56, x7, ir.I64)
+	e.Store(e.XBase(), 112, x14, ir.I64)
+	e.Ret(0x14c, 0, ir.VRegZero)
+	e.PlaceLabel(failLabel)
+	e.Store(e.XBase(), 56, x7, ir.I64)
+	e.Store(e.XBase(), 112, x14, ir.I64)
+	e.Ret(0x592, 0, ir.VRegZero)
+
+	blk := e.Block
+	compiled, cerr := jitCompileV2(&emitResult{block: blk, numInsns: 3})
+	if cerr != nil {
+		t.Fatalf("compile: %v", cerr)
+	}
+
+	var x [32]uint64
+	var f [32]uint64
+	var fcsr uint32
+	x[11] = 0xFFFFFFFF80000000
+
+	res := jitcallCall(compiled.fn, &x, &f, &fcsr, mem.Base(), mem.Mask())
+	t.Logf("V2: PC=0x%x IC=%d x[14]=0x%x x[7]=0x%x", res.PC, res.IC, x[14], x[7])
+
+	if x[14] != 0xFFFFFFFF80000000 {
+		t.Fatalf("V2: x[14]=0x%x, want 0xFFFFFFFF80000000", x[14])
+	}
+}
+
+func TestSRL_ExactIR_DumpAlloc(t *testing.T) {
+	e := ir.NewEmitter()
+	x7 := ir.VReg(7)
+	x11 := ir.VReg(11)
+	x12 := ir.VReg(12)
+	x14 := ir.VReg(14)
+
+	e.Load(x7, e.XBase(), 56, ir.I64, false)
+	e.Load(x11, e.XBase(), 88, ir.I64, false)
+	e.Load(x12, e.XBase(), 96, ir.I64, false)
+	e.Load(x14, e.XBase(), 112, ir.I64, false)
+	e.Shr(x14, x11, x12)
+	e.AddImm(e.IC(), e.IC(), 1)
+	e.Const(x7, -2147483648)
+	e.AddImm(e.IC(), e.IC(), 1)
+	e.AddImm(e.IC(), e.IC(), 1)
+	failLabel := e.NewLabel()
+	e.Branch(x14, x7, ir.NE, failLabel)
+	e.Store(e.XBase(), 56, x7, ir.I64)
+	e.Store(e.XBase(), 112, x14, ir.I64)
+	e.Ret(0x14c, 0, ir.VRegZero)
+	e.PlaceLabel(failLabel)
+	e.Store(e.XBase(), 56, x7, ir.I64)
+	e.Store(e.XBase(), 112, x14, ir.I64)
+	e.Ret(0x592, 0, ir.VRegZero)
+
+	blk := e.Block
+	pool := ir.AMD64Pool(blk)
+	pinned := ir.AMD64Pinned()
+	alloc := ir.Allocate(blk, pool, pinned, nil)
+
+	t.Logf("StackSlots=%d", alloc.StackSlots)
+	for i, k := range alloc.Kind {
+		if k != ir.AllocUnused {
+			t.Logf("VReg(%d): kind=%v spill=%d", i, k, alloc.SpillSlot[i])
+		}
+	}
+	for _, ia := range alloc.IntervalMap {
+		t.Logf("  interval: VReg(%d) [%d..%d] -> host=%d",
+			ia.Interval.VReg, ia.Interval.Start, ia.Interval.End, ia.Host)
 	}
 }
