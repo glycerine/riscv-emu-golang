@@ -34,7 +34,7 @@ type blockCacheEntry struct {
 // JIT holds the cache of compiled basic blocks.
 type JIT struct {
 	cache      [blockCacheSize]blockCacheEntry
-	noJIT      map[uint64]bool // PCs where translation failed — don't retry
+	noJIT      u64set          // PCs where translation failed — don't retry
 	InterpOnly bool            // debug: force all-interpreter mode
 	UseV2      bool            // bench: use V2 lowerer for comparison
 	DebugV1V2  bool            // debug: run every block through V1 AND V2, compare results
@@ -44,7 +44,7 @@ type JIT struct {
 // NewJIT creates a new JIT translation cache.
 func NewJIT() *JIT {
 	return &JIT{
-		noJIT: make(map[uint64]bool),
+		noJIT: newU64set(),
 	}
 }
 
@@ -108,7 +108,7 @@ func (j *JIT) StepBlock(cpu *CPU) (ic uint64, err error) {
 	}
 
 	// Try to translate
-	if !j.InterpOnly && !j.noJIT[pc] {
+	if !j.InterpOnly && !j.noJIT.has(pc) {
 		res := emitBlock(&cpu.mem, pc)
 		if res != nil && res.numInsns > 0 {
 			compiled, cerr := jitCompileWith(res, j.UseV2)
@@ -124,7 +124,7 @@ func (j *JIT) StepBlock(cpu *CPU) (ic uint64, err error) {
 				return j.StepBlock(cpu) // retry with compiled block
 			}
 		}
-		j.noJIT[pc] = true
+		j.noJIT.add(pc)
 	}
 
 	// Interpreter fallback
@@ -294,7 +294,7 @@ func (j *JIT) RunJIT(cpu *CPU) error {
 		}
 
 		// No compiled block — try to translate.
-		if !j.InterpOnly && !j.noJIT[pc] {
+		if !j.InterpOnly && !j.noJIT.has(pc) {
 			res := emitBlock(&cpu.mem, pc)
 			if res != nil && res.numInsns > 0 {
 				blk, err := jitCompileWith(res, j.UseV2)
@@ -303,7 +303,7 @@ func (j *JIT) RunJIT(cpu *CPU) error {
 					continue
 				}
 			}
-			j.noJIT[pc] = true
+			j.noJIT.add(pc)
 		}
 
 		// Interpret one instruction.

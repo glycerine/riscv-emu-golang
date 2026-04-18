@@ -105,15 +105,15 @@ func scanRegion(mem *GuestMemory, entryPC uint64) regionInfo {
 	const maxInsns = 2048
 	const maxRange = 16384
 
-	visited := make(map[uint64]bool)
+	visited := newU64set()
 	worklist := []uint64{entryPC}
 	maxEnd := entryPC
 
-	for len(worklist) > 0 && len(visited) < maxInsns {
+	for len(worklist) > 0 && visited.len() < maxInsns {
 		pc := worklist[0]
 		worklist = worklist[1:]
 
-		if visited[pc] {
+		if visited.has(pc) {
 			continue
 		}
 		if pc < entryPC || pc > entryPC+maxRange {
@@ -125,7 +125,7 @@ func scanRegion(mem *GuestMemory, entryPC uint64) regionInfo {
 			continue // fetch failed
 		}
 
-		visited[pc] = true
+		visited.add(pc)
 		if end := pc + insnSize; end > maxEnd {
 			maxEnd = end
 		}
@@ -147,7 +147,7 @@ func scanRegion(mem *GuestMemory, entryPC uint64) regionInfo {
 		}
 	}
 
-	return regionInfo{endPC: maxEnd, pcCount: len(visited)}
+	return regionInfo{endPC: maxEnd, pcCount: visited.len()}
 }
 
 // ── RVC immediate extraction ────────────────────────────────────────────

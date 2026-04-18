@@ -31,10 +31,10 @@ type emitter struct {
 	numInsns   int
 	regsUsed   [32]bool
 	terminated bool
-	visited    map[uint64]bool
-	regionEnd  uint64
-	gotoTargets map[uint64]bool
-	pcLabels   map[uint64]ir.Label
+	visited     u64set
+	regionEnd   uint64
+	gotoTargets u64set
+	pcLabels    u64labelmap
 	icEmitted  bool
 	loadFaultLabel  ir.Label
 	storeFaultLabel ir.Label
@@ -111,11 +111,11 @@ func (e *emitter) unboxF32(rs uint32) ir.VReg {
 // ── Control flow helpers ───────────────────────────────────────────────
 
 func (e *emitter) getOrCreateLabel(pc uint64) ir.Label {
-	if l, ok := e.pcLabels[pc]; ok {
+	if l, ok := e.pcLabels.get(pc); ok {
 		return l
 	}
 	l := e.irEm.NewLabel()
-	e.pcLabels[pc] = l
+	e.pcLabels.set(pc, l)
 	return l
 }
 
@@ -388,15 +388,15 @@ func (e *emitter) finalize() *emitResult {
 	e.irEm.WriteBackAll()
 	e.irEm.Ret(e.pc, jitOK, ir.VRegZero)
 
-	// Bail labels: goto targets not emitted.
-	for target := range e.gotoTargets {
-		if !e.visited[target] {
+	// Bail labels: goto targets not emitted. Deterministic order is critical —
+	// random order changes IR indices, affecting register allocation.
+	e.gotoTargets.each(func(target uint64) {
+		if !e.visited.has(target) {
 			e.irEm.PlaceLabel(e.getOrCreateLabel(target))
 			e.irEm.WriteBackAll()
-	
 			e.irEm.Ret(target, jitOK, ir.VRegZero)
 		}
-	}
+	})
 
 	// Deferred external exits.
 	for _, de := range e.deferredExits {
@@ -556,10 +556,10 @@ func emitBlock(mem *GuestMemory, pc uint64) *emitResult {
 		startPC:     pc,
 		pc:          pc,
 		irEm:        irEm,
-		visited:     make(map[uint64]bool),
+		visited:     newU64set(),
 		regionEnd:   region.endPC,
-		gotoTargets: make(map[uint64]bool),
-		pcLabels:    make(map[uint64]ir.Label),
+		gotoTargets: newU64set(),
+		pcLabels:    newU64labelmap(),
 	}
 
 	// Pre-allocate fault labels.
@@ -569,13 +569,13 @@ func emitBlock(mem *GuestMemory, pc uint64) *emitResult {
 	// Emit IR (populates regsUsed via xreg/xregDst calls).
 	const maxBlockInsns = 3
 	for e.numInsns < maxBlockInsns && !e.terminated && e.pc < e.regionEnd {
-		if e.visited[e.pc] {
+		if e.visited.has(e.pc) {
 			e.irEm.Jump(e.getOrCreateLabel(e.pc))
-			e.gotoTargets[e.pc] = true
+			e.gotoTargets.add(e.pc)
 			e.terminated = true
 			break
 		}
-		e.visited[e.pc] = true
+		e.visited.add(e.pc)
 
 		half, fh := mem.Fetch16(e.pc)
 		if fh != nil {
@@ -1845,7 +1845,7 @@ func (e *emitter) emitJAL(rd uint32, offset int64, insnSize uint64) {
 		} else {
 			e.irEm.Jump(targetLabel)
 		}
-		e.gotoTargets[target] = true
+		e.gotoTargets.add(target)
 		e.pc = target
 		return
 	}
@@ -1876,7 +1876,7 @@ func (e *emitter) emitBranch(rs1, rs2, funct3 uint32, offset int64) {
 	a := e.xreg(rs1)
 	b := e.xreg(rs2)
 
-	internal := e.visited[target] ||
+	internal := e.visited.has(target) ||
 		(e.regionEnd > 0 && target >= e.startPC && target < e.regionEnd)
 
 	if internal {
@@ -1892,7 +1892,7 @@ func (e *emitter) emitBranch(rs1, rs2, funct3 uint32, offset int64) {
 		} else {
 			e.irEm.Branch(a, b, pred, targetLabel)
 		}
-		e.gotoTargets[target] = true
+		e.gotoTargets.add(target)
 	} else {
 		exitLabel := e.irEm.NewLabel()
 		e.irEm.Branch(a, b, pred, exitLabel)

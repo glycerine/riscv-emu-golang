@@ -832,7 +832,7 @@ func TestJIT_TranslationFailure(t *testing.T) {
 	jit := NewJIT()
 	jit.RunJIT(cpu)
 
-	if !jit.noJIT[0x1000] {
+	if !jit.noJIT.has(0x1000) {
 		t.Error("expected noJIT[0x1000] to be set after translation failure")
 	}
 	// x1 should have a cycle count value (nonzero after at least 1 instruction)
