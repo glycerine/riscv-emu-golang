@@ -624,3 +624,36 @@ func TestSETImm_Convention(t *testing.T) {
 		})
 	}
 }
+
+// TestSETImm_Debug dumps allocation for the 3<5 case to find the V2 bug.
+func TestSETImm_Debug(t *testing.T) {
+	e := NewEmitter()
+	x1 := VReg(1)
+	x3 := VReg(3)
+	e.Const(x1, 3)
+	e.SetImm(x3, x1, 5, LT)
+	e.Store(e.XBase(), 24, x3, I64)
+	e.Ret(0x1000, 0, VRegZero)
+
+	blk := e.Block
+	t.Logf("IR has %d instructions:", len(blk.Instrs))
+	for i, ins := range blk.Instrs {
+		t.Logf("  [%d] %v", i, ins)
+	}
+
+	// V1 alloc
+	pool1 := AMD64Pool(blk)
+	alloc1 := Allocate(blk, pool1, AMD64Pinned(), nil)
+	t.Logf("V1 allocation:")
+	for _, ia := range alloc1.IntervalMap {
+		t.Logf("  VReg(%d) [%d..%d] host=%d", ia.Interval.VReg, ia.Interval.Start, ia.Interval.End, ia.Host)
+	}
+
+	// V2 alloc
+	pool2 := AMD64Pool_V2(blk)
+	alloc2 := Allocate(blk, pool2, AMD64Pinned(), nil)
+	t.Logf("V2 allocation:")
+	for _, ia := range alloc2.IntervalMap {
+		t.Logf("  VReg(%d) [%d..%d] host=%d", ia.Interval.VReg, ia.Interval.Start, ia.Interval.End, ia.Host)
+	}
+}

@@ -782,10 +782,10 @@ func (lc *lowerCtxV2) v2Set(ins *IRInstr) {
 
 func (lc *lowerCtxV2) v2SetImm(ins *IRInstr) {
 	a := lc.stageInt(ins.A, 0) // R10
-	if ins.Imm2 >= -(1<<31) && ins.Imm2 < (1<<31) {
-		lc.emitCmpRI2(a, ins.Imm2)
+	if ins.Imm >= -(1<<31) && ins.Imm < (1<<31) {
+		lc.emitCmpRI2(a, ins.Imm)
 	} else {
-		lc.loadImm(ins.Imm2, v2StgB) // R11 = imm
+		lc.loadImm(ins.Imm, v2StgB) // R11 = imm
 		lc.emit2(x86.ACMPQ, a, v2StgB)
 	}
 	dst := lc.writeDst(ins.Dst)
