@@ -1850,7 +1850,10 @@ func (e *emitter) emitJAL(rd uint32, offset int64, insnSize uint64) {
 	if rd == 0 {
 		origPC := e.pc - insnSize
 		targetLabel := e.getOrCreateLabel(target)
-		if target < origPC {
+		// Same backward detection as emitBranch: check both PC ordering
+		// and whether the target was already emitted (visited).
+		backward := target < origPC || e.visited.has(target)
+		if backward {
 			e.irEm.BudgetCheck(targetLabel, target)
 		} else {
 			e.irEm.Jump(targetLabel)
@@ -1891,7 +1894,14 @@ func (e *emitter) emitBranch(rs1, rs2, funct3 uint32, offset int64) {
 
 	if internal {
 		targetLabel := e.getOrCreateLabel(target)
-		if target < e.pc {
+		// A branch is "backward" if the target was already emitted (visited).
+		// We cannot simply check target < e.pc because scanRegion may have
+		// followed a forward JAL past the target, causing the target to be
+		// emitted at a higher PC but earlier in the IR. Jumping to an
+		// already-emitted label re-executes code → potential infinite loop
+		// → requires BudgetCheck.
+		backward := target < e.pc || e.visited.has(target)
+		if backward {
 			takenLabel := e.irEm.NewLabel()
 			continueLabel := e.irEm.NewLabel()
 			e.irEm.Branch(a, b, pred, takenLabel)

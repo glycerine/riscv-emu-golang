@@ -1713,3 +1713,217 @@ func TestNativeTrace_0x34e(t *testing.T) {
 		t.Log("V1/V2 registers match.")
 	}
 }
+
+// TestDumpBlock_ld_st_0x1a0 investigates the ld_st hang by dumping the IR
+// for the block at pc=0x1a0 in rv64ui-p-ld_st. We look for backward branches
+// that lack BudgetCheck, which would cause an infinite loop in native code.
+func TestDumpBlock_ld_st_0x1a0(t *testing.T) {
+	mem, err := NewGuestMemory(Size64MB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mem.Free()
+	_, err = LoadELF(mem, "riscv-elf-tests/rv64ui-p-ld_st")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Try to find a block covering 0x1a0.
+	var res *emitResult
+	for pc := uint64(0x180); pc <= 0x1b0; pc += 2 {
+		r := emitBlock(mem, pc)
+		if r != nil && r.startPC <= 0x1a0 && r.endPC > 0x1a0 {
+			res = r
+			break
+		}
+	}
+	if res == nil {
+		// Try emitting directly from 0x1a0.
+		res = emitBlock(mem, 0x1a0)
+	}
+	if res == nil {
+		t.Fatal("could not emit block covering 0x1a0")
+	}
+	t.Logf("block: start=0x%x end=0x%x insns=%d irLen=%d",
+		res.startPC, res.endPC, res.numInsns, len(res.block.Instrs))
+
+	// Dump full IR.
+	t.Logf("=== IR (%d instructions) ===", len(res.block.Instrs))
+	for i, ins := range res.block.Instrs {
+		t.Logf("  [%3d] %v", i, ins)
+	}
+
+	// Count backward jumps and budget checks.
+	budgetChecks := 0
+	jumps := 0
+	branches := 0
+	for _, ins := range res.block.Instrs {
+		switch ins.Op {
+		case ir.IRJump:
+			jumps++
+		case ir.IRBranch, ir.IRBranchImm:
+			branches++
+		}
+	}
+	// BudgetCheck emits: BranchImm + Jump + PlaceLabel + WriteBackAll-seq + Ret
+	// Count BranchImm with Imm2=4096 (MaxIC) as budget checks.
+	for _, ins := range res.block.Instrs {
+		if ins.Op == ir.IRBranchImm && ins.Imm2 == int64(ir.MaxIC) {
+			budgetChecks++
+		}
+	}
+	t.Logf("jumps=%d branches=%d budgetChecks=%d", jumps, branches, budgetChecks)
+
+	// Also dump the Prog listing.
+	_, dbg, cerr := jitCompileDebug(res, false)
+	if cerr != nil {
+		t.Fatalf("V1 compile: %v", cerr)
+	}
+	progLines := strings.Split(dbg.progs, "\n")
+	t.Logf("=== V1 Progs (%d lines, %d bytes) ===", len(progLines), len(dbg.code))
+	for _, line := range progLines {
+		if line != "" {
+			t.Logf("  %s", line)
+		}
+	}
+}
+
+// TestNativeTrace_sraw investigates the sraw lockstep failure by comparing
+// V1 vs V2 on the failing block, and also running the interpreter to see
+// where the divergence occurs.
+func TestNativeTrace_sraw(t *testing.T) {
+	testNativeTraceW(t, "riscv-elf-tests/rv64ui-p-sraw", 39)
+}
+
+func TestNativeTrace_srlw(t *testing.T) {
+	testNativeTraceW(t, "riscv-elf-tests/rv64ui-p-srlw", 39)
+}
+
+func TestNativeTrace_sllw(t *testing.T) {
+	testNativeTraceW(t, "riscv-elf-tests/rv64ui-p-sllw", 39)
+}
+
+func testNativeTraceW(t *testing.T, elfPath string, targetBlock int) {
+	mem, err := NewGuestMemory(Size64MB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mem.Free()
+	_, err = LoadELF(mem, elfPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Run JIT until we reach the target block.
+	cpu := NewCPU(*mem)
+	cpu.SetPC(0)
+	cpu.Notes.Push(func(c *CPU, note Note) NoteDisposition { return NoteHandled })
+	jit := NewJIT()
+	var lastPC uint64
+	for i := 0; i < targetBlock; i++ {
+		lastPC = cpu.pc
+		ic, jerr := jit.StepBlock(cpu)
+		_ = ic
+		if jerr != nil {
+			// Check for ECALL exit
+			if _, ok := jerr.(*MemFault); ok {
+				continue
+			}
+		}
+	}
+	t.Logf("at block %d, pc=0x%x (prev=0x%x)", targetBlock, cpu.pc, lastPC)
+
+	// Snapshot state.
+	var xSnap [32]uint64
+	copy(xSnap[:], cpu.x[:])
+	pcSnap := cpu.pc
+
+	// Emit the block at current PC.
+	res := emitBlock(&cpu.mem, cpu.pc)
+	if res == nil {
+		t.Fatal("emitBlock returned nil")
+	}
+	t.Logf("block: start=0x%x end=0x%x insns=%d irLen=%d",
+		res.startPC, res.endPC, res.numInsns, len(res.block.Instrs))
+
+	// Compile with V1 and V2.
+	blkV1, v1dbg, err := jitCompileDebug(res, false)
+	if err != nil {
+		t.Fatalf("V1 compile: %v", err)
+	}
+	blkV2, v2dbg, err := jitCompileDebug(res, true)
+	if err != nil {
+		t.Fatalf("V2 compile: %v", err)
+	}
+
+	// Execute V1.
+	copy(cpu.x[:], xSnap[:])
+	cpu.pc = pcSnap
+	r1 := jitcallCall(blkV1.fn, &cpu.x, &cpu.f, &cpu.fcsr, cpu.mem.Base(), cpu.mem.Mask())
+	var xV1 [32]uint64
+	copy(xV1[:], cpu.x[:])
+
+	// Execute V2.
+	copy(cpu.x[:], xSnap[:])
+	cpu.pc = pcSnap
+	r2 := jitcallCall(blkV2.fn, &cpu.x, &cpu.f, &cpu.fcsr, cpu.mem.Base(), cpu.mem.Mask())
+	var xV2 [32]uint64
+	copy(xV2[:], cpu.x[:])
+
+	t.Logf("V1: pc=0x%x ic=%d status=%d", r1.PC, r1.IC, r1.Status)
+	t.Logf("V2: pc=0x%x ic=%d status=%d", r2.PC, r2.IC, r2.Status)
+
+	// Compare V1 vs V2.
+	v1v2Match := true
+	for i := 0; i < 32; i++ {
+		if xV1[i] != xV2[i] {
+			t.Logf("  V1!=V2 x[%d]: V1=0x%x V2=0x%x", i, xV1[i], xV2[i])
+			v1v2Match = false
+		}
+	}
+	if v1v2Match {
+		t.Log("V1==V2 (both lowerers agree)")
+	}
+
+	// Run interpreter for the same IC steps.
+	copy(cpu.x[:], xSnap[:])
+	cpu.pc = pcSnap
+	interpIC := r1.IC
+	var interpErr error
+	for i := uint64(0); i < interpIC; i++ {
+		interpErr = cpu.step()
+		cpu.cycle++
+		if interpErr != nil {
+			t.Logf("interpreter error at step %d: %v (pc=0x%x)", i, interpErr, cpu.pc)
+			break
+		}
+	}
+	t.Logf("interp: pc=0x%x after %d steps", cpu.pc, interpIC)
+
+	// Compare V1 vs interpreter.
+	v1InterpMatch := true
+	for i := 0; i < 32; i++ {
+		if xV1[i] != cpu.x[i] {
+			t.Logf("  V1!=interp x[%d]: V1=0x%x interp=0x%x", i, xV1[i], cpu.x[i])
+			v1InterpMatch = false
+		}
+	}
+	if v1InterpMatch {
+		t.Log("V1==interp (JIT and interpreter agree)")
+	} else {
+		t.Log("V1!=interp — DIVERGENCE")
+		// Dump first few progs for debugging.
+		lines := strings.Split(v1dbg.progs, "\n")
+		limit := 30
+		if len(lines) < limit {
+			limit = len(lines)
+		}
+		t.Logf("=== V1 Progs (first %d) ===", limit)
+		for _, line := range lines[:limit] {
+			if line != "" {
+				t.Logf("  %s", line)
+			}
+		}
+	}
+	_ = v2dbg
+}
