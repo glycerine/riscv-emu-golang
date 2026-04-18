@@ -146,6 +146,138 @@ func (e *emitter) emitWriteBackAll() {
 	e.irEm.WriteBackAll()
 }
 
+// emitDivGuarded emits a 64-bit DIV/DIVU/REM/REMU with zero-divisor and
+// overflow guards per the RISC-V spec (no x86 fault on divide-by-zero).
+func (e *emitter) emitDivGuarded(dst, a, b ir.VReg, signed, wantRem bool) {
+	em := e.irEm
+	doneLabel := em.NewLabel()
+	normalLabel := em.NewLabel()
+
+	// Check divisor == 0.
+	zeroLabel := em.NewLabel()
+	em.Branch(b, ir.VRegZero, ir.EQ, zeroLabel)
+
+	if signed {
+		// Check signed overflow: a == INT64_MIN && b == -1.
+		ovfLabel := em.NewLabel()
+		tmin := em.Tmp()
+		em.Const(tmin, -9223372036854775808) // INT64_MIN
+		em.Branch(a, tmin, ir.NE, normalLabel)
+		tminus1 := em.Tmp()
+		em.Const(tminus1, -1)
+		em.Branch(b, tminus1, ir.NE, normalLabel)
+		// Overflow path.
+		em.PlaceLabel(ovfLabel)
+		if wantRem {
+			em.Const(dst, 0) // REM overflow → 0
+		} else {
+			em.Mov(dst, a) // DIV overflow → dividend
+		}
+		em.Jump(doneLabel)
+	} else {
+		em.Jump(normalLabel)
+	}
+
+	// Zero-divisor path.
+	em.PlaceLabel(zeroLabel)
+	if wantRem {
+		em.Mov(dst, a) // REM(x,0) → x
+	} else {
+		em.Const(dst, -1) // DIV(x,0) → all-ones
+	}
+	em.Jump(doneLabel)
+
+	// Normal division.
+	em.PlaceLabel(normalLabel)
+	if signed {
+		if wantRem {
+			em.Rem(dst, a, b)
+		} else {
+			em.DivS(dst, a, b)
+		}
+	} else {
+		if wantRem {
+			em.RemU(dst, a, b)
+		} else {
+			em.DivU(dst, a, b)
+		}
+	}
+
+	em.PlaceLabel(doneLabel)
+}
+
+// emitDivW emits a 32-bit DIVW/DIVUW/REMW/REMUW with guards.
+// Operates on lower 32 bits, result is sign-extended to 64 bits.
+func (e *emitter) emitDivW(dst, a, b ir.VReg, signed, wantRem bool) {
+	em := e.irEm
+	doneLabel := em.NewLabel()
+	normalLabel := em.NewLabel()
+
+	// Truncate operands to 32 bits.
+	a32 := em.Tmp()
+	b32 := em.Tmp()
+	if signed {
+		em.Sext(a32, a, ir.I32)
+		em.Sext(b32, b, ir.I32)
+	} else {
+		em.Zext(a32, a, ir.I32)
+		em.Zext(b32, b, ir.I32)
+	}
+
+	// Check divisor == 0.
+	zeroLabel := em.NewLabel()
+	em.Branch(b32, ir.VRegZero, ir.EQ, zeroLabel)
+
+	if signed {
+		// Check signed overflow: a32 == INT32_MIN && b32 == -1.
+		ovfLabel := em.NewLabel()
+		tmin := em.Tmp()
+		em.Const(tmin, -2147483648) // INT32_MIN (sign-extended to 64-bit)
+		em.Branch(a32, tmin, ir.NE, normalLabel)
+		tminus1 := em.Tmp()
+		em.Const(tminus1, -1)
+		em.Branch(b32, tminus1, ir.NE, normalLabel)
+		em.PlaceLabel(ovfLabel)
+		if wantRem {
+			em.Const(dst, 0)
+		} else {
+			em.Sext(dst, a32, ir.I32) // dividend, sign-extended
+		}
+		em.Jump(doneLabel)
+	} else {
+		em.Jump(normalLabel)
+	}
+
+	// Zero-divisor path.
+	em.PlaceLabel(zeroLabel)
+	if wantRem {
+		em.Sext(dst, a32, ir.I32) // REMW(x,0) → x, sign-extended
+	} else {
+		em.Const(dst, -1) // DIVW(x,0) → all-ones
+	}
+	em.Jump(doneLabel)
+
+	// Normal.
+	em.PlaceLabel(normalLabel)
+	t := em.Tmp()
+	if signed {
+		if wantRem {
+			em.Rem(t, a32, b32)
+		} else {
+			em.DivS(t, a32, b32)
+		}
+	} else {
+		if wantRem {
+			em.RemU(t, a32, b32)
+		} else {
+			em.DivU(t, a32, b32)
+		}
+	}
+	em.Sext(dst, t, ir.I32)
+
+	em.PlaceLabel(doneLabel)
+}
+
 func branchPred(funct3 uint32) (ir.Pred, bool) {
 	switch funct3 {
 	case 0:
@@ -797,14 +929,14 @@ func (e *emitter) emitOp(rd, rs1, rs2, funct3, funct7 uint32) {
 			e.irEm.MulHSU(dst, a, b)
 		case 3:
 			e.irEm.MulHU(dst, a, b)
-		case 4: // DIV — bail, x86 faults on divide-by-zero but RISC-V returns -1
-			e.terminated = true
-		case 5: // DIVU — bail
-			e.terminated = true
-		case 6: // REM — bail
-			e.terminated = true
-		case 7: // REMU — bail
-			e.terminated = true
+		case 4: // DIV — guarded: div-by-zero → -1, overflow → dividend
+			e.emitDivGuarded(dst, a, b, true, false)
+		case 5: // DIVU — guarded: div-by-zero → MAX_UINT
+			e.emitDivGuarded(dst, a, b, false, false)
+		case 6: // REM — guarded: div-by-zero → dividend, overflow → 0
+			e.emitDivGuarded(dst, a, b, true, true)
+		case 7: // REMU — guarded: div-by-zero → dividend
+			e.emitDivGuarded(dst, a, b, false, true)
 		}
 	case 0x04: // Zbb: ZEXT.H (R-type encoding funct7=0x04, funct3 can vary)
 		e.irEm.Zext(dst, a, ir.I16)
@@ -1014,14 +1146,14 @@ func (e *emitter) emitOp32(rd, rs1, rs2, funct3, funct7 uint32) {
 			t := e.irEm.Tmp()
 			e.irEm.Mul(t, a, b)
 			e.irEm.Sext(dst, t, ir.I32)
-		case 4: // DIVW — bail, complex overflow semantics
-			e.terminated = true
-		case 5: // DIVUW — bail
-			e.terminated = true
-		case 6: // REMW — bail
-			e.terminated = true
-		case 7: // REMUW — bail
-			e.terminated = true
+		case 4: // DIVW — guarded 32-bit signed division
+			e.emitDivW(dst, a, b, true, false)
+		case 5: // DIVUW — guarded 32-bit unsigned division
+			e.emitDivW(dst, a, b, false, false)
+		case 6: // REMW — guarded 32-bit signed remainder
+			e.emitDivW(dst, a, b, true, true)
+		case 7: // REMUW — guarded 32-bit unsigned remainder
+			e.emitDivW(dst, a, b, false, true)
 		default:
 			e.terminated = true
 		}

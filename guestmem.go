@@ -143,6 +143,10 @@ type GuestMemory struct {
 
 	// size is kept for munmap and for ZeroRange bounds checking.
 	size uint64
+
+	// scratch is a reusable MemFault to avoid heap allocation on every fault.
+	// Only one fault is ever live at a time (caller checks, then discards).
+	scratch MemFault
 }
 
 // NewGuestMemory allocates a guest address space of the given size.
@@ -260,7 +264,8 @@ func (m *GuestMemory) fault(addr, width uint64, defaultKind FaultKind) *MemFault
 	if addr&(width-1) != 0 {
 		kind = FaultMisalign
 	}
-	return &MemFault{addr, width, kind}
+	m.scratch = MemFault{addr, width, kind}
+	return &m.scratch
 }
 
 // ---------------------------------------------------------------------------
