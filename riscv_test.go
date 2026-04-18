@@ -407,14 +407,6 @@ func runLockstep(t *testing.T, elfPath string) {
 				blockNum, jitCPU.pc, interpCPU.pc)
 		}
 
-		// Dump register state before dispatch for blocks near the failure.
-		if blockNum >= 97 && blockNum <= 101 {
-			t.Logf("BEFORE block %d pc=0x%x JIT: x[7]=0x%x x[11]=0x%x x[12]=0x%x x[14]=0x%x",
-				blockNum, jitCPU.pc, jitCPU.x[7], jitCPU.x[11], jitCPU.x[12], jitCPU.x[14])
-			t.Logf("BEFORE block %d pc=0x%x INT: x[7]=0x%x x[11]=0x%x x[12]=0x%x x[14]=0x%x",
-				blockNum, interpCPU.pc, interpCPU.x[7], interpCPU.x[11], interpCPU.x[12], interpCPU.x[14])
-		}
-
 		// JIT: one dispatch cycle
 		jitIC, jitErr := jit.StepBlock(jitCPU)
 

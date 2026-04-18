@@ -840,46 +840,40 @@ func (lc *lowerCtx) lowerShift(ins *IRInstr, op obj.As) {
 	//   3. SHL/SHR/SAR CL, dst.
 	//   4. Restore CX if saved.
 
+	// Strategy: stage both operands into scratch registers to avoid all
+	// CX aliasing hazards, then shift, then write result.
+	// This mirrors V2's "always-stage" for this one tricky case.
+	//
+	// 1. Move value (a) to R10.
+	// 2. Move count (b) to CX (saving CX first if live and not our dst).
+	// 3. SHL/SHR/SAR CL, R10.
+	// 4. Move R10 to dst.
+	// 5. Restore CX if saved.
+
 	needCXSave := b != goasm.REG_AMD64_CX && dst != goasm.REG_AMD64_CX && lc.isCXLive()
+
+	// Stage value into R10. Must happen before CX is clobbered.
+	if a != amd64Scratch1 {
+		lc.emitRR(x86.AMOVQ, a, amd64Scratch1)
+	}
+
+	// Save CX if needed, then move count to CX.
 	if needCXSave {
 		lc.emitRR(x86.AMOVQ, goasm.REG_AMD64_CX, amd64Scratch2)
 	}
-
-	// Get count (b) into CX. Use scratch if b==dst would be clobbered
-	// by the subsequent a→dst move, or if b is already in CX.
-	if b == goasm.REG_AMD64_CX {
-		// Already there.
-	} else if b == dst && dst != a {
-		// b lives in dst. Moving a→dst later would clobber it.
-		// Save b to CX first.
-		lc.emitRR(x86.AMOVQ, b, goasm.REG_AMD64_CX)
-	} else {
-		// No conflict or b!=dst. Safe to move b→CX.
+	if b != goasm.REG_AMD64_CX {
 		lc.emitRR(x86.AMOVQ, b, goasm.REG_AMD64_CX)
 	}
 
-	// Get value (a) into dst.
-	// If a==CX and we saved CX, the original value is now in R11.
-	aEff := a
-	if needCXSave && a == goasm.REG_AMD64_CX {
-		aEff = amd64Scratch2 // R11 holds saved CX = original a
-	}
-	if dst == goasm.REG_AMD64_CX {
-		// dst IS CX. We just put count there. Use scratch for dst,
-		// shift, then move result to CX at the end.
-		scr := amd64Scratch1
-		if aEff != scr {
-			lc.emitRR(x86.AMOVQ, aEff, scr)
-		}
-		lc.emitRR(op, goasm.REG_AMD64_CX, scr)
-		lc.emitRR(x86.AMOVQ, scr, dst)
-	} else {
-		if dst != aEff {
-			lc.emitRR(x86.AMOVQ, aEff, dst)
-		}
-		lc.emitRR(op, goasm.REG_AMD64_CX, dst)
+	// Shift: R10 by CL.
+	lc.emitRR(op, goasm.REG_AMD64_CX, amd64Scratch1)
+
+	// Write result to dst.
+	if dst != amd64Scratch1 {
+		lc.emitRR(x86.AMOVQ, amd64Scratch1, dst)
 	}
 
+	// Restore CX if saved.
 	if needCXSave {
 		lc.emitRR(x86.AMOVQ, amd64Scratch2, goasm.REG_AMD64_CX)
 	}

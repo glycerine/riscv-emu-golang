@@ -5,11 +5,7 @@ package riscv
 // jit_emit_ir.go — Translates RISC-V basic blocks to IR (ir.Block).
 // This replaces jit_emit.go's C source generation with IR emission.
 
-import (
-	"fmt"
-	"os"
-	"riscv/ir"
-)
+import "riscv/ir"
 
 // emitResult holds the generated IR block and metadata.
 type emitResult struct {
@@ -448,22 +444,7 @@ func emitBlock(mem *GuestMemory, pc uint64) *emitResult {
 		}
 	}
 
-	result := e.finalize()
-	// Debug: dump IR for blocks starting at specific PCs.
-	if e.startPC == 0x140 {
-		fmt.Fprintf(os.Stderr, "=== IR DUMP pc=0x%x numInsns=%d ===\n", e.startPC, e.numInsns)
-		for i, ins := range result.block.Instrs {
-			fmt.Fprintf(os.Stderr, "  [%d] %v\n", i, ins)
-		}
-		fmt.Fprintf(os.Stderr, "  regsUsed: ")
-		for i := 0; i < 32; i++ {
-			if e.regsUsed[i] {
-				fmt.Fprintf(os.Stderr, "x%d ", i)
-			}
-		}
-		fmt.Fprintf(os.Stderr, "\n=== END IR DUMP ===\n")
-	}
-	return result
+	return e.finalize()
 }
 
 // ── 32-bit instruction emitter ─────────────────────────────────────────
