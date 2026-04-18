@@ -107,7 +107,28 @@ func Allocate(b *Block, pool RegPool, pinned map[VReg]int16, freq []float64) *Al
 
 	// Step 2: classify VRegs as int or FP.
 	mv := maxVReg(b)
+	// Ensure mv covers all pinned VRegs (they may not appear in instructions).
+	for vr := range pinned {
+		if vr > mv {
+			mv = vr
+		}
+	}
+	// Extend intervals slice to cover pinned VRegs.
+	if need := int(mv) + 1; len(intervals) < need {
+		ext := make([]intervalSet, need)
+		copy(ext, intervals)
+		for i := len(intervals); i < need; i++ {
+			ext[i] = intervalSet{VReg: VReg(i)}
+		}
+		intervals = ext
+	}
 	isFP := classifyVRegs(b, intervals)
+	// Extend isFP to cover pinned VRegs.
+	if need := int(mv) + 1; len(isFP) < need {
+		ext := make([]bool, need)
+		copy(ext, isFP)
+		isFP = ext
+	}
 
 	// Step 3: compute separate int and FP counts, excluding pinned VRegs.
 	// Pinned VRegs have pre-assigned host registers that are already removed
