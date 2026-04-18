@@ -419,6 +419,14 @@ func computeIntervalSets(b *Block) []intervalSet {
 		}
 	}
 
+	// Extend live ranges across backward branches (loops).
+	// A linear backward scan doesn't know that a Jump/Branch at index S
+	// transfers control to a label at index T < S. VRegs that are used
+	// inside the loop body [T, S] must be live for the entire range, so
+	// that the register allocator doesn't reuse their host registers in
+	// the gap between the loop header and their first use in the body.
+	extendLoopLiveRanges(b, result)
+
 	// Sort intervals by Start for each VReg and merge adjacent/overlapping.
 	for vr := range result {
 		ivals := result[vr].Intervals
@@ -452,6 +460,63 @@ func computeIntervalSets(b *Block) []intervalSet {
 	}
 
 	return result
+}
+
+// extendLoopLiveRanges finds backward edges in the IR (Jump/Branch to an
+// earlier label) and extends live ranges so that every VReg referenced in
+// the loop body [target, source] has a contiguous interval covering the
+// whole range. Without this, the linear backward scan leaves gaps where a
+// VReg is "dead" between the loop header and its first use in the body,
+// allowing the allocator to reuse its host register for another VReg.
+func extendLoopLiveRanges(b *Block, result []intervalSet) {
+	for i := range b.Instrs {
+		ins := &b.Instrs[i]
+
+		// Identify backward edges: jumps/branches to earlier labels.
+		var targetLabel Label
+		switch ins.Op {
+		case IRJump:
+			targetLabel = Label(ins.Imm)
+		case IRBranch, IRBranchImm:
+			targetLabel = Label(ins.Imm)
+		default:
+			continue
+		}
+
+		targetIdx, ok := b.Labels[targetLabel]
+		if !ok || targetIdx >= i {
+			continue // forward edge or unknown label
+		}
+
+		// Backward edge from i to targetIdx.
+		// Collect all VRegs used or defined in [targetIdx, i].
+		touched := make(map[VReg]bool)
+		for j := targetIdx; j <= i; j++ {
+			for _, vr := range instrUses(&b.Instrs[j]) {
+				if vr != VRegZero {
+					touched[vr] = true
+				}
+			}
+			def := instrDefs(&b.Instrs[j])
+			if def != VRegZero {
+				touched[def] = true
+			}
+		}
+
+		// For each touched VReg, add a synthetic interval [targetIdx, i].
+		// The merge step that follows will unify it with existing intervals.
+		for vr := range touched {
+			idx := int(vr)
+			if idx >= len(result) {
+				continue
+			}
+			result[idx].Intervals = append(result[idx].Intervals, Interval{
+				VReg:  vr,
+				Start: targetIdx,
+				End:   i,
+			})
+		}
+	}
 }
 
 // buildIEP collects all interval endpoints, sorted by program point.

@@ -15,6 +15,13 @@ var testIterStart int
 // Variable so tests can adjust it without recompilation.
 var maxBlockInsns = 2048
 
+// maxBlockIRInsns limits the total IR instructions per block. Each RISC-V
+// instruction expands to ~5-10 IR ops; very large blocks hit O(N^2) in the
+// register allocator's spill phase. 8192 IR instructions covers ~1000-1600
+// RISC-V instructions — large enough for good optimization, small enough
+// for fast compilation.
+const maxBlockIRInsns = 8192
+
 // emitResult holds the generated IR block and metadata.
 type emitResult struct {
 	block    *ir.Block
@@ -578,7 +585,8 @@ func emitBlock(mem *GuestMemory, pc uint64) *emitResult {
 	e.storeFaultLabel = irEm.NewLabel()
 
 	// Emit IR (populates regsUsed via xreg/xregDst calls).
-	for e.numInsns < maxBlockInsns && !e.terminated && e.pc < e.regionEnd {
+	for e.numInsns < maxBlockInsns && !e.terminated && e.pc < e.regionEnd &&
+		len(irEm.Block.Instrs) < maxBlockIRInsns {
 		if e.visited.has(e.pc) {
 			e.irEm.Jump(e.getOrCreateLabel(e.pc))
 			e.gotoTargets.add(e.pc)

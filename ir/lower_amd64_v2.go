@@ -10,6 +10,7 @@ package ir
 
 import (
 	"fmt"
+	"sort"
 
 	"riscv/goasm"
 	"riscv/goasm/obj"
@@ -56,6 +57,11 @@ type lowerCtxV2 struct {
 	c     *goasm.Ctx
 	idx   int
 
+	// Fast per-VReg host register lookup (shared types from lower_amd64.go).
+	rIdx   regIndex
+	fpSet  map[VReg]bool
+	cxLive []regEntry
+
 	labelProg map[Label]*obj.Prog
 	pending   map[Label][]*obj.Prog
 
@@ -69,10 +75,37 @@ func LowerAMD64_V2(ctx *goasm.Ctx, b *Block, alloc *Allocation) error {
 	if alloc == nil {
 		return fmt.Errorf("ir.LowerAMD64_V2: nil allocation")
 	}
+	// Build fast lookup indices (shared helpers from lower_amd64.go).
+	rIdx := buildRegIndex(alloc)
+	fpSet := make(map[VReg]bool)
+	var cxLive []regEntry
+	for i := range alloc.IntervalMap {
+		ia := &alloc.IntervalMap[i]
+		if isXMMReg(ia.Host) {
+			fpSet[ia.Interval.VReg] = true
+		}
+		if ia.Host == goasm.REG_AMD64_CX {
+			cxLive = append(cxLive, regEntry{
+				start: ia.Interval.Start,
+				end:   ia.Interval.End,
+				host:  ia.Host,
+			})
+		}
+	}
+	for vr := VReg(32); vr < 64; vr++ {
+		fpSet[vr] = true
+	}
+	sort.Slice(cxLive, func(a, b int) bool {
+		return cxLive[a].start < cxLive[b].start
+	})
+
 	lc := &lowerCtxV2{
 		blk:        b,
 		alloc:      alloc,
 		c:          ctx,
+		rIdx:       rIdx,
+		fpSet:      fpSet,
+		cxLive:     cxLive,
 		labelProg:  make(map[Label]*obj.Prog),
 		pending:    make(map[Label][]*obj.Prog),
 		stackSlots: alloc.StackSlots,
@@ -218,32 +251,30 @@ func (lc *lowerCtxV2) hostReg(v VReg) int16 {
 	if lc.alloc.Kind[v] != AllocReg {
 		return -1
 	}
-	for i := range lc.alloc.IntervalMap {
-		ia := &lc.alloc.IntervalMap[i]
-		if ia.Interval.VReg == v && ia.Interval.Start <= lc.idx && lc.idx <= ia.Interval.End {
-			return ia.Host
-		}
-	}
-	return -1
+	return lc.rIdx.lookup(v, lc.idx)
 }
 
 func (lc *lowerCtxV2) isCXLive() bool {
-	for i := range lc.alloc.IntervalMap {
-		ia := &lc.alloc.IntervalMap[i]
-		if ia.Host == goasm.REG_AMD64_CX &&
-			ia.Interval.Start <= lc.idx && lc.idx <= ia.Interval.End {
-			return true
+	idx := lc.idx
+	lo, hi := 0, len(lc.cxLive)
+	for lo < hi {
+		mid := (lo + hi) / 2
+		if lc.cxLive[mid].end < idx {
+			lo = mid + 1
+		} else {
+			hi = mid
 		}
 	}
-	return false
+	return lo < len(lc.cxLive) && lc.cxLive[lo].start <= idx && idx <= lc.cxLive[lo].end
 }
 
 func (lc *lowerCtxV2) isRegLive(hostReg int16) bool {
-	for i := range lc.alloc.IntervalMap {
-		ia := &lc.alloc.IntervalMap[i]
-		if ia.Host == hostReg &&
-			ia.Interval.Start <= lc.idx && lc.idx <= ia.Interval.End {
-			return true
+	// Check all VRegs for any interval assigned to hostReg containing lc.idx.
+	for vr := 0; vr < len(lc.rIdx); vr++ {
+		for _, e := range lc.rIdx[VReg(vr)] {
+			if e.host == hostReg && e.start <= lc.idx && lc.idx <= e.end {
+				return true
+			}
 		}
 	}
 	return false
@@ -872,18 +903,7 @@ func (lc *lowerCtxV2) isVRegFP2(v VReg) bool {
 	if v == VRegZero {
 		return false
 	}
-	// Guest FP regs are VRegs 32..63.
-	if v >= 32 && v < 64 {
-		return true
-	}
-	// Check if the allocator classified it as FP by looking at IntervalMap.
-	for i := range lc.alloc.IntervalMap {
-		ia := &lc.alloc.IntervalMap[i]
-		if ia.Interval.VReg == v && isXMMReg(ia.Host) {
-			return true
-		}
-	}
-	return false
+	return lc.fpSet[v]
 }
 
 // ── Control flow ──

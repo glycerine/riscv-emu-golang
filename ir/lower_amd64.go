@@ -2,6 +2,7 @@ package ir
 
 import (
 	"fmt"
+	"sort"
 
 	"riscv/goasm"
 	"riscv/goasm/obj"
@@ -91,6 +92,67 @@ func AMD64Pinned() map[VReg]int16 {
 	}
 }
 
+// ── Per-VReg interval lookup (replaces linear IntervalMap scan) ──
+
+// regEntry is one interval's host register assignment, sorted by Start.
+type regEntry struct {
+	start, end int
+	host       int16
+}
+
+// regIndex maps VReg → sorted list of regEntry for O(log N) host-register lookup.
+type regIndex [][]regEntry
+
+func buildRegIndex(alloc *Allocation) regIndex {
+	// Determine max VReg.
+	maxVR := len(alloc.Kind)
+	idx := make(regIndex, maxVR)
+	for i := range alloc.IntervalMap {
+		ia := &alloc.IntervalMap[i]
+		vr := int(ia.Interval.VReg)
+		if vr < maxVR {
+			idx[vr] = append(idx[vr], regEntry{
+				start: ia.Interval.Start,
+				end:   ia.Interval.End,
+				host:  ia.Host,
+			})
+		}
+	}
+	// Sort each VReg's entries by start for binary search.
+	for vr := range idx {
+		entries := idx[vr]
+		if len(entries) > 1 {
+			sort.Slice(entries, func(a, b int) bool {
+				return entries[a].start < entries[b].start
+			})
+		}
+	}
+	return idx
+}
+
+// lookup returns the host register for VReg v at instruction index idx, or -1.
+func (ri regIndex) lookup(v VReg, idx int) int16 {
+	vr := int(v)
+	if vr >= len(ri) {
+		return -1
+	}
+	entries := ri[vr]
+	// Binary search for the interval containing idx.
+	lo, hi := 0, len(entries)
+	for lo < hi {
+		mid := (lo + hi) / 2
+		if entries[mid].end < idx {
+			lo = mid + 1
+		} else {
+			hi = mid
+		}
+	}
+	if lo < len(entries) && entries[lo].start <= idx && idx <= entries[lo].end {
+		return entries[lo].host
+	}
+	return -1
+}
+
 // ── lowerCtx holds mutable state during lowering ──
 
 type lowerCtx struct {
@@ -98,6 +160,11 @@ type lowerCtx struct {
 	alloc *Allocation
 	c     *goasm.Ctx
 	idx   int // current IR instruction index
+
+	// Fast per-VReg host register lookup (replaces linear IntervalMap scan).
+	rIdx     regIndex
+	fpSet    map[VReg]bool // precomputed: is this VReg assigned to an XMM register?
+	cxLive   []regEntry    // intervals where CX is live (sorted by start)
 
 	// Label resolution.
 	labelProg map[Label]*obj.Prog   // label → NOP prog at that point
@@ -119,10 +186,40 @@ func LowerAMD64(ctx *goasm.Ctx, b *Block, alloc *Allocation) error {
 		return fmt.Errorf("ir.LowerAMD64: nil allocation")
 	}
 
+	// Build fast lookup index for host register assignments.
+	rIdx := buildRegIndex(alloc)
+
+	// Precompute FP VReg set and CX live intervals.
+	fpSet := make(map[VReg]bool)
+	var cxLive []regEntry
+	for i := range alloc.IntervalMap {
+		ia := &alloc.IntervalMap[i]
+		if isXMMReg(ia.Host) {
+			fpSet[ia.Interval.VReg] = true
+		}
+		if ia.Host == goasm.REG_AMD64_CX {
+			cxLive = append(cxLive, regEntry{
+				start: ia.Interval.Start,
+				end:   ia.Interval.End,
+				host:  ia.Host,
+			})
+		}
+	}
+	// Guest FP regs 32-63 are always FP.
+	for vr := VReg(32); vr < 64; vr++ {
+		fpSet[vr] = true
+	}
+	sort.Slice(cxLive, func(a, b int) bool {
+		return cxLive[a].start < cxLive[b].start
+	})
+
 	lc := &lowerCtx{
 		blk:        b,
 		alloc:      alloc,
 		c:          ctx,
+		rIdx:       rIdx,
+		fpSet:      fpSet,
+		cxLive:     cxLive,
 		labelProg:  make(map[Label]*obj.Prog),
 		pending:    make(map[Label][]*obj.Prog),
 		stackSlots: alloc.StackSlots,
@@ -366,13 +463,7 @@ func (lc *lowerCtx) hostRegFor(v VReg, idx int) int16 {
 	if lc.alloc.Kind[v] != AllocReg {
 		return -1
 	}
-	for i := range lc.alloc.IntervalMap {
-		ia := &lc.alloc.IntervalMap[i]
-		if ia.Interval.VReg == v && ia.Interval.Start <= idx && idx <= ia.Interval.End {
-			return ia.Host
-		}
-	}
-	return -1
+	return lc.rIdx.lookup(v, idx)
 }
 
 // isXMMReg returns true if the register constant is an XMM register.
@@ -381,20 +472,9 @@ func isXMMReg(r int16) bool {
 }
 
 // isVRegFP returns true if the VReg is a floating-point register.
-// Guest FP regs are 32-63; temps are FP if their defining instruction is FP-typed.
-// We detect this by checking if the allocator assigned it an XMM register.
+// Uses a precomputed set built at the start of lowering.
 func (lc *lowerCtx) isVRegFP(v VReg) bool {
-	if v >= 32 && v < 64 {
-		return true // guest FP register
-	}
-	// Check if any interval for this VReg is assigned to an XMM register.
-	for i := range lc.alloc.IntervalMap {
-		ia := &lc.alloc.IntervalMap[i]
-		if ia.Interval.VReg == v && isXMMReg(ia.Host) {
-			return true
-		}
-	}
-	return false
+	return lc.fpSet[v]
 }
 
 // use loads VReg v into a host register for reading. Returns the host register.
@@ -971,14 +1051,18 @@ func (lc *lowerCtx) lowerShiftImm(ins *IRInstr, op obj.As) {
 
 // isCXLive returns true if RCX currently holds a live allocated VReg.
 func (lc *lowerCtx) isCXLive() bool {
-	for i := range lc.alloc.IntervalMap {
-		ia := &lc.alloc.IntervalMap[i]
-		if ia.Host == goasm.REG_AMD64_CX &&
-			ia.Interval.Start <= lc.idx && lc.idx <= ia.Interval.End {
-			return true
+	// Binary search the precomputed sorted CX intervals.
+	idx := lc.idx
+	lo, hi := 0, len(lc.cxLive)
+	for lo < hi {
+		mid := (lo + hi) / 2
+		if lc.cxLive[mid].end < idx {
+			lo = mid + 1
+		} else {
+			hi = mid
 		}
 	}
-	return false
+	return lo < len(lc.cxLive) && lc.cxLive[lo].start <= idx && idx <= lc.cxLive[lo].end
 }
 
 // ── Comparison ──
