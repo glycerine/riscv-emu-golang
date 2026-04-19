@@ -1394,12 +1394,61 @@ func (e *emitter) emitLoad(rd, rs1 uint32, imm int64, funct3 uint32) {
 		doneLabel := e.irEm.NewLabel()
 		e.irEm.Jump(doneLabel)
 		e.irEm.PlaceLabel(misalignLabel)
-		e.irEm.WriteBackAll()
-		e.irEm.Ret(e.pc, jitOK, ir.VRegZero) // bail to interp
+		// Misaligned load: byte-by-byte little-endian read.
+		e.emitMisalignedLoad(dst, addr, width, signed)
 		e.irEm.PlaceLabel(doneLabel)
 	} else {
 		e.irEm.MaskedLoad(dst, base, e.irEm.MemBase(), e.irEm.MemMask(), imm, 1, signed, e.loadFaultLabel)
 		e.hasLoadFault = true
+	}
+}
+
+// emitMisalignedLoad emits byte-by-byte loads for a misaligned address.
+// addr is a VReg holding the guest virtual address (already computed).
+func (e *emitter) emitMisalignedLoad(dst ir.VReg, addr ir.VReg, width int, signed bool) {
+	memBase := e.irEm.MemBase()
+	mask := e.irEm.MemMask()
+
+	// OOB check for the full range: (addr | (addr+width-1)) & ~mask
+	tmp1 := e.irEm.Tmp()
+	e.irEm.AddImm(tmp1, addr, int64(width-1))
+	e.irEm.Or(tmp1, addr, tmp1)
+	maskNot := e.irEm.Tmp()
+	e.irEm.Not(maskNot, mask)
+	e.irEm.And(tmp1, tmp1, maskNot)
+	e.irEm.Branch(tmp1, ir.VRegZero, ir.NE, e.loadFaultLabel)
+	e.hasLoadFault = true
+
+	// Load byte 0.
+	m0 := e.irEm.Tmp()
+	e.irEm.And(m0, addr, mask)
+	h0 := e.irEm.Tmp()
+	e.irEm.Add(h0, memBase, m0)
+	e.irEm.Load(dst, h0, 0, ir.I8, false) // zero-extend byte
+
+	// Load remaining bytes and OR them in.
+	for i := 1; i < width; i++ {
+		ai := e.irEm.Tmp()
+		e.irEm.AddImm(ai, addr, int64(i))
+		mi := e.irEm.Tmp()
+		e.irEm.And(mi, ai, mask)
+		hi := e.irEm.Tmp()
+		e.irEm.Add(hi, memBase, mi)
+		bi := e.irEm.Tmp()
+		e.irEm.Load(bi, hi, 0, ir.I8, false)
+		shifted := e.irEm.Tmp()
+		e.irEm.ShlImm(shifted, bi, int64(i*8))
+		e.irEm.Or(dst, dst, shifted)
+	}
+
+	// Sign-extend if needed.
+	if signed {
+		switch width {
+		case 2:
+			e.irEm.Sext(dst, dst, ir.I16)
+		case 4:
+			e.irEm.Sext(dst, dst, ir.I32)
+		}
 	}
 }
 
@@ -1426,12 +1475,46 @@ func (e *emitter) emitStore(rs1, rs2 uint32, imm int64, funct3 uint32) {
 		doneLabel := e.irEm.NewLabel()
 		e.irEm.Jump(doneLabel)
 		e.irEm.PlaceLabel(misalignLabel)
-		e.irEm.WriteBackAll()
-		e.irEm.Ret(e.pc, jitOK, ir.VRegZero)
+		// Misaligned store: byte-by-byte little-endian write.
+		e.emitMisalignedStore(addr, src, width)
 		e.irEm.PlaceLabel(doneLabel)
 	} else {
 		e.irEm.GuestStore(base, e.irEm.MemBase(), e.irEm.MemMask(), imm, src, 1, e.storeFaultLabel)
 		e.hasStoreFault = true
+	}
+}
+
+// emitMisalignedStore emits byte-by-byte stores for a misaligned address.
+func (e *emitter) emitMisalignedStore(addr, src ir.VReg, width int) {
+	memBase := e.irEm.MemBase()
+	mask := e.irEm.MemMask()
+
+	// OOB check for the full range.
+	tmp1 := e.irEm.Tmp()
+	e.irEm.AddImm(tmp1, addr, int64(width-1))
+	e.irEm.Or(tmp1, addr, tmp1)
+	maskNot := e.irEm.Tmp()
+	e.irEm.Not(maskNot, mask)
+	e.irEm.And(tmp1, tmp1, maskNot)
+	e.irEm.Branch(tmp1, ir.VRegZero, ir.NE, e.storeFaultLabel)
+	e.hasStoreFault = true
+
+	// Store each byte.
+	for i := 0; i < width; i++ {
+		ai := e.irEm.Tmp()
+		e.irEm.AddImm(ai, addr, int64(i))
+		mi := e.irEm.Tmp()
+		e.irEm.And(mi, ai, mask)
+		hi := e.irEm.Tmp()
+		e.irEm.Add(hi, memBase, mi)
+		bi := e.irEm.Tmp()
+		if i == 0 {
+			e.irEm.AndImm(bi, src, 0xFF)
+		} else {
+			e.irEm.ShrImm(bi, src, int64(i*8))
+			e.irEm.AndImm(bi, bi, 0xFF)
+		}
+		e.irEm.Store(hi, 0, bi, ir.I8)
 	}
 }
 
