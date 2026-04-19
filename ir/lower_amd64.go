@@ -184,6 +184,28 @@ func (ri regIndex) lookup(v VReg, idx int) int16 {
 
 // ── lowerCtx holds mutable state during lowering ──
 
+// chainExitInfo records a chain exit for post-assembly backpatching.
+type chainExitInfo struct {
+	targetPC uint64    // guest PC this exit targets
+	movProg  *obj.Prog // MOVABS Prog — read Pc after assembly for patch offset
+	stubProg *obj.Prog // first Prog of the slow exit stub
+}
+
+// ChainExitDesc describes a chain exit for the caller.
+// After assembly, use MovProg.Pc and StubProg.Pc to compute byte offsets.
+type ChainExitDesc struct {
+	TargetPC uint64    // guest PC this exit targets
+	MovProg  *obj.Prog // the MOVABS Prog — Pc gives instruction offset after assembly
+	StubProg *obj.Prog // first Prog of the slow exit stub
+}
+
+// LowerResult holds chain-related metadata produced during lowering.
+// After assembly, Prog.Pc fields contain byte offsets into the assembled code.
+type LowerResult struct {
+	ChainEntryProg *obj.Prog      // NOP at chain entry point
+	ChainExits     []ChainExitDesc // chain exit descriptors
+}
+
 type lowerCtx struct {
 	blk   *Block
 	alloc *Allocation
@@ -206,17 +228,22 @@ type lowerCtx struct {
 	// Scratch cache: elides redundant spill loads when consecutive instructions
 	// use the same spilled VReg. Index 0 tracks R10, index 1 tracks R11.
 	scratchCache [2]scratchEntry
+
+	// Block chaining.
+	chainEntryProg *obj.Prog       // NOP marking chain entry point
+	chainExits     []chainExitInfo // chain exit metadata for backpatching
 }
 
 // ── Exported API ──
 
 // LowerAMD64 converts a register-allocated IR Block into x86-64 obj.Progs
 // appended to ctx. After calling this, ctx.Assemble() produces native bytes.
+// Returns a LowerResult with chain entry/exit metadata for block chaining.
 //
 // The caller must have already appended an ATEXT prog to ctx.
-func LowerAMD64(ctx *goasm.Ctx, b *Block, alloc *Allocation) error {
+func LowerAMD64(ctx *goasm.Ctx, b *Block, alloc *Allocation) (*LowerResult, error) {
 	if alloc == nil {
-		return fmt.Errorf("ir.LowerAMD64: nil allocation")
+		return nil, fmt.Errorf("ir.LowerAMD64: nil allocation")
 	}
 
 	// Build fast lookup index for host register assignments.
@@ -267,20 +294,34 @@ func LowerAMD64(ctx *goasm.Ctx, b *Block, alloc *Allocation) error {
 	for idx := range b.Instrs {
 		lc.idx = idx
 		if err := lc.lowerInstr(&b.Instrs[idx]); err != nil {
-			return err
+			return nil, err
 		}
 	}
 
 	if len(lc.pending) > 0 {
-		return fmt.Errorf("ir.LowerAMD64: %d unresolved forward labels", len(lc.pending))
+		return nil, fmt.Errorf("ir.LowerAMD64: %d unresolved forward labels", len(lc.pending))
 	}
 
-	return nil
+	// Emit slow exit stubs for chain exits and build result.
+	result := &LowerResult{
+		ChainEntryProg: lc.chainEntryProg,
+	}
+	for i := range lc.chainExits {
+		lc.chainExits[i].stubProg = lc.emitSlowExitStub(lc.chainExits[i].targetPC)
+		result.ChainExits = append(result.ChainExits, ChainExitDesc{
+			TargetPC: lc.chainExits[i].targetPC,
+			MovProg:  lc.chainExits[i].movProg,
+			StubProg: lc.chainExits[i].stubProg,
+		})
+	}
+
+	return result, nil
 }
 
 // ── Prologue / Epilogue ──
 
 func (lc *lowerCtx) emitPrologue() {
+	// ── Normal entry (from jitcall.Call) ──
 	// Move SysV ABI args to pinned callee-saved registers.
 	// Entry ABI: RDI=sret, RSI=x[], RDX=f[], RCX=fcsr, R8=memBase, R9=memMask
 	lc.emitRR(x86.AMOVQ, goasm.REG_AMD64_SI, amd64RegXBase)   // RSI → R12
@@ -288,16 +329,25 @@ func (lc *lowerCtx) emitPrologue() {
 	lc.emitRR(x86.AMOVQ, goasm.REG_AMD64_R8, amd64RegMemBase) // R8  → R14
 	lc.emitRR(x86.AMOVQ, goasm.REG_AMD64_R9, amd64RegMemMask) // R9  → R15
 	lc.emitRR(x86.AMOVQ, goasm.REG_AMD64_DI, amd64RegSret)    // RDI → RBX
-
-	// Allocate spill frame if needed.
-	if lc.frameSize > 0 {
-		lc.emitRI(x86.ASUBQ, lc.frameSize, goasm.REG_AMD64_SP)
-		// Save fcsr pointer at top of frame.
-		lc.emitMR(x86.AMOVQ, goasm.REG_AMD64_CX, goasm.REG_AMD64_SP, int64(lc.stackSlots)*8)
-	}
-
+	// Save fcsr pointer at fixed location [RBX+80] for chain entries.
+	// Offset 80 is free: sret uses 0-31, callee-saves use 32-79.
+	lc.emitMR(x86.AMOVQ, goasm.REG_AMD64_CX, amd64RegSret, 80)
 	// Initialize IC to 0 (pinned to RBP).
 	lc.emitRR(x86.AXORQ, amd64RegIC, amd64RegIC)
+
+	// ── Chain entry point (jumped to from another block's chain exit) ──
+	// Pinned regs (R12-R15, RBX) and IC (RBP) are already set.
+	lc.chainEntryProg = lc.emitNOP()
+
+	// ── Common: allocate spill frame ──
+	if lc.frameSize > 0 {
+		lc.emitRI(x86.ASUBQ, lc.frameSize, goasm.REG_AMD64_SP)
+		// Load fcsr from fixed location [RBX+80] into this block's spill slot.
+		// On normal entry: [RBX+80] was just saved above.
+		// On chain entry: [RBX+80] was saved by the first block in the chain.
+		lc.emitRM(x86.AMOVQ, amd64RegSret, 80, amd64Scratch1) // R10 = [RBX+80]
+		lc.emitMR(x86.AMOVQ, amd64Scratch1, goasm.REG_AMD64_SP, int64(lc.stackSlots)*8)
+	}
 }
 
 func (lc *lowerCtx) emitEpilogue() {
@@ -307,6 +357,58 @@ func (lc *lowerCtx) emitEpilogue() {
 	p := lc.c.NewProg()
 	p.As = obj.ARET
 	lc.c.Append(p)
+}
+
+// ── Block chaining ──
+
+func (lc *lowerCtx) emitNOP() *obj.Prog {
+	p := lc.c.NewProg()
+	p.As = x86.ANOP
+	lc.c.Append(p)
+	return p
+}
+
+func (lc *lowerCtx) emitJmpReg(reg int16) {
+	p := lc.c.NewProg()
+	p.As = x86.AJMP
+	p.To.Type = obj.TYPE_REG
+	p.To.Reg = reg
+	lc.c.Append(p)
+}
+
+// lowerChainExit emits a chain exit sequence: dealloc spill frame,
+// MOVABS R10 with a sentinel (to be backpatched), JMP R10.
+func (lc *lowerCtx) lowerChainExit(ins *IRInstr) {
+	// Deallocate spill frame.
+	if lc.frameSize > 0 {
+		lc.emitRI(x86.AADDQ, lc.frameSize, goasm.REG_AMD64_SP)
+	}
+	// MOVABS R10, <sentinel> — 10-byte encoding for patching.
+	// Sentinel > 32 bits forces the assembler to use the 10-byte MOVABS encoding.
+	const sentinel = int64(0x7BADC0DE7BADC0DE)
+	movProg := lc.emitRI(x86.AMOVQ, sentinel, amd64Scratch1)
+	lc.chainExits = append(lc.chainExits, chainExitInfo{
+		targetPC: uint64(ins.Imm),
+		movProg:  movProg,
+	})
+	// JMP R10
+	lc.emitJmpReg(amd64Scratch1)
+}
+
+// emitSlowExitStub emits a slow exit stub that writes Result to sret and RETs.
+// Called when a chain exit hasn't been patched yet.
+func (lc *lowerCtx) emitSlowExitStub(targetPC uint64) *obj.Prog {
+	// Record the first prog of the stub for offset computation.
+	firstProg := lc.emitRI(x86.AMOVQ, int64(targetPC), amd64Scratch1)
+	lc.emitMR(x86.AMOVQ, amd64Scratch1, amd64RegSret, 0) // Result.PC
+	lc.emitMR(x86.AMOVQ, amd64RegIC, amd64RegSret, 8)    // Result.IC
+	lc.emitMI(x86.AMOVQ, 0, amd64RegSret, 16)            // Result.Status = jitOK
+	lc.emitMI(x86.AMOVQ, 0, amd64RegSret, 24)            // Result.FaultAddr = 0
+	// No spill frame to deallocate — already done before MOVABS in chain exit.
+	p := lc.c.NewProg()
+	p.As = obj.ARET
+	lc.c.Append(p)
+	return firstProg
 }
 
 // ── Instruction lowering dispatch ──
@@ -319,7 +421,7 @@ func (lc *lowerCtx) lowerInstr(ins *IRInstr) error {
 		IRShl, IRShr, IRSar, // may save CX to R11
 		IRLoadX, IRStoreX, // R10/R11 for address computation
 		IRLabel, IRBranch, IRBranchImm, IRJump, // control flow
-		IRRet, IRRetDyn, IRCall, // exits/calls
+		IRRet, IRRetDyn, IRChainExit, IRCall, // exits/calls
 		IRFAdd, IRFSub, IRFMul, IRFDiv, IRFSqrt, IRFNeg, IRFAbs, IRFCmp, // FP uses FP scratch
 		IRFCvtToI, IRFCvtToU, IRFCvtFromI, IRFCvtFromU, IRFCvtFF: // FP conversions
 		lc.invalidateScratchCache()
@@ -449,6 +551,8 @@ func (lc *lowerCtx) lowerInstr(ins *IRInstr) error {
 		lc.lowerRet(ins)
 	case IRRetDyn:
 		lc.lowerRetDyn(ins)
+	case IRChainExit:
+		lc.lowerChainExit(ins)
 	case IRCall:
 		lc.lowerCall(ins)
 

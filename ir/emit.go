@@ -234,6 +234,13 @@ func (e *Emitter) RetDyn(pcVReg VReg, status int, faultAddr VReg) {
 	e.emit(IRInstr{Op: IRRetDyn, A: pcVReg, Imm: int64(status), B: faultAddr})
 }
 
+// ChainExit emits a chain exit. The lowerer will emit a MOVABS+JMP sequence
+// initially targeting a slow exit stub, which Go can later patch to jump
+// directly to the target block's chain entry.
+func (e *Emitter) ChainExit(targetPC uint64, exitIdx int) {
+	e.emit(IRInstr{Op: IRChainExit, Imm: int64(targetPC), Imm2: int64(exitIdx)})
+}
+
 // ── Floating point ──
 
 func (e *Emitter) FAdd(dst, a, b VReg, t Type) { e.op3(IRFAdd, t, dst, a, b) }

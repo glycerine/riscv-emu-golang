@@ -100,6 +100,13 @@ func (e *Emitter) FaultExit(pc uint64, status int, faultAddr VReg) {
 	e.Ret(pc, status, faultAddr)
 }
 
+// ChainableRet emits writeback of all dirty vregs followed by a chain exit.
+// Used for jitOK exits that can be patched for block chaining.
+func (e *Emitter) ChainableRet(targetPC uint64, exitIdx int) {
+	e.WriteBackAll()
+	e.ChainExit(targetPC, exitIdx)
+}
+
 // BudgetCheck emits a backward-branch budget check:
 //
 //	if (ic >= MaxIC) { writeback; return(targetPC, 0, 0) }

@@ -17,7 +17,7 @@ func lowerBlockV2(t *testing.T, b *Block) ([]byte, *Allocation) {
 
 	ctx := goasm.New(goasm.AMD64)
 	ctx.Append(ctx.NewATEXT())
-	if err := LowerAMD64_V2(ctx, b, alloc); err != nil {
+	if _, err := LowerAMD64_V2(ctx, b, alloc); err != nil {
 		t.Fatalf("LowerAMD64_V2: %v", err)
 	}
 	ctx.Append(ctx.NewRET())
@@ -37,7 +37,7 @@ func lowerBlockV2WithRet(t *testing.T, b *Block) ([]byte, *Allocation) {
 
 	ctx := goasm.New(goasm.AMD64)
 	ctx.Append(ctx.NewATEXT())
-	if err := LowerAMD64_V2(ctx, b, alloc); err != nil {
+	if _, err := LowerAMD64_V2(ctx, b, alloc); err != nil {
 		t.Fatalf("LowerAMD64_V2: %v", err)
 	}
 
@@ -439,7 +439,7 @@ func TestLockstep_V1V2_Assembly(t *testing.T) {
 		alloc2 := Allocate(blk, pool2, AMD64Pinned(), nil)
 		ctx2 := goasm.New(goasm.AMD64)
 		ctx2.Append(ctx2.NewATEXT())
-		err2 := LowerAMD64_V2(ctx2, blk, alloc2)
+		_, err2 := LowerAMD64_V2(ctx2, blk, alloc2)
 		if err2 != nil {
 			t.Fatalf("block %d: V1 succeeded but V2 failed: %v", i, err2)
 		}

@@ -24,11 +24,12 @@ const maxBlockIRInsns = 2048
 
 // emitResult holds the generated IR block and metadata.
 type emitResult struct {
-	block    *ir.Block
-	startPC  uint64
-	endPC    uint64
-	numInsns int
-	regsUsed [32]bool
+	block         *ir.Block
+	startPC       uint64
+	endPC         uint64
+	numInsns      int
+	regsUsed      [32]bool
+	numChainExits int // number of IRChainExit instructions emitted
 }
 
 // deferredExit holds an external branch exit to emit at finalize time.
@@ -54,6 +55,7 @@ type emitter struct {
 	loadFaultLabel  ir.Label
 	storeFaultLabel ir.Label
 	deferredExits []deferredExit
+	exitIdx       int // counter for chain exit indices
 }
 
 // ── Register access helpers ────────────────────────────────────────────
@@ -155,6 +157,14 @@ func (e *emitter) advancePC(size uint64) {
 func (e *emitter) emitReturn(pc uint64, status int) {
 	e.irEm.WriteBackAll()
 	e.irEm.Ret(pc, status, ir.VRegZero)
+}
+
+// emitChainableReturn emits a chain exit for jitOK exits.
+// These can be patched by Go to jump directly to the target block.
+func (e *emitter) emitChainableReturn(pc uint64) {
+	idx := e.exitIdx
+	e.exitIdx++
+	e.irEm.ChainableRet(pc, idx)
 }
 
 func (e *emitter) emitWriteBackAll() {
@@ -400,33 +410,30 @@ func (e *emitter) finalize() *emitResult {
 	// explicit Ret (ECALL, EBREAK, JAL) this is dead code. For blocks that
 	// terminated due to untranslatable instructions (CSR, unknown opcode),
 	// this IS the return path.
-	e.irEm.WriteBackAll()
-	e.irEm.Ret(e.pc, jitOK, ir.VRegZero)
+	e.emitChainableReturn(e.pc)
 
 	// Bail labels: goto targets not emitted. Deterministic order is critical —
 	// random order changes IR indices, affecting register allocation.
 	e.gotoTargets.each(func(target uint64) {
 		if !e.visited.has(target) {
 			e.irEm.PlaceLabel(e.getOrCreateLabel(target))
-			e.irEm.WriteBackAll()
-			e.irEm.Ret(target, jitOK, ir.VRegZero)
+			e.emitChainableReturn(target)
 		}
 	})
 
 	// Deferred external exits.
 	for _, de := range e.deferredExits {
 		e.irEm.PlaceLabel(de.label)
-		e.irEm.WriteBackAll()
-
-		e.irEm.Ret(de.targetPC, jitOK, ir.VRegZero)
+		e.emitChainableReturn(de.targetPC)
 	}
 
 	return &emitResult{
-		block:    e.irEm.Block,
-		startPC:  e.startPC,
-		endPC:    e.pc,
-		numInsns: e.numInsns,
-		regsUsed: e.regsUsed,
+		block:         e.irEm.Block,
+		startPC:       e.startPC,
+		endPC:         e.pc,
+		numInsns:      e.numInsns,
+		regsUsed:      e.regsUsed,
+		numChainExits: e.exitIdx,
 	}
 }
 
@@ -1870,7 +1877,7 @@ func (e *emitter) emitJAL(rd uint32, offset int64, insnSize uint64) {
 		e.pc = target
 		return
 	}
-	e.emitReturn(target, jitOK)
+	e.emitChainableReturn(target)
 	e.terminated = true
 }
 

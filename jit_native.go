@@ -7,6 +7,7 @@ package riscv
 // to native code via the goasm package (no cgo).
 
 import (
+	"encoding/binary"
 	"fmt"
 	"riscv/goasm"
 	"riscv/ir"
@@ -26,10 +27,18 @@ func getJITCtx() *goasm.Ctx {
 	return jitCtx
 }
 
+// chainPatchInfo describes a chain exit that can be patched by Go.
+type chainPatchInfo struct {
+	targetPC    uint64 // guest PC this exit targets
+	patchOffset int    // byte offset of imm64 in MOVABS within the code page
+}
+
 // compiledBlock holds a natively-compiled function pointer.
 type compiledBlock struct {
-	fn     uintptr        // native function pointer (mmap'd executable memory)
-	shadow *compiledBlock // V2 shadow block for DebugV1V2 comparison
+	fn         uintptr          // native function pointer (mmap'd executable memory)
+	chainEntry uintptr          // entry point that skips pinned reg setup (for chaining)
+	chainExits []chainPatchInfo // chain exits that Go can patch
+	shadow     *compiledBlock   // V2 shadow block for DebugV1V2 comparison
 }
 
 // jitCompile compiles an IR block to native code and returns a compiledBlock.
@@ -61,11 +70,12 @@ func (j *JIT) jitCompileWith(res *emitResult, useV2 bool) (*compiledBlock, error
 	ctx.Append(ctx.NewATEXT())
 
 	// Step 3: Lower IR to x86-64 Progs.
+	var lowerResult *ir.LowerResult
 	var lowerErr error
 	if useV2 {
-		lowerErr = ir.LowerAMD64_V2(ctx, res.block, alloc)
+		lowerResult, lowerErr = ir.LowerAMD64_V2(ctx, res.block, alloc)
 	} else {
-		lowerErr = ir.LowerAMD64(ctx, res.block, alloc)
+		lowerResult, lowerErr = ir.LowerAMD64(ctx, res.block, alloc)
 	}
 	if lowerErr != nil {
 		return nil, fmt.Errorf("jit lower: %w", lowerErr)
@@ -87,9 +97,32 @@ func (j *JIT) jitCompileWith(res *emitResult, useV2 bool) (*compiledBlock, error
 	}
 	copy(execMem, code)
 
-	return &compiledBlock{
-		fn: uintptr(unsafe.Pointer(&execMem[0])),
-	}, nil
+	codeBase := uintptr(unsafe.Pointer(&execMem[0]))
+	blk := &compiledBlock{
+		fn: codeBase,
+	}
+
+	// Step 6: Block chaining setup — backpatch MOVABS sentinels and record metadata.
+	if lowerResult != nil && lowerResult.ChainEntryProg != nil {
+		blk.chainEntry = codeBase + uintptr(lowerResult.ChainEntryProg.Pc)
+
+		for _, ce := range lowerResult.ChainExits {
+			// The MOVABS R10, imm64 encoding is: 49 BA <8 bytes imm64>.
+			// The imm64 starts at byte offset +2 from the instruction start.
+			patchOff := int(ce.MovProg.Pc) + 2
+			stubAddr := codeBase + uintptr(ce.StubProg.Pc)
+
+			// Backpatch the sentinel to point to the slow exit stub.
+			binary.LittleEndian.PutUint64(execMem[patchOff:], uint64(stubAddr))
+
+			blk.chainExits = append(blk.chainExits, chainPatchInfo{
+				targetPC:    ce.TargetPC,
+				patchOffset: patchOff,
+			})
+		}
+	}
+
+	return blk, nil
 }
 
 // compileDebugInfo holds debug artifacts from compilation.
@@ -116,14 +149,16 @@ func (j *JIT) jitCompileDebug(res *emitResult, useV2 bool) (*compiledBlock, *com
 	ctx := goasm.New(goasm.AMD64)
 	ctx.Append(ctx.NewATEXT())
 
-	var lowerErr error
 	if useV2 {
-		lowerErr = ir.LowerAMD64_V2(ctx, res.block, alloc)
+		_, lowerErr := ir.LowerAMD64_V2(ctx, res.block, alloc)
+		if lowerErr != nil {
+			return nil, nil, fmt.Errorf("jit lower: %w", lowerErr)
+		}
 	} else {
-		lowerErr = ir.LowerAMD64(ctx, res.block, alloc)
-	}
-	if lowerErr != nil {
-		return nil, nil, fmt.Errorf("jit lower: %w", lowerErr)
+		_, lowerErr := ir.LowerAMD64(ctx, res.block, alloc)
+		if lowerErr != nil {
+			return nil, nil, fmt.Errorf("jit lower: %w", lowerErr)
+		}
 	}
 
 	// Capture Prog listing before assembly.

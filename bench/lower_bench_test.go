@@ -111,7 +111,7 @@ func BenchmarkLower_V1(b *testing.B) {
 		for _, it := range items {
 			ctx := goasm.New(goasm.AMD64)
 			ctx.Append(ctx.NewATEXT())
-			if err := ir.LowerAMD64(ctx, it.blk, it.alloc); err != nil {
+			if _, err := ir.LowerAMD64(ctx, it.blk, it.alloc); err != nil {
 				continue
 			}
 			_, _ = ctx.Assemble()
@@ -152,7 +152,7 @@ func BenchmarkLower_V2(b *testing.B) {
 		for _, it := range items {
 			ctx := goasm.New(goasm.AMD64)
 			ctx.Append(ctx.NewATEXT())
-			if err := ir.LowerAMD64_V2(ctx, it.blk, it.alloc); err != nil {
+			if _, err := ir.LowerAMD64_V2(ctx, it.blk, it.alloc); err != nil {
 				continue
 			}
 			_, _ = ctx.Assemble()
@@ -228,7 +228,7 @@ func TestLower_CodeSize_V1_vs_V2(t *testing.T) {
 		alloc1 := allocator.Allocate(blk, pool1, ir.AMD64Pinned(), nil)
 		ctx1 := goasm.New(goasm.AMD64)
 		ctx1.Append(ctx1.NewATEXT())
-		if err := ir.LowerAMD64(ctx1, blk, alloc1); err == nil {
+		if _, err := ir.LowerAMD64(ctx1, blk, alloc1); err == nil {
 			if code, err := ctx1.Assemble(); err == nil {
 				v1Total += len(code)
 				v1Count++
@@ -240,7 +240,7 @@ func TestLower_CodeSize_V1_vs_V2(t *testing.T) {
 		alloc2 := allocator.Allocate(blk, pool2, ir.AMD64Pinned(), nil)
 		ctx2 := goasm.New(goasm.AMD64)
 		ctx2.Append(ctx2.NewATEXT())
-		if err := ir.LowerAMD64_V2(ctx2, blk, alloc2); err == nil {
+		if _, err := ir.LowerAMD64_V2(ctx2, blk, alloc2); err == nil {
 			if code, err := ctx2.Assemble(); err == nil {
 				v2Total += len(code)
 				v2Count++

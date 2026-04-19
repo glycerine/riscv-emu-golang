@@ -29,9 +29,9 @@ func compileIR(t *testing.T, b *ir.Block, useV2 bool) (uintptr, []byte) {
 	ctx.Append(ctx.NewATEXT())
 	var err error
 	if useV2 {
-		err = ir.LowerAMD64_V2(ctx, b, alloc)
+		_, err = ir.LowerAMD64_V2(ctx, b, alloc)
 	} else {
-		err = ir.LowerAMD64(ctx, b, alloc)
+		_, err = ir.LowerAMD64(ctx, b, alloc)
 	}
 	if err != nil {
 		t.Fatalf("lower: %v", err)
@@ -85,7 +85,7 @@ func TestLockstep_V1V2_Execution(t *testing.T) {
 		alloc1 := j.irAlloc.Allocate(blk, pool1, ir.AMD64Pinned(), nil)
 		ctx1 := goasm.New(goasm.AMD64)
 		ctx1.Append(ctx1.NewATEXT())
-		if err := ir.LowerAMD64(ctx1, blk, alloc1); err != nil {
+		if _, err := ir.LowerAMD64(ctx1, blk, alloc1); err != nil {
 			continue
 		}
 		code1, err := ctx1.Assemble()
@@ -98,7 +98,7 @@ func TestLockstep_V1V2_Execution(t *testing.T) {
 		alloc2 := j.irAlloc.Allocate(blk, pool2, ir.AMD64Pinned(), nil)
 		ctx2 := goasm.New(goasm.AMD64)
 		ctx2.Append(ctx2.NewATEXT())
-		if err := ir.LowerAMD64_V2(ctx2, blk, alloc2); err != nil {
+		if _, err := ir.LowerAMD64_V2(ctx2, blk, alloc2); err != nil {
 			t.Fatalf("block %d: V2 lower failed: %v", i, err)
 		}
 		code2, err := ctx2.Assemble()

@@ -71,7 +71,7 @@ type lowerCtxV2 struct {
 
 // LowerAMD64_V2 converts a register-allocated IR Block into x86-64 machine code
 // using the "always-stage" approach.
-func LowerAMD64_V2(ctx *goasm.Ctx, b *Block, alloc *Allocation) error {
+func LowerAMD64_V2(ctx *goasm.Ctx, b *Block, alloc *Allocation) (*LowerResult, error) {
 	if alloc == nil {
 		return fmt.Errorf("ir.LowerAMD64_V2: nil allocation")
 	}
@@ -116,13 +116,13 @@ func LowerAMD64_V2(ctx *goasm.Ctx, b *Block, alloc *Allocation) error {
 	for idx := range b.Instrs {
 		lc.idx = idx
 		if err := lc.lowerInstr(&b.Instrs[idx]); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	if len(lc.pending) > 0 {
-		return fmt.Errorf("ir.LowerAMD64_V2: %d unresolved forward labels", len(lc.pending))
+		return nil, fmt.Errorf("ir.LowerAMD64_V2: %d unresolved forward labels", len(lc.pending))
 	}
-	return nil
+	return &LowerResult{}, nil
 }
 
 // ── Prologue / Epilogue (identical to V1) ──
@@ -526,6 +526,9 @@ func (lc *lowerCtxV2) lowerInstr(ins *IRInstr) error {
 		lc.v2Ret(ins)
 	case IRRetDyn:
 		lc.v2RetDyn(ins)
+	case IRChainExit:
+		// V2 doesn't support chaining — lower as a regular ret.
+		lc.v2Ret(&IRInstr{Op: IRRet, Imm: ins.Imm, Imm2: 0, A: VRegZero})
 	case IRCall:
 		lc.v2Call(ins)
 

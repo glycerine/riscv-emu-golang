@@ -3,10 +3,12 @@ package riscv
 // jit.go — JIT manager: block cache, RunJIT dispatch loop.
 
 import (
+	"encoding/binary"
 	"fmt"
 	"os"
 	"riscv/internal/jitcall"
 	"riscv/ir"
+	"unsafe"
 )
 
 // JIT status codes returned by compiled blocks.
@@ -44,11 +46,11 @@ type JIT struct {
 	irAlloc ir.RegAllocator
 }
 
-// NewJIT creates a new JIT translation cache using the ELS register allocator.
+// NewJIT creates a new JIT translation cache using the Fixed Static Mapping allocator.
 func NewJIT() *JIT {
 	return &JIT{
 		noJIT:   newU64set(),
-		irAlloc: ir.NewAllocator(),
+		irAlloc: ir.NewFixedStaticAllocator(),
 	}
 }
 
@@ -56,10 +58,10 @@ func NewJIT() *JIT {
 // Valid strategies: "els" (Extended Linear Scan), "fixed" (Fixed Static Mapping).
 func (j *JIT) SetAllocStrategy(name string) {
 	switch name {
-	case "fixed":
-		j.irAlloc = ir.NewFixedStaticAllocator()
-	default:
+	case "els":
 		j.irAlloc = ir.NewAllocator()
+	default:
+		j.irAlloc = ir.NewFixedStaticAllocator()
 	}
 	// Clear block cache — compiled blocks used the old allocator.
 	j.cache = [blockCacheSize]blockCacheEntry{}
@@ -250,6 +252,7 @@ func (j *JIT) stepBlockResult(_ *CPU, res jitcall.Result) (uint64, error) {
 // RunJIT executes the CPU using JIT-compiled blocks where possible,
 // falling back to the interpreter for untranslatable instructions.
 func (j *JIT) RunJIT(cpu *CPU) error {
+	var prevBlk *compiledBlock // track previous block for chain patching
 	for {
 		// Tohost polling — once per dispatch cycle (block granularity).
 		if cpu.watchAddr != 0 {
@@ -269,9 +272,15 @@ func (j *JIT) RunJIT(cpu *CPU) error {
 
 			switch int(res.Status) {
 			case jitOK:
+				// Patch previous block's chain exit to jump directly to this block.
+				if prevBlk != nil && len(prevBlk.chainExits) > 0 {
+					j.tryPatchChain(prevBlk, cpu.pc)
+				}
+				prevBlk = blk
 				continue
 
 			case jitEcall:
+				prevBlk = nil
 				if cpu.mtvec != 0 {
 					cpu.mepc = cpu.pc
 					cpu.mcause = 8
@@ -288,6 +297,7 @@ func (j *JIT) RunJIT(cpu *CPU) error {
 				}
 
 			case jitEbreak:
+				prevBlk = nil
 				n := noteFromStepErr(ErrEbreak, cpu.pc)
 				switch cpu.Notes.Deliver(cpu, n) {
 				case NoteHandled:
@@ -297,6 +307,7 @@ func (j *JIT) RunJIT(cpu *CPU) error {
 				}
 
 			case jitLoadFault:
+				prevBlk = nil
 				f := &MemFault{Addr: res.FaultAddr, Width: 8, Kind: FaultLoad}
 				n := noteFromStepErr(f, cpu.pc)
 				switch cpu.Notes.Deliver(cpu, n) {
@@ -307,6 +318,7 @@ func (j *JIT) RunJIT(cpu *CPU) error {
 				}
 
 			case jitStoreFault:
+				prevBlk = nil
 				f := &MemFault{Addr: res.FaultAddr, Width: 8, Kind: FaultStore}
 				n := noteFromStepErr(f, cpu.pc)
 				switch cpu.Notes.Deliver(cpu, n) {
@@ -317,6 +329,7 @@ func (j *JIT) RunJIT(cpu *CPU) error {
 				}
 
 			default:
+				prevBlk = nil
 				err := cpu.step()
 				cpu.cycle++
 				if err == nil {
@@ -357,6 +370,27 @@ func (j *JIT) RunJIT(cpu *CPU) error {
 			continue
 		default:
 			return err
+		}
+	}
+}
+
+// tryPatchChain patches a previous block's chain exit to jump directly
+// to the target block, bypassing the Go dispatch loop on future executions.
+func (j *JIT) tryPatchChain(blk *compiledBlock, targetPC uint64) {
+	target := j.lookupBlock(targetPC)
+	if target == nil || target.chainEntry == 0 {
+		return
+	}
+	for _, ce := range blk.chainExits {
+		if ce.targetPC == targetPC {
+			// Overwrite the MOVABS imm64 with target's chain entry address.
+			// The code page is RWX, so this write is safe.
+			addr := blk.fn + uintptr(ce.patchOffset)
+			binary.LittleEndian.PutUint64(
+				unsafe.Slice((*byte)(unsafe.Pointer(addr)), 8),
+				uint64(target.chainEntry),
+			)
+			break
 		}
 	}
 }

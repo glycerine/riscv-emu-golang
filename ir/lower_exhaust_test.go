@@ -33,9 +33,9 @@ func execBlock(t *testing.T, b *Block, x *[32]uint64, v2 bool) jitcall.Result {
 	ctx.Append(ctx.NewATEXT())
 	var err error
 	if v2 {
-		err = LowerAMD64_V2(ctx, b, alloc)
+		_, err = LowerAMD64_V2(ctx, b, alloc)
 	} else {
-		err = LowerAMD64(ctx, b, alloc)
+		_, err = LowerAMD64(ctx, b, alloc)
 	}
 	if err != nil {
 		t.Fatalf("lower: %v", err)

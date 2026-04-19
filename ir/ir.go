@@ -189,6 +189,7 @@ const (
 	IRCall      // call external symbol; Imm = CTab index
 	IRRet       // return {pc=Imm, status=Imm2, faultAddr=A}
 	IRRetDyn    // return {pc=A, status=Imm, faultAddr=B}  — dynamic PC from VReg
+	IRChainExit // chain exit: {targetPC=Imm, exitIdx=Imm2}. WriteBackAll must precede.
 
 	// Floating point
 	IRFAdd      // Dst = A + B       (FP, type T)
@@ -271,6 +272,7 @@ var irOpNames = [...]string{
 	IRCall:      "call",
 	IRRet:       "ret",
 	IRRetDyn:    "ret_dyn",
+	IRChainExit: "chain_exit",
 	IRFAdd:      "fadd",
 	IRFSub:      "fsub",
 	IRFMul:      "fmul",
