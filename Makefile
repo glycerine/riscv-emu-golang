@@ -22,8 +22,9 @@
 #   make clean          # remove xendor/build_capi and generated ELF
 #   make help           # this message
 
-.PHONY: all help bench-setup bench bench-quick bench-raw bench-ours bench-cpu bench-libriscv bench-mem \
-        bench-smoke bench-summary bench-alloc test clean check-tools \
+.PHONY: all help bench-setup bench bench-quick \
+        bench-raw bench-ours bench-cpu bench-libriscv bench-mem \
+        bench-smoke bench-summary bench-lots test clean check-tools \
         libriscv-build guest-elf guest-native
 
 # ── platform detection ─────────────────────────────────────────────────────
@@ -278,7 +279,7 @@ $(GUEST_NATIVE): $(GUEST_SRC)
 
 # ── benchmark targets ──────────────────────────────────────────────────────
 
-bench: bench-setup
+bench-lots: bench-setup
 	@mkdir -p $(RESULTS_DIR)
 	@echo ""
 	@echo "══════════════════════════════════════════════════════════════════"
@@ -398,11 +399,13 @@ bench-smoke: bench-setup
 	        -run='^TestLibriscvSmokeTest$$' \
 	        ./bench/libriscv/ 2>&1
 
-# number of riscv instructions retired, we use this number 
-# for native to so we get an apples-to-apples comparison.
+# The number of riscv instructions retired during a
+# run on compiled bench/libriscv_guest/bench_guest.c ;
+# we use this number for the numerator in native 
+# benchmarking for an apples-to-apples comparison.
 NATIVE_RETIRED := 2524935201
 
-bench-alloc: bench-setup
+bench:
 	@echo ""
 	@echo "══════════════════════════════════════════════════════════════════"
 	@echo "  JIT ALLOCATOR COMPARISON — $$(date '+%Y-%m-%d %H:%M')  [$(PLATFORM)]"
