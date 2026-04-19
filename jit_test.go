@@ -1,6 +1,9 @@
 package riscv
 
-import "testing"
+import (
+	"bytes"
+	"testing"
+)
 
 // ── Instruction encoding helpers ─────────────────────────────────────────
 
@@ -157,18 +160,18 @@ func newTestCPU(t *testing.T, memSize uint64, codeVA uint64, insns []uint32) (*C
 // compareFullMemory reads both sandboxes and compares byte-for-byte.
 func compareFullMemory(t *testing.T, a, b *GuestMemory, blockNum int) {
 	t.Helper()
-	size := a.Size()
-	bufA := make([]byte, size)
-	bufB := make([]byte, size)
-	a.ReadBytes(0, bufA)
-	b.ReadBytes(0, bufB)
-
+	sliceA := a.RawSlice()
+	sliceB := b.RawSlice()
+	if bytes.Equal(sliceA, sliceB) {
+		return
+	}
+	// slow path: only on actual mismatch
 	diffs := 0
-	for i := range bufA {
-		if bufA[i] != bufB[i] {
+	for i := range sliceA {
+		if sliceA[i] != sliceB[i] {
 			if diffs < 5 {
 				t.Errorf("block %d: memory[0x%04x] mismatch: jit=0x%02x interp=0x%02x",
-					blockNum, i, bufA[i], bufB[i])
+					blockNum, i, sliceA[i], sliceB[i])
 			}
 			diffs++
 		}

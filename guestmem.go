@@ -205,6 +205,11 @@ func (m *GuestMemory) Size() uint64 { return m.size }
 func (m *GuestMemory) Mask() uint64 { return m.mask }
 func (m *GuestMemory) Base() uintptr { return m.base }
 
+// RawSlice returns a zero-copy byte slice over the entire guest memory slab.
+func (m *GuestMemory) RawSlice() []byte {
+	return unsafe.Slice((*byte)(unsafe.Pointer(m.base)), m.size)
+}
+
 // ZeroRange returns physical pages in [addr, addr+length) to the OS.
 // Virtual address space is retained. Use to reclaim RAM after a guest
 // process exits without reallocating the address space for reuse.

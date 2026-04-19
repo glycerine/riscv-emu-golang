@@ -503,7 +503,9 @@ func TestRISCVTests_Lockstep_UI(t *testing.T) {
 	}
 	for _, path := range entries {
 		name := strings.TrimPrefix(filepath.Base(path), "rv64ui-p-")
-		t.Run(name, func(t *testing.T) { runLockstep(t, path) })
+		t.Run(name, func(t *testing.T) {
+			runLockstep(t, path)
+		})
 	}
 }
 
