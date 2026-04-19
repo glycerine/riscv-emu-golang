@@ -75,8 +75,9 @@ import (
 
 // compiledBlock holds a TCC-compiled native function pointer.
 type compiledBlock struct {
-	fn    uintptr        // native function pointer
-	state unsafe.Pointer // *C.TCCState — prevents code memory from being freed
+	fn     uintptr        // native function pointer
+	state  unsafe.Pointer // *C.TCCState — prevents code memory from being freed
+	shadow *compiledBlock // V2 shadow block for DebugV1V2 comparison
 }
 
 // tccCompile compiles C source into a native function pointer.

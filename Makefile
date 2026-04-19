@@ -74,7 +74,7 @@ GUEST_CFLAGS := -O2 -target $(ZIG_TARGET) -static -mcpu=generic_rv64+m+a+f+d+c \
 # ── paths ──────────────────────────────────────────────────────────────────
 
 ROOT        := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
-VENDOR      := $(ROOT)vendor/libriscv
+VENDOR      := $(ROOT)xendor/libriscv
 BUILD       := $(VENDOR)/build_capi
 LIB_CAPI    := $(BUILD)/libriscv_capi.a
 LIB_CORE    := $(BUILD)/libriscv/libriscv.a
@@ -143,7 +143,7 @@ endif
 	@echo ""
 	@echo "  Other:"
 	@echo "    make test             unit tests"
-	@echo "    make clean            remove vendor/ and generated ELF"
+	@echo "    make clean            remove xendor/ and generated ELF"
 	@echo ""
 	@echo "  Overrides:"
 	@echo "    ZIG_CC=$(ZIG_CC)  BENCH_COUNT=$(BENCH_COUNT)  BENCH_TIME=$(BENCH_TIME)"
