@@ -1,5 +1,4 @@
 *~
-bench/libriscv_guest/bench_guest.elf
 riscv.test
 xendor/tcc/libtcc.o
 next_plan.md
