@@ -462,8 +462,6 @@ bench:
 	        ./bench/libriscv/ 2>&1 \
 	    | awk '/MIPS/{for(i=1;i<=NF;i++){if($$i=="MIPS"){print p" MIPS";next}; p=$$i}}' \
 	    || echo "(failed)"
-
-ya:
 	@printf "  %-44s " "native x86-64 (-O3 -march=native):"
 	@best=""; \
 	elapsed=$$( { TIMEFORMAT='%R'; time $(GUEST_NATIVE) >/dev/null 2>&1; } 2>&1 ); \
