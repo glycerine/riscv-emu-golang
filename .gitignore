@@ -6,3 +6,4 @@ bench.test
 cpu.prof
 mem.prof
 *test
+bench/libriscv_guest/bench_guest.native

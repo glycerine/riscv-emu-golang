@@ -24,7 +24,7 @@
 
 .PHONY: all help bench-setup bench bench-quick bench-raw bench-ours bench-cpu bench-libriscv bench-mem \
         bench-smoke bench-summary bench-alloc test clean check-tools \
-        libriscv-build guest-elf
+        libriscv-build guest-elf guest-native
 
 # ── platform detection ─────────────────────────────────────────────────────
 
@@ -81,6 +81,7 @@ LIB_CORE    := $(BUILD)/libriscv/libriscv.a
 GUEST_DIR   := $(ROOT)bench/libriscv_guest
 GUEST_SRC   := $(GUEST_DIR)/bench_guest.c
 GUEST_ELF   := $(GUEST_DIR)/bench_guest.elf
+GUEST_NATIVE := $(GUEST_DIR)/bench_guest.native
 RESULTS_DIR := /tmp/riscv-bench
 #PATCH_STAMP := $(VENDOR)/.patched
 
@@ -266,6 +267,15 @@ $(GUEST_ELF): $(GUEST_SRC)
 	@echo "  ✓ $$(file $(GUEST_ELF) | cut -d: -f2 | xargs)"
 	@echo "  ✓ size: $$(du -h $(GUEST_ELF) | cut -f1)"
 
+guest-native: $(GUEST_NATIVE)
+$(GUEST_NATIVE): $(GUEST_SRC)
+	@echo "── compiling native guest  ──────────────────────────────────"
+	$(ZIG_CC) cc -O3 -march=native -o $(GUEST_NATIVE) $(GUEST_SRC)
+	@test -f $(GUEST_NATIVE) || { echo "  ✗ guest native not produced"; exit 1; }
+	@echo "  ✓ $$(file $(GUEST_NATIVE) | cut -d: -f2 | xargs)"
+	@echo "  ✓ size: $$(du -h $(GUEST_NATIVE) | cut -f1)"
+
+
 # ── benchmark targets ──────────────────────────────────────────────────────
 
 bench: bench-setup
@@ -388,6 +398,10 @@ bench-smoke: bench-setup
 	        -run='^TestLibriscvSmokeTest$$' \
 	        ./bench/libriscv/ 2>&1
 
+# number of riscv instructions retired, we use this number 
+# for native to so we get an apples-to-apples comparison.
+NATIVE_RETIRED := 2524935201
+
 bench-alloc: bench-setup
 	@echo ""
 	@echo "══════════════════════════════════════════════════════════════════"
@@ -445,6 +459,15 @@ bench-alloc: bench-setup
 	        ./bench/libriscv/ 2>&1 \
 	    | awk '/MIPS/{for(i=1;i<=NF;i++){if($$i=="MIPS"){print p" MIPS";next}; p=$$i}}' \
 	    || echo "(failed)"
+	@printf "  %-44s " "native x86-64 (-O3 -march=native):"
+	@best="";
+	for i in 1 2 3 4 5; do
+	  elapsed=$$( { TIMEFORMAT='%R'; time $(GUEST_NATIVE) >/dev/null 2>&1; } 2>&1 );
+	  if [ -z "$$best" ] || awk "BEGIN{exit(!($$elapsed<$$best))}" 2>/dev/null; then
+	    best=$$elapsed;
+	  fi;
+	done;
+	awk "BEGIN{printf \"%.0f MIPS  (%.1f ms)\n\", $(NATIVE_RETIRED)/$$best/1e6, $$best*1000}
 	@echo ""
 
 bench-summary:

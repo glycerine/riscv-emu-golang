@@ -14,15 +14,25 @@
  */
 
 #include <stdint.h>
-/*include <stdlib.h>*/
+#if !defined(__riscv)
+#include <unistd.h>  /* _exit() for native builds */
+#endif
 
 /* ── syscall exit (used directly so we don't need stdio) ─────────────────── */
 
 static inline void do_exit(int code) {
+#if defined(__riscv)
     register long a0 asm("a0") = code;
     register long a7 asm("a7") = 93;
     asm volatile ("ecall" :: "r"(a0), "r"(a7));
     __builtin_unreachable();
+#elif defined(__x86_64__) && defined(__linux__)
+    asm volatile ("syscall" :: "a"(60), "D"(code));
+    __builtin_unreachable();
+#else
+    /* macOS / other: use libc */
+    _exit(code);
+#endif
 }
 
 /* ── workloads ───────────────────────────────────────────────────────────── */
