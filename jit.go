@@ -374,6 +374,16 @@ func (j *JIT) RunJIT(cpu *CPU) error {
 	}
 }
 
+// patchChainTarget overwrites the 8-byte imm64 in a MOVABS instruction
+// at codeBase+patchOffset to redirect to targetAddr.
+//
+//go:nosplit
+func patchChainTarget(codeBase uintptr, patchOffset int, targetAddr uintptr) {
+	//nolint:gosec // JIT code patching requires direct memory writes to RWX pages.
+	p := (*[8]byte)(unsafe.Pointer(codeBase + uintptr(patchOffset))) //nolint:govet
+	binary.LittleEndian.PutUint64(p[:], uint64(targetAddr))
+}
+
 // tryPatchChain patches a previous block's chain exit to jump directly
 // to the target block, bypassing the Go dispatch loop on future executions.
 func (j *JIT) tryPatchChain(blk *compiledBlock, targetPC uint64) {
@@ -385,11 +395,7 @@ func (j *JIT) tryPatchChain(blk *compiledBlock, targetPC uint64) {
 		if ce.targetPC == targetPC {
 			// Overwrite the MOVABS imm64 with target's chain entry address.
 			// The code page is RWX, so this write is safe.
-			addr := blk.fn + uintptr(ce.patchOffset)
-			binary.LittleEndian.PutUint64(
-				unsafe.Slice((*byte)(unsafe.Pointer(addr)), 8),
-				uint64(target.chainEntry),
-			)
+			patchChainTarget(blk.fn, ce.patchOffset, target.chainEntry)
 			break
 		}
 	}

@@ -73,7 +73,7 @@ type lowerCtxV2 struct {
 // using the "always-stage" approach.
 func LowerAMD64_V2(ctx *goasm.Ctx, b *Block, alloc *Allocation) (*LowerResult, error) {
 	if alloc == nil {
-		return fmt.Errorf("ir.LowerAMD64_V2: nil allocation")
+		return nil, fmt.Errorf("ir.LowerAMD64_V2: nil allocation")
 	}
 	// Build fast lookup indices (shared helpers from lower_amd64.go).
 	rIdx := buildRegIndex(alloc)

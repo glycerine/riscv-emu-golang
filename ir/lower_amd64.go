@@ -363,14 +363,14 @@ func (lc *lowerCtx) emitEpilogue() {
 
 func (lc *lowerCtx) emitNOP() *obj.Prog {
 	p := lc.c.NewProg()
-	p.As = x86.ANOP
+	p.As = obj.ANOP
 	lc.c.Append(p)
 	return p
 }
 
 func (lc *lowerCtx) emitJmpReg(reg int16) {
 	p := lc.c.NewProg()
-	p.As = x86.AJMP
+	p.As = obj.AJMP
 	p.To.Type = obj.TYPE_REG
 	p.To.Reg = reg
 	lc.c.Append(p)
@@ -386,10 +386,17 @@ func (lc *lowerCtx) lowerChainExit(ins *IRInstr) {
 	// MOVABS R10, <sentinel> — 10-byte encoding for patching.
 	// Sentinel > 32 bits forces the assembler to use the 10-byte MOVABS encoding.
 	const sentinel = int64(0x7BADC0DE7BADC0DE)
-	movProg := lc.emitRI(x86.AMOVQ, sentinel, amd64Scratch1)
+	p := lc.c.NewProg()
+	p.As = x86.AMOVQ
+	p.From.Type = obj.TYPE_CONST
+	p.From.Offset = sentinel
+	p.To.Type = obj.TYPE_REG
+	p.To.Reg = amd64Scratch1
+	lc.c.Append(p)
+
 	lc.chainExits = append(lc.chainExits, chainExitInfo{
 		targetPC: uint64(ins.Imm),
-		movProg:  movProg,
+		movProg:  p,
 	})
 	// JMP R10
 	lc.emitJmpReg(amd64Scratch1)
@@ -399,7 +406,14 @@ func (lc *lowerCtx) lowerChainExit(ins *IRInstr) {
 // Called when a chain exit hasn't been patched yet.
 func (lc *lowerCtx) emitSlowExitStub(targetPC uint64) *obj.Prog {
 	// Record the first prog of the stub for offset computation.
-	firstProg := lc.emitRI(x86.AMOVQ, int64(targetPC), amd64Scratch1)
+	firstProg := lc.c.NewProg()
+	firstProg.As = x86.AMOVQ
+	firstProg.From.Type = obj.TYPE_CONST
+	firstProg.From.Offset = int64(targetPC)
+	firstProg.To.Type = obj.TYPE_REG
+	firstProg.To.Reg = amd64Scratch1
+	lc.c.Append(firstProg)
+
 	lc.emitMR(x86.AMOVQ, amd64Scratch1, amd64RegSret, 0) // Result.PC
 	lc.emitMR(x86.AMOVQ, amd64RegIC, amd64RegSret, 8)    // Result.IC
 	lc.emitMI(x86.AMOVQ, 0, amd64RegSret, 16)            // Result.Status = jitOK

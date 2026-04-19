@@ -428,7 +428,7 @@ func TestLockstep_V1V2_Assembly(t *testing.T) {
 		alloc1 := Allocate(blk, pool1, AMD64Pinned(), nil)
 		ctx1 := goasm.New(goasm.AMD64)
 		ctx1.Append(ctx1.NewATEXT())
-		err1 := LowerAMD64(ctx1, blk, alloc1)
+		_, err1 := LowerAMD64(ctx1, blk, alloc1)
 		if err1 != nil {
 			continue // V1 can't handle → skip
 		}

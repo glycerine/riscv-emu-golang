@@ -15,11 +15,11 @@ func lowerBlock(t *testing.T, b *Block) ([]byte, *Allocation) {
 	t.Helper()
 	pool := AMD64Pool(b)
 	pinned := AMD64Pinned()
-	alloc := Allocate(b, pool, pinned, nil)
+	alloc := NewAllocator().Allocate(b, pool, pinned, nil)
 
 	ctx := goasm.New(goasm.AMD64)
 	ctx.Append(ctx.NewATEXT())
-	if err := LowerAMD64(ctx, b, alloc); err != nil {
+	if _, err := LowerAMD64(ctx, b, alloc); err != nil {
 		t.Fatalf("LowerAMD64: %v", err)
 	}
 	ctx.Append(ctx.NewRET()) // safety net RET
@@ -40,7 +40,7 @@ func lowerBlockWithRet(t *testing.T, b *Block) ([]byte, *Allocation) {
 
 	ctx := goasm.New(goasm.AMD64)
 	ctx.Append(ctx.NewATEXT())
-	if err := LowerAMD64(ctx, b, alloc); err != nil {
+	if _, err := LowerAMD64(ctx, b, alloc); err != nil {
 		t.Fatalf("LowerAMD64: %v", err)
 	}
 
@@ -132,7 +132,7 @@ func TestLowerAMD64_EmptyBlock(t *testing.T) {
 
 	ctx := goasm.New(goasm.AMD64)
 	ctx.Append(ctx.NewATEXT())
-	err := LowerAMD64(ctx, b, alloc)
+	_, err := LowerAMD64(ctx, b, alloc)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -150,7 +150,7 @@ func TestLowerAMD64_NilAlloc(t *testing.T) {
 	b := NewBlock()
 	ctx := goasm.New(goasm.AMD64)
 	ctx.Append(ctx.NewATEXT())
-	err := LowerAMD64(ctx, b, nil)
+	_, err := LowerAMD64(ctx, b, nil)
 	if err == nil {
 		t.Error("expected error for nil allocation")
 	}
