@@ -1,5 +1,3 @@
-//go:build !tcc
-
 package riscv
 
 // jit_emit_ir.go — Translates RISC-V basic blocks to IR (ir.Block).
@@ -10,12 +8,6 @@ import (
 	"os"
 	"riscv/ir"
 )
-
-// debugJIT enables diagnostic logging in emitBlock.
-var debugJIT bool
-
-// SetDebugJIT enables/disables emitBlock diagnostic logging.
-func SetDebugJIT(on bool) { debugJIT = on }
 
 // testIterStart is set by tests to rotate gotoTargets iteration order.
 // Zero means normal sorted order. Non-zero rotates by this offset.

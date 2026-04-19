@@ -1,5 +1,3 @@
-//go:build !tcc
-
 package riscv
 
 // jit_native.go — Native IR→machine-code compilation pipeline.
@@ -25,20 +23,6 @@ func getJITCtx() *goasm.Ctx {
 		jitCtx.Reset()
 	}
 	return jitCtx
-}
-
-// chainPatchInfo describes a chain exit that can be patched by Go.
-type chainPatchInfo struct {
-	targetPC    uint64 // guest PC this exit targets
-	patchOffset int    // byte offset of imm64 in MOVABS within the code page
-}
-
-// compiledBlock holds a natively-compiled function pointer.
-type compiledBlock struct {
-	fn         uintptr          // native function pointer (mmap'd executable memory)
-	chainEntry uintptr          // entry point that skips pinned reg setup (for chaining)
-	chainExits []chainPatchInfo // chain exits that Go can patch
-	shadow     *compiledBlock   // V2 shadow block for DebugV1V2 comparison
 }
 
 // jitCompile compiles an IR block to native code and returns a compiledBlock.

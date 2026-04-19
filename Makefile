@@ -420,8 +420,8 @@ bench-alloc: bench-setup
 	    || echo "(failed)"
 	@printf "  %-44s " "Go JIT — TCC backend:"
 	@cd $(ROOT) && BENCH_ELF=$(GUEST_ELF) CGO_ENABLED=1 \
-	    $(GO) test -tags tcc -count=1 -benchtime=1x -benchmem \
-	        -run='^$$' -bench='^BenchmarkCPU_FullExecution_JIT$$' \
+	    $(GO) test -count=1 -benchtime=1x -benchmem \
+	        -run='^$$' -bench='^BenchmarkCPU_FullExecution_JIT_TCC$$' \
 	        ./bench/ 2>&1 \
 	    | awk '/MIPS/{for(i=1;i<=NF;i++){if($$i=="MIPS"){print p" MIPS";next}; p=$$i}}' \
 	    || echo "(failed)"

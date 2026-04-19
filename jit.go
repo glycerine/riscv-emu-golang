@@ -11,6 +11,27 @@ import (
 	"unsafe"
 )
 
+// debugJIT enables diagnostic logging in emitBlock.
+var debugJIT bool
+
+// SetDebugJIT enables/disables emitBlock diagnostic logging.
+func SetDebugJIT(on bool) { debugJIT = on }
+
+// chainPatchInfo describes a chain exit that can be patched by Go.
+type chainPatchInfo struct {
+	targetPC    uint64 // guest PC this exit targets
+	patchOffset int    // byte offset of imm64 in MOVABS within the code page
+}
+
+// compiledBlock holds a compiled function pointer (native IR or TCC).
+type compiledBlock struct {
+	fn         uintptr          // native function pointer
+	chainEntry uintptr          // entry point for chaining (native IR only)
+	chainExits []chainPatchInfo // chain exits for patching (native IR only)
+	tccState   unsafe.Pointer   // *C.TCCState for TCC-compiled blocks (nil for native)
+	shadow     *compiledBlock   // V2 shadow block for DebugV1V2 comparison
+}
+
 // JIT status codes returned by compiled blocks.
 const (
 	jitOK         = 0

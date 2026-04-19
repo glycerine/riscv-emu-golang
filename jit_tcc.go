@@ -1,5 +1,3 @@
-//go:build tcc
-
 package riscv
 
 // jit_tcc.go — cgo bridge to TCC for compiling C source to native code.
@@ -73,13 +71,6 @@ import (
 	"unsafe"
 )
 
-// compiledBlock holds a TCC-compiled native function pointer.
-type compiledBlock struct {
-	fn     uintptr        // native function pointer
-	state  unsafe.Pointer // *C.TCCState — prevents code memory from being freed
-	shadow *compiledBlock // V2 shadow block for DebugV1V2 comparison
-}
-
 // tccCompile compiles C source into a native function pointer.
 // Cold path: ~1ms per call, amortized over billions of block executions.
 func tccCompile(csrc string) (*compiledBlock, error) {
@@ -93,16 +84,11 @@ func tccCompile(csrc string) (*compiledBlock, error) {
 	}
 	return &compiledBlock{
 		fn:    uintptr(fn),
-		state: unsafe.Pointer(state),
+		tccState: unsafe.Pointer(state),
 	}, nil
 }
 
-// jitCompile dispatches to tccCompile under the tcc build tag.
-func jitCompile(res *emitResult) (*compiledBlock, error) {
-	return tccCompile(res.csrc)
-}
-
-// jitCompileWith is the TCC stub — ignores useV2 (V2 is native-only).
-func (j *JIT) jitCompileWith(res *emitResult, _ bool) (*compiledBlock, error) {
+// tccJitCompileWith compiles via TCC — ignores useV2 (V2 is native-only).
+func (j *JIT) tccJitCompileWith(res *tccEmitResult) (*compiledBlock, error) {
 	return tccCompile(res.csrc)
 }

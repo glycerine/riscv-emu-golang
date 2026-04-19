@@ -51,6 +51,26 @@ func BenchmarkCPU_FullExecution_JIT_Fixed(b *testing.B) {
 	benchJITWith(b, "fixed")
 }
 
+func BenchmarkCPU_FullExecution_JIT_TCC(b *testing.B) {
+	elfData := loadCPUELF(b)
+	b.ReportAllocs()
+	b.ResetTimer()
+	totalInsns := uint64(0)
+	for i := 0; i < b.N; i++ {
+		cpu, mem := newBenchCPU(b, elfData)
+		jit := riscv.NewJIT()
+		_, insns := runTccJITBenchGuestWith(cpu, jit)
+		totalInsns += insns
+		mem.Free()
+	}
+	b.StopTimer()
+	elapsed := b.Elapsed().Seconds()
+	if elapsed > 0 && totalInsns > 0 {
+		mips := float64(totalInsns) / elapsed / 1e6
+		b.ReportMetric(mips, "MIPS")
+	}
+}
+
 func benchJITWith(b *testing.B, strategy string) {
 	b.Helper()
 	elfData := loadCPUELF(b)

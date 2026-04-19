@@ -1,5 +1,3 @@
-//go:build tcc
-
 package riscv
 
 // jit_emit.go — Translates RISC-V basic blocks to C source code.
@@ -10,8 +8,8 @@ import (
 	"strings"
 )
 
-// emitResult holds the generated C source and metadata about the block.
-type emitResult struct {
+// tccEmitResult holds the generated C source and metadata about the block.
+type tccEmitResult struct {
 	csrc     string   // complete C source for the block
 	startPC  uint64   // first instruction PC
 	endPC    uint64   // PC past the last instruction
@@ -19,13 +17,13 @@ type emitResult struct {
 	regsUsed [32]bool // which registers are read or written
 }
 
-// emitBlock translates a basic block starting at pc into C source.
+// tccEmitBlock translates a basic block starting at pc into C source.
 // Uses a two-phase approach: scan the region, then emit all instructions.
-func emitBlock(mem *GuestMemory, pc uint64) *emitResult {
+func tccEmitBlock(mem *GuestMemory, pc uint64) *tccEmitResult {
 	// Phase 1: pre-scan to determine region extent.
 	region := scanRegion(mem, pc)
 
-	e := &emitter{
+	e := &tccEmitter{
 		mem:         mem,
 		startPC:     pc,
 		pc:          pc,
@@ -79,8 +77,8 @@ func emitBlock(mem *GuestMemory, pc uint64) *emitResult {
 	return e.finalize()
 }
 
-// emitter accumulates C code for a basic block.
-type emitter struct {
+// tccEmitter accumulates C code for a basic block.
+type tccEmitter struct {
 	mem       *GuestMemory
 	startPC   uint64
 	pc        uint64
@@ -105,7 +103,7 @@ type emitter struct {
 
 // ── C source generation helpers ─────────────────────────────────────────
 
-func (e *emitter) rd(r uint32) string {
+func (e *tccEmitter) rd(r uint32) string {
 	if r == 0 {
 		return "" // writes to x0 are discarded
 	}
@@ -113,7 +111,7 @@ func (e *emitter) rd(r uint32) string {
 	return fmt.Sprintf("r%d", r)
 }
 
-func (e *emitter) rs(r uint32) string {
+func (e *tccEmitter) rs(r uint32) string {
 	if r == 0 {
 		return "0"
 	}
@@ -121,31 +119,31 @@ func (e *emitter) rs(r uint32) string {
 	return fmt.Sprintf("r%d", r)
 }
 
-func (e *emitter) emit(format string, args ...any) {
+func (e *tccEmitter) emit(format string, args ...any) {
 	fmt.Fprintf(&e.body, format, args...)
 }
 
-func (e *emitter) emitLabel() {
+func (e *tccEmitter) emitLabel() {
 	e.emit("b_%x:\n", e.pc)
 }
 
-func (e *emitter) emitIC() {
+func (e *tccEmitter) emitIC() {
 	e.emit("    ic++;\n")
 }
 
 
 // emitWriteBack emits code to write back all cached registers and return.
-func (e *emitter) emitReturn(pc uint64, status int) {
+func (e *tccEmitter) emitReturn(pc uint64, status int) {
 	e.emitWriteBackAll()
 	e.emit("    return (JITResult){0x%xULL, ic, %d, 0};\n", pc, status)
 }
 
-func (e *emitter) emitReturnFault(pcExpr string, status int, addrExpr string) {
+func (e *tccEmitter) emitReturnFault(pcExpr string, status int, addrExpr string) {
 	e.emitWriteBackAll()
 	e.emit("    return (JITResult){%s, ic, %d, %s};\n", pcExpr, status, addrExpr)
 }
 
-func (e *emitter) emitWriteBackAll() {
+func (e *tccEmitter) emitWriteBackAll() {
 	for i := 1; i < 32; i++ {
 		if e.regsUsed[i] {
 			e.emit("    x[%d] = r%d;\n", i, i)
@@ -156,7 +154,7 @@ func (e *emitter) emitWriteBackAll() {
 // advancePC marks an instruction as consumed and moves to the next PC.
 // Emits ic++ in the generated C so the instruction count stays accurate,
 // unless emitBranch already emitted ic++ (indicated by icEmitted flag).
-func (e *emitter) advancePC(size uint64) {
+func (e *tccEmitter) advancePC(size uint64) {
 	e.numInsns++
 	e.pc += size
 	if e.icEmitted {
@@ -166,9 +164,9 @@ func (e *emitter) advancePC(size uint64) {
 	}
 }
 
-// ── 32-bit instruction emitter ──────────────────────────────────────────
+// ── 32-bit instruction tccEmitter ──────────────────────────────────────────
 
-func (e *emitter) emit32(insn uint32) {
+func (e *tccEmitter) emit32(insn uint32) {
 	opcode := insn & 0x7F
 	rd := (insn >> 7) & 0x1F
 	funct3 := (insn >> 12) & 0x7
@@ -311,7 +309,7 @@ func (e *emitter) emit32(insn uint32) {
 
 // ── OP-IMM (opcode 0x13) ────────────────────────────────────────────────
 
-func (e *emitter) emitOpImm(rd, rs1 uint32, imm int64, funct3, funct7 uint32) {
+func (e *tccEmitter) emitOpImm(rd, rs1 uint32, imm int64, funct3, funct7 uint32) {
 	if rd == 0 {
 		return
 	}
@@ -402,7 +400,7 @@ func (e *emitter) emitOpImm(rd, rs1 uint32, imm int64, funct3, funct7 uint32) {
 
 // ── OP-IMM-32 (opcode 0x1B) ─────────────────────────────────────────────
 
-func (e *emitter) emitOpImm32(rd, rs1 uint32, imm int64, funct3, funct7 uint32) {
+func (e *tccEmitter) emitOpImm32(rd, rs1 uint32, imm int64, funct3, funct7 uint32) {
 	if rd == 0 {
 		return
 	}
@@ -446,7 +444,7 @@ func (e *emitter) emitOpImm32(rd, rs1 uint32, imm int64, funct3, funct7 uint32) 
 
 // ── OP (opcode 0x33) ────────────────────────────────────────────────────
 
-func (e *emitter) emitOp(rd, rs1, rs2, funct3, funct7 uint32) {
+func (e *tccEmitter) emitOp(rd, rs1, rs2, funct3, funct7 uint32) {
 	if rd == 0 {
 		return
 	}
@@ -603,7 +601,7 @@ func (e *emitter) emitOp(rd, rs1, rs2, funct3, funct7 uint32) {
 
 // ── OP-32 (opcode 0x3B) ─────────────────────────────────────────────────
 
-func (e *emitter) emitOp32(rd, rs1, rs2, funct3, funct7 uint32) {
+func (e *tccEmitter) emitOp32(rd, rs1, rs2, funct3, funct7 uint32) {
 	if rd == 0 {
 		return
 	}
@@ -686,7 +684,7 @@ func (e *emitter) emitOp32(rd, rs1, rs2, funct3, funct7 uint32) {
 
 // ── LOAD ─────────────────────────────────────────────────────────────────
 
-func (e *emitter) emitLoad(rd, rs1 uint32, imm int64, funct3 uint32) {
+func (e *tccEmitter) emitLoad(rd, rs1 uint32, imm int64, funct3 uint32) {
 	width, ctype, signed_ := loadInfo(funct3)
 	if ctype == "" {
 		e.terminated = true
@@ -755,7 +753,7 @@ func loadInfo(funct3 uint32) (width uint64, ctype string, signed_ bool) {
 
 // ── STORE ────────────────────────────────────────────────────────────────
 
-func (e *emitter) emitStore(rs1, rs2 uint32, imm int64, funct3 uint32) {
+func (e *tccEmitter) emitStore(rs1, rs2 uint32, imm int64, funct3 uint32) {
 	width, ctype := storeInfo(funct3)
 	if ctype == "" {
 		e.terminated = true
@@ -798,7 +796,7 @@ func storeInfo(funct3 uint32) (width uint64, ctype string) {
 
 // ── FP LOAD (opcode 0x07) ───────────────────────────────────────────────
 
-func (e *emitter) emitFPLoad(rd, rs1 uint32, imm int64, funct3 uint32) {
+func (e *tccEmitter) emitFPLoad(rd, rs1 uint32, imm int64, funct3 uint32) {
 	e.usesFP = true
 	var width uint64
 	switch funct3 {
@@ -824,7 +822,7 @@ func (e *emitter) emitFPLoad(rd, rs1 uint32, imm int64, funct3 uint32) {
 
 // ── FP STORE (opcode 0x27) ──────────────────────────────────────────────
 
-func (e *emitter) emitFPStore(rs1, rs2 uint32, imm int64, funct3 uint32) {
+func (e *tccEmitter) emitFPStore(rs1, rs2 uint32, imm int64, funct3 uint32) {
 	e.usesFP = true
 	var width uint64
 	switch funct3 {
@@ -850,7 +848,7 @@ func (e *emitter) emitFPStore(rs1, rs2 uint32, imm int64, funct3 uint32) {
 
 // ── FMADD family (opcodes 0x43, 0x47, 0x4B, 0x4F) ─────────────────────
 
-func (e *emitter) emitFMA(opcode, rd, rs1, rs2, rs3, fpfmt uint32) {
+func (e *tccEmitter) emitFMA(opcode, rd, rs1, rs2, rs3, fpfmt uint32) {
 	e.usesFP = true
 	if fpfmt > 1 {
 		e.terminated = true
@@ -884,7 +882,7 @@ func (e *emitter) emitFMA(opcode, rd, rs1, rs2, rs3, fpfmt uint32) {
 
 // ── FP-OP (opcode 0x53) ────────────────────────────────────────────────
 
-func (e *emitter) emitFPOp(rd, rs1, rs2, funct3, funct5, fpfmt uint32) {
+func (e *tccEmitter) emitFPOp(rd, rs1, rs2, funct3, funct5, fpfmt uint32) {
 	e.usesFP = true
 	if fpfmt == 0 {
 		e.emitFPOpS(rd, rs1, rs2, funct3, funct5)
@@ -895,7 +893,7 @@ func (e *emitter) emitFPOp(rd, rs1, rs2, funct3, funct5, fpfmt uint32) {
 	}
 }
 
-func (e *emitter) emitFPOpS(rd, rs1, rs2, funct3, funct5 uint32) {
+func (e *tccEmitter) emitFPOpS(rd, rs1, rs2, funct3, funct5 uint32) {
 	switch funct5 {
 	case 0x00: // FADD.S
 		e.emit("    wr_f32(f, %d, rd_f32(f,%d) + rd_f32(f,%d));\n", rd, rs1, rs2)
@@ -942,7 +940,7 @@ func (e *emitter) emitFPOpS(rd, rs1, rs2, funct3, funct5 uint32) {
 	}
 }
 
-func (e *emitter) emitFPOpD(rd, rs1, rs2, funct3, funct5 uint32) {
+func (e *tccEmitter) emitFPOpD(rd, rs1, rs2, funct3, funct5 uint32) {
 	switch funct5 {
 	case 0x00: // FADD.D
 		e.emit("    wr_f64(f, %d, rd_f64(f,%d) + rd_f64(f,%d));\n", rd, rs1, rs2)
@@ -991,7 +989,7 @@ func (e *emitter) emitFPOpD(rd, rs1, rs2, funct3, funct5 uint32) {
 
 // ── FP sign injection helpers ───────────────────────────────────────────
 
-func (e *emitter) emitFsgnjS(rd, rs1, rs2, funct3 uint32) {
+func (e *tccEmitter) emitFsgnjS(rd, rs1, rs2, funct3 uint32) {
 	s1 := fmt.Sprintf("unbox_f32(f[%d])", rs1)
 	s2 := fmt.Sprintf("unbox_f32(f[%d])", rs2)
 	switch funct3 {
@@ -1006,7 +1004,7 @@ func (e *emitter) emitFsgnjS(rd, rs1, rs2, funct3 uint32) {
 	}
 }
 
-func (e *emitter) emitFsgnjD(rd, rs1, rs2, funct3 uint32) {
+func (e *tccEmitter) emitFsgnjD(rd, rs1, rs2, funct3 uint32) {
 	switch funct3 {
 	case 0: // FSGNJ.D
 		e.emit("    f[%d] = (f[%d] & 0x7FFFFFFFFFFFFFFFULL) | (f[%d] & 0x8000000000000000ULL);\n", rd, rs1, rs2)
@@ -1021,7 +1019,7 @@ func (e *emitter) emitFsgnjD(rd, rs1, rs2, funct3 uint32) {
 
 // ── FP comparison helpers ───────────────────────────────────────────────
 
-func (e *emitter) emitFcmpS(rd, rs1, rs2, funct3 uint32) {
+func (e *tccEmitter) emitFcmpS(rd, rs1, rs2, funct3 uint32) {
 	if rd == 0 {
 		return // write to x0 discarded
 	}
@@ -1038,7 +1036,7 @@ func (e *emitter) emitFcmpS(rd, rs1, rs2, funct3 uint32) {
 	}
 }
 
-func (e *emitter) emitFcmpD(rd, rs1, rs2, funct3 uint32) {
+func (e *tccEmitter) emitFcmpD(rd, rs1, rs2, funct3 uint32) {
 	if rd == 0 {
 		return
 	}
@@ -1057,7 +1055,7 @@ func (e *emitter) emitFcmpD(rd, rs1, rs2, funct3 uint32) {
 
 // ── FP conversion helpers ───────────────────────────────────────────────
 
-func (e *emitter) emitFcvtToIntS(rd, rs1, rs2 uint32) {
+func (e *tccEmitter) emitFcvtToIntS(rd, rs1, rs2 uint32) {
 	if rd == 0 {
 		return
 	}
@@ -1076,7 +1074,7 @@ func (e *emitter) emitFcvtToIntS(rd, rs1, rs2 uint32) {
 	}
 }
 
-func (e *emitter) emitFcvtToIntD(rd, rs1, rs2 uint32) {
+func (e *tccEmitter) emitFcvtToIntD(rd, rs1, rs2 uint32) {
 	if rd == 0 {
 		return
 	}
@@ -1095,7 +1093,7 @@ func (e *emitter) emitFcvtToIntD(rd, rs1, rs2 uint32) {
 	}
 }
 
-func (e *emitter) emitFcvtFromIntS(rd, rs1, rs2 uint32) {
+func (e *tccEmitter) emitFcvtFromIntS(rd, rs1, rs2 uint32) {
 	s := e.rs(rs1) // integer register
 	switch rs2 {
 	case 0: // FCVT.S.W
@@ -1111,7 +1109,7 @@ func (e *emitter) emitFcvtFromIntS(rd, rs1, rs2 uint32) {
 	}
 }
 
-func (e *emitter) emitFcvtFromIntD(rd, rs1, rs2 uint32) {
+func (e *tccEmitter) emitFcvtFromIntD(rd, rs1, rs2 uint32) {
 	s := e.rs(rs1)
 	switch rs2 {
 	case 0: // FCVT.D.W
@@ -1128,11 +1126,11 @@ func (e *emitter) emitFcvtFromIntD(rd, rs1, rs2 uint32) {
 }
 
 // ── Shared helpers for JAL, JALR, BRANCH ────────────────────────────────
-// These are used by both 32-bit and RVC emitters.
+// These are used by both 32-bit and RVC tccEmitters.
 
 // emitJAL emits a JAL (rd = link, exit block to target).
 // insnSize is 4 for 32-bit or 2 for RVC.
-func (e *emitter) emitJAL(rd uint32, offset int64, insnSize uint64) {
+func (e *tccEmitter) emitJAL(rd uint32, offset int64, insnSize uint64) {
 	target := e.pc + uint64(offset)
 	if rd != 0 {
 		e.emit("    %s = 0x%xULL;\n", e.rd(rd), e.pc+insnSize) // link
@@ -1168,7 +1166,7 @@ func (e *emitter) emitJAL(rd uint32, offset int64, insnSize uint64) {
 
 // emitJALR emits a JALR (rd = link, exit block to rs1+imm).
 // insnSize is 4 for 32-bit or 2 for RVC.
-func (e *emitter) emitJALR(rd, rs1 uint32, imm int64, insnSize uint64) {
+func (e *tccEmitter) emitJALR(rd, rs1 uint32, imm int64, insnSize uint64) {
 	// Compute target BEFORE writing link (rd may alias rs1).
 	e.emit("    { uint64_t t = (%s + %dLL) & ~(uint64_t)1;\n", e.rs(rs1), imm)
 	if rd != 0 {
@@ -1184,7 +1182,7 @@ func (e *emitter) emitJALR(rd, rs1 uint32, imm int64, insnSize uint64) {
 // Does NOT call advancePC — the caller must do that for the fall-through path.
 // Emits its own ic++ before the conditional because the caller's advancePC
 // (which also emits ic++) is unreachable on the taken path.
-func (e *emitter) emitBranch(rs1, rs2, funct3 uint32, offset int64) {
+func (e *tccEmitter) emitBranch(rs1, rs2, funct3 uint32, offset int64) {
 	target := e.pc + uint64(offset)
 	cmp := branchCmp(funct3)
 
@@ -1224,9 +1222,9 @@ func (e *emitter) emitBranch(rs1, rs2, funct3 uint32, offset int64) {
 
 // ── RVC (compressed instructions) ───────────────────────────────────────
 // Strategy: decode 16-bit instruction, expand to equivalent 32-bit fields,
-// then call existing emitters. Same approach as libriscv's tr_emit_rvc.cpp.
+// then call existing tccEmitters. Same approach as libriscv's tr_emit_rvc.cpp.
 
-func (e *emitter) emitRVC(insn uint16) {
+func (e *tccEmitter) emitRVC(insn uint16) {
 	e.emitLabel()
 
 	quad := insn & 0x3
@@ -1249,7 +1247,7 @@ func (e *emitter) emitRVC(insn uint16) {
 }
 
 // emitRVC_Q0 handles Quadrant 0: loads/stores with compressed registers.
-func (e *emitter) emitRVC_Q0(insn uint16, funct3 uint16) {
+func (e *tccEmitter) emitRVC_Q0(insn uint16, funct3 uint16) {
 	rd := uint32(8 + ((insn >> 2) & 7))
 	rs1 := uint32(8 + ((insn >> 7) & 7))
 
@@ -1289,7 +1287,7 @@ func (e *emitter) emitRVC_Q0(insn uint16, funct3 uint16) {
 }
 
 // emitRVC_Q1 handles Quadrant 1: arithmetic, branches, jumps.
-func (e *emitter) emitRVC_Q1(insn uint16, funct3 uint16) {
+func (e *tccEmitter) emitRVC_Q1(insn uint16, funct3 uint16) {
 	switch funct3 {
 	case 0b000: // C.NOP / C.ADDI
 		rd := uint32((insn >> 7) & 0x1F)
@@ -1392,7 +1390,7 @@ func (e *emitter) emitRVC_Q1(insn uint16, funct3 uint16) {
 }
 
 // emitRVC_Q2 handles Quadrant 2: stack-pointer relative, register ops.
-func (e *emitter) emitRVC_Q2(insn uint16, funct3 uint16) {
+func (e *tccEmitter) emitRVC_Q2(insn uint16, funct3 uint16) {
 	rd := uint32((insn >> 7) & 0x1F)
 	rs2 := uint32((insn >> 2) & 0x1F)
 
@@ -1477,7 +1475,7 @@ func branchCmp(funct3 uint32) string {
 }
 
 // rsC returns the register expression with appropriate cast for branch comparison.
-func (e *emitter) rsC(r, funct3 uint32) string {
+func (e *tccEmitter) rsC(r, funct3 uint32) string {
 	s := e.rs(r)
 	if funct3 >= 4 && funct3 <= 5 {
 		return "(int64_t)" + s // signed comparison
@@ -1487,7 +1485,7 @@ func (e *emitter) rsC(r, funct3 uint32) string {
 
 // ── Finalize: wrap body in a complete C function ────────────────────────
 
-func (e *emitter) finalize() *emitResult {
+func (e *tccEmitter) finalize() *tccEmitResult {
 	var out strings.Builder
 
 	// Header — define types directly to avoid needing system headers in TCC.
@@ -1571,7 +1569,7 @@ func (e *emitter) finalize() *emitResult {
 
 	out.WriteString("}\n")
 
-	return &emitResult{
+	return &tccEmitResult{
 		csrc:     out.String(),
 		startPC:  e.startPC,
 		endPC:    e.pc,
