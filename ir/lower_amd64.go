@@ -80,6 +80,42 @@ func AMD64Pool(b *Block) RegPool {
 	return RegPool{IntRegs: intRegs, FPRegs: fpRegs}
 }
 
+// AMD64PoolNormal returns the AMD64 register pool for blocks without div/mul.
+func AMD64PoolNormal() RegPool {
+	return RegPool{
+		IntRegs: []int16{
+			goasm.REG_AMD64_AX, goasm.REG_AMD64_CX, goasm.REG_AMD64_DX,
+			goasm.REG_AMD64_SI, goasm.REG_AMD64_DI,
+			goasm.REG_AMD64_R8, goasm.REG_AMD64_R9,
+		},
+		FPRegs: amd64FPRegs(),
+	}
+}
+
+// AMD64PoolDivMul returns the AMD64 register pool for blocks with div/mul
+// (AX and DX reserved).
+func AMD64PoolDivMul(_ *Block) RegPool {
+	return RegPool{
+		IntRegs: []int16{
+			goasm.REG_AMD64_CX,
+			goasm.REG_AMD64_SI,
+			goasm.REG_AMD64_DI,
+			goasm.REG_AMD64_R8,
+			goasm.REG_AMD64_R9,
+		},
+		FPRegs: amd64FPRegs(),
+	}
+}
+
+func amd64FPRegs() []int16 {
+	return []int16{
+		goasm.REG_AMD64_X0, goasm.REG_AMD64_X1, goasm.REG_AMD64_X2, goasm.REG_AMD64_X3,
+		goasm.REG_AMD64_X4, goasm.REG_AMD64_X5, goasm.REG_AMD64_X6, goasm.REG_AMD64_X7,
+		goasm.REG_AMD64_X8, goasm.REG_AMD64_X9, goasm.REG_AMD64_X10, goasm.REG_AMD64_X11,
+		goasm.REG_AMD64_X12, goasm.REG_AMD64_X13, goasm.REG_AMD64_X14, goasm.REG_AMD64_X15,
+	}
+}
+
 // AMD64Pinned returns the pinned VReg → host register map for parameter VRegs.
 // These are passed to Allocate() so the allocator fixes them in place.
 func AMD64Pinned() map[VReg]int16 {
@@ -208,11 +244,12 @@ type LowerResult struct {
 
 type lowerCtx struct {
 	blk   *Block
-	alloc *Allocation
+	alloc *Allocation      // ELS path (nil when using fixed path)
+	fixed *FixedAllocation // Fixed path (nil when using ELS path)
 	c     *goasm.Ctx
 	idx   int // current IR instruction index
 
-	// Fast per-VReg host register lookup (replaces linear IntervalMap scan).
+	// Fast per-VReg host register lookup (ELS path only).
 	rIdx     regIndex
 	fpSet    map[VReg]bool // precomputed: is this VReg assigned to an XMM register?
 	cxLive   []regEntry    // intervals where CX is live (sorted by start)
@@ -317,6 +354,57 @@ func LowerAMD64(ctx *goasm.Ctx, b *Block, alloc *Allocation) (*LowerResult, erro
 
 	return result, nil
 }
+
+// LowerAMD64Fixed converts an IR Block with a FixedAllocation into x86-64
+// obj.Progs. Zero-allocation fast path: no regIndex, no fpSet map, no cxLive.
+// All lookups are O(1) array accesses into the FixedAllocation.
+func LowerAMD64Fixed(ctx *goasm.Ctx, b *Block, fa *FixedAllocation) (*LowerResult, error) {
+	if fa == nil {
+		return nil, fmt.Errorf("ir.LowerAMD64Fixed: nil allocation")
+	}
+
+	lc := &lowerCtx{
+		blk:        b,
+		fixed:      fa,
+		c:          ctx,
+		labelProg:  make(map[Label]*obj.Prog),
+		pending:    make(map[Label][]*obj.Prog),
+		stackSlots: fa.StackSlots,
+	}
+
+	lc.frameSize = int64(lc.stackSlots)*8 + 8
+	if lc.stackSlots == 0 {
+		lc.frameSize = 0
+	}
+
+	lc.emitPrologue()
+
+	for idx := range b.Instrs {
+		lc.idx = idx
+		if err := lc.lowerInstr(&b.Instrs[idx]); err != nil {
+			return nil, err
+		}
+	}
+
+	if len(lc.pending) > 0 {
+		return nil, fmt.Errorf("ir.LowerAMD64Fixed: %d unresolved forward labels", len(lc.pending))
+	}
+
+	result := &LowerResult{
+		ChainEntryProg: lc.chainEntryProg,
+	}
+	for i := range lc.chainExits {
+		lc.chainExits[i].stubProg = lc.emitSlowExitStub(lc.chainExits[i].targetPC)
+		result.ChainExits = append(result.ChainExits, ChainExitDesc{
+			TargetPC: lc.chainExits[i].targetPC,
+			MovProg:  lc.chainExits[i].movProg,
+			StubProg: lc.chainExits[i].stubProg,
+		})
+	}
+
+	return result, nil
+}
+
 
 // ── Prologue / Epilogue ──
 
@@ -602,11 +690,36 @@ func (lc *lowerCtx) lowerInstr(ins *IRInstr) error {
 
 // ── Register resolution ──
 
+// allocKind returns the allocation kind for VReg v.
+func (lc *lowerCtx) allocKind(v VReg) AllocKind {
+	if lc.fixed != nil {
+		return lc.fixed.AllocKind(v)
+	}
+	if int(v) < len(lc.alloc.Kind) {
+		return lc.alloc.Kind[v]
+	}
+	return AllocUnused
+}
+
+// spillSlot returns the spill slot for VReg v.
+func (lc *lowerCtx) spillSlot(v VReg) int16 {
+	if lc.fixed != nil {
+		return lc.fixed.SpillSlotOf(v)
+	}
+	if int(v) < len(lc.alloc.SpillSlot) {
+		return lc.alloc.SpillSlot[v]
+	}
+	return -1
+}
+
 // hostRegFor returns the x86 register constant for VReg v at instruction idx.
 // Returns -1 if the VReg is unused or on stack.
 func (lc *lowerCtx) hostRegFor(v VReg, idx int) int16 {
 	if v == VRegZero {
 		return -1
+	}
+	if lc.fixed != nil {
+		return lc.fixed.HostReg(v)
 	}
 	if int(v) >= len(lc.alloc.Kind) {
 		return -1
@@ -623,8 +736,10 @@ func isXMMReg(r int16) bool {
 }
 
 // isVRegFP returns true if the VReg is a floating-point register.
-// Uses a precomputed set built at the start of lowering.
 func (lc *lowerCtx) isVRegFP(v VReg) bool {
+	if lc.fixed != nil {
+		return lc.fixed.IsFP(v)
+	}
 	return lc.fpSet[v]
 }
 
@@ -638,23 +753,25 @@ func (lc *lowerCtx) use(v VReg, scratchIdx int) int16 {
 		lc.emitRR(x86.AXORQ, scr, scr)
 		return scr
 	}
-	if int(v) < len(lc.alloc.Kind) && lc.alloc.Kind[v] == AllocReg {
+	kind := lc.allocKind(v)
+	if kind == AllocReg {
 		r := lc.hostRegFor(v, lc.idx)
 		if r >= 0 {
 			return r
 		}
 	}
-	if int(v) < len(lc.alloc.Kind) && lc.alloc.Kind[v] == AllocStack {
+	if kind == AllocStack {
+		slot := lc.spillSlot(v)
 		if lc.isVRegFP(v) {
 			scr := lc.fpScratch(scratchIdx)
-			lc.fpSpillLoad(lc.alloc.SpillSlot[v], scr)
+			lc.fpSpillLoad(slot, scr)
 			return scr
 		}
 		scr := lc.scratch(scratchIdx)
 		if lc.scratchCache[scratchIdx].valid && lc.scratchCache[scratchIdx].vr == v {
 			return scr // peephole: skip redundant spill load
 		}
-		lc.spillLoad(lc.alloc.SpillSlot[v], scr)
+		lc.spillLoad(slot, scr)
 		lc.scratchCache[scratchIdx] = scratchEntry{v, true}
 		return scr
 	}
@@ -669,7 +786,7 @@ func (lc *lowerCtx) def(v VReg) int16 {
 	if v == VRegZero {
 		return lc.scratch(0) // writes discarded
 	}
-	if int(v) < len(lc.alloc.Kind) && lc.alloc.Kind[v] == AllocReg {
+	if lc.allocKind(v) == AllocReg {
 		r := lc.hostRegFor(v, lc.idx)
 		if r >= 0 {
 			return r
@@ -686,11 +803,12 @@ func (lc *lowerCtx) defCommit(v VReg, hostReg int16) {
 	if v == VRegZero {
 		return
 	}
-	if int(v) < len(lc.alloc.Kind) && lc.alloc.Kind[v] == AllocStack {
+	if lc.allocKind(v) == AllocStack {
+		slot := lc.spillSlot(v)
 		if isXMMReg(hostReg) {
-			lc.fpSpillStore(hostReg, lc.alloc.SpillSlot[v])
+			lc.fpSpillStore(hostReg, slot)
 		} else {
-			lc.spillStore(hostReg, lc.alloc.SpillSlot[v])
+			lc.spillStore(hostReg, slot)
 			// Update scratch cache: this scratch now holds v's new value.
 			if hostReg == amd64Scratch1 {
 				lc.scratchCache[0] = scratchEntry{v, true}
@@ -1229,6 +1347,9 @@ func (lc *lowerCtx) lowerShiftImm(ins *IRInstr, op obj.As) {
 
 // isCXLive returns true if RCX currently holds a live allocated VReg.
 func (lc *lowerCtx) isCXLive() bool {
+	if lc.fixed != nil {
+		return lc.fixed.CXAssigned
+	}
 	// Binary search the precomputed sorted CX intervals.
 	idx := lc.idx
 	lo, hi := 0, len(lc.cxLive)
@@ -1358,8 +1479,7 @@ func (lc *lowerCtx) lowerStoreX(ins *IRInstr) {
 
 	// Check if src needs a scratch register (i.e., is spilled).
 	src := ins.Dst // the VReg, not yet resolved
-	srcInReg := src != VRegZero &&
-		int(src) < len(lc.alloc.Kind) && lc.alloc.Kind[src] == AllocReg
+	srcInReg := src != VRegZero && lc.allocKind(src) == AllocReg
 	srcReg := lc.hostRegFor(src, lc.idx)
 
 	if !srcInReg || srcReg < 0 {
@@ -1378,7 +1498,7 @@ func (lc *lowerCtx) lowerStoreX(ins *IRInstr) {
 		if src == VRegZero {
 			lc.emitRR(x86.AXORQ, amd64Scratch1, amd64Scratch1)
 		} else {
-			lc.spillLoad(lc.alloc.SpillSlot[src], amd64Scratch1)
+			lc.spillLoad(lc.spillSlot(src), amd64Scratch1)
 		}
 		lc.emitMR(storeOp(ins.T), amd64Scratch1, amd64Scratch2, 0)
 		return
@@ -1628,6 +1748,9 @@ func (lc *lowerCtx) liveCallerSaved() (intRegs, fpRegs []int16) {
 // isRegLive returns true if a host register holds a live allocated VReg
 // at the current instruction index.
 func (lc *lowerCtx) isRegLive(hostReg int16) bool {
+	if lc.fixed != nil {
+		return lc.fixed.IsHostLive(hostReg)
+	}
 	for i := range lc.alloc.IntervalMap {
 		ia := &lc.alloc.IntervalMap[i]
 		if ia.Host == hostReg &&

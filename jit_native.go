@@ -47,7 +47,6 @@ func (j *JIT) jitCompileWith(res *emitResult, useV2 bool) (*compiledBlock, error
 		pool = ir.AMD64Pool(res.block)
 	}
 	pinned := ir.AMD64Pinned()
-	alloc := j.irAlloc.Allocate(res.block, pool, pinned, nil)
 
 	// Step 2: Reuse assembler context and emit ATEXT prologue.
 	ctx := getJITCtx()
@@ -56,10 +55,23 @@ func (j *JIT) jitCompileWith(res *emitResult, useV2 bool) (*compiledBlock, error
 	// Step 3: Lower IR to x86-64 Progs.
 	var lowerResult *ir.LowerResult
 	var lowerErr error
-	if useV2 {
-		lowerResult, lowerErr = ir.LowerAMD64_V2(ctx, res.block, alloc)
+
+	// Fast path: FixedStaticAllocator → zero-alloc FixedAllocation + LowerAMD64Fixed.
+	if fixed, ok := j.irAlloc.(*ir.FixedStaticAllocator); ok && !useV2 {
+		if !fixed.Initialized() {
+			normalPool := ir.AMD64PoolNormal()
+			divmulPool := ir.AMD64PoolDivMul(nil)
+			fixed.InitFixed(goasm.REG_AMD64_CX, normalPool, divmulPool, pinned)
+		}
+		fa := fixed.AllocateFixed(res.block, pool, pinned)
+		lowerResult, lowerErr = ir.LowerAMD64Fixed(ctx, res.block, fa)
 	} else {
-		lowerResult, lowerErr = ir.LowerAMD64(ctx, res.block, alloc)
+		alloc := j.irAlloc.Allocate(res.block, pool, pinned, nil)
+		if useV2 {
+			lowerResult, lowerErr = ir.LowerAMD64_V2(ctx, res.block, alloc)
+		} else {
+			lowerResult, lowerErr = ir.LowerAMD64(ctx, res.block, alloc)
+		}
 	}
 	if lowerErr != nil {
 		return nil, fmt.Errorf("jit lower: %w", lowerErr)

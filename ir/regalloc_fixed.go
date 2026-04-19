@@ -4,13 +4,131 @@ package ir
 // to native host registers, spilling the rest to stack slots. No liveness
 // analysis or interference graphs — just a hardcoded priority table.
 //
-// This mirrors what QEMU's TCG and other production binary translators do:
-// piggyback on the source compiler's register allocation, mapping the most
-// frequently used RISC-V registers to the limited x86-64 register file.
-type FixedStaticAllocator struct{}
+// Zero heap allocations per block: guest-reg mappings are pre-computed once,
+// temps are assigned from remaining pool slots via a counter, and the output
+// is a FixedAllocation with fixed-size arrays reused across blocks.
 
-func NewFixedStaticAllocator() *FixedStaticAllocator {
-	return &FixedStaticAllocator{}
+// MaxFixedTemps is the maximum number of JIT temporaries supported by
+// FixedAllocation. Typical blocks use 10-40; the largest observed ~200.
+const MaxFixedTemps = 256
+
+// FixedAllocation is the zero-allocation output of FixedStaticAllocator.
+// All fields are fixed-size arrays — no heap allocation required.
+// Pre-computed by AllocateFixed so the lowerer never computes anything.
+type FixedAllocation struct {
+	// Guest registers: index 0..63.
+	GuestHost  [64]int16 // host register or -1 (spilled)
+	GuestSpill [64]int16 // spill slot (valid when GuestHost == -1)
+	GuestIsFP  [64]bool  // true for VRegs 32..63
+
+	// Temps: index by (VReg - VRegTempStart), up to MaxFixedTemps.
+	TempHost  [MaxFixedTemps]int16 // host register or -1 (spilled)
+	TempSpill [MaxFixedTemps]int16 // spill slot (valid when TempHost == -1)
+	TempIsFP  [MaxFixedTemps]bool  // classified by defining instruction
+
+	// Pinned VRegs (parameters like xBase, fBase, etc.)
+	PinnedHost [MaxFixedTemps]int16 // host register for pinned temps (-1 = not pinned)
+
+	TempCount  int // number of temps in this block (max VReg - VRegTempStart + 1)
+	StackSlots int // total 8-byte spill slots needed
+
+	// Pre-computed for lowerer — CX liveness and host register liveness.
+	// In fixed mapping, all assignments span [0, n-1], so these are
+	// block-level constants, not per-instruction.
+	CXAssigned bool // true if any VReg is assigned to CX
+
+	// Host registers that are assigned to some VReg (live entire block).
+	// Stored as a compact list for isHostLive linear scan.
+	AssignedHosts    [48]int16 // max: 7 int + 14 FP + 5 pinned + ~20 temps
+	NumAssignedHosts int
+}
+
+// HostReg returns the host register for VReg v, or -1 if spilled/unused.
+func (fa *FixedAllocation) HostReg(v VReg) int16 {
+	if v == VRegZero {
+		return -1
+	}
+	if v < 64 {
+		return fa.GuestHost[v]
+	}
+	ti := int(v) - int(VRegTempStart)
+	if ti >= 0 && ti < fa.TempCount {
+		if fa.PinnedHost[ti] != -1 {
+			return fa.PinnedHost[ti]
+		}
+		return fa.TempHost[ti]
+	}
+	return -1
+}
+
+// AllocKind returns the allocation kind for VReg v.
+func (fa *FixedAllocation) AllocKind(v VReg) AllocKind {
+	if v == VRegZero {
+		return AllocUnused
+	}
+	if v < 64 {
+		if fa.GuestHost[v] >= 0 {
+			return AllocReg
+		}
+		if fa.GuestSpill[v] >= 0 {
+			return AllocStack
+		}
+		return AllocUnused
+	}
+	ti := int(v) - int(VRegTempStart)
+	if ti >= 0 && ti < fa.TempCount {
+		if fa.PinnedHost[ti] != -1 {
+			return AllocReg
+		}
+		if fa.TempHost[ti] >= 0 {
+			return AllocReg
+		}
+		return AllocStack
+	}
+	return AllocUnused
+}
+
+// SpillSlotOf returns the spill slot for VReg v.
+func (fa *FixedAllocation) SpillSlotOf(v VReg) int16 {
+	if v < 64 {
+		return fa.GuestSpill[v]
+	}
+	ti := int(v) - int(VRegTempStart)
+	if ti >= 0 && ti < fa.TempCount {
+		return fa.TempSpill[ti]
+	}
+	return -1
+}
+
+// IsFP returns true if VReg v is floating-point.
+func (fa *FixedAllocation) IsFP(v VReg) bool {
+	if v < 64 {
+		return fa.GuestIsFP[v]
+	}
+	ti := int(v) - int(VRegTempStart)
+	if ti >= 0 && ti < MaxFixedTemps {
+		return fa.TempIsFP[ti]
+	}
+	return false
+}
+
+// IsHostLive returns true if a host register is assigned to any VReg.
+// In fixed mapping all assignments span the entire block.
+func (fa *FixedAllocation) IsHostLive(hostReg int16) bool {
+	for i := 0; i < fa.NumAssignedHosts; i++ {
+		if fa.AssignedHosts[i] == hostReg {
+			return true
+		}
+	}
+	return false
+}
+
+// addAssignedHost records a host register as assigned (for IsHostLive).
+func (fa *FixedAllocation) addAssignedHost(h int16) {
+	if fa.NumAssignedHosts < len(fa.AssignedHosts) {
+		fa.AssignedHosts[fa.NumAssignedHosts] = h
+		fa.NumAssignedHosts++
+	}
 }
 
 // intPriority is the RISC-V integer register priority order.
@@ -34,15 +152,288 @@ var fpPriority = []VReg{
 	32 + 18, 32 + 19, 32 + 20, 32 + 21, 32 + 22, 32 + 23, 32 + 24, 32 + 25, 32 + 26, 32 + 27, // fs2-fs11
 }
 
-// Allocate produces a register assignment using fixed static mapping.
-func (f *FixedStaticAllocator) Allocate(b *Block, pool RegPool, pinned map[VReg]int16, freq []float64) *Allocation {
-	if len(b.Instrs) == 0 {
-		return &Allocation{
-			Kind:      []AllocKind{AllocUnused},
-			SpillSlot: []int16{0},
+// cachedGuestMapping holds a pre-computed guest register → host register
+// mapping for one pool variant. Two are pre-computed: normal and divmul.
+type cachedGuestMapping struct {
+	guestHost         [64]int16
+	guestSpill        [64]int16
+	intPoolStart      int   // index into pool.IntRegs where temp assignment starts
+	fpPoolStart       int   // index into pool.FPRegs where temp assignment starts
+	guestSpillCount   int   // number of guest spill slots
+	cxAssigned        bool  // CX assigned to any guest reg
+	assignedHosts     [48]int16
+	numAssignedHosts  int
+}
+
+// FixedStaticAllocator pre-computes guest register mappings for both pool
+// variants (normal and divmul) and reuses a scratch FixedAllocation across
+// blocks for zero heap allocation per block.
+type FixedStaticAllocator struct {
+	normal cachedGuestMapping // pool without div/mul (7 int regs)
+	divmul cachedGuestMapping // pool with div/mul (5 int regs, no AX/DX)
+
+	// FP classification is the same for both variants.
+	guestIsFP [64]bool
+
+	// CX register constant (set by InitWithCX).
+	cxReg int16
+
+	// Pool sizes for cache selection.
+	normalIntCount int
+
+	// Reusable output — returned by AllocateFixed, overwritten each call.
+	scratch FixedAllocation
+
+	initialized bool
+}
+
+func NewFixedStaticAllocator() *FixedStaticAllocator {
+	return &FixedStaticAllocator{cxReg: -1}
+}
+
+// Initialized returns true if InitFixed has been called.
+func (f *FixedStaticAllocator) Initialized() bool {
+	return f.initialized
+}
+
+// InitFixed configures the allocator with both pool variants and the CX
+// register constant. Must be called once before AllocateFixed.
+// normalPool is the pool for blocks without div/mul;
+// divmulPool is the pool for blocks with div/mul (AX/DX removed).
+func (f *FixedStaticAllocator) InitFixed(cxReg int16, normalPool, divmulPool RegPool, pinned map[VReg]int16) {
+	f.cxReg = cxReg
+	f.initBoth(normalPool, divmulPool, pinned)
+}
+
+// initBoth pre-computes guest mappings for both pool variants.
+// Called lazily on first AllocateFixed. Needs the normal pool + pinned;
+// derives the divmul pool by removing AX and DX from IntRegs.
+func (f *FixedStaticAllocator) initBoth(normalPool RegPool, divmulPool RegPool, pinned map[VReg]int16) {
+	if f.initialized {
+		return
+	}
+	f.initialized = true
+	f.normalIntCount = len(normalPool.IntRegs)
+
+	// FP classification (shared).
+	for i := 32; i < 64; i++ {
+		f.guestIsFP[i] = true
+	}
+
+	f.buildCache(&f.normal, normalPool, pinned)
+	f.buildCache(&f.divmul, divmulPool, pinned)
+}
+
+// buildCache fills one cachedGuestMapping from a pool + pinned set.
+func (f *FixedStaticAllocator) buildCache(c *cachedGuestMapping, pool RegPool, pinned map[VReg]int16) {
+	for i := range c.guestHost {
+		c.guestHost[i] = -1
+		c.guestSpill[i] = -1
+	}
+	c.cxAssigned = false
+	c.numAssignedHosts = 0
+
+	// Pinned guest regs.
+	for vr, host := range pinned {
+		if vr < 64 {
+			c.guestHost[vr] = host
+			if c.numAssignedHosts < len(c.assignedHosts) {
+				c.assignedHosts[c.numAssignedHosts] = host
+				c.numAssignedHosts++
+			}
+			if host == f.cxReg {
+				c.cxAssigned = true
+			}
 		}
 	}
 
+	// Integer guest regs by priority.
+	intIdx := 0
+	for _, vr := range intPriority {
+		if _, isPinned := pinned[vr]; isPinned {
+			continue
+		}
+		if intIdx >= len(pool.IntRegs) {
+			break
+		}
+		h := pool.IntRegs[intIdx]
+		c.guestHost[vr] = h
+		if c.numAssignedHosts < len(c.assignedHosts) {
+			c.assignedHosts[c.numAssignedHosts] = h
+			c.numAssignedHosts++
+		}
+		if h == f.cxReg {
+			c.cxAssigned = true
+		}
+		intIdx++
+	}
+	c.intPoolStart = intIdx
+
+	// FP guest regs by priority.
+	fpIdx := 0
+	for _, vr := range fpPriority {
+		if _, isPinned := pinned[vr]; isPinned {
+			continue
+		}
+		if fpIdx >= len(pool.FPRegs) {
+			break
+		}
+		h := pool.FPRegs[fpIdx]
+		c.guestHost[vr] = h
+		if c.numAssignedHosts < len(c.assignedHosts) {
+			c.assignedHosts[c.numAssignedHosts] = h
+			c.numAssignedHosts++
+		}
+		fpIdx++
+	}
+	c.fpPoolStart = fpIdx
+
+	// Spill slots for unmapped guest regs.
+	slot := int16(0)
+	for vr := VReg(1); vr < 64; vr++ {
+		if c.guestHost[vr] == -1 {
+			if _, isPinned := pinned[vr]; !isPinned {
+				c.guestSpill[vr] = slot
+				slot++
+			}
+		}
+	}
+	c.guestSpillCount = int(slot)
+}
+
+// AllocateFixed produces a FixedAllocation with zero heap allocations.
+// The returned pointer is reused across calls — caller must consume
+// the result before calling AllocateFixed again.
+func (f *FixedStaticAllocator) AllocateFixed(b *Block, pool RegPool, pinned map[VReg]int16) *FixedAllocation {
+	// Pick the right cached mapping based on pool size.
+	c := &f.normal
+	if len(pool.IntRegs) != f.normalIntCount {
+		c = &f.divmul
+	}
+
+	fa := &f.scratch
+
+	// Copy cached guest mapping.
+	fa.GuestHost = c.guestHost
+	fa.GuestSpill = c.guestSpill
+	fa.GuestIsFP = f.guestIsFP
+	fa.StackSlots = c.guestSpillCount
+	fa.CXAssigned = c.cxAssigned
+	fa.NumAssignedHosts = c.numAssignedHosts
+	copy(fa.AssignedHosts[:c.numAssignedHosts], c.assignedHosts[:c.numAssignedHosts])
+
+	// Clear temp arrays.
+	fa.TempCount = 0
+	for i := range fa.PinnedHost {
+		fa.PinnedHost[i] = -1
+	}
+
+	// Find max temp VReg used in the block.
+	maxTemp := VReg(0)
+	for i := range b.Instrs {
+		ins := &b.Instrs[i]
+		for _, vr := range [3]VReg{ins.Dst, ins.A, ins.B} {
+			if vr >= VRegTempStart && vr > maxTemp {
+				maxTemp = vr
+			}
+		}
+	}
+
+	// Handle pinned VRegs that are temps.
+	for vr, host := range pinned {
+		if vr >= VRegTempStart {
+			ti := int(vr) - int(VRegTempStart)
+			if ti < MaxFixedTemps {
+				fa.PinnedHost[ti] = host
+				if ti+1 > fa.TempCount {
+					fa.TempCount = ti + 1
+				}
+				fa.addAssignedHost(host)
+				if host == f.cxReg {
+					fa.CXAssigned = true
+				}
+			}
+		}
+	}
+
+	if maxTemp < VRegTempStart {
+		return fa
+	}
+
+	tempCount := int(maxTemp) - int(VRegTempStart) + 1
+	if tempCount > MaxFixedTemps {
+		tempCount = MaxFixedTemps
+	}
+	if tempCount > fa.TempCount {
+		fa.TempCount = tempCount
+	}
+
+	// Classify temp FP-ness from defining instruction type.
+	for i := 0; i < fa.TempCount; i++ {
+		fa.TempIsFP[i] = false
+	}
+	for i := range b.Instrs {
+		ins := &b.Instrs[i]
+		if ins.Dst >= VRegTempStart {
+			ti := int(ins.Dst) - int(VRegTempStart)
+			if ti < fa.TempCount {
+				switch ins.T {
+				case F32, F64:
+					fa.TempIsFP[ti] = true
+				}
+			}
+		}
+	}
+
+	// Assign temps from remaining pool registers.
+	intIdx := c.intPoolStart
+	fpIdx := c.fpPoolStart
+	stackSlots := int16(c.guestSpillCount)
+
+	for ti := 0; ti < fa.TempCount; ti++ {
+		if fa.PinnedHost[ti] != -1 {
+			fa.TempHost[ti] = -1
+			fa.TempSpill[ti] = -1
+			continue
+		}
+		if fa.TempIsFP[ti] {
+			if fpIdx < len(pool.FPRegs) {
+				h := pool.FPRegs[fpIdx]
+				fa.TempHost[ti] = h
+				fa.TempSpill[ti] = -1
+				fa.addAssignedHost(h)
+				fpIdx++
+				continue
+			}
+		} else {
+			if intIdx < len(pool.IntRegs) {
+				h := pool.IntRegs[intIdx]
+				fa.TempHost[ti] = h
+				fa.TempSpill[ti] = -1
+				fa.addAssignedHost(h)
+				if h == f.cxReg {
+					fa.CXAssigned = true
+				}
+				intIdx++
+				continue
+			}
+		}
+		// Spill.
+		fa.TempHost[ti] = -1
+		fa.TempSpill[ti] = stackSlots
+		stackSlots++
+	}
+
+	fa.StackSlots = int(stackSlots)
+	return fa
+}
+
+// Allocate satisfies the RegAllocator interface for compatibility with ELS.
+// It wraps AllocateFixed into the Allocation struct the ELS lowerer path accepts.
+func (f *FixedStaticAllocator) Allocate(b *Block, pool RegPool, pinned map[VReg]int16, freq []float64) *Allocation {
+	fa := f.AllocateFixed(b, pool, pinned)
+
+	// Convert to Allocation for the ELS-compatible lowerer path.
 	n := len(b.Instrs)
 	mv := maxVReg(b)
 	for vr := range pinned {
@@ -52,155 +443,28 @@ func (f *FixedStaticAllocator) Allocate(b *Block, pool RegPool, pinned map[VReg]
 	}
 	numVRegs := int(mv) + 1
 
-	// Discover which VRegs are actually used in the block.
-	used := make([]bool, numVRegs)
-	isFP := make([]bool, numVRegs)
-	for i := range b.Instrs {
-		ins := &b.Instrs[i]
-		if ins.Dst != VRegZero && int(ins.Dst) < numVRegs {
-			used[ins.Dst] = true
-		}
-		if ins.A != VRegZero && int(ins.A) < numVRegs {
-			used[ins.A] = true
-		}
-		if ins.B != VRegZero && int(ins.B) < numVRegs {
-			used[ins.B] = true
-		}
-	}
-	// Classify FP VRegs.
-	for vr := VReg(32); vr < 64 && int(vr) < numVRegs; vr++ {
-		isFP[vr] = true
-	}
-	// Also classify by instruction type usage.
-	for i := range b.Instrs {
-		ins := &b.Instrs[i]
-		switch ins.T {
-		case F32, F64:
-			if ins.Dst != VRegZero && int(ins.Dst) < numVRegs {
-				isFP[ins.Dst] = true
-			}
-		}
-	}
-
-	// Mark pinned VRegs as used.
-	for vr := range pinned {
-		if int(vr) < numVRegs {
-			used[vr] = true
-		}
-	}
-
-	// Build the allocation.
 	kind := make([]AllocKind, numVRegs)
 	spillSlot := make([]int16, numVRegs)
 	var intervalAllocs []IntervalAlloc
 
-	// 1. Handle pinned VRegs first — they get their fixed host registers.
-	for vr, host := range pinned {
-		vi := int(vr)
-		if vi >= numVRegs {
-			continue
+	for vr := VReg(0); vr < VReg(numVRegs); vr++ {
+		k := fa.AllocKind(vr)
+		kind[vr] = k
+		if k == AllocStack {
+			spillSlot[vr] = fa.SpillSlotOf(vr)
 		}
-		kind[vi] = AllocReg
-		intervalAllocs = append(intervalAllocs, IntervalAlloc{
-			Interval: Interval{VReg: vr, Start: 0, End: n - 1},
-			Host:     host,
-		})
-	}
-
-	// 2. Assign integer VRegs by priority.
-	intPoolIdx := 0
-	for _, vr := range intPriority {
-		if int(vr) >= numVRegs || !used[vr] || isFP[vr] {
-			continue
+		if k == AllocReg {
+			intervalAllocs = append(intervalAllocs, IntervalAlloc{
+				Interval: Interval{VReg: vr, Start: 0, End: n - 1},
+				Host:     fa.HostReg(vr),
+			})
 		}
-		if _, isPinned := pinned[vr]; isPinned {
-			continue
-		}
-		if intPoolIdx >= len(pool.IntRegs) {
-			break
-		}
-		kind[vr] = AllocReg
-		intervalAllocs = append(intervalAllocs, IntervalAlloc{
-			Interval: Interval{VReg: vr, Start: 0, End: n - 1},
-			Host:     pool.IntRegs[intPoolIdx],
-		})
-		intPoolIdx++
-	}
-
-	// 3. Assign FP VRegs by priority.
-	fpPoolIdx := 0
-	for _, vr := range fpPriority {
-		if int(vr) >= numVRegs || !used[vr] || !isFP[vr] {
-			continue
-		}
-		if _, isPinned := pinned[vr]; isPinned {
-			continue
-		}
-		if fpPoolIdx >= len(pool.FPRegs) {
-			break
-		}
-		kind[vr] = AllocReg
-		intervalAllocs = append(intervalAllocs, IntervalAlloc{
-			Interval: Interval{VReg: vr, Start: 0, End: n - 1},
-			Host:     pool.FPRegs[fpPoolIdx],
-		})
-		fpPoolIdx++
-	}
-
-	// 4. Handle temps (VReg >= VRegTempStart) that aren't pinned.
-	//    These are JIT-internal temporaries. Assign from remaining pool registers.
-	stackSlots := int16(0)
-	for vr := VRegTempStart; int(vr) < numVRegs; vr++ {
-		if !used[vr] {
-			continue
-		}
-		if _, isPinned := pinned[vr]; isPinned {
-			continue
-		}
-		if isFP[vr] {
-			if fpPoolIdx < len(pool.FPRegs) {
-				kind[vr] = AllocReg
-				intervalAllocs = append(intervalAllocs, IntervalAlloc{
-					Interval: Interval{VReg: vr, Start: 0, End: n - 1},
-					Host:     pool.FPRegs[fpPoolIdx],
-				})
-				fpPoolIdx++
-				continue
-			}
-		} else {
-			if intPoolIdx < len(pool.IntRegs) {
-				kind[vr] = AllocReg
-				intervalAllocs = append(intervalAllocs, IntervalAlloc{
-					Interval: Interval{VReg: vr, Start: 0, End: n - 1},
-					Host:     pool.IntRegs[intPoolIdx],
-				})
-				intPoolIdx++
-				continue
-			}
-		}
-		// Spill if no registers left.
-		kind[vr] = AllocStack
-		spillSlot[vr] = stackSlots
-		stackSlots++
-	}
-
-	// 5. Spill all remaining used VRegs that weren't assigned.
-	for vr := 1; vr < numVRegs; vr++ {
-		if !used[vr] || kind[vr] != AllocUnused {
-			continue
-		}
-		if _, isPinned := pinned[VReg(vr)]; isPinned {
-			continue
-		}
-		kind[vr] = AllocStack
-		spillSlot[vr] = stackSlots
-		stackSlots++
 	}
 
 	return &Allocation{
 		Kind:        kind,
 		SpillSlot:   spillSlot,
 		IntervalMap: intervalAllocs,
-		StackSlots:  int(stackSlots),
+		StackSlots:  fa.StackSlots,
 	}
 }
