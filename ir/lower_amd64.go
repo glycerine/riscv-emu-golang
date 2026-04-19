@@ -202,6 +202,10 @@ type lowerCtx struct {
 	// Frame layout.
 	stackSlots int   // from Allocation.StackSlots
 	frameSize  int64 // total bytes: stackSlots*8 + 8 (fcsr save)
+
+	// Scratch cache: elides redundant spill loads when consecutive instructions
+	// use the same spilled VReg. Index 0 tracks R10, index 1 tracks R11.
+	scratchCache [2]scratchEntry
 }
 
 // ── Exported API ──
@@ -308,6 +312,18 @@ func (lc *lowerCtx) emitEpilogue() {
 // ── Instruction lowering dispatch ──
 
 func (lc *lowerCtx) lowerInstr(ins *IRInstr) error {
+	// Invalidate scratch cache for ops that clobber scratch registers (R10/R11)
+	// outside the standard use/def/defCommit path, or at control flow boundaries.
+	switch ins.Op {
+	case IRDivS, IRDivU, IRRem, IRRemU, IRMulHS, IRMulHU, IRMulHSU, // R10/R11 for operand shuffling
+		IRShl, IRShr, IRSar, // may save CX to R11
+		IRLoadX, IRStoreX, // R10/R11 for address computation
+		IRLabel, IRBranch, IRBranchImm, IRJump, // control flow
+		IRRet, IRRetDyn, IRCall, // exits/calls
+		IRFAdd, IRFSub, IRFMul, IRFDiv, IRFSqrt, IRFNeg, IRFAbs, IRFCmp, // FP uses FP scratch
+		IRFCvtToI, IRFCvtToU, IRFCvtFromI, IRFCvtFromU, IRFCvtFF: // FP conversions
+		lc.invalidateScratchCache()
+	}
 	switch ins.Op {
 	case IROpInvalid:
 		return fmt.Errorf("ir.LowerAMD64: invalid op at index %d", lc.idx)
@@ -527,7 +543,11 @@ func (lc *lowerCtx) use(v VReg, scratchIdx int) int16 {
 			return scr
 		}
 		scr := lc.scratch(scratchIdx)
+		if lc.scratchCache[scratchIdx].valid && lc.scratchCache[scratchIdx].vr == v {
+			return scr // peephole: skip redundant spill load
+		}
 		lc.spillLoad(lc.alloc.SpillSlot[v], scr)
+		lc.scratchCache[scratchIdx] = scratchEntry{v, true}
 		return scr
 	}
 	// VReg not found in allocation — shouldn't happen for valid IR.
@@ -563,8 +583,31 @@ func (lc *lowerCtx) defCommit(v VReg, hostReg int16) {
 			lc.fpSpillStore(hostReg, lc.alloc.SpillSlot[v])
 		} else {
 			lc.spillStore(hostReg, lc.alloc.SpillSlot[v])
+			// Update scratch cache: this scratch now holds v's new value.
+			if hostReg == amd64Scratch1 {
+				lc.scratchCache[0] = scratchEntry{v, true}
+				if lc.scratchCache[1].valid && lc.scratchCache[1].vr == v {
+					lc.scratchCache[1].valid = false
+				}
+			} else if hostReg == amd64Scratch2 {
+				lc.scratchCache[1] = scratchEntry{v, true}
+				if lc.scratchCache[0].valid && lc.scratchCache[0].vr == v {
+					lc.scratchCache[0].valid = false
+				}
+			}
 		}
 	}
+}
+
+// scratchEntry tracks which spilled VReg's value is resident in a scratch register.
+type scratchEntry struct {
+	vr    VReg
+	valid bool
+}
+
+func (lc *lowerCtx) invalidateScratchCache() {
+	lc.scratchCache[0].valid = false
+	lc.scratchCache[1].valid = false
 }
 
 func (lc *lowerCtx) scratch(idx int) int16 {
