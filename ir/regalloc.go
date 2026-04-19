@@ -489,11 +489,19 @@ func computeIntervalSets(b *Block) []intervalSet {
 		result[vr].Intervals = merged
 	}
 
-	// Guest regs (1-63): extend last interval's End to len(Instrs)-1.
+	// Guest regs (1-63): merge all intervals into a single full-block span.
+	// Guest registers persist across blocks, so the allocator must not
+	// reuse their host registers during "gaps" in the backward scan.
+	// Without this, a temp assigned to the same register during a gap
+	// clobbers the guest reg value, producing wrong code.
 	for vr := 1; vr <= 63 && vr < len(result); vr++ {
 		ivals := result[vr].Intervals
 		if len(ivals) > 0 {
-			ivals[len(ivals)-1].End = n - 1
+			result[vr].Intervals = []Interval{{
+				VReg:  VReg(vr),
+				Start: 0,
+				End:   n - 1,
+			}}
 		}
 	}
 
