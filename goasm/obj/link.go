@@ -535,6 +535,13 @@ func (s *LSym) Func() *FuncInfo {
 	return f
 }
 
+// ResetFunc clears the FuncInfo so the symbol can be reused for a new assembly.
+func (s *LSym) ResetFunc() {
+	s.Extra = nil
+	s.P = nil
+	s.Size = 0
+}
+
 type VarInfo struct {
 	dwarfInfoSym *LSym
 }
@@ -1154,6 +1161,12 @@ type Link struct {
 	Headtype             objabi.HeadType
 	Arch                 *LinkArch
 	CompressInstructions bool // use compressed instructions where possible (if supported by architecture)
+
+	// Prog arena: slab allocator to avoid per-Prog heap allocations.
+	progCur  *ProgSlab   // current slab being allocated from
+	progIdx  int         // next free slot in progCur
+	progUsed []*ProgSlab // slabs filled during this compilation
+	progFree []*ProgSlab // free list for reuse
 	Debugasm             int
 	Debugvlog            bool
 	Debugpcln            string

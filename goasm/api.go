@@ -131,9 +131,19 @@ func (c *Ctx) init() {
 }
 
 // Reset clears state so the Ctx can be reused for a new block.
+// The underlying Link and its Prog arena slabs are retained — no new
+// heap allocations as long as the next block fits in the same slabs.
 func (c *Ctx) Reset() {
 	c.errors = nil
-	c.init()
+	c.ctxt.ResetProgs()
+	// Remove the old symbol and create a fresh one so Assemble's
+	// "already called" guard (checks Func()==nil) passes cleanly.
+	c.ctxt.DeleteSym("jit_block")
+	c.sym = c.ctxt.LookupInit("jit_block", func(s *obj.LSym) {
+		s.Type = objabi.STEXT
+	})
+	c.firstProg = nil
+	c.last = nil
 }
 
 // NewProg allocates an uninitialized Prog linked to this context.

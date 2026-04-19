@@ -212,10 +212,43 @@ func (p *Prog) WriteInstructionString(w io.Writer) {
 	}
 }
 
+const progSlabSize = 256 // ~50KB per slab (256 * 200 bytes)
+
+// ProgSlab is a contiguous block of Progs allocated together.
+type ProgSlab struct {
+	prog [progSlabSize]Prog
+}
+
 func (ctxt *Link) NewProg() *Prog {
-	p := new(Prog)
+	if ctxt.progCur == nil || ctxt.progIdx >= progSlabSize {
+		// Retire current slab and get a new one.
+		if ctxt.progCur != nil {
+			ctxt.progUsed = append(ctxt.progUsed, ctxt.progCur)
+		}
+		if n := len(ctxt.progFree); n > 0 {
+			ctxt.progCur = ctxt.progFree[n-1]
+			ctxt.progFree = ctxt.progFree[:n-1]
+			ctxt.progCur.prog = [progSlabSize]Prog{} // zero for reuse
+		} else {
+			ctxt.progCur = new(ProgSlab)
+		}
+		ctxt.progIdx = 0
+	}
+	p := &ctxt.progCur.prog[ctxt.progIdx]
+	ctxt.progIdx++
 	p.Ctxt = ctxt
 	return p
+}
+
+// ResetProgs returns all slabs to the free list for reuse.
+func (ctxt *Link) ResetProgs() {
+	if ctxt.progCur != nil {
+		ctxt.progFree = append(ctxt.progFree, ctxt.progCur)
+		ctxt.progCur = nil
+	}
+	ctxt.progFree = append(ctxt.progFree, ctxt.progUsed...)
+	ctxt.progUsed = ctxt.progUsed[:0]
+	ctxt.progIdx = 0
 }
 
 func (ctxt *Link) CanReuseProgs() bool {

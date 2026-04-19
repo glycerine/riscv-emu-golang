@@ -14,6 +14,18 @@ import (
 	"unsafe"
 )
 
+// Reusable assembler context — Prog slabs are recycled across compilations.
+var jitCtx *goasm.Ctx
+
+func getJITCtx() *goasm.Ctx {
+	if jitCtx == nil {
+		jitCtx = goasm.New(goasm.AMD64)
+	} else {
+		jitCtx.Reset()
+	}
+	return jitCtx
+}
+
 // compiledBlock holds a natively-compiled function pointer.
 type compiledBlock struct {
 	fn     uintptr        // native function pointer (mmap'd executable memory)
@@ -46,8 +58,8 @@ func jitCompileWith(res *emitResult, useV2 bool) (*compiledBlock, error) {
 
 
 
-	// Step 2: Create assembler context and emit ATEXT prologue.
-	ctx := goasm.New(goasm.AMD64)
+	// Step 2: Reuse assembler context and emit ATEXT prologue.
+	ctx := getJITCtx()
 	ctx.Append(ctx.NewATEXT())
 
 	// Step 3: Lower IR to x86-64 Progs.

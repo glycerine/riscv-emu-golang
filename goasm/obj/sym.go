@@ -136,6 +136,13 @@ func (ctxt *Link) LookupInit(name string, init func(s *LSym)) *LSym {
 	return s
 }
 
+// DeleteSym removes a symbol from the lookup table so it can be re-created fresh.
+func (ctxt *Link) DeleteSym(name string) {
+	ctxt.hashmu.Lock()
+	delete(ctxt.hash, name)
+	ctxt.hashmu.Unlock()
+}
+
 func (ctxt *Link) rodataKind() (suffix string, typ objabi.SymKind) {
 	return "", objabi.SRODATA
 }
