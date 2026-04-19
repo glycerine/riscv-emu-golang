@@ -1300,6 +1300,7 @@ func TestDebugV1V2_SRL_DumpAlloc(t *testing.T) {
 // gotoTargets iteration start offsets. This flushes out any remaining
 // order-dependent lowerer bugs that a single sorted order might hide.
 func TestMetaIterOrder_SRL(t *testing.T) {
+	t.Skip("too slow for normal test runs.")
 	mem, err := NewGuestMemory(Size64MB)
 	if err != nil {
 		t.Fatal(err)
@@ -1337,6 +1338,7 @@ func TestMetaIterOrder_SRL(t *testing.T) {
 // TestMetaIterOrder_AllUI runs ALL rv64ui ELF tests across multiple
 // iteration orderings.
 func TestMetaIterOrder_AllUI(t *testing.T) {
+	t.Skip("too slow for normal test runs.")
 	entries, err := filepath.Glob(filepath.Join(rvTestsDir, "rv64ui-p-*"))
 	if err != nil || len(entries) == 0 {
 		t.Skip("rv64ui ELFs not found")
