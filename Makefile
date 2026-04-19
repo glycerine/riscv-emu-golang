@@ -24,7 +24,7 @@
 
 .PHONY: all help bench-setup bench bench-quick bench-raw bench-ours bench-cpu bench-libriscv bench-mem \
         bench-smoke bench-summary test clean check-tools \
-        libriscv-clone libriscv-patch libriscv-build guest-elf
+        libriscv-build guest-elf
 
 # ── platform detection ─────────────────────────────────────────────────────
 
@@ -82,7 +82,7 @@ GUEST_DIR   := $(ROOT)bench/libriscv_guest
 GUEST_SRC   := $(GUEST_DIR)/bench_guest.c
 GUEST_ELF   := $(GUEST_DIR)/bench_guest.elf
 RESULTS_DIR := /tmp/riscv-bench
-PATCH_STAMP := $(VENDOR)/.patched
+#PATCH_STAMP := $(VENDOR)/.patched
 
 # ── tools ──────────────────────────────────────────────────────────────────
 
@@ -153,7 +153,6 @@ endif
 
 bench-setup: check-tools libriscv-build guest-elf
 	@echo "we use vendored xendor/libriscv now, and do not pull from github."
-	@echo "hence these make targets are not invoked: libriscv-clone libriscv-patch"
 	@echo ""
 	@echo "  ✓ bench-setup complete — run 'make bench' to start"
 	@echo ""
@@ -188,58 +187,58 @@ check-tools:
 
 # ── libriscv clone ─────────────────────────────────────────────────────────
 
-libriscv-clone: $(VENDOR)/.git
-$(VENDOR)/.git:
-	@echo "── cloning libriscv ────────────────────────────────────────────"
-	@mkdir -p $(dir $(VENDOR))
-	$(GIT) clone --depth=1 $(LIBRISCV_REPO) $(VENDOR) 2>&1 | sed 's/^/  /'
-	@echo "  ✓ cloned into $(VENDOR)"
+# libriscv-clone: $(VENDOR)/.git
+# $(VENDOR)/.git:
+# 	@echo "── cloning libriscv ────────────────────────────────────────────"
+# 	@mkdir -p $(dir $(VENDOR))
+# 	$(GIT) clone --depth=1 $(LIBRISCV_REPO) $(VENDOR) 2>&1 | sed 's/^/  /'
+# 	@echo "  ✓ cloned into $(VENDOR)"
 
 # ── libriscv patch ─────────────────────────────────────────────────────────
 # macOS SDK defines stdout as a macro (__stdoutp) in <stdio.h>.
 # libriscv's RISCVOptions struct has a field named 'stdout' which clashes.
 # We rename it to 'output' in both the header and implementation.
 
-libriscv-patch: $(PATCH_STAMP)
-$(PATCH_STAMP): $(VENDOR)/.git
-	@echo "── patching libriscv (stdout→output field rename) ──────────────"
-	sed -i.bak \
-	    's/riscv_stdout_func_t stdout;/riscv_stdout_func_t output; \/\* renamed: stdout is a macro on macOS \*\//' \
-	    $(VENDOR)/c/libriscv.h
-	sed -i.bak \
-	    's/riscv_stdout_func_t stdout = nullptr;/riscv_stdout_func_t output = nullptr;/' \
-	    $(VENDOR)/c/libriscv.cpp
-	sed -i.bak \
-	    's/\.stdout = options->stdout,/.output = options->output,/' \
-	    $(VENDOR)/c/libriscv.cpp
-	sed -i.bak \
-	    's/userdata\.stdout/userdata.output/g' \
-	    $(VENDOR)/c/libriscv.cpp
-	@grep -q '\.stdout\b' $(VENDOR)/c/libriscv.h $(VENDOR)/c/libriscv.cpp \
-	    && { echo "  ✗ patch incomplete"; exit 1; } || true
-	@# no_translate field (for JIT-disabled benchmarks) should already be
-	@# present in the committed vendor files. Warn if missing.
-	@grep -q 'no_translate' $(VENDOR)/c/libriscv.h \
-	    || echo "  ⚠ no_translate field missing from libriscv.h — no-JIT benchmark will not work"
-	@# Fix Intel Mac: libriscv CMake assumes all macOS == ARM64 (Apple Silicon).
-	@# On Intel Macs (x86_64) we must patch CMakeLists.txt to use TCC_TARGET_X86_64.
-ifeq ($(PLATFORM),macos)
-	@if [ "$$(uname -m)" = "x86_64" ]; then \
-	    echo "  ✓ Intel Mac: patching libtcc target to x86_64"; \
-	    awk '/CMAKE_HOST_APPLE OR APPLE/{in_apple=1} in_apple && /TCC_TARGET_ARM64=1/{sub(/TCC_TARGET_ARM64=1/,"TCC_TARGET_X86_64=1");in_apple=0} {print}' \
-	        $(VENDOR)/lib/CMakeLists.txt > $(VENDOR)/lib/CMakeLists.txt.tmp \
-	    && mv $(VENDOR)/lib/CMakeLists.txt.tmp $(VENDOR)/lib/CMakeLists.txt; \
-	else \
-	    echo "  ✓ Apple Silicon: TCC_TARGET_ARM64 correct"; \
-	fi
-endif
-	@touch $(PATCH_STAMP)
-	@echo "  ✓ patch applied"
+# libriscv-patch: $(PATCH_STAMP)
+# $(PATCH_STAMP): $(VENDOR)/CMakeLists.txt
+# 	@echo "── patching libriscv (stdout→output field rename) ──────────────"
+# 	sed -i.bak \
+# 	    's/riscv_stdout_func_t stdout;/riscv_stdout_func_t output; \/\* renamed: stdout is a macro on macOS \*\//' \
+# 	    $(VENDOR)/c/libriscv.h
+# 	sed -i.bak \
+# 	    's/riscv_stdout_func_t stdout = nullptr;/riscv_stdout_func_t output = nullptr;/' \
+# 	    $(VENDOR)/c/libriscv.cpp
+# 	sed -i.bak \
+# 	    's/\.stdout = options->stdout,/.output = options->output,/' \
+# 	    $(VENDOR)/c/libriscv.cpp
+# 	sed -i.bak \
+# 	    's/userdata\.stdout/userdata.output/g' \
+# 	    $(VENDOR)/c/libriscv.cpp
+# 	@grep -q '\.stdout\b' $(VENDOR)/c/libriscv.h $(VENDOR)/c/libriscv.cpp \
+# 	    && { echo "  ✗ patch incomplete"; exit 1; } || true
+# 	@# no_translate field (for JIT-disabled benchmarks) should already be
+# 	@# present in the committed vendor files. Warn if missing.
+# 	@grep -q 'no_translate' $(VENDOR)/c/libriscv.h \
+# 	    || echo "  ⚠ no_translate field missing from libriscv.h — no-JIT benchmark will not work"
+# 	@# Fix Intel Mac: libriscv CMake assumes all macOS == ARM64 (Apple Silicon).
+# 	@# On Intel Macs (x86_64) we must patch CMakeLists.txt to use TCC_TARGET_X86_64.
+# ifeq ($(PLATFORM),macos)
+# 	@if [ "$$(uname -m)" = "x86_64" ]; then \
+# 	    echo "  ✓ Intel Mac: patching libtcc target to x86_64"; \
+# 	    awk '/CMAKE_HOST_APPLE OR APPLE/{in_apple=1} in_apple && /TCC_TARGET_ARM64=1/{sub(/TCC_TARGET_ARM64=1/,"TCC_TARGET_X86_64=1");in_apple=0} {print}' \
+# 	        $(VENDOR)/lib/CMakeLists.txt > $(VENDOR)/lib/CMakeLists.txt.tmp \
+# 	    && mv $(VENDOR)/lib/CMakeLists.txt.tmp $(VENDOR)/lib/CMakeLists.txt; \
+# 	else \
+# 	    echo "  ✓ Apple Silicon: TCC_TARGET_ARM64 correct"; \
+# 	fi
+# endif
+# 	@touch $(PATCH_STAMP)
+# 	@echo "  ✓ patch applied"
 
 # ── libriscv build ─────────────────────────────────────────────────────────
 
 libriscv-build: $(LIB_CAPI)
-$(LIB_CAPI): $(PATCH_STAMP)
+$(LIB_CAPI): # $(PATCH_STAMP)
 	@echo "── building libriscv C API ─────────────────────────────────────"
 	@mkdir -p $(BUILD)
 	cd $(BUILD) && $(CMAKE) $(VENDOR)/c \
