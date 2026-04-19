@@ -33,15 +33,15 @@ type compiledBlock struct {
 }
 
 // jitCompile compiles an IR block to native code and returns a compiledBlock.
-func jitCompile(res *emitResult) (*compiledBlock, error) {
-	return jitCompileWith(res, false)
+func (j *JIT) jitCompile(res *emitResult) (*compiledBlock, error) {
+	return j.jitCompileWith(res, false)
 }
 
-func jitCompileV2(res *emitResult) (*compiledBlock, error) {
-	return jitCompileWith(res, true)
+func (j *JIT) jitCompileV2(res *emitResult) (*compiledBlock, error) {
+	return j.jitCompileWith(res, true)
 }
 
-func jitCompileWith(res *emitResult, useV2 bool) (*compiledBlock, error) {
+func (j *JIT) jitCompileWith(res *emitResult, useV2 bool) (*compiledBlock, error) {
 	if res.block == nil {
 		return nil, fmt.Errorf("jit: nil block")
 	}
@@ -54,9 +54,7 @@ func jitCompileWith(res *emitResult, useV2 bool) (*compiledBlock, error) {
 		pool = ir.AMD64Pool(res.block)
 	}
 	pinned := ir.AMD64Pinned()
-	alloc := ir.Allocate(res.block, pool, pinned, nil)
-
-
+	alloc := j.irAlloc.Allocate(res.block, pool, pinned, nil)
 
 	// Step 2: Reuse assembler context and emit ATEXT prologue.
 	ctx := getJITCtx()
@@ -101,7 +99,7 @@ type compileDebugInfo struct {
 }
 
 // jitCompileDebug compiles an IR block and returns debug info (Prog listing + assembled bytes).
-func jitCompileDebug(res *emitResult, useV2 bool) (*compiledBlock, *compileDebugInfo, error) {
+func (j *JIT) jitCompileDebug(res *emitResult, useV2 bool) (*compiledBlock, *compileDebugInfo, error) {
 	if res.block == nil {
 		return nil, nil, fmt.Errorf("jit: nil block")
 	}
@@ -113,7 +111,7 @@ func jitCompileDebug(res *emitResult, useV2 bool) (*compiledBlock, *compileDebug
 		pool = ir.AMD64Pool(res.block)
 	}
 	pinned := ir.AMD64Pinned()
-	alloc := ir.Allocate(res.block, pool, pinned, nil)
+	alloc := j.irAlloc.Allocate(res.block, pool, pinned, nil)
 
 	ctx := goasm.New(goasm.AMD64)
 	ctx.Append(ctx.NewATEXT())

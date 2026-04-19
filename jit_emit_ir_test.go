@@ -126,11 +126,11 @@ func TestScanUsedRegs_FibLoop(t *testing.T) {
 	defer mem.Free()
 	pc := uint64(0x1000)
 	insns := []uint32{
-		renc(0x33, 0, 0x00, 5, 10, 11),  // ADD x5, x10, x11
-		ienc(opOPIMM, 0, 10, 11, 0),     // MV x10, x11
-		ienc(opOPIMM, 0, 11, 5, 0),      // MV x11, x5
-		ienc(opOPIMM, 0, 12, 12, 1),     // ADDI x12, x12, 1
-		benc(opBRANCH, 4, 12, 13, -16),  // BLT x12, x13, -16
+		renc(0x33, 0, 0x00, 5, 10, 11), // ADD x5, x10, x11
+		ienc(opOPIMM, 0, 10, 11, 0),    // MV x10, x11
+		ienc(opOPIMM, 0, 11, 5, 0),     // MV x11, x5
+		ienc(opOPIMM, 0, 12, 12, 1),    // ADDI x12, x12, 1
+		benc(opBRANCH, 4, 12, 13, -16), // BLT x12, x13, -16
 		instrECALL,
 	}
 	for i, insn := range insns {
@@ -216,7 +216,7 @@ func TestScanUsedRegs_MixedBlock2(t *testing.T) {
 	}
 	defer mem.Free()
 	pc := uint64(0x100C)
-	mem.Store32(0x100C, ienc(opOPIMM, 0, 4, 0, 30)) // ADDI x4, x0, 30
+	mem.Store32(0x100C, ienc(opOPIMM, 0, 4, 0, 30))   // ADDI x4, x0, 30
 	mem.Store32(0x1010, renc(opOP, 0, 0x00, 5, 1, 2)) // ADD x5, x1, x2
 	mem.Store32(0x1014, instrECALL)
 
@@ -240,7 +240,7 @@ func TestMixedExecution_Block2_Compile(t *testing.T) {
 	}
 	defer mem.Free()
 
-	mem.Store32(0x100C, ienc(opOPIMM, 0, 4, 0, 30)) // ADDI x4, x0, 30
+	mem.Store32(0x100C, ienc(opOPIMM, 0, 4, 0, 30))   // ADDI x4, x0, 30
 	mem.Store32(0x1010, renc(opOP, 0, 0x00, 5, 1, 2)) // ADD x5, x1, x2
 	mem.Store32(0x1014, instrECALL)
 
@@ -254,7 +254,8 @@ func TestMixedExecution_Block2_Compile(t *testing.T) {
 	t.Logf("block has %d IR instructions", len(res.block.Instrs))
 
 	// Compile it
-	compiled, err := jitCompile(res)
+	j := NewJIT()
+	compiled, err := j.jitCompile(res)
 	if err != nil {
 		t.Fatalf("jitCompile: %v", err)
 	}
@@ -301,7 +302,8 @@ func TestMixedExecution_Block1_Dump(t *testing.T) {
 		t.Logf("  [%d] %s", i, ins.String())
 	}
 
-	compiled, err := jitCompile(res)
+	j := NewJIT()
+	compiled, err := j.jitCompile(res)
 	if err != nil {
 		t.Fatalf("jitCompile: %v", err)
 	}
@@ -321,11 +323,11 @@ func TestMixedExecution_Block1_Dump(t *testing.T) {
 func TestMixedExecution_FullSequence(t *testing.T) {
 	csrrs := ienc(opSYSTEM, 2, 3, 0, 0xC00)
 	cpu, mem := newTestCPU(t, Size64MB, 0x1000, []uint32{
-		ienc(opOPIMM, 0, 1, 0, 10),       // ADDI x1, x0, 10
-		ienc(opOPIMM, 0, 2, 0, 20),       // ADDI x2, x0, 20
-		csrrs,                              // CSRRS — terminates block
-		ienc(opOPIMM, 0, 4, 0, 30),       // ADDI x4, x0, 30
-		renc(opOP, 0, 0x00, 5, 1, 2),     // ADD x5, x1, x2
+		ienc(opOPIMM, 0, 1, 0, 10),   // ADDI x1, x0, 10
+		ienc(opOPIMM, 0, 2, 0, 20),   // ADDI x2, x0, 20
+		csrrs,                        // CSRRS — terminates block
+		ienc(opOPIMM, 0, 4, 0, 30),   // ADDI x4, x0, 30
+		renc(opOP, 0, 0x00, 5, 1, 2), // ADD x5, x1, x2
 		instrECALL,
 	})
 	defer mem.Free()
@@ -355,9 +357,9 @@ func TestMixedExecution_FullSequence(t *testing.T) {
 // TestSrc1EqDest tests SUB x1, x1, x2 (rd==rs1 aliasing).
 func TestSrc1EqDest(t *testing.T) {
 	cpu, mem := newTestCPU(t, Size64MB, 0x1000, []uint32{
-		ienc(opOPIMM, 0, 1, 0, 13),       // ADDI x1, x0, 13
-		ienc(opOPIMM, 0, 2, 0, 11),       // ADDI x2, x0, 11
-		renc(opOP, 0, 0x20, 1, 1, 2),     // SUB x1, x1, x2  (rd==rs1)
+		ienc(opOPIMM, 0, 1, 0, 13),   // ADDI x1, x0, 13
+		ienc(opOPIMM, 0, 2, 0, 11),   // ADDI x2, x0, 11
+		renc(opOP, 0, 0x20, 1, 1, 2), // SUB x1, x1, x2  (rd==rs1)
 		instrECALL,
 	})
 	defer mem.Free()
@@ -619,7 +621,7 @@ func TestSRL_LargeValue_Block(t *testing.T) {
 	pc := uint64(0x1000)
 	// C.LI x11, -1  (0x55fd = C.LI x11, -1? Let's use full instructions)
 	// LUI x11, 0x80000  (x11 = 0xFFFFFFFF80000000)
-	mem.Store32(pc, 0x800005B7)   // LUI x11, 0x80000
+	mem.Store32(pc, 0x800005B7) // LUI x11, 0x80000
 	// C.LI x12, 0  (x12 = 0)
 	mem.Store32(pc+4, 0x00000613) // ADDI x12, x0, 0
 	// SRL x14, x11, x12
@@ -652,7 +654,7 @@ func TestSRL_CrossBlock_Writeback(t *testing.T) {
 
 	pc := uint64(0x1000)
 	// Block 1: LUI x11, 0x80000 (sets x11 = 0xFFFFFFFF80000000)
-	mem.Store32(pc, 0x800005B7)   // LUI x11, 0x80000
+	mem.Store32(pc, 0x800005B7) // LUI x11, 0x80000
 	// ECALL to end block 1
 	mem.Store32(pc+4, 0x00000073) // ECALL
 
@@ -744,7 +746,8 @@ func TestSRL_ExactIR(t *testing.T) {
 
 	// Compile and execute
 	blk := e.Block
-	compiled, cerr := jitCompile(&emitResult{block: blk, numInsns: 3})
+	j := NewJIT()
+	compiled, cerr := j.jitCompile(&emitResult{block: blk, numInsns: 3})
 	if cerr != nil {
 		t.Fatalf("compile: %v", cerr)
 	}
@@ -799,7 +802,8 @@ func TestSRL_ExactIR_V2(t *testing.T) {
 	e.Ret(0x592, 0, ir.VRegZero)
 
 	blk := e.Block
-	compiled, cerr := jitCompileV2(&emitResult{block: blk, numInsns: 3})
+	j := NewJIT()
+	compiled, cerr := j.jitCompileV2(&emitResult{block: blk, numInsns: 3})
 	if cerr != nil {
 		t.Fatalf("compile: %v", cerr)
 	}
@@ -846,7 +850,8 @@ func TestSRL_ExactIR_DumpAlloc(t *testing.T) {
 	blk := e.Block
 	pool := ir.AMD64Pool(blk)
 	pinned := ir.AMD64Pinned()
-	alloc := ir.Allocate(blk, pool, pinned, nil)
+	j := NewJIT()
+	alloc := j.irAlloc.Allocate(blk, pool, pinned, nil)
 
 	t.Logf("StackSlots=%d", alloc.StackSlots)
 	for i, k := range alloc.Kind {
@@ -864,7 +869,9 @@ func TestSRL_ExactIR_DumpAlloc(t *testing.T) {
 // and compares V1 vs V2 results.
 func TestSRL_Block61_V1vV2(t *testing.T) {
 	mem, err := NewGuestMemory(Size64MB)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer mem.Free()
 
 	e := ir.NewEmitter()
@@ -955,13 +962,18 @@ func TestSRL_Block61_V1vV2(t *testing.T) {
 	x2v = x1v
 
 	// V1
-	c1, err := jitCompile(&emitResult{block: blk, numInsns: 9})
-	if err != nil { t.Fatalf("V1 compile: %v", err) }
+	j := NewJIT()
+	c1, err := j.jitCompile(&emitResult{block: blk, numInsns: 9})
+	if err != nil {
+		t.Fatalf("V1 compile: %v", err)
+	}
 	r1 := jitcallCall(c1.fn, &x1v, &f1v, &fcsr1, mem.Base(), mem.Mask())
 
 	// V2
-	c2, err := jitCompileV2(&emitResult{block: blk, numInsns: 9})
-	if err != nil { t.Fatalf("V2 compile: %v", err) }
+	c2, err := j.jitCompileV2(&emitResult{block: blk, numInsns: 9})
+	if err != nil {
+		t.Fatalf("V2 compile: %v", err)
+	}
 	r2 := jitcallCall(c2.fn, &x2v, &f2v, &fcsr2, mem.Base(), mem.Mask())
 
 	t.Logf("V1: PC=0x%x IC=%d x[3]=%d x[6]=0x%x x[14]=0x%x", r1.PC, r1.IC, x1v[3], x1v[6], x1v[14])
@@ -988,7 +1000,9 @@ func TestSRL_Block61_V1vV2(t *testing.T) {
 // with writeback helper.
 func TestSRL_Block61_V1vV2b(t *testing.T) {
 	mem, err := NewGuestMemory(Size64MB)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer mem.Free()
 
 	e := ir.NewEmitter()
@@ -1000,20 +1014,20 @@ func TestSRL_Block61_V1vV2b(t *testing.T) {
 		e.Load(vr, e.XBase(), int64(vr)*8, ir.I64, false)
 	}
 
-	e.Shr(x14, x1, x2)           // SRL x14 = x1, x2
+	e.Shr(x14, x1, x2) // SRL x14 = x1, x2
 	e.AddImm(e.IC(), e.IC(), 1)
-	e.Mov(x6, x14)               // MOV x6 = x14
+	e.Mov(x6, x14) // MOV x6 = x14
 	e.AddImm(e.IC(), e.IC(), 1)
-	e.AddImm(x4, x4, 1)          // ADDI x4 = x4 + 1
+	e.AddImm(x4, x4, 1) // ADDI x4 = x4 + 1
 	e.AddImm(e.IC(), e.IC(), 1)
-	e.Const(x5, 2)               // CONST x5 = 2
+	e.Const(x5, 2) // CONST x5 = 2
 	e.AddImm(e.IC(), e.IC(), 1)
 	e.AddImm(e.IC(), e.IC(), 1)
 
 	l7 := e.NewLabel()
-	e.Branch(x4, x5, ir.NE, l7)  // BNE x4, x5 → L7
+	e.Branch(x4, x5, ir.NE, l7) // BNE x4, x5 → L7
 
-	e.Const(x7, 0x1000000)       // CONST x7 = 16777216
+	e.Const(x7, 0x1000000) // CONST x7 = 16777216
 	e.AddImm(e.IC(), e.IC(), 1)
 	e.AddImm(e.IC(), e.IC(), 1)
 
@@ -1060,12 +1074,17 @@ func TestSRL_Block61_V1vV2b(t *testing.T) {
 	setup(&xv1)
 	setup(&xv2)
 
-	c1, err := jitCompile(&emitResult{block: blk, numInsns: 9})
-	if err != nil { t.Fatalf("V1 compile: %v", err) }
+	j := NewJIT()
+	c1, err := j.jitCompile(&emitResult{block: blk, numInsns: 9})
+	if err != nil {
+		t.Fatalf("V1 compile: %v", err)
+	}
 	r1 := jitcallCall(c1.fn, &xv1, &fv1, &fc1, mem.Base(), mem.Mask())
 
-	c2, err := jitCompileV2(&emitResult{block: blk, numInsns: 9})
-	if err != nil { t.Fatalf("V2 compile: %v", err) }
+	c2, err := j.jitCompileV2(&emitResult{block: blk, numInsns: 9})
+	if err != nil {
+		t.Fatalf("V2 compile: %v", err)
+	}
 	r2 := jitcallCall(c2.fn, &xv2, &fv2, &fc2, mem.Base(), mem.Mask())
 
 	t.Logf("V1: PC=0x%x IC=%d x[3]=%d x[6]=0x%x x[14]=0x%x", r1.PC, r1.IC, xv1[3], xv1[6], xv1[14])
@@ -1094,11 +1113,15 @@ func TestSRL_Block61_V1vV2b(t *testing.T) {
 // then compiles the resulting IR block with both V1 and V2 to find divergences.
 func TestSRL_RealBlock_V1vV2(t *testing.T) {
 	mem, err := NewGuestMemory(Size64MB)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer mem.Free()
 
 	_, err = LoadELF(mem, "riscv-elf-tests/rv64ui-p-srl")
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	// Block 61 starts at pc=0x35c with maxBlockInsns=9 (from earlier tracing).
 	// But with maxBlockInsns=2048, the failing block is block 39 starting
@@ -1151,10 +1174,14 @@ func TestSRL_RealBlock_V1vV2(t *testing.T) {
 // TestSRL_Block39_Alloc dumps the register allocation for the real block 39.
 func TestSRL_Block39_Alloc(t *testing.T) {
 	mem, err := NewGuestMemory(Size64MB)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer mem.Free()
 	_, err = LoadELF(mem, "riscv-elf-tests/rv64ui-p-srl")
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	// Block 39 starts near the beginning of the test code.
 	// Find it by running StepBlock until we get a large block.
@@ -1170,11 +1197,14 @@ func TestSRL_Block39_Alloc(t *testing.T) {
 	t.Logf("block 39 starts at pc=0x%x", pc)
 
 	res := emitBlock(&cpu.mem, pc)
-	if res == nil { t.Fatal("emitBlock returned nil") }
+	if res == nil {
+		t.Fatal("emitBlock returned nil")
+	}
 	t.Logf("block: numInsns=%d, %d IR instrs", res.numInsns, len(res.block.Instrs))
 
 	pool := ir.AMD64Pool(res.block)
-	alloc := ir.Allocate(res.block, pool, ir.AMD64Pinned(), nil)
+	j := NewJIT()
+	alloc := j.irAlloc.Allocate(res.block, pool, ir.AMD64Pinned(), nil)
 
 	// Find all intervals for x1.
 	for _, ia := range alloc.IntervalMap {
@@ -1193,10 +1223,14 @@ func TestSRL_Block39_Alloc(t *testing.T) {
 // to find the exact block and registers where V1 diverges from V2.
 func TestDebugV1V2_SRL(t *testing.T) {
 	mem, err := NewGuestMemory(Size64MB)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer mem.Free()
 	_, err = LoadELF(mem, "riscv-elf-tests/rv64ui-p-srl")
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	cpu := NewCPU(*mem)
 	cpu.SetPC(0)
@@ -1223,10 +1257,16 @@ func TestDebugV1V2_SRL(t *testing.T) {
 
 func TestDebugV1V2_SRL_DumpAlloc(t *testing.T) {
 	mem, err := NewGuestMemory(Size64MB)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer mem.Free()
 	_, err = LoadELF(mem, "riscv-elf-tests/rv64ui-p-srl")
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	j := NewJIT()
 
 	// The failing block is at pc=0x322. But emitBlock starts at a block
 	// boundary, not necessarily 0x322. Let me find it by running to that PC.
@@ -1241,7 +1281,7 @@ func TestDebugV1V2_SRL_DumpAlloc(t *testing.T) {
 				t.Logf("found block: startPC=0x%x endPC=0x%x numInsns=%d irLen=%d",
 					res.startPC, res.endPC, res.numInsns, len(res.block.Instrs))
 				pool := ir.AMD64Pool(res.block)
-				alloc := ir.Allocate(res.block, pool, ir.AMD64Pinned(), nil)
+				alloc := j.irAlloc.Allocate(res.block, pool, ir.AMD64Pinned(), nil)
 				for _, ia := range alloc.IntervalMap {
 					vr := ia.Interval.VReg
 					if vr == ir.VReg(11) || vr == ir.VReg(12) {
@@ -1261,10 +1301,14 @@ func TestDebugV1V2_SRL_DumpAlloc(t *testing.T) {
 // order-dependent lowerer bugs that a single sorted order might hide.
 func TestMetaIterOrder_SRL(t *testing.T) {
 	mem, err := NewGuestMemory(Size64MB)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer mem.Free()
 	_, err = LoadELF(mem, "riscv-elf-tests/rv64ui-p-srl")
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	for offset := 0; offset < 100; offset++ {
 		testIterStart = offset
@@ -1305,10 +1349,14 @@ func TestMetaIterOrder_AllUI(t *testing.T) {
 				name := strings.TrimPrefix(filepath.Base(path), "rv64ui-p-")
 				t.Run(name, func(t *testing.T) {
 					mem, err := NewGuestMemory(Size64MB)
-					if err != nil { t.Fatal(err) }
+					if err != nil {
+						t.Fatal(err)
+					}
 					defer mem.Free()
 					_, err = LoadELF(mem, path)
-					if err != nil { t.Fatal(err) }
+					if err != nil {
+						t.Fatal(err)
+					}
 
 					cpu := NewCPU(*mem)
 					cpu.SetPC(0)
@@ -1336,10 +1384,14 @@ func TestMetaIterOrder_AllUI(t *testing.T) {
 // TestBisectBlockSize finds the smallest maxBlockInsns where V1 diverges from V2.
 func TestBisectBlockSize(t *testing.T) {
 	mem, err := NewGuestMemory(Size64MB)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer mem.Free()
 	_, err = LoadELF(mem, "riscv-elf-tests/rv64ui-p-srl")
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	trySize := func(n int) bool {
 		maxBlockInsns = n
@@ -1376,10 +1428,14 @@ func TestBisectBlockSize(t *testing.T) {
 
 func TestBisectBlockSize2(t *testing.T) {
 	mem, err := NewGuestMemory(Size64MB)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer mem.Free()
 	_, err = LoadELF(mem, "riscv-elf-tests/rv64ui-p-srl")
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	trySize := func(n int) (pass bool, detail string) {
 		maxBlockInsns = n
@@ -1421,10 +1477,14 @@ func TestBisectBlockSize2(t *testing.T) {
 
 func TestBisectBlockSize3(t *testing.T) {
 	mem, err := NewGuestMemory(Size64MB)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer mem.Free()
 	_, err = LoadELF(mem, "riscv-elf-tests/rv64ui-p-srl")
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	trySize := func(n int) (pass bool, pc uint64, detail string) {
 		maxBlockInsns = n
@@ -1445,7 +1505,9 @@ func TestBisectBlockSize3(t *testing.T) {
 			pass = true
 			for i := 0; i < 500; i++ {
 				_, err := jit.StepBlock(cpu)
-				if err != nil { return }
+				if err != nil {
+					return
+				}
 			}
 		}()
 		return
@@ -1463,10 +1525,14 @@ func TestBisectBlockSize3(t *testing.T) {
 
 func TestDumpBlock_0x34e(t *testing.T) {
 	mem, err := NewGuestMemory(Size64MB)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer mem.Free()
 	_, err = LoadELF(mem, "riscv-elf-tests/rv64ui-p-srl")
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	maxBlockInsns = 15
 	defer func() { maxBlockInsns = 2048 }()
@@ -1490,7 +1556,7 @@ func TestDumpBlock_0x34e(t *testing.T) {
 			if res != nil && res.startPC <= 0x34e && res.endPC > 0x34e {
 				t.Logf("block at 0x%x covers 0x34e: numInsns=%d irLen=%d", res.startPC, res.numInsns, len(res.block.Instrs))
 				pool := ir.AMD64Pool(res.block)
-				alloc := ir.Allocate(res.block, pool, ir.AMD64Pinned(), nil)
+				alloc := jit.irAlloc.Allocate(res.block, pool, ir.AMD64Pinned(), nil)
 				// Print IR and allocation for shift instructions
 				for i, ins := range res.block.Instrs {
 					if ins.Op == ir.IRShr || ins.Op == ir.IRShl || ins.Op == ir.IRSar {
@@ -1523,26 +1589,35 @@ func regName(r int16) string {
 		2072: "R8", 2073: "R9", 2074: "R10", 2075: "R11",
 		2076: "R12", 2077: "R13", 2078: "R14", 2079: "R15",
 	}
-	if n, ok := names[r]; ok { return n }
+	if n, ok := names[r]; ok {
+		return n
+	}
 	return fmt.Sprintf("?%d", r)
 }
 
 func TestDumpBlock_0x34e_v2(t *testing.T) {
 	mem, err := NewGuestMemory(Size64MB)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer mem.Free()
 	_, err = LoadELF(mem, "riscv-elf-tests/rv64ui-p-srl")
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	maxBlockInsns = 15
 	defer func() { maxBlockInsns = 2048 }()
 
 	res := emitBlock(mem, 0x34e)
-	if res == nil { t.Fatal("emitBlock returned nil") }
+	if res == nil {
+		t.Fatal("emitBlock returned nil")
+	}
 	t.Logf("block: start=0x%x end=0x%x insns=%d irLen=%d", res.startPC, res.endPC, res.numInsns, len(res.block.Instrs))
 
+	j := NewJIT()
 	pool := ir.AMD64Pool(res.block)
-	alloc := ir.Allocate(res.block, pool, ir.AMD64Pinned(), nil)
+	alloc := j.irAlloc.Allocate(res.block, pool, ir.AMD64Pinned(), nil)
 	for i, ins := range res.block.Instrs {
 		if ins.Op == ir.IRShr || ins.Op == ir.IRShl || ins.Op == ir.IRSar {
 			aHost := findHost(alloc, ins.A, i)
@@ -1556,19 +1631,26 @@ func TestDumpBlock_0x34e_v2(t *testing.T) {
 
 func TestDumpBlock_0x34e_v3(t *testing.T) {
 	mem, err := NewGuestMemory(Size64MB)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer mem.Free()
 	_, err = LoadELF(mem, "riscv-elf-tests/rv64ui-p-srl")
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	maxBlockInsns = 15
 	defer func() { maxBlockInsns = 2048 }()
 
 	res := emitBlock(mem, 0x34e)
-	if res == nil { t.Fatal("nil") }
+	if res == nil {
+		t.Fatal("nil")
+	}
 
 	pool := ir.AMD64Pool(res.block)
-	alloc := ir.Allocate(res.block, pool, ir.AMD64Pinned(), nil)
+	j := NewJIT()
+	alloc := j.irAlloc.Allocate(res.block, pool, ir.AMD64Pinned(), nil)
 
 	t.Logf("StackSlots=%d", alloc.StackSlots)
 	for i := 0; i < len(alloc.Kind); i++ {
@@ -1628,13 +1710,14 @@ func TestNativeTrace_0x34e(t *testing.T) {
 	}
 
 	// Compile with V1.
-	_, v1dbg, err := jitCompileDebug(res, false)
+	j := NewJIT()
+	_, v1dbg, err := j.jitCompileDebug(res, false)
 	if err != nil {
 		t.Fatalf("V1 compile: %v", err)
 	}
 
 	// Compile with V2.
-	_, v2dbg, err := jitCompileDebug(res, true)
+	_, v2dbg, err := j.jitCompileDebug(res, true)
 	if err != nil {
 		t.Fatalf("V2 compile: %v", err)
 	}
@@ -1681,7 +1764,7 @@ func TestNativeTrace_0x34e(t *testing.T) {
 	copy(xSnap[:], cpu.x[:])
 
 	// Execute with V1.
-	blkV1, _, err := jitCompileDebug(res, false)
+	blkV1, _, err := jit.jitCompileDebug(res, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1692,7 +1775,7 @@ func TestNativeTrace_0x34e(t *testing.T) {
 
 	// Restore and execute with V2.
 	copy(cpu.x[:], xSnap[:])
-	blkV2, _, err := jitCompileDebug(res, true)
+	blkV2, _, err := jit.jitCompileDebug(res, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1776,7 +1859,8 @@ func TestDumpBlock_ld_st_0x1a0(t *testing.T) {
 	t.Logf("jumps=%d branches=%d budgetChecks=%d", jumps, branches, budgetChecks)
 
 	// Also dump the Prog listing.
-	_, dbg, cerr := jitCompileDebug(res, false)
+	j := NewJIT()
+	_, dbg, cerr := j.jitCompileDebug(res, false)
 	if cerr != nil {
 		t.Fatalf("V1 compile: %v", cerr)
 	}
@@ -1897,11 +1981,11 @@ func testNativeTraceW(t *testing.T, elfPath string, targetBlock int) {
 		res.startPC, res.endPC, res.numInsns, len(res.block.Instrs))
 
 	// Compile with V1 and V2.
-	blkV1, v1dbg, err := jitCompileDebug(res, false)
+	blkV1, v1dbg, err := jit.jitCompileDebug(res, false)
 	if err != nil {
 		t.Fatalf("V1 compile: %v", err)
 	}
-	blkV2, v2dbg, err := jitCompileDebug(res, true)
+	blkV2, v2dbg, err := jit.jitCompileDebug(res, true)
 	if err != nil {
 		t.Fatalf("V2 compile: %v", err)
 	}

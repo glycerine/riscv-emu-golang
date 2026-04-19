@@ -105,23 +105,30 @@ type iep struct {
 
 // allocState holds mutable state during the allocation algorithm.
 type allocState struct {
-	count     []int     // count[P] = number of live VRegs at point P
-	availInt  []int16   // available integer host registers
-	availFP   []int16   // available FP host registers
-	isFP      []bool    // per-VReg: is it FP?
-	spilled   []bool    // per-VReg: spill(s) = true if totally spilled
-	spillCost []float64 // per-VReg: totalSpillCost(s)
-	intervals []intervalSet
-	lastReg   []int16  // per-VReg: last assigned host register
-	spillStack []VReg  // stack for spill resurrection
+	count          []int     // count[P] = number of live VRegs at point P
+	availInt       []int16   // available integer host registers
+	availFP        []int16   // available FP host registers
+	isFP           []bool    // per-VReg: is it FP?
+	spilled        []bool    // per-VReg: spill(s) = true if totally spilled
+	spillCost      []float64 // per-VReg: totalSpillCost(s)
+	intervals      []intervalSet
+	lastReg        []int16 // per-VReg: last assigned host register
+	spillStack     []VReg  // stack for spill resurrection
 	intervalAllocs []IntervalAlloc
-	moves     []RegMove
+	moves          []RegMove
 }
 
 // ── Primary API ──
 
+type Allocator struct {
+}
+
+func NewAllocator() *Allocator {
+	return &Allocator{}
+}
+
 // Allocate performs Extended Linear Scan register allocation on the block.
-func Allocate(b *Block, pool RegPool, pinned map[VReg]int16, freq []float64) *Allocation {
+func (s *Allocator) Allocate(b *Block, pool RegPool, pinned map[VReg]int16, freq []float64) *Allocation {
 	if len(b.Instrs) == 0 {
 		return &Allocation{
 			Kind:      []AllocKind{AllocUnused},
@@ -383,8 +390,8 @@ func computeIntervalSets(b *Block) []intervalSet {
 	// Per-VReg: track whether currently live during backward scan,
 	// and the current interval's end point.
 	type liveInfo struct {
-		live     bool
-		curEnd   int
+		live   bool
+		curEnd int
 	}
 	info := make([]liveInfo, int(mv)+1)
 	result := make([]intervalSet, int(mv)+1)

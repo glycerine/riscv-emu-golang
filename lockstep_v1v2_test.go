@@ -22,7 +22,8 @@ func compileIR(t *testing.T, b *ir.Block, useV2 bool) (uintptr, []byte) {
 		pool = ir.AMD64Pool(b)
 	}
 	pinned := ir.AMD64Pinned()
-	alloc := ir.Allocate(b, pool, pinned, nil)
+	j := NewJIT()
+	alloc := j.irAlloc.Allocate(b, pool, pinned, nil)
 
 	ctx := goasm.New(goasm.AMD64)
 	ctx.Append(ctx.NewATEXT())
@@ -71,6 +72,7 @@ func TestLockstep_V1V2_Execution(t *testing.T) {
 	}
 	defer mem.Free()
 
+	j := NewJIT()
 	for i := 0; i < numBlocks; i++ {
 		n := rng.Intn(maxInsns) + 1
 		blk := genLockstepBlock(rng, n, 6)
@@ -80,7 +82,7 @@ func TestLockstep_V1V2_Execution(t *testing.T) {
 
 		// Try V1 first. If it fails to lower/assemble, skip.
 		pool1 := ir.AMD64Pool(blk)
-		alloc1 := ir.Allocate(blk, pool1, ir.AMD64Pinned(), nil)
+		alloc1 := j.irAlloc.Allocate(blk, pool1, ir.AMD64Pinned(), nil)
 		ctx1 := goasm.New(goasm.AMD64)
 		ctx1.Append(ctx1.NewATEXT())
 		if err := ir.LowerAMD64(ctx1, blk, alloc1); err != nil {
@@ -93,7 +95,7 @@ func TestLockstep_V1V2_Execution(t *testing.T) {
 
 		// V2 must succeed.
 		pool2 := ir.AMD64Pool_V2(blk)
-		alloc2 := ir.Allocate(blk, pool2, ir.AMD64Pinned(), nil)
+		alloc2 := j.irAlloc.Allocate(blk, pool2, ir.AMD64Pinned(), nil)
 		ctx2 := goasm.New(goasm.AMD64)
 		ctx2.Append(ctx2.NewATEXT())
 		if err := ir.LowerAMD64_V2(ctx2, blk, alloc2); err != nil {

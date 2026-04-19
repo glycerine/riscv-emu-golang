@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"riscv/internal/jitcall"
+	"riscv/ir"
 )
 
 // JIT status codes returned by compiled blocks.
@@ -21,8 +22,8 @@ const (
 // Block cache: direct-mapped array replaces map[uint64]*compiledBlock.
 // Eliminates Go map hash+probe overhead (~20-30ns) per dispatch cycle.
 const (
-	blockCacheShift = 12                       // 4096 entries
-	blockCacheSize  = 1 << blockCacheShift     // must be power of 2
+	blockCacheShift = 12                   // 4096 entries
+	blockCacheSize  = 1 << blockCacheShift // must be power of 2
 	blockCacheMask  = blockCacheSize - 1
 )
 
@@ -34,17 +35,20 @@ type blockCacheEntry struct {
 // JIT holds the cache of compiled basic blocks.
 type JIT struct {
 	cache      [blockCacheSize]blockCacheEntry
-	noJIT      u64set          // PCs where translation failed — don't retry
-	InterpOnly bool            // debug: force all-interpreter mode
-	UseV2      bool            // bench: use V2 lowerer for comparison
-	DebugV1V2  bool            // debug: run every block through V1 AND V2, compare results
-	trace      bool            // debug: log block executions to stderr
+	noJIT      u64set // PCs where translation failed — don't retry
+	InterpOnly bool   // debug: force all-interpreter mode
+	UseV2      bool   // bench: use V2 lowerer for comparison
+	DebugV1V2  bool   // debug: run every block through V1 AND V2, compare results
+	trace      bool   // debug: log block executions to stderr
+
+	irAlloc *ir.Allocator
 }
 
 // NewJIT creates a new JIT translation cache.
 func NewJIT() *JIT {
 	return &JIT{
-		noJIT: newU64set(),
+		noJIT:   newU64set(),
+		irAlloc: ir.NewAllocator(),
 	}
 }
 
@@ -118,11 +122,11 @@ func (j *JIT) StepBlock(cpu *CPU) (ic uint64, err error) {
 	if !j.InterpOnly && !j.noJIT.has(pc) {
 		res := emitBlock(&cpu.mem, pc)
 		if res != nil && res.numInsns > 0 {
-			compiled, cerr := jitCompileWith(res, j.UseV2)
+			compiled, cerr := j.jitCompileWith(res, j.UseV2)
 			if cerr == nil {
 				// When DebugV1V2, also compile a V2 shadow block.
 				if j.DebugV1V2 && !j.UseV2 {
-					v2, v2err := jitCompileWith(res, true)
+					v2, v2err := j.jitCompileWith(res, true)
 					if v2err == nil {
 						compiled.shadow = v2
 					}
@@ -318,7 +322,7 @@ func (j *JIT) RunJIT(cpu *CPU) error {
 		if !j.InterpOnly && !j.noJIT.has(pc) {
 			res := emitBlock(&cpu.mem, pc)
 			if res != nil && res.numInsns > 0 {
-				blk, err := jitCompileWith(res, j.UseV2)
+				blk, err := j.jitCompileWith(res, j.UseV2)
 				if err == nil {
 					j.insertBlock(pc, blk)
 					continue

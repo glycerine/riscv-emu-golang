@@ -103,6 +103,6 @@ func jitCompile(res *emitResult) (*compiledBlock, error) {
 }
 
 // jitCompileWith is the TCC stub — ignores useV2 (V2 is native-only).
-func jitCompileWith(res *emitResult, _ bool) (*compiledBlock, error) {
+func (j *JIT) jitCompileWith(res *emitResult, _ bool) (*compiledBlock, error) {
 	return tccCompile(res.csrc)
 }
