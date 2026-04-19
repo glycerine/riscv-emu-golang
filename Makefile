@@ -19,7 +19,7 @@
 #   make bench-mem      # head-to-head memory pair benchmark only
 #   make bench-smoke    # quick smoke test (~3s)
 #   make test           # unit tests
-#   make clean          # remove vendor/ and generated ELF
+#   make clean          # remove xendor/build_capi and generated ELF
 #   make help           # this message
 
 .PHONY: all help bench-setup bench bench-quick bench-raw bench-ours bench-cpu bench-libriscv bench-mem \
@@ -143,7 +143,7 @@ endif
 	@echo ""
 	@echo "  Other:"
 	@echo "    make test             unit tests"
-	@echo "    make clean            remove xendor/ and generated ELF"
+	@echo "    make clean            remove xendor/build_capi and generated ELF"
 	@echo ""
 	@echo "  Overrides:"
 	@echo "    ZIG_CC=$(ZIG_CC)  BENCH_COUNT=$(BENCH_COUNT)  BENCH_TIME=$(BENCH_TIME)"
