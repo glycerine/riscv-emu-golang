@@ -387,6 +387,42 @@ func TestJIT_LoadStore(t *testing.T) {
 	}
 }
 
+func TestJIT_LoadStore_Debug(t *testing.T) {
+	cpu, mem := newTestCPU(t, Size64MB, 0x1000, []uint32{
+		uenc(opLUI, 10, 0x2000),           // LUI x10, 0x2  → x10 = 0x2000
+		ienc(opOPIMM, 0, 11, 0, 42),       // ADDI x11, x0, 42
+		senc(opSTORE, 2, 10, 11, 0),       // SW x11, 0(x10)
+		ienc(opLOAD, 2, 12, 10, 0),        // LW x12, 0(x10)
+		instrECALL,
+	})
+	defer mem.Free()
+	_ = cpu
+
+	res := emitBlock(mem, 0x1000)
+	if res == nil {
+		t.Fatal("emitBlock returned nil")
+	}
+	t.Logf("IR: %d instructions, %d chain exits", len(res.block.Instrs), res.numChainExits)
+	for i, ins := range res.block.Instrs {
+		t.Logf("  [%3d] %s", i, ins.String())
+	}
+
+	jit := NewJIT()
+	_, dbg, err := jit.jitCompileDebug(res, false)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	t.Logf("Prog listing:\n%s", dbg.progs)
+	t.Logf("Code bytes (%d):", len(dbg.code))
+	for i := 0; i < len(dbg.code); i += 16 {
+		end := i + 16
+		if end > len(dbg.code) {
+			end = len(dbg.code)
+		}
+		t.Logf("  %04x: % x", i, dbg.code[i:end])
+	}
+}
+
 func TestJIT_LoadStore_AllWidths(t *testing.T) {
 	tests := []struct {
 		name     string

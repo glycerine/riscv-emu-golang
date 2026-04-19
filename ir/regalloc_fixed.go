@@ -149,6 +149,7 @@ func (f *FixedStaticAllocator) Allocate(b *Block, pool RegPool, pinned map[VReg]
 
 	// 4. Handle temps (VReg >= VRegTempStart) that aren't pinned.
 	//    These are JIT-internal temporaries. Assign from remaining pool registers.
+	stackSlots := int16(0)
 	for vr := VRegTempStart; int(vr) < numVRegs; vr++ {
 		if !used[vr] {
 			continue
@@ -179,10 +180,11 @@ func (f *FixedStaticAllocator) Allocate(b *Block, pool RegPool, pinned map[VReg]
 		}
 		// Spill if no registers left.
 		kind[vr] = AllocStack
+		spillSlot[vr] = stackSlots
+		stackSlots++
 	}
 
 	// 5. Spill all remaining used VRegs that weren't assigned.
-	stackSlots := int16(0)
 	for vr := 1; vr < numVRegs; vr++ {
 		if !used[vr] || kind[vr] != AllocUnused {
 			continue
