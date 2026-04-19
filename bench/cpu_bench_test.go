@@ -64,6 +64,22 @@ func newBenchCPU(tb testing.TB, elfData []byte) (*riscv.CPU, *riscv.GuestMemory)
 	return cpu, mem
 }
 
+func runJITBenchGuestWith(cpu *riscv.CPU, jit *riscv.JIT) (exitCode int, insns uint64) {
+	defer func() {
+		if r := recover(); r != nil {
+			if ex, ok := r.(*riscv.ExitError); ok {
+				exitCode = ex.Code
+				insns = cpu.Cycle()
+				return
+			}
+			panic(r)
+		}
+	}()
+	_ = jit.RunJIT(cpu)
+	insns = cpu.Cycle()
+	return
+}
+
 func runBenchGuest(cpu *riscv.CPU) (exitCode int, insns uint64) {
 	defer func() {
 		if r := recover(); r != nil {

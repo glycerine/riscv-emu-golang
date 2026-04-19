@@ -206,22 +206,6 @@ func BenchmarkExec_V2(b *testing.B) {
 	}
 }
 
-func runJITBenchGuestWith(cpu *riscv.CPU, jit *riscv.JIT) (exitCode int, insns uint64) {
-	defer func() {
-		if r := recover(); r != nil {
-			if ex, ok := r.(*riscv.ExitError); ok {
-				exitCode = ex.Code
-				insns = cpu.Cycle()
-				return
-			}
-			panic(r)
-		}
-	}()
-	_ = jit.RunJIT(cpu)
-	insns = cpu.Cycle()
-	return
-}
-
 // ── Code size comparison ──
 
 func TestLower_CodeSize_V1_vs_V2(t *testing.T) {

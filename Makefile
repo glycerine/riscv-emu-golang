@@ -23,7 +23,7 @@
 #   make help           # this message
 
 .PHONY: all help bench-setup bench bench-quick bench-raw bench-ours bench-cpu bench-libriscv bench-mem \
-        bench-smoke bench-summary test clean check-tools \
+        bench-smoke bench-summary bench-alloc test clean check-tools \
         libriscv-build guest-elf
 
 # ── platform detection ─────────────────────────────────────────────────────
@@ -134,6 +134,7 @@ endif
 	@echo "    make bench-setup"
 	@echo ""
 	@echo "  Benchmarks:"
+	@echo "    make bench-alloc      JIT allocator comparison (ELS vs Fixed vs TCC vs libriscv)"
 	@echo "    make bench-quick      fast head-to-head (<1s)"
 	@echo "    make bench            full comparison (ours + libriscv)"
 	@echo "    make bench-ours       our GuestMemory only (no libriscv needed)"
@@ -386,6 +387,65 @@ bench-smoke: bench-setup
 	    $(GO) test -tags libriscv -v \
 	        -run='^TestLibriscvSmokeTest$$' \
 	        ./bench/libriscv/ 2>&1
+
+bench-alloc: bench-setup
+	@echo ""
+	@echo "══════════════════════════════════════════════════════════════════"
+	@echo "  JIT ALLOCATOR COMPARISON — $$(date '+%Y-%m-%d %H:%M')  [$(PLATFORM)]"
+	@echo "  cpu: $(CPU_INFO)"
+	@echo "══════════════════════════════════════════════════════════════════"
+	@echo ""
+	@printf "  %-44s %s\n" "Strategy" "MIPS"
+	@printf "  %-44s %s\n" "────────────────────────────────────────────" "──────────"
+	@printf "  %-44s " "Go interpreter (no JIT):"
+	@cd $(ROOT) && BENCH_ELF=$(GUEST_ELF) \
+	    $(GO) test -count=1 -benchtime=1x -benchmem \
+	        -run='^$$' -bench='^BenchmarkCPU_FullExecution$$' \
+	        ./bench/ 2>&1 \
+	    | awk '/MIPS/{for(i=1;i<=NF;i++){if($$i=="MIPS"){print p" MIPS";next}; p=$$i}}' \
+	    || echo "(failed)"
+	@printf "  %-44s " "Go JIT — ELS allocator (native):"
+	@cd $(ROOT) && BENCH_ELF=$(GUEST_ELF) \
+	    $(GO) test -count=1 -benchtime=1x -benchmem \
+	        -run='^$$' -bench='^BenchmarkCPU_FullExecution_JIT$$' \
+	        ./bench/ 2>&1 \
+	    | awk '/MIPS/{for(i=1;i<=NF;i++){if($$i=="MIPS"){print p" MIPS";next}; p=$$i}}' \
+	    || echo "(failed)"
+	@printf "  %-44s " "Go JIT — Fixed Static Mapping (native):"
+	@cd $(ROOT) && BENCH_ELF=$(GUEST_ELF) \
+	    $(GO) test -count=1 -benchtime=1x -benchmem \
+	        -run='^$$' -bench='^BenchmarkCPU_FullExecution_JIT_Fixed$$' \
+	        ./bench/ 2>&1 \
+	    | awk '/MIPS/{for(i=1;i<=NF;i++){if($$i=="MIPS"){print p" MIPS";next}; p=$$i}}' \
+	    || echo "(failed)"
+	@printf "  %-44s " "Go JIT — TCC backend:"
+	@cd $(ROOT) && BENCH_ELF=$(GUEST_ELF) CGO_ENABLED=1 \
+	    $(GO) test -tags tcc -count=1 -benchtime=1x -benchmem \
+	        -run='^$$' -bench='^BenchmarkCPU_FullExecution_JIT$$' \
+	        ./bench/ 2>&1 \
+	    | awk '/MIPS/{for(i=1;i<=NF;i++){if($$i=="MIPS"){print p" MIPS";next}; p=$$i}}' \
+	    || echo "(failed)"
+	@printf "  %-44s " "libriscv — JIT (TCC):"
+	@cd $(ROOT) && \
+	    CGO_CFLAGS="$(CGO_CFLAGS_VAL)" \
+	    CGO_LDFLAGS="$(CGO_LDFLAGS_VAL)" \
+	    BENCH_ELF=$(GUEST_ELF) \
+	    $(GO) test -tags libriscv -count=1 -benchtime=1x -benchmem \
+	        -run='^$$' -bench='^BenchmarkLibriscv_FullExecution_Steady$$' \
+	        ./bench/libriscv/ 2>&1 \
+	    | awk '/MIPS/{for(i=1;i<=NF;i++){if($$i=="MIPS"){print p" MIPS";next}; p=$$i}}' \
+	    || echo "(failed)"
+	@printf "  %-44s " "libriscv — interpreter (no JIT):"
+	@cd $(ROOT) && \
+	    CGO_CFLAGS="$(CGO_CFLAGS_VAL)" \
+	    CGO_LDFLAGS="$(CGO_LDFLAGS_VAL)" \
+	    BENCH_ELF=$(GUEST_ELF) \
+	    $(GO) test -tags libriscv -count=1 -benchtime=1x -benchmem \
+	        -run='^$$' -bench='^BenchmarkLibriscv_FullExecution_NoJIT$$' \
+	        ./bench/libriscv/ 2>&1 \
+	    | awk '/MIPS/{for(i=1;i<=NF;i++){if($$i=="MIPS"){print p" MIPS";next}; p=$$i}}' \
+	    || echo "(failed)"
+	@echo ""
 
 bench-summary:
 	@echo ""
