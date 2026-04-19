@@ -100,7 +100,9 @@ func (fa *FixedAllocation) SpillSlotOf(v VReg) int16 {
 	return -1
 }
 
-// IsFP returns true if VReg v is floating-point.
+// IsFP returns true if VReg v is assigned to an XMM (floating-point) register.
+// For spilled VRegs, returns whether the VReg is FP-typed (so spill loads
+// use the correct scratch register class).
 func (fa *FixedAllocation) IsFP(v VReg) bool {
 	if v < 64 {
 		return fa.GuestIsFP[v]
@@ -305,22 +307,90 @@ func (f *FixedStaticAllocator) buildCache(c *cachedGuestMapping, pool RegPool, p
 // The returned pointer is reused across calls — caller must consume
 // the result before calling AllocateFixed again.
 func (f *FixedStaticAllocator) AllocateFixed(b *Block, pool RegPool, pinned map[VReg]int16) *FixedAllocation {
-	// Pick the right cached mapping based on pool size.
-	c := &f.normal
-	if len(pool.IntRegs) != f.normalIntCount {
-		c = &f.divmul
+	// Lazy init if InitFixed wasn't called (e.g. via Allocate() interface).
+	if !f.initialized {
+		// Both pools are the same when we don't know the divmul variant.
+		f.initBoth(pool, pool, pinned)
 	}
 
 	fa := &f.scratch
 
-	// Copy cached guest mapping.
-	fa.GuestHost = c.guestHost
-	fa.GuestSpill = c.guestSpill
+	// Scan which guest VRegs are actually used in the block (bitmask, no alloc).
+	var usedMask uint64 // bits 0-63 = guest VRegs 0-63
+	for i := range b.Instrs {
+		ins := &b.Instrs[i]
+		for _, vr := range [3]VReg{ins.Dst, ins.A, ins.B} {
+			if vr > 0 && vr < 64 {
+				usedMask |= 1 << vr
+			}
+		}
+	}
+	// Pinned VRegs are always "used".
+	for vr := range pinned {
+		if vr < 64 {
+			usedMask |= 1 << vr
+		}
+	}
+
+	// Assign guest regs by priority, skipping unused ones (no heap alloc).
 	fa.GuestIsFP = f.guestIsFP
-	fa.StackSlots = c.guestSpillCount
-	fa.CXAssigned = c.cxAssigned
-	fa.NumAssignedHosts = c.numAssignedHosts
-	copy(fa.AssignedHosts[:c.numAssignedHosts], c.assignedHosts[:c.numAssignedHosts])
+	fa.CXAssigned = false
+	fa.NumAssignedHosts = 0
+	for i := range fa.GuestHost {
+		fa.GuestHost[i] = -1
+		fa.GuestSpill[i] = -1
+	}
+
+	// Pinned guest regs.
+	for vr, host := range pinned {
+		if vr < 64 {
+			fa.GuestHost[vr] = host
+			fa.addAssignedHost(host)
+			if host == f.cxReg {
+				fa.CXAssigned = true
+			}
+		}
+	}
+
+	// Integer guest regs by priority (only used ones consume pool slots).
+	intIdx := 0
+	for _, vr := range intPriority {
+		if usedMask&(1<<vr) == 0 {
+			continue // not used in this block
+		}
+		if _, isPinned := pinned[vr]; isPinned {
+			continue
+		}
+		if intIdx >= len(pool.IntRegs) {
+			break
+		}
+		fa.GuestHost[vr] = pool.IntRegs[intIdx]
+		fa.addAssignedHost(pool.IntRegs[intIdx])
+		if pool.IntRegs[intIdx] == f.cxReg {
+			fa.CXAssigned = true
+		}
+		intIdx++
+	}
+
+	// FP guest regs by priority (only used ones consume pool slots).
+	fpIdx := 0
+	for _, vr := range fpPriority {
+		if usedMask&(1<<vr) == 0 {
+			continue
+		}
+		if _, isPinned := pinned[vr]; isPinned {
+			continue
+		}
+		if fpIdx >= len(pool.FPRegs) {
+			break
+		}
+		fa.GuestHost[vr] = pool.FPRegs[fpIdx]
+		fa.addAssignedHost(pool.FPRegs[fpIdx])
+		fpIdx++
+	}
+
+	// Guest spill slots are assigned AFTER temps (matching old Allocate order).
+	// Defer guest spills to after temp assignment.
 
 	// Clear temp arrays.
 	fa.TempCount = 0
@@ -386,9 +456,8 @@ func (f *FixedStaticAllocator) AllocateFixed(b *Block, pool RegPool, pinned map[
 	}
 
 	// Assign temps from remaining pool registers.
-	intIdx := c.intPoolStart
-	fpIdx := c.fpPoolStart
-	stackSlots := int16(c.guestSpillCount)
+	// intIdx and fpIdx already point past guest assignments.
+	stackSlots := int16(0)
 
 	for ti := 0; ti < fa.TempCount; ti++ {
 		if fa.PinnedHost[ti] != -1 {
@@ -424,16 +493,35 @@ func (f *FixedStaticAllocator) AllocateFixed(b *Block, pool RegPool, pinned map[
 		stackSlots++
 	}
 
+	// Spill slots for used guest regs without pool regs (after temps,
+	// matching old Allocate() step 5 ordering).
+	for vr := VReg(1); vr < 64; vr++ {
+		if usedMask&(1<<vr) == 0 {
+			continue
+		}
+		if fa.GuestHost[vr] == -1 {
+			if _, isPinned := pinned[vr]; !isPinned {
+				fa.GuestSpill[vr] = stackSlots
+				stackSlots++
+			}
+		}
+	}
+
 	fa.StackSlots = int(stackSlots)
 	return fa
 }
 
-// Allocate satisfies the RegAllocator interface for compatibility with ELS.
-// It wraps AllocateFixed into the Allocation struct the ELS lowerer path accepts.
+// Allocate satisfies the RegAllocator interface. This is the standalone
+// implementation used when InitFixed hasn't been called (ELS-compatible path,
+// tests, benchmarks that use SetAllocStrategy). Heap-allocates per block.
 func (f *FixedStaticAllocator) Allocate(b *Block, pool RegPool, pinned map[VReg]int16, freq []float64) *Allocation {
-	fa := f.AllocateFixed(b, pool, pinned)
+	if len(b.Instrs) == 0 {
+		return &Allocation{
+			Kind:      []AllocKind{AllocUnused},
+			SpillSlot: []int16{0},
+		}
+	}
 
-	// Convert to Allocation for the ELS-compatible lowerer path.
 	n := len(b.Instrs)
 	mv := maxVReg(b)
 	for vr := range pinned {
@@ -443,28 +531,148 @@ func (f *FixedStaticAllocator) Allocate(b *Block, pool RegPool, pinned map[VReg]
 	}
 	numVRegs := int(mv) + 1
 
+	// Discover which VRegs are actually used in the block.
+	used := make([]bool, numVRegs)
+	isFP := make([]bool, numVRegs)
+	for i := range b.Instrs {
+		ins := &b.Instrs[i]
+		if ins.Dst != VRegZero && int(ins.Dst) < numVRegs {
+			used[ins.Dst] = true
+		}
+		if ins.A != VRegZero && int(ins.A) < numVRegs {
+			used[ins.A] = true
+		}
+		if ins.B != VRegZero && int(ins.B) < numVRegs {
+			used[ins.B] = true
+		}
+	}
+	for vr := VReg(32); vr < 64 && int(vr) < numVRegs; vr++ {
+		isFP[vr] = true
+	}
+	for i := range b.Instrs {
+		ins := &b.Instrs[i]
+		switch ins.T {
+		case F32, F64:
+			if ins.Dst != VRegZero && int(ins.Dst) < numVRegs {
+				isFP[ins.Dst] = true
+			}
+		}
+	}
+	for vr := range pinned {
+		if int(vr) < numVRegs {
+			used[vr] = true
+		}
+	}
+
 	kind := make([]AllocKind, numVRegs)
 	spillSlot := make([]int16, numVRegs)
 	var intervalAllocs []IntervalAlloc
 
-	for vr := VReg(0); vr < VReg(numVRegs); vr++ {
-		k := fa.AllocKind(vr)
-		kind[vr] = k
-		if k == AllocStack {
-			spillSlot[vr] = fa.SpillSlotOf(vr)
+	// 1. Pinned VRegs.
+	for vr, host := range pinned {
+		vi := int(vr)
+		if vi >= numVRegs {
+			continue
 		}
-		if k == AllocReg {
-			intervalAllocs = append(intervalAllocs, IntervalAlloc{
-				Interval: Interval{VReg: vr, Start: 0, End: n - 1},
-				Host:     fa.HostReg(vr),
-			})
+		kind[vi] = AllocReg
+		intervalAllocs = append(intervalAllocs, IntervalAlloc{
+			Interval: Interval{VReg: vr, Start: 0, End: n - 1},
+			Host:     host,
+		})
+	}
+
+	// 2. Integer guest regs by priority.
+	intPoolIdx := 0
+	for _, vr := range intPriority {
+		if int(vr) >= numVRegs || !used[vr] || isFP[vr] {
+			continue
 		}
+		if _, isPinned := pinned[vr]; isPinned {
+			continue
+		}
+		if intPoolIdx >= len(pool.IntRegs) {
+			break
+		}
+		kind[vr] = AllocReg
+		intervalAllocs = append(intervalAllocs, IntervalAlloc{
+			Interval: Interval{VReg: vr, Start: 0, End: n - 1},
+			Host:     pool.IntRegs[intPoolIdx],
+		})
+		intPoolIdx++
+	}
+
+	// 3. FP guest regs by priority.
+	fpPoolIdx := 0
+	for _, vr := range fpPriority {
+		if int(vr) >= numVRegs || !used[vr] || !isFP[vr] {
+			continue
+		}
+		if _, isPinned := pinned[vr]; isPinned {
+			continue
+		}
+		if fpPoolIdx >= len(pool.FPRegs) {
+			break
+		}
+		kind[vr] = AllocReg
+		intervalAllocs = append(intervalAllocs, IntervalAlloc{
+			Interval: Interval{VReg: vr, Start: 0, End: n - 1},
+			Host:     pool.FPRegs[fpPoolIdx],
+		})
+		fpPoolIdx++
+	}
+
+	// 4. Temps.
+	stackSlots := int16(0)
+	for vr := VRegTempStart; int(vr) < numVRegs; vr++ {
+		if !used[vr] {
+			continue
+		}
+		if _, isPinned := pinned[vr]; isPinned {
+			continue
+		}
+		if isFP[vr] {
+			if fpPoolIdx < len(pool.FPRegs) {
+				kind[vr] = AllocReg
+				intervalAllocs = append(intervalAllocs, IntervalAlloc{
+					Interval: Interval{VReg: vr, Start: 0, End: n - 1},
+					Host:     pool.FPRegs[fpPoolIdx],
+				})
+				fpPoolIdx++
+				continue
+			}
+		} else {
+			if intPoolIdx < len(pool.IntRegs) {
+				kind[vr] = AllocReg
+				intervalAllocs = append(intervalAllocs, IntervalAlloc{
+					Interval: Interval{VReg: vr, Start: 0, End: n - 1},
+					Host:     pool.IntRegs[intPoolIdx],
+				})
+				intPoolIdx++
+				continue
+			}
+		}
+		kind[vr] = AllocStack
+		spillSlot[vr] = stackSlots
+		stackSlots++
+	}
+
+	// 5. Spill remaining used VRegs.
+	for vr := 1; vr < numVRegs; vr++ {
+		if !used[vr] || kind[vr] != AllocUnused {
+			continue
+		}
+		if _, isPinned := pinned[VReg(vr)]; isPinned {
+			continue
+		}
+		kind[vr] = AllocStack
+		spillSlot[vr] = stackSlots
+		stackSlots++
 	}
 
 	return &Allocation{
 		Kind:        kind,
 		SpillSlot:   spillSlot,
 		IntervalMap: intervalAllocs,
-		StackSlots:  fa.StackSlots,
+		StackSlots:  int(stackSlots),
 	}
 }

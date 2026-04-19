@@ -56,22 +56,11 @@ func (j *JIT) jitCompileWith(res *emitResult, useV2 bool) (*compiledBlock, error
 	var lowerResult *ir.LowerResult
 	var lowerErr error
 
-	// Fast path: FixedStaticAllocator → zero-alloc FixedAllocation + LowerAMD64Fixed.
-	if fixed, ok := j.irAlloc.(*ir.FixedStaticAllocator); ok && !useV2 {
-		if !fixed.Initialized() {
-			normalPool := ir.AMD64PoolNormal()
-			divmulPool := ir.AMD64PoolDivMul(nil)
-			fixed.InitFixed(goasm.REG_AMD64_CX, normalPool, divmulPool, pinned)
-		}
-		fa := fixed.AllocateFixed(res.block, pool, pinned)
-		lowerResult, lowerErr = ir.LowerAMD64Fixed(ctx, res.block, fa)
+	alloc := j.irAlloc.Allocate(res.block, pool, pinned, nil)
+	if useV2 {
+		lowerResult, lowerErr = ir.LowerAMD64_V2(ctx, res.block, alloc)
 	} else {
-		alloc := j.irAlloc.Allocate(res.block, pool, pinned, nil)
-		if useV2 {
-			lowerResult, lowerErr = ir.LowerAMD64_V2(ctx, res.block, alloc)
-		} else {
-			lowerResult, lowerErr = ir.LowerAMD64(ctx, res.block, alloc)
-		}
+		lowerResult, lowerErr = ir.LowerAMD64(ctx, res.block, alloc)
 	}
 	if lowerErr != nil {
 		return nil, fmt.Errorf("jit lower: %w", lowerErr)
