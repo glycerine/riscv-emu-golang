@@ -98,6 +98,7 @@ int main(void) {
     return 0;
 }
 
+#ifndef __linux__
 /* freestanding! (no C stdlib) Define the entry point the linker looks for */
 void _start(void) {
     /* Call your logic */
@@ -106,4 +107,5 @@ void _start(void) {
     /* Ensure we never return, as there is no OS to return to */
     do_exit(0);
 }
+#endif
 
