@@ -459,15 +459,12 @@ bench-alloc: bench-setup
 	        ./bench/libriscv/ 2>&1 \
 	    | awk '/MIPS/{for(i=1;i<=NF;i++){if($$i=="MIPS"){print p" MIPS";next}; p=$$i}}' \
 	    || echo "(failed)"
+
+ya:
 	@printf "  %-44s " "native x86-64 (-O3 -march=native):"
-	@best="";
-	for i in 1 2 3 4 5; do
-	  elapsed=$$( { TIMEFORMAT='%R'; time $(GUEST_NATIVE) >/dev/null 2>&1; } 2>&1 );
-	  if [ -z "$$best" ] || awk "BEGIN{exit(!($$elapsed<$$best))}" 2>/dev/null; then
-	    best=$$elapsed;
-	  fi;
-	done;
-	awk "BEGIN{printf \"%.0f MIPS  (%.1f ms)\n\", $(NATIVE_RETIRED)/$$best/1e6, $$best*1000}
+	@best=""; \
+	elapsed=$$( { TIMEFORMAT='%R'; time $(GUEST_NATIVE) >/dev/null 2>&1; } 2>&1 ); \
+	awk "BEGIN{printf \"%.0f MIPS  (%.1f ms)\n\", $(NATIVE_RETIRED)/$$elapsed/1e6, $$elapsed*1000}"
 	@echo ""
 
 bench-summary:
