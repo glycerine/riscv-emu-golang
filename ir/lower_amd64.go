@@ -104,9 +104,33 @@ type regEntry struct {
 type regIndex [][]regEntry
 
 func buildRegIndex(alloc *Allocation) regIndex {
-	// Determine max VReg.
 	maxVR := len(alloc.Kind)
 	idx := make(regIndex, maxVR)
+
+	// Count entries per VReg to pre-allocate a single flat backing array.
+	counts := make([]int, maxVR)
+	for i := range alloc.IntervalMap {
+		vr := int(alloc.IntervalMap[i].Interval.VReg)
+		if vr < maxVR {
+			counts[vr]++
+		}
+	}
+	total := 0
+	for _, c := range counts {
+		total += c
+	}
+	flat := make([]regEntry, total)
+
+	// Assign sub-slices from the flat array.
+	off := 0
+	for vr, c := range counts {
+		if c > 0 {
+			idx[vr] = flat[off : off : off+c] // len=0, cap=c
+			off += c
+		}
+	}
+
+	// Fill entries.
 	for i := range alloc.IntervalMap {
 		ia := &alloc.IntervalMap[i]
 		vr := int(ia.Interval.VReg)
@@ -118,6 +142,7 @@ func buildRegIndex(alloc *Allocation) regIndex {
 			})
 		}
 	}
+
 	// Sort each VReg's entries by start for binary search.
 	for vr := range idx {
 		entries := idx[vr]

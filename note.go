@@ -82,6 +82,14 @@ func (n Note) String() string { return n.Text }
 // ErrEbreak maps to CauseBreakpoint.
 // ErrIllegalInstruction maps to CauseIllegalInsn.
 // Any other error produces a note with Cause=^0 and the error string as Text.
+// Static note text constants — avoid fmt.Sprintf on the hot path.
+const (
+	noteTextBreakpoint = "breakpoint"
+	noteTextEcall      = "ecall"
+	noteTextIllegal    = "illegal instruction"
+	noteTextUnknown    = "unknown"
+)
+
 func noteFromStepErr(err error, pc uint64) Note {
 	switch e := err.(type) {
 	case *MemFault:
@@ -96,25 +104,25 @@ func noteFromStepErr(err error, pc uint64) Note {
 	switch err {
 	case ErrEbreak:
 		return Note{
-			Text:  fmt.Sprintf("breakpoint pc=0x%016X", pc),
+			Text:  noteTextBreakpoint,
 			Cause: CauseBreakpoint,
 			PC:    pc,
 		}
 	case ErrEcall:
 		return Note{
-			Text:  fmt.Sprintf("ecall pc=0x%016X", pc),
+			Text:  noteTextEcall,
 			Cause: CauseEcallU,
 			PC:    pc,
 		}
 	case ErrIllegalInstruction:
 		return Note{
-			Text:  fmt.Sprintf("illegal instruction pc=0x%016X", pc),
+			Text:  noteTextIllegal,
 			Cause: CauseIllegalInsn,
 			PC:    pc,
 		}
 	default:
 		return Note{
-			Text:  err.Error(),
+			Text:  noteTextUnknown,
 			Cause: ^uint64(0),
 			PC:    pc,
 		}
