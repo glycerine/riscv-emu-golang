@@ -89,8 +89,8 @@ PATCH_STAMP := $(VENDOR)/.patched
 GO            ?= go
 CMAKE         ?= cmake
 GIT           ?= git
-LIBRISCV_REPO ?= https://github.com/libriscv/libriscv.git
-LIBRISCV_REF  ?= master
+#LIBRISCV_REPO ?= https://github.com/libriscv/libriscv.git
+#LIBRISCV_REF  ?= master
 
 # ── cgo environment ────────────────────────────────────────────────────────
 
@@ -151,7 +151,9 @@ endif
 
 # ── setup pipeline ─────────────────────────────────────────────────────────
 
-bench-setup: check-tools libriscv-clone libriscv-patch libriscv-build guest-elf
+bench-setup: check-tools libriscv-build guest-elf
+	@echo "we use vendored xendor/libriscv now, and do not pull from github."
+	@echo "hence these make targets are not invoked: libriscv-clone libriscv-patch"
 	@echo ""
 	@echo "  ✓ bench-setup complete — run 'make bench' to start"
 	@echo ""
