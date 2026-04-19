@@ -41,20 +41,25 @@ JMP R10                 ; direct jump to next block's chain entry
 ### Two entry points per block
 
 ```asm
-fn:                     ; from jitcall.Call (normal entry)
-  MOV R12, RSI          ; xBase
-  MOV R13, RDX          ; fBase
-  MOV R14, R8           ; memBase
-  MOV R15, R9           ; memMask
-  MOV RBX, RDI          ; sret buffer
-  XOR RBP, RBP          ; IC = 0
-chainEntry:             ; from another block (chain entry)
-  SUB RSP, frame_size   ; allocate spill frame
-  MOV [RSP+off], RCX    ; save fcsr (harmless garbage on chain entry for non-FP blocks)
-  ; ... block body ...
+fn:                           ; from jitcall.Call (normal entry)
+  MOV R12, RSI                ; xBase
+  MOV R13, RDX                ; fBase
+  MOV R14, R8                 ; memBase
+  MOV R15, R9                 ; memMask
+  MOV RBX, RDI                ; sret buffer
+  MOV [RBX + 80], RCX         ; save fcsr pointer at fixed location for chains
+  XOR RBP, RBP                ; IC = 0
+
+chainEntry:                   ; from another block (chain entry)
+  SUB RSP, frame_size         ; allocate spill frame
+  MOV R10, [RBX + 80]         ; load fcsr from fixed location (saved by first block)
+  MOV [RSP+stackSlots*8], R10 ; store in this block's fcsr spill slot
+  ; ... block body (accesses fcsr via [RSP+stackSlots*8] as before) ...
 ```
 
 Chain entry skips pinned reg setup and IC zeroing. Pinned regs (R12-R15, RBX) and IC (RBP) survive from the previous block.
+
+**fcsr handling**: RBX (sret buffer ptr) is pinned and always live. The sret buffer uses offsets 0-31, callee-saves use 32-79, so offset 80 is free. The first block in a chain saves `RCX` (fcsr pointer from SysV args) to `[RBX + 80]`. Every block's chain entry loads it from there into its own spill slot. Block body code is unchanged — it still reads fcsr via `[RSP + stackSlots*8]`. This means **all blocks can chain, including FP blocks**.
 
 ### Slow exit stub (miss path)
 
@@ -77,10 +82,6 @@ When a slow exit returns to Go with `Status=jitOK`:
 3. Overwrites the 8-byte immediate in the MOVABS to point to target block's `chainEntry`
 4. Future executions jump directly — no Go involved
 
-### fcsr restriction (V1 simplification)
-
-The fcsr pointer arrives in RCX on normal entry but RCX is caller-saved and dead on chain entry. Rather than adding complexity, V1 simply doesn't chain FP blocks. Most hot loops (fib, sieve, memstress) are integer-only. Track `usesFcsr` per block; FP blocks use the existing `IRRet` (non-chained) path.
-
 ### IC accumulation
 
 RBP (instruction counter) accumulates across the entire chain without reset. Budget checks at backward branches (`BudgetCheck`: if IC >= 4096, exit to Go) ensure GC preemption windows. When finally returning to Go (via slow exit or ECALL), `Result.IC` includes all instructions from the chain.
@@ -90,7 +91,6 @@ RBP (instruction counter) accumulates across the entire chain without reset. Bud
 - ECALL/EBREAK — need Go exception handling
 - Load/store faults — need Go fault delivery
 - JALR (indirect jump) — target PC unknown at compile time
-- FP blocks (V1) — need fcsr pointer
 
 ## Implementation Steps
 
@@ -117,17 +117,12 @@ RBP (instruction counter) accumulates across the entire chain without reset. Bud
 
 Add to `emitter`:
 ```go
-usesFcsr bool  // set true when any FP instruction emitted
 exitIdx  int   // counter for chain exit indices
 ```
 
 Add helper:
 ```go
 func (e *emitter) emitChainableReturn(pc uint64) {
-    if e.usesFcsr {
-        e.emitReturn(pc, jitOK) // non-chainable
-        return
-    }
     idx := e.exitIdx
     e.exitIdx++
     e.irEm.ChainableRet(pc, idx)
@@ -141,8 +136,6 @@ Replace `emitReturn(pc, jitOK)` → `emitChainableReturn(pc)` in:
 Keep `emitReturn(pc, jitEcall)` and `emitReturn(pc, jitEbreak)` unchanged.
 
 Add `numChainExits` to `emitResult`.
-
-Set `usesFcsr = true` in `emitFPOpS()`, `emitFPOpD()`, and any FP instruction emission.
 
 ### Step 4: Lower `IRChainExit`
 
@@ -161,21 +154,29 @@ chainEntryProg *obj.Prog  // NOP at chain entry point — read Pc after assembly
 **Modify `emitPrologue()`**: Insert chain entry marker (NOP) between pinned reg setup and spill frame allocation:
 ```go
 func (lc *lowerCtx) emitPrologue() {
-    // Normal entry: setup pinned regs from SysV args
+    // ── Normal entry (from jitcall.Call) ──
     lc.emitRR(x86.AMOVQ, RSI, R12)   // xBase
     lc.emitRR(x86.AMOVQ, RDX, R13)   // fBase
     lc.emitRR(x86.AMOVQ, R8, R14)    // memBase
     lc.emitRR(x86.AMOVQ, R9, R15)    // memMask
     lc.emitRR(x86.AMOVQ, RDI, RBX)   // sret
+    // Save fcsr pointer at fixed location for future chain entries.
+    // [RBX+80] is free: sret uses 0-31, callee-saves use 32-79.
+    lc.emitMR(x86.AMOVQ, RCX, RBX, 80)  // [RBX+80] = fcsr ptr
     lc.emitRR(x86.AXORQ, RBP, RBP)   // IC = 0
 
-    // Chain entry point (jumped to from another block)
+    // ── Chain entry point (jumped to from another block) ──
+    // Pinned regs (R12-R15, RBX) and IC (RBP) already set.
     lc.chainEntryProg = lc.emitNOP()
 
-    // Common: allocate spill frame
+    // ── Common: allocate spill frame ──
     if lc.frameSize > 0 {
         lc.emitRI(x86.ASUBQ, lc.frameSize, RSP)
-        lc.emitMR(x86.AMOVQ, RCX, RSP, int64(lc.stackSlots)*8) // save fcsr
+        // Load fcsr from fixed location into this block's spill slot.
+        // On normal entry: [RBX+80] was just saved above.
+        // On chain entry: [RBX+80] was saved by the first block in the chain.
+        lc.emitRM(x86.AMOVQ, RBX, 80, amd64Scratch1)  // R10 = [RBX+80]
+        lc.emitMR(x86.AMOVQ, amd64Scratch1, RSP, int64(lc.stackSlots)*8) // spill slot = R10
     }
 }
 ```
@@ -359,7 +360,7 @@ func (lc *lowerCtx) emitJmpReg(reg int16) {
 | `ir/regalloc.go` | Handle `IRChainExit` (no uses/defs) |
 | `ir/regalloc_fixed.go` | Handle `IRChainExit` (no uses/defs) |
 | `ir/lower_amd64.go` | Chain entry marker in prologue; `lowerChainExit()`; slow exit stubs; `emitNOP()`; `emitJmpReg()`; return `LowerResult` |
-| `jit_emit_ir.go` | `usesFcsr`/`exitIdx` fields; `emitChainableReturn()`; replace `emitReturn(pc, jitOK)` calls |
+| `jit_emit_ir.go` | `exitIdx` field; `emitChainableReturn()`; replace `emitReturn(pc, jitOK)` calls |
 
 ## Verification
 
