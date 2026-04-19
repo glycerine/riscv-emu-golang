@@ -295,25 +295,26 @@ func TestMixedExecution_Block1_Dump(t *testing.T) {
 	if res == nil {
 		t.Fatal("emitBlock returned nil")
 	}
-	t.Logf("IR instructions: %d", len(res.block.Instrs))
-	for i, ins := range res.block.Instrs {
-		t.Logf("  [%d] %s", i, ins.String())
-	}
+	//t.Logf("IR instructions: %d", len(res.block.Instrs))
+	//for i, ins := range res.block.Instrs {
+	//	t.Logf("  [%d] %s", i, ins.String())
+	//}
 
 	j := NewJIT()
 	compiled, err := j.jitCompile(res)
 	if err != nil {
 		t.Fatalf("jitCompile: %v", err)
 	}
-	t.Logf("compiled block fn=%x", compiled.fn)
+	//t.Logf("compiled block fn=%x", compiled.fn)
 
 	// Run it
 	cpu := NewCPU(*mem)
 	cpu.SetPC(0x1000)
 	result := jitcallCall(compiled.fn, &cpu.x, &cpu.f, &cpu.fcsr,
 		cpu.mem.Base(), cpu.mem.Mask())
-	t.Logf("result: PC=0x%x IC=%d Status=%d x1=%d x2=%d",
-		result.PC, result.IC, result.Status, cpu.Reg(1), cpu.Reg(2))
+	_ = result
+	//t.Logf("result: PC=0x%x IC=%d Status=%d x1=%d x2=%d",
+	//	result.PC, result.IC, result.Status, cpu.Reg(1), cpu.Reg(2))
 }
 
 // TestMixedExecution_FullSequence reproduces the full TestJIT_MixedExecution
