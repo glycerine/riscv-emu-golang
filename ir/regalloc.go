@@ -2,6 +2,33 @@ package ir
 
 import "sort"
 
+// ── Sort adapters (avoid sort.Slice reflection overhead) ──
+
+type intervalsByStart []Interval
+
+func (s intervalsByStart) Len() int           { return len(s) }
+func (s intervalsByStart) Less(i, j int) bool { return s[i].Start < s[j].Start }
+func (s intervalsByStart) Swap(i, j int)      { s[i], s[j] = s[j], s[i] }
+
+type iepByPoint []iep
+
+func (s iepByPoint) Len() int { return len(s) }
+func (s iepByPoint) Less(i, j int) bool {
+	if s[i].Point != s[j].Point {
+		return s[i].Point < s[j].Point
+	}
+	// Same point, same VReg/interval (point interval): start before end.
+	if s[i].VReg == s[j].VReg && s[i].Interval == s[j].Interval {
+		return s[i].IsStart && !s[j].IsStart
+	}
+	// Same point, different intervals: ends before starts (free regs first).
+	if s[i].IsStart != s[j].IsStart {
+		return !s[i].IsStart
+	}
+	return s[i].VReg < s[j].VReg
+}
+func (s iepByPoint) Swap(i, j int) { s[i], s[j] = s[j], s[i] }
+
 // ── Interval representation (paper's I(s)) ──
 
 // Interval is one contiguous live range [Start, End] for a symbolic register.
@@ -433,9 +460,7 @@ func computeIntervalSets(b *Block) []intervalSet {
 		if len(ivals) <= 1 {
 			continue
 		}
-		sort.Slice(ivals, func(a, b int) bool {
-			return ivals[a].Start < ivals[b].Start
-		})
+		sort.Sort(intervalsByStart(ivals))
 		// Merge overlapping/adjacent.
 		merged := ivals[:1]
 		for _, iv := range ivals[1:] {
@@ -543,20 +568,7 @@ func buildIEP(intervals []intervalSet) []iep {
 			})
 		}
 	}
-	sort.Slice(endpoints, func(a, b int) bool {
-		if endpoints[a].Point != endpoints[b].Point {
-			return endpoints[a].Point < endpoints[b].Point
-		}
-		// At same point, same VReg/interval (point interval): start before end.
-		if endpoints[a].VReg == endpoints[b].VReg && endpoints[a].Interval == endpoints[b].Interval {
-			return endpoints[a].IsStart && !endpoints[b].IsStart
-		}
-		// At same point, different intervals: ends before starts (free regs first).
-		if endpoints[a].IsStart != endpoints[b].IsStart {
-			return !endpoints[a].IsStart
-		}
-		return endpoints[a].VReg < endpoints[b].VReg
-	})
+	sort.Sort(iepByPoint(endpoints))
 	return endpoints
 }
 

@@ -566,7 +566,7 @@ func emitBlock(mem *GuestMemory, pc uint64) *emitResult {
 
 	irEm := ir.NewEmitter()
 
-	gt := newU64set()
+	gt := newU64setSized(256)
 	gt.IterStart = testIterStart
 
 	e := &emitter{
@@ -574,7 +574,7 @@ func emitBlock(mem *GuestMemory, pc uint64) *emitResult {
 		startPC:     pc,
 		pc:          pc,
 		irEm:        irEm,
-		visited:     newU64set(),
+		visited:     newU64setSized(region.pcCount),
 		regionEnd:   region.endPC,
 		gotoTargets: gt,
 		pcLabels:    newU64labelmap(),

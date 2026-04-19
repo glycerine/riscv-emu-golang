@@ -105,7 +105,7 @@ func scanRegion(mem *GuestMemory, entryPC uint64) regionInfo {
 	const maxInsns = 2048
 	const maxRange = 16384
 
-	visited := newU64set()
+	visited := newU64setSized(maxInsns)
 	worklist := []uint64{entryPC}
 	maxEnd := entryPC
 

@@ -95,9 +95,7 @@ func LowerAMD64_V2(ctx *goasm.Ctx, b *Block, alloc *Allocation) error {
 	for vr := VReg(32); vr < 64; vr++ {
 		fpSet[vr] = true
 	}
-	sort.Slice(cxLive, func(a, b int) bool {
-		return cxLive[a].start < cxLive[b].start
-	})
+	sort.Sort(regEntriesByStart(cxLive))
 
 	lc := &lowerCtxV2{
 		blk:        b,

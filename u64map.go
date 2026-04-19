@@ -14,7 +14,11 @@ type u64set struct {
 }
 
 func newU64set() u64set {
-	return u64set{m: make(map[uint64]struct{})}
+	return u64set{m: make(map[uint64]struct{}, 256)}
+}
+
+func newU64setSized(hint int) u64set {
+	return u64set{m: make(map[uint64]struct{}, hint)}
 }
 
 func (s *u64set) add(key uint64) {

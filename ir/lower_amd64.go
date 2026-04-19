@@ -103,6 +103,12 @@ type regEntry struct {
 // regIndex maps VReg → sorted list of regEntry for O(log N) host-register lookup.
 type regIndex [][]regEntry
 
+type regEntriesByStart []regEntry
+
+func (s regEntriesByStart) Len() int           { return len(s) }
+func (s regEntriesByStart) Less(i, j int) bool { return s[i].start < s[j].start }
+func (s regEntriesByStart) Swap(i, j int)      { s[i], s[j] = s[j], s[i] }
+
 func buildRegIndex(alloc *Allocation) regIndex {
 	maxVR := len(alloc.Kind)
 	idx := make(regIndex, maxVR)
@@ -147,9 +153,7 @@ func buildRegIndex(alloc *Allocation) regIndex {
 	for vr := range idx {
 		entries := idx[vr]
 		if len(entries) > 1 {
-			sort.Slice(entries, func(a, b int) bool {
-				return entries[a].start < entries[b].start
-			})
+			sort.Sort(regEntriesByStart(entries))
 		}
 	}
 	return idx
@@ -234,9 +238,7 @@ func LowerAMD64(ctx *goasm.Ctx, b *Block, alloc *Allocation) error {
 	for vr := VReg(32); vr < 64; vr++ {
 		fpSet[vr] = true
 	}
-	sort.Slice(cxLive, func(a, b int) bool {
-		return cxLive[a].start < cxLive[b].start
-	})
+	sort.Sort(regEntriesByStart(cxLive))
 
 	lc := &lowerCtx{
 		blk:        b,
