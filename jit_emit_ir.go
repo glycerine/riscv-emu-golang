@@ -813,14 +813,13 @@ func (e *emitter) emit32(insn uint32) {
 			e.emitReturn(e.pc, jitEbreak)
 			e.terminated = true
 		default:
-			// CSR or unknown SYSTEM — advance past it so the block isn't empty.
-			e.advancePC(4)
+			// CSR or unknown SYSTEM — end block before this instruction.
+			// The interpreter will handle it via fallback.
 			e.terminated = true
 		}
 
 	default:
-		// Unknown opcode — advance past it so the block isn't empty.
-		e.advancePC(4)
+		// Unknown opcode — end block before this instruction.
 		e.terminated = true
 	}
 }
