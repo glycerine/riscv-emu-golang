@@ -13,7 +13,7 @@ func lowerBlockV2(t *testing.T, b *Block) ([]byte, *Allocation) {
 	t.Helper()
 	pool := AMD64Pool_V2(b)
 	pinned := AMD64Pinned()
-	alloc := Allocate(b, pool, pinned, nil)
+	alloc := helperTestAllocate(b, pool, pinned, nil)
 
 	ctx := goasm.New(goasm.AMD64)
 	ctx.Append(ctx.NewATEXT())
@@ -33,7 +33,7 @@ func lowerBlockV2WithRet(t *testing.T, b *Block) ([]byte, *Allocation) {
 	t.Helper()
 	pool := AMD64Pool_V2(b)
 	pinned := AMD64Pinned()
-	alloc := Allocate(b, pool, pinned, nil)
+	alloc := helperTestAllocate(b, pool, pinned, nil)
 
 	ctx := goasm.New(goasm.AMD64)
 	ctx.Append(ctx.NewATEXT())
@@ -425,7 +425,7 @@ func TestLockstep_V1V2_Assembly(t *testing.T) {
 
 		// V1
 		pool1 := AMD64Pool(blk)
-		alloc1 := Allocate(blk, pool1, AMD64Pinned(), nil)
+		alloc1 := helperTestAllocate(blk, pool1, AMD64Pinned(), nil)
 		ctx1 := goasm.New(goasm.AMD64)
 		ctx1.Append(ctx1.NewATEXT())
 		_, err1 := LowerAMD64(ctx1, blk, alloc1)
@@ -436,7 +436,7 @@ func TestLockstep_V1V2_Assembly(t *testing.T) {
 
 		// V2
 		pool2 := AMD64Pool_V2(blk)
-		alloc2 := Allocate(blk, pool2, AMD64Pinned(), nil)
+		alloc2 := helperTestAllocate(blk, pool2, AMD64Pinned(), nil)
 		ctx2 := goasm.New(goasm.AMD64)
 		ctx2.Append(ctx2.NewATEXT())
 		_, err2 := LowerAMD64_V2(ctx2, blk, alloc2)

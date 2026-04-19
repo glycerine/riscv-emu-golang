@@ -15,7 +15,7 @@ func lowerBlock(t *testing.T, b *Block) ([]byte, *Allocation) {
 	t.Helper()
 	pool := AMD64Pool(b)
 	pinned := AMD64Pinned()
-	alloc := NewAllocator().Allocate(b, pool, pinned, nil)
+	alloc := helperTestAllocate(b, pool, pinned, nil)
 
 	ctx := goasm.New(goasm.AMD64)
 	ctx.Append(ctx.NewATEXT())
@@ -31,12 +31,19 @@ func lowerBlock(t *testing.T, b *Block) ([]byte, *Allocation) {
 	return bytes, alloc
 }
 
+// a helper to fix up all the places where the tests did not create an Allocator
+// to invoke Allocate() on.
+func helperTestAllocate(b *Block, pool RegPool, pinned map[VReg]int16, freq []float64) *Allocation {
+	a := NewAllocator()
+	return a.Allocate(b, pool, pinned, freq)
+}
+
 // lowerBlockWithRet runs pipeline for blocks that already contain IRRet.
 func lowerBlockWithRet(t *testing.T, b *Block) ([]byte, *Allocation) {
 	t.Helper()
 	pool := AMD64Pool(b)
 	pinned := AMD64Pinned()
-	alloc := Allocate(b, pool, pinned, nil)
+	alloc := helperTestAllocate(b, pool, pinned, nil)
 
 	ctx := goasm.New(goasm.AMD64)
 	ctx.Append(ctx.NewATEXT())
@@ -128,7 +135,7 @@ func TestAMD64Pinned(t *testing.T) {
 func TestLowerAMD64_EmptyBlock(t *testing.T) {
 	b := NewBlock()
 	pool := AMD64Pool(b)
-	alloc := Allocate(b, pool, AMD64Pinned(), nil)
+	alloc := helperTestAllocate(b, pool, AMD64Pinned(), nil)
 
 	ctx := goasm.New(goasm.AMD64)
 	ctx.Append(ctx.NewATEXT())

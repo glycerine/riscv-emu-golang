@@ -252,7 +252,6 @@ func (j *JIT) stepBlockResult(_ *CPU, res jitcall.Result) (uint64, error) {
 // RunJIT executes the CPU using JIT-compiled blocks where possible,
 // falling back to the interpreter for untranslatable instructions.
 func (j *JIT) RunJIT(cpu *CPU) error {
-	var prevBlk *compiledBlock // track previous block for chain patching
 	for {
 		// Tohost polling — once per dispatch cycle (block granularity).
 		if cpu.watchAddr != 0 {
@@ -272,15 +271,15 @@ func (j *JIT) RunJIT(cpu *CPU) error {
 
 			switch int(res.Status) {
 			case jitOK:
-				// Patch previous block's chain exit to jump directly to this block.
-				if prevBlk != nil && len(prevBlk.chainExits) > 0 {
-					j.tryPatchChain(prevBlk, cpu.pc)
+				// Patch this block's chain exit to jump directly to the target.
+				// When a chain exit isn't patched, the slow stub returns here.
+				// After patching, future executions jump directly — bypassing Go.
+				if len(blk.chainExits) > 0 {
+					j.tryPatchChain(blk, cpu.pc)
 				}
-				prevBlk = blk
 				continue
 
 			case jitEcall:
-				prevBlk = nil
 				if cpu.mtvec != 0 {
 					cpu.mepc = cpu.pc
 					cpu.mcause = 8
@@ -297,7 +296,6 @@ func (j *JIT) RunJIT(cpu *CPU) error {
 				}
 
 			case jitEbreak:
-				prevBlk = nil
 				n := noteFromStepErr(ErrEbreak, cpu.pc)
 				switch cpu.Notes.Deliver(cpu, n) {
 				case NoteHandled:
@@ -307,7 +305,6 @@ func (j *JIT) RunJIT(cpu *CPU) error {
 				}
 
 			case jitLoadFault:
-				prevBlk = nil
 				f := &MemFault{Addr: res.FaultAddr, Width: 8, Kind: FaultLoad}
 				n := noteFromStepErr(f, cpu.pc)
 				switch cpu.Notes.Deliver(cpu, n) {
@@ -318,7 +315,6 @@ func (j *JIT) RunJIT(cpu *CPU) error {
 				}
 
 			case jitStoreFault:
-				prevBlk = nil
 				f := &MemFault{Addr: res.FaultAddr, Width: 8, Kind: FaultStore}
 				n := noteFromStepErr(f, cpu.pc)
 				switch cpu.Notes.Deliver(cpu, n) {
@@ -329,7 +325,6 @@ func (j *JIT) RunJIT(cpu *CPU) error {
 				}
 
 			default:
-				prevBlk = nil
 				err := cpu.step()
 				cpu.cycle++
 				if err == nil {
@@ -384,11 +379,17 @@ func patchChainTarget(codeBase uintptr, patchOffset int, targetAddr uintptr) {
 	binary.LittleEndian.PutUint64(p[:], uint64(targetAddr))
 }
 
+var chainPatchCount int64
+var chainMissCount int64
+var chainAttemptCount int64
+
 // tryPatchChain patches a previous block's chain exit to jump directly
 // to the target block, bypassing the Go dispatch loop on future executions.
 func (j *JIT) tryPatchChain(blk *compiledBlock, targetPC uint64) {
+	chainAttemptCount++
 	target := j.lookupBlock(targetPC)
 	if target == nil || target.chainEntry == 0 {
+		chainMissCount++
 		return
 	}
 	for _, ce := range blk.chainExits {
@@ -396,6 +397,7 @@ func (j *JIT) tryPatchChain(blk *compiledBlock, targetPC uint64) {
 			// Overwrite the MOVABS imm64 with target's chain entry address.
 			// The code page is RWX, so this write is safe.
 			patchChainTarget(blk.fn, ce.patchOffset, target.chainEntry)
+			chainPatchCount++
 			break
 		}
 	}

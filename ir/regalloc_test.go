@@ -235,14 +235,14 @@ func TestIntervalSets_DefAndUse(t *testing.T) {
 func TestIntervalSets_LiveRangeHole(t *testing.T) {
 	// t64 defined at 0, used at 2, dead at 3-5, redefined at 6, used at 8
 	b := makeBlock(
-		IRInstr{Op: IRConst, Dst: VReg(64), Imm: 1},          // 0: def t64
-		IRInstr{Op: IRConst, Dst: VReg(65), Imm: 2},          // 1: (filler)
+		IRInstr{Op: IRConst, Dst: VReg(64), Imm: 1},                         // 0: def t64
+		IRInstr{Op: IRConst, Dst: VReg(65), Imm: 2},                         // 1: (filler)
 		IRInstr{Op: IRAdd, T: I64, Dst: VReg(66), A: VReg(64), B: VReg(65)}, // 2: use t64
-		IRInstr{Op: IRConst, Dst: VReg(67), Imm: 3},          // 3: (filler)
-		IRInstr{Op: IRConst, Dst: VReg(68), Imm: 4},          // 4: (filler)
-		IRInstr{Op: IRConst, Dst: VReg(69), Imm: 5},          // 5: (filler)
-		IRInstr{Op: IRConst, Dst: VReg(64), Imm: 10},         // 6: redef t64
-		IRInstr{Op: IRConst, Dst: VReg(70), Imm: 6},          // 7: (filler)
+		IRInstr{Op: IRConst, Dst: VReg(67), Imm: 3},                         // 3: (filler)
+		IRInstr{Op: IRConst, Dst: VReg(68), Imm: 4},                         // 4: (filler)
+		IRInstr{Op: IRConst, Dst: VReg(69), Imm: 5},                         // 5: (filler)
+		IRInstr{Op: IRConst, Dst: VReg(64), Imm: 10},                        // 6: redef t64
+		IRInstr{Op: IRConst, Dst: VReg(70), Imm: 6},                         // 7: (filler)
 		IRInstr{Op: IRAdd, T: I64, Dst: VReg(71), A: VReg(64), B: VReg(70)}, // 8: use t64
 	)
 	intervals := computeIntervalSets(b)
@@ -260,16 +260,16 @@ func TestIntervalSets_LiveRangeHole(t *testing.T) {
 
 func TestIntervalSets_GuestRegsExtendToEnd(t *testing.T) {
 	b := makeBlock(
-		IRInstr{Op: IRConst, Dst: VReg(5), Imm: 1},         // 0: def x5
-		IRInstr{Op: IRConst, Dst: VReg(64), Imm: 2},        // 1
+		IRInstr{Op: IRConst, Dst: VReg(5), Imm: 1},                         // 0: def x5
+		IRInstr{Op: IRConst, Dst: VReg(64), Imm: 2},                        // 1
 		IRInstr{Op: IRAdd, T: I64, Dst: VReg(65), A: VReg(5), B: VReg(64)}, // 2: use x5
-		IRInstr{Op: IRConst, Dst: VReg(66), Imm: 3},        // 3
-		IRInstr{Op: IRConst, Dst: VReg(67), Imm: 4},        // 4
-		IRInstr{Op: IRConst, Dst: VReg(68), Imm: 5},        // 5
-		IRInstr{Op: IRConst, Dst: VReg(69), Imm: 6},        // 6
-		IRInstr{Op: IRConst, Dst: VReg(70), Imm: 7},        // 7
-		IRInstr{Op: IRConst, Dst: VReg(71), Imm: 8},        // 8
-		IRInstr{Op: IRConst, Dst: VReg(72), Imm: 9},        // 9
+		IRInstr{Op: IRConst, Dst: VReg(66), Imm: 3},                        // 3
+		IRInstr{Op: IRConst, Dst: VReg(67), Imm: 4},                        // 4
+		IRInstr{Op: IRConst, Dst: VReg(68), Imm: 5},                        // 5
+		IRInstr{Op: IRConst, Dst: VReg(69), Imm: 6},                        // 6
+		IRInstr{Op: IRConst, Dst: VReg(70), Imm: 7},                        // 7
+		IRInstr{Op: IRConst, Dst: VReg(71), Imm: 8},                        // 8
+		IRInstr{Op: IRConst, Dst: VReg(72), Imm: 9},                        // 9
 	)
 	intervals := computeIntervalSets(b)
 	is := intervals[5]
@@ -532,7 +532,7 @@ func TestMaxVReg_HighTemp(t *testing.T) {
 
 func TestAllocate_EmptyBlock(t *testing.T) {
 	b := makeBlock()
-	alloc := Allocate(b, testPool(8, 4), nil, nil)
+	alloc := helperTestAllocate(b, testPool(8, 4), nil, nil)
 	if alloc == nil {
 		t.Fatal("Allocate returned nil for empty block")
 	}
@@ -545,7 +545,7 @@ func TestAllocate_SingleInstrNoPressure(t *testing.T) {
 	b := makeBlock(
 		IRInstr{Op: IRConst, Dst: VReg(64), Imm: 42},
 	)
-	alloc := Allocate(b, testPool(8, 4), nil, nil)
+	alloc := helperTestAllocate(b, testPool(8, 4), nil, nil)
 	assertAllocReg(t, alloc, VReg(64))
 	if alloc.StackSlots != 0 {
 		t.Errorf("StackSlots = %d, want 0", alloc.StackSlots)
@@ -558,7 +558,7 @@ func TestAllocate_AllFitNoOverlap(t *testing.T) {
 		IRInstr{Op: IRConst, Dst: VReg(65), Imm: 2}, // 1
 		IRInstr{Op: IRConst, Dst: VReg(66), Imm: 3}, // 2
 	)
-	alloc := Allocate(b, testPool(3, 0), nil, nil)
+	alloc := helperTestAllocate(b, testPool(3, 0), nil, nil)
 	assertAllocReg(t, alloc, VReg(64))
 	assertAllocReg(t, alloc, VReg(65))
 	assertAllocReg(t, alloc, VReg(66))
@@ -575,7 +575,7 @@ func TestAllocate_AllFitOverlapping(t *testing.T) {
 		IRInstr{Op: IRAdd, T: I64, Dst: VReg(67), A: VReg(64), B: VReg(65)},
 		IRInstr{Op: IRAdd, T: I64, Dst: VReg(68), A: VReg(66), B: VReg(67)},
 	)
-	alloc := Allocate(b, testPool(4, 0), nil, nil)
+	alloc := helperTestAllocate(b, testPool(4, 0), nil, nil)
 	assertAllocReg(t, alloc, VReg(64))
 	assertAllocReg(t, alloc, VReg(65))
 	assertAllocReg(t, alloc, VReg(66))
@@ -586,20 +586,20 @@ func TestAllocate_VRegZeroNeverAllocated(t *testing.T) {
 	b := makeBlock(
 		IRInstr{Op: IRAdd, T: I64, Dst: VReg(1), A: VRegZero, B: VReg(2)},
 	)
-	alloc := Allocate(b, testPool(8, 0), nil, nil)
+	alloc := helperTestAllocate(b, testPool(8, 0), nil, nil)
 	assertAllocUnused(t, alloc, VRegZero)
 }
 
 func TestAllocate_ReuseAfterDeath(t *testing.T) {
 	b := makeBlock(
-		IRInstr{Op: IRConst, Dst: VReg(64), Imm: 1},          // 0: def t64
+		IRInstr{Op: IRConst, Dst: VReg(64), Imm: 1},                         // 0: def t64
 		IRInstr{Op: IRAdd, T: I64, Dst: VReg(65), A: VReg(64), B: VReg(64)}, // 1: use t64 (last use)
-		IRInstr{Op: IRConst, Dst: VReg(66), Imm: 2},          // 2: (gap)
-		IRInstr{Op: IRConst, Dst: VReg(67), Imm: 3},          // 3: (gap)
-		IRInstr{Op: IRConst, Dst: VReg(68), Imm: 4},          // 4: def t68
+		IRInstr{Op: IRConst, Dst: VReg(66), Imm: 2},                         // 2: (gap)
+		IRInstr{Op: IRConst, Dst: VReg(67), Imm: 3},                         // 3: (gap)
+		IRInstr{Op: IRConst, Dst: VReg(68), Imm: 4},                         // 4: def t68
 		IRInstr{Op: IRAdd, T: I64, Dst: VReg(69), A: VReg(68), B: VReg(68)}, // 5: use t68
 	)
-	alloc := Allocate(b, testPool(2, 0), nil, nil)
+	alloc := helperTestAllocate(b, testPool(2, 0), nil, nil)
 	// t64 and t68 don't overlap — both should get registers with 2 regs.
 	assertAllocReg(t, alloc, VReg(64))
 	assertAllocReg(t, alloc, VReg(68))
@@ -620,7 +620,7 @@ func TestAllocate_ManyShortRanges(t *testing.T) {
 		instrs = append(instrs, IRInstr{Op: IRAdd, T: I64, Dst: dst, A: src, B: src})
 	}
 	b := makeBlock(instrs...)
-	alloc := Allocate(b, testPool(1, 0), nil, nil)
+	alloc := helperTestAllocate(b, testPool(1, 0), nil, nil)
 	for i := 0; i < 10; i++ {
 		assertAllocReg(t, alloc, VReg(64+i*2))
 	}
@@ -640,7 +640,7 @@ func TestAllocate_OneSpill(t *testing.T) {
 		IRInstr{Op: IRAdd, T: I64, Dst: VReg(67), A: VReg(64), B: VReg(65)},
 		IRInstr{Op: IRAdd, T: I64, Dst: VReg(68), A: VReg(66), B: VReg(67)},
 	)
-	alloc := Allocate(b, testPool(2, 0), nil, nil)
+	alloc := helperTestAllocate(b, testPool(2, 0), nil, nil)
 	// At least one should be spilled.
 	spilled := 0
 	for vr := VReg(64); vr <= 68; vr++ {
@@ -666,7 +666,7 @@ func TestAllocate_MultipleSpills(t *testing.T) {
 		IRInstr{Op: IRAdd, T: I64, Dst: VReg(70), A: VReg(66), B: VReg(67)},
 		IRInstr{Op: IRAdd, T: I64, Dst: VReg(71), A: VReg(68), B: VReg(69)},
 	)
-	alloc := Allocate(b, testPool(2, 0), nil, nil)
+	alloc := helperTestAllocate(b, testPool(2, 0), nil, nil)
 	spilled := 0
 	for vr := VReg(64); vr <= 71; vr++ {
 		if int(vr) < len(alloc.Kind) && alloc.Kind[vr] == AllocStack {
@@ -689,7 +689,7 @@ func TestAllocate_StackSlotCounting(t *testing.T) {
 		IRInstr{Op: IRAdd, T: I64, Dst: VReg(68), A: VReg(64), B: VReg(65)},
 		IRInstr{Op: IRAdd, T: I64, Dst: VReg(69), A: VReg(66), B: VReg(67)},
 	)
-	alloc := Allocate(b, testPool(1, 0), nil, nil)
+	alloc := helperTestAllocate(b, testPool(1, 0), nil, nil)
 	if alloc.StackSlots < 1 {
 		t.Errorf("StackSlots = %d, want >= 1", alloc.StackSlots)
 	}
@@ -713,14 +713,14 @@ func TestAllocate_StackSlotCounting(t *testing.T) {
 func TestAllocate_PreferSameReg(t *testing.T) {
 	// t64 has two intervals (hole in between). Both should prefer the same host reg.
 	b := makeBlock(
-		IRInstr{Op: IRConst, Dst: VReg(64), Imm: 1},                             // 0: def t64
-		IRInstr{Op: IRAdd, T: I64, Dst: VReg(65), A: VReg(64), B: VReg(64)},     // 1: use t64
-		IRInstr{Op: IRConst, Dst: VReg(66), Imm: 2},                             // 2: filler
-		IRInstr{Op: IRConst, Dst: VReg(67), Imm: 3},                             // 3: filler
-		IRInstr{Op: IRConst, Dst: VReg(64), Imm: 10},                            // 4: redef t64
-		IRInstr{Op: IRAdd, T: I64, Dst: VReg(68), A: VReg(64), B: VReg(64)},     // 5: use t64
+		IRInstr{Op: IRConst, Dst: VReg(64), Imm: 1},                         // 0: def t64
+		IRInstr{Op: IRAdd, T: I64, Dst: VReg(65), A: VReg(64), B: VReg(64)}, // 1: use t64
+		IRInstr{Op: IRConst, Dst: VReg(66), Imm: 2},                         // 2: filler
+		IRInstr{Op: IRConst, Dst: VReg(67), Imm: 3},                         // 3: filler
+		IRInstr{Op: IRConst, Dst: VReg(64), Imm: 10},                        // 4: redef t64
+		IRInstr{Op: IRAdd, T: I64, Dst: VReg(68), A: VReg(64), B: VReg(64)}, // 5: use t64
 	)
-	alloc := Allocate(b, testPool(4, 0), nil, nil)
+	alloc := helperTestAllocate(b, testPool(4, 0), nil, nil)
 	assertAllocReg(t, alloc, VReg(64))
 	// Both intervals of t64 should get the same host register.
 	reg1, ok1 := regAt(alloc, VReg(64), 0)
@@ -735,15 +735,15 @@ func TestAllocate_PreferSameReg(t *testing.T) {
 func TestAllocate_IntervalHoleReuse(t *testing.T) {
 	// t64 has a hole at [3,5]; another VReg can use t64's register during the hole.
 	b := makeBlock(
-		IRInstr{Op: IRConst, Dst: VReg(64), Imm: 1},                             // 0
-		IRInstr{Op: IRAdd, T: I64, Dst: VReg(65), A: VReg(64), B: VReg(64)},     // 1
-		IRInstr{Op: IRConst, Dst: VReg(66), Imm: 2},                             // 2: use t64 ends
-		IRInstr{Op: IRConst, Dst: VReg(67), Imm: 3},                             // 3: hole — t67 can use t64's reg
-		IRInstr{Op: IRConst, Dst: VReg(68), Imm: 4},                             // 4: hole
-		IRInstr{Op: IRConst, Dst: VReg(64), Imm: 10},                            // 5: redef t64
-		IRInstr{Op: IRAdd, T: I64, Dst: VReg(69), A: VReg(64), B: VReg(64)},     // 6
+		IRInstr{Op: IRConst, Dst: VReg(64), Imm: 1},                         // 0
+		IRInstr{Op: IRAdd, T: I64, Dst: VReg(65), A: VReg(64), B: VReg(64)}, // 1
+		IRInstr{Op: IRConst, Dst: VReg(66), Imm: 2},                         // 2: use t64 ends
+		IRInstr{Op: IRConst, Dst: VReg(67), Imm: 3},                         // 3: hole — t67 can use t64's reg
+		IRInstr{Op: IRConst, Dst: VReg(68), Imm: 4},                         // 4: hole
+		IRInstr{Op: IRConst, Dst: VReg(64), Imm: 10},                        // 5: redef t64
+		IRInstr{Op: IRAdd, T: I64, Dst: VReg(69), A: VReg(64), B: VReg(64)}, // 6
 	)
-	alloc := Allocate(b, testPool(2, 0), nil, nil)
+	alloc := helperTestAllocate(b, testPool(2, 0), nil, nil)
 	assertAllocReg(t, alloc, VReg(64))
 	assertAllocReg(t, alloc, VReg(67))
 	assertNoConflicts(t, alloc)
@@ -761,15 +761,15 @@ func TestAllocate_SpillResurrection(t *testing.T) {
 	// Use freq to control spill order: A has low freq (spilled first),
 	// B has medium freq, C has high freq (never spilled).
 	b := makeBlock(
-		IRInstr{Op: IRConst, Dst: VReg(64), Imm: 1},                             // 0: def A
-		IRInstr{Op: IRConst, Dst: VReg(65), Imm: 2},                             // 1: def B
-		IRInstr{Op: IRConst, Dst: VReg(66), Imm: 3},                             // 2: def C
-		IRInstr{Op: IRAdd, T: I64, Dst: VReg(67), A: VReg(64), B: VReg(65)},     // 3: use A, B
-		IRInstr{Op: IRAdd, T: I64, Dst: VReg(68), A: VReg(66), B: VReg(67)},     // 4: use C
+		IRInstr{Op: IRConst, Dst: VReg(64), Imm: 1},                         // 0: def A
+		IRInstr{Op: IRConst, Dst: VReg(65), Imm: 2},                         // 1: def B
+		IRInstr{Op: IRConst, Dst: VReg(66), Imm: 3},                         // 2: def C
+		IRInstr{Op: IRAdd, T: I64, Dst: VReg(67), A: VReg(64), B: VReg(65)}, // 3: use A, B
+		IRInstr{Op: IRAdd, T: I64, Dst: VReg(68), A: VReg(66), B: VReg(67)}, // 4: use C
 	)
 	// freq weights: instructions 0-2 are low weight, 3-4 are high weight.
 	freq := []float64{1, 1, 1, 10, 10}
-	alloc := Allocate(b, testPool(2, 0), nil, freq)
+	alloc := helperTestAllocate(b, testPool(2, 0), nil, freq)
 	// With resurrection, it's possible that a VReg initially spilled gets un-spilled.
 	// We verify the key invariant: no conflicts.
 	assertNoConflicts(t, alloc)
@@ -789,7 +789,7 @@ func TestAllocate_NoResurrection(t *testing.T) {
 		IRInstr{Op: IRAdd, T: I64, Dst: VReg(68), A: VReg(64), B: VReg(65)},
 		IRInstr{Op: IRAdd, T: I64, Dst: VReg(69), A: VReg(66), B: VReg(67)},
 	)
-	alloc := Allocate(b, testPool(2, 0), nil, nil)
+	alloc := helperTestAllocate(b, testPool(2, 0), nil, nil)
 	spilled := 0
 	for vr := VReg(64); vr <= 69; vr++ {
 		if int(vr) < len(alloc.Kind) && alloc.Kind[vr] == AllocStack {
@@ -808,8 +808,8 @@ func TestAllocate_NoResurrection(t *testing.T) {
 
 func TestComputeSpillCosts_UniformFreq(t *testing.T) {
 	b := makeBlock(
-		IRInstr{Op: IRConst, Dst: VReg(64), Imm: 1},                             // 1 write
-		IRInstr{Op: IRAdd, T: I64, Dst: VReg(65), A: VReg(64), B: VReg(64)},     // 2 reads of t64
+		IRInstr{Op: IRConst, Dst: VReg(64), Imm: 1},                         // 1 write
+		IRInstr{Op: IRAdd, T: I64, Dst: VReg(65), A: VReg(64), B: VReg(64)}, // 2 reads of t64
 	)
 	intervals := computeIntervalSets(b)
 	costs := computeSpillCosts(b, intervals, nil)
@@ -821,9 +821,9 @@ func TestComputeSpillCosts_UniformFreq(t *testing.T) {
 
 func TestComputeSpillCosts_LoopWeight(t *testing.T) {
 	b := makeBlock(
-		IRInstr{Op: IRConst, Dst: VReg(64), Imm: 1},                             // 0: low freq
-		IRInstr{Op: IRConst, Dst: VReg(65), Imm: 2},                             // 1: high freq
-		IRInstr{Op: IRAdd, T: I64, Dst: VReg(66), A: VReg(64), B: VReg(65)},     // 2: high freq
+		IRInstr{Op: IRConst, Dst: VReg(64), Imm: 1},                         // 0: low freq
+		IRInstr{Op: IRConst, Dst: VReg(65), Imm: 2},                         // 1: high freq
+		IRInstr{Op: IRAdd, T: I64, Dst: VReg(66), A: VReg(64), B: VReg(65)}, // 2: high freq
 	)
 	intervals := computeIntervalSets(b)
 	freq := []float64{1.0, 100.0, 100.0}
@@ -837,9 +837,9 @@ func TestComputeSpillCosts_LoopWeight(t *testing.T) {
 
 func TestComputeSpillCosts_DeadDef(t *testing.T) {
 	b := makeBlock(
-		IRInstr{Op: IRConst, Dst: VReg(64), Imm: 1},                             // defined, never used
+		IRInstr{Op: IRConst, Dst: VReg(64), Imm: 1}, // defined, never used
 		IRInstr{Op: IRConst, Dst: VReg(65), Imm: 2},
-		IRInstr{Op: IRAdd, T: I64, Dst: VReg(66), A: VReg(65), B: VReg(65)},     // t65 used
+		IRInstr{Op: IRAdd, T: I64, Dst: VReg(66), A: VReg(65), B: VReg(65)}, // t65 used
 	)
 	intervals := computeIntervalSets(b)
 	costs := computeSpillCosts(b, intervals, nil)
@@ -856,10 +856,10 @@ func TestComputeSpillCosts_DeadDef(t *testing.T) {
 func TestAllocate_IntAndFP_SeparatePools(t *testing.T) {
 	// Use FP temps (not guest FP regs, which extend to end of block).
 	b := makeBlock(
-		IRInstr{Op: IRConst, Dst: VReg(64), Imm: 1},                           // int temp
+		IRInstr{Op: IRConst, Dst: VReg(64), Imm: 1},                          // int temp
 		IRInstr{Op: IRFAdd, T: F64, Dst: VReg(65), A: VReg(65), B: VReg(65)}, // FP temp
 	)
-	alloc := Allocate(b, testPool(1, 1), nil, nil)
+	alloc := helperTestAllocate(b, testPool(1, 1), nil, nil)
 	assertAllocReg(t, alloc, VReg(64))
 	assertAllocReg(t, alloc, VReg(65))
 }
@@ -871,7 +871,7 @@ func TestAllocate_FPPressure_IntFree(t *testing.T) {
 		IRInstr{Op: IRFAdd, T: F64, Dst: VReg(65), A: VReg(34), B: VReg(35)}, // FP temp t65
 		IRInstr{Op: IRFAdd, T: F64, Dst: VReg(66), A: VReg(64), B: VReg(65)}, // uses both
 	)
-	alloc := Allocate(b, testPool(5, 1), nil, nil)
+	alloc := helperTestAllocate(b, testPool(5, 1), nil, nil)
 	// At least one FP temp should be spilled (only 1 FP reg).
 	fpSpilled := 0
 	for _, vr := range []VReg{64, 65} {
@@ -889,7 +889,7 @@ func TestAllocate_GuestFPRegs(t *testing.T) {
 	b := makeBlock(
 		IRInstr{Op: IRFAdd, T: F64, Dst: VReg(37), A: VReg(33), B: VReg(34)},
 	)
-	alloc := Allocate(b, testPool(4, 4), nil, nil)
+	alloc := helperTestAllocate(b, testPool(4, 4), nil, nil)
 	assertAllocReg(t, alloc, VReg(37))
 	// Verify it got an FP pool register (200+).
 	reg, ok := regAt(alloc, VReg(37), 0)
@@ -910,7 +910,7 @@ func TestAllocate_GuestRegLiveToEnd(t *testing.T) {
 		instrs = append(instrs, IRInstr{Op: IRConst, Dst: VReg(64 + i), Imm: int64(i)})
 	}
 	b := makeBlock(instrs...)
-	alloc := Allocate(b, testPool(4, 0), nil, nil)
+	alloc := helperTestAllocate(b, testPool(4, 0), nil, nil)
 	assertAllocReg(t, alloc, VReg(5))
 	// x5 should be live at the last instruction.
 	_, ok := regAt(alloc, VReg(5), 9)
@@ -923,13 +923,13 @@ func TestAllocate_GuestRegEvictsTemp(t *testing.T) {
 	// x5 lives to end, temps overlap. With low reg count, some temps should be spilled.
 	// At instr 3: x5 + t64 + t65 + t66 = 4 live. With 3 regs, 1 must spill.
 	b := makeBlock(
-		IRInstr{Op: IRConst, Dst: VReg(5), Imm: 1},                             // 0: def x5
-		IRInstr{Op: IRConst, Dst: VReg(64), Imm: 2},                            // 1: def t64
-		IRInstr{Op: IRConst, Dst: VReg(65), Imm: 3},                            // 2: def t65
-		IRInstr{Op: IRAdd, T: I64, Dst: VReg(66), A: VReg(64), B: VReg(65)},    // 3: use t64,t65
-		IRInstr{Op: IRAdd, T: I64, Dst: VReg(67), A: VReg(5), B: VReg(66)},     // 4: use x5
+		IRInstr{Op: IRConst, Dst: VReg(5), Imm: 1},                          // 0: def x5
+		IRInstr{Op: IRConst, Dst: VReg(64), Imm: 2},                         // 1: def t64
+		IRInstr{Op: IRConst, Dst: VReg(65), Imm: 3},                         // 2: def t65
+		IRInstr{Op: IRAdd, T: I64, Dst: VReg(66), A: VReg(64), B: VReg(65)}, // 3: use t64,t65
+		IRInstr{Op: IRAdd, T: I64, Dst: VReg(67), A: VReg(5), B: VReg(66)},  // 4: use x5
 	)
-	alloc := Allocate(b, testPool(3, 0), nil, nil)
+	alloc := helperTestAllocate(b, testPool(3, 0), nil, nil)
 	// x5 is guest reg → live to end. With 3 regs, some temps may spill
 	// but x5 should survive (highest cost: used late in block).
 	assertNoConflicts(t, alloc)
@@ -951,7 +951,7 @@ func TestAllocate_PinnedRegs(t *testing.T) {
 		VReg(64): 50,
 		VReg(65): 51,
 	}
-	alloc := Allocate(b, testPool(4, 0), pinned, nil)
+	alloc := helperTestAllocate(b, testPool(4, 0), pinned, nil)
 	assertRegAt(t, alloc, VReg(64), 0, 50)
 	assertRegAt(t, alloc, VReg(65), 0, 51)
 }
@@ -960,13 +960,13 @@ func TestAllocate_PinnedRegsNotInPool(t *testing.T) {
 	// Pinned regs don't consume pool registers. Pool has 2 regs,
 	// 2 pinned VRegs, 2 non-pinned temps → all should get registers.
 	b := makeBlock(
-		IRInstr{Op: IRConst, Dst: VReg(66), Imm: 1},                             // non-pinned temp
-		IRInstr{Op: IRConst, Dst: VReg(67), Imm: 2},                             // non-pinned temp
+		IRInstr{Op: IRConst, Dst: VReg(66), Imm: 1}, // non-pinned temp
+		IRInstr{Op: IRConst, Dst: VReg(67), Imm: 2}, // non-pinned temp
 		IRInstr{Op: IRAdd, T: I64, Dst: VReg(68), A: VReg(64), B: VReg(66)},
 		IRInstr{Op: IRAdd, T: I64, Dst: VReg(69), A: VReg(65), B: VReg(67)},
 	)
 	pinned := map[VReg]int16{VReg(64): 50, VReg(65): 51}
-	alloc := Allocate(b, testPool(2, 0), pinned, nil)
+	alloc := helperTestAllocate(b, testPool(2, 0), pinned, nil)
 	assertAllocReg(t, alloc, VReg(64))
 	assertAllocReg(t, alloc, VReg(65))
 	assertAllocReg(t, alloc, VReg(66))
@@ -983,7 +983,7 @@ func TestAllocate_PinnedRegsBlockHostReg(t *testing.T) {
 	// Pin t64 to host reg 100 (first in pool). Pool has regs [100, 101, 102].
 	// At instr 1: t64(pinned) + t66 + t67 all live → need 2 pool regs after pin.
 	pinned := map[VReg]int16{VReg(64): 100}
-	alloc := Allocate(b, testPool(3, 0), pinned, nil)
+	alloc := helperTestAllocate(b, testPool(3, 0), pinned, nil)
 	assertRegAt(t, alloc, VReg(64), 0, 100)
 	// t66 should NOT get host reg 100 (it's taken by pinned t64).
 	reg66, ok := regAt(alloc, VReg(66), 0)
@@ -1003,7 +1003,7 @@ func TestAllocate_NoMovesNeeded(t *testing.T) {
 		IRInstr{Op: IRConst, Dst: VReg(64), Imm: 1},
 		IRInstr{Op: IRAdd, T: I64, Dst: VReg(65), A: VReg(64), B: VReg(64)},
 	)
-	alloc := Allocate(b, testPool(4, 0), nil, nil)
+	alloc := helperTestAllocate(b, testPool(4, 0), nil, nil)
 	if len(alloc.Moves) != 0 {
 		t.Errorf("expected 0 moves, got %d", len(alloc.Moves))
 	}
@@ -1017,7 +1017,7 @@ func TestAllocate_OnlyVRegZeroRefs(t *testing.T) {
 	b := makeBlock(
 		IRInstr{Op: IRAdd, T: I64, Dst: VRegZero, A: VRegZero, B: VRegZero},
 	)
-	alloc := Allocate(b, testPool(4, 0), nil, nil)
+	alloc := helperTestAllocate(b, testPool(4, 0), nil, nil)
 	assertAllocUnused(t, alloc, VRegZero)
 }
 
@@ -1032,7 +1032,7 @@ func TestAllocate_ManyTempsShortRanges(t *testing.T) {
 		instrs = append(instrs, IRInstr{Op: IRAdd, T: I64, Dst: dst, A: src, B: src})
 	}
 	b := makeBlock(instrs...)
-	alloc := Allocate(b, testPool(2, 0), nil, nil)
+	alloc := helperTestAllocate(b, testPool(2, 0), nil, nil)
 	assertNoConflicts(t, alloc)
 	if alloc.StackSlots != 0 {
 		t.Errorf("StackSlots = %d, want 0 (sequential non-overlapping)", alloc.StackSlots)
@@ -1051,7 +1051,7 @@ func TestAllocate_OneLongVsManyShort(t *testing.T) {
 	}
 	instrs = append(instrs, IRInstr{Op: IRAdd, T: I64, Dst: VReg(200), A: VReg(64), B: VReg(64)})
 	b := makeBlock(instrs...)
-	alloc := Allocate(b, testPool(3, 0), nil, nil)
+	alloc := helperTestAllocate(b, testPool(3, 0), nil, nil)
 	assertAllocReg(t, alloc, VReg(64))
 	assertNoConflicts(t, alloc)
 	if alloc.StackSlots != 0 {
@@ -1071,7 +1071,7 @@ func TestAllocate_PoolWithoutDivMulRegs(t *testing.T) {
 		t.Fatal("expected BlockHasDivMul = true")
 	}
 	pool := testPool(3, 0) // Caller would remove RAX/RDX equivalents
-	alloc := Allocate(b, pool, nil, nil)
+	alloc := helperTestAllocate(b, pool, nil, nil)
 	assertNoConflicts(t, alloc)
 }
 
@@ -1090,7 +1090,7 @@ func TestAllocate_NoConflicts_SmallBlock(t *testing.T) {
 		IRInstr{Op: IRAdd, T: I64, Dst: VReg(70), A: VReg(66), B: VReg(67)},
 		IRInstr{Op: IRAdd, T: I64, Dst: VReg(71), A: VReg(68), B: VReg(69)},
 	)
-	alloc := Allocate(b, testPool(3, 0), nil, nil)
+	alloc := helperTestAllocate(b, testPool(3, 0), nil, nil)
 	assertNoConflicts(t, alloc)
 }
 
@@ -1100,7 +1100,7 @@ func TestAllocate_AllReferencedVRegsAllocated(t *testing.T) {
 		IRInstr{Op: IRConst, Dst: VReg(65), Imm: 2},
 		IRInstr{Op: IRAdd, T: I64, Dst: VReg(66), A: VReg(64), B: VReg(65)},
 	)
-	alloc := Allocate(b, testPool(4, 0), nil, nil)
+	alloc := helperTestAllocate(b, testPool(4, 0), nil, nil)
 	referenced := map[VReg]bool{}
 	for _, ins := range b.Instrs {
 		for _, vr := range []VReg{ins.Dst, ins.A, ins.B} {
@@ -1125,7 +1125,7 @@ func TestAllocate_SpilledVRegsHaveSlots(t *testing.T) {
 		IRInstr{Op: IRAdd, T: I64, Dst: VReg(67), A: VReg(64), B: VReg(65)},
 		IRInstr{Op: IRAdd, T: I64, Dst: VReg(68), A: VReg(66), B: VReg(67)},
 	)
-	alloc := Allocate(b, testPool(1, 0), nil, nil)
+	alloc := helperTestAllocate(b, testPool(1, 0), nil, nil)
 	slots := map[int16]VReg{}
 	for vr := VReg(0); vr < VReg(len(alloc.Kind)); vr++ {
 		if alloc.Kind[vr] == AllocStack {
@@ -1203,7 +1203,7 @@ func FuzzRegAllocInvariants(f *testing.F) {
 
 		b := makeBlock(instrs...)
 		pool := testPool(3, 2)
-		alloc := Allocate(b, pool, nil, nil)
+		alloc := helperTestAllocate(b, pool, nil, nil)
 
 		// Invariant 1: non-nil result.
 		if alloc == nil {
@@ -1364,7 +1364,7 @@ func FuzzSpillResurrection(f *testing.F) {
 		b := makeBlock(instrs...)
 		// Small pool to force spills + resurrection opportunities.
 		pool := testPool(2, 1)
-		alloc := Allocate(b, pool, nil, nil)
+		alloc := helperTestAllocate(b, pool, nil, nil)
 
 		if alloc == nil {
 			t.Fatal("Allocate returned nil")

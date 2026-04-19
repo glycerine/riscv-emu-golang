@@ -28,7 +28,7 @@ func execBlock(t *testing.T, b *Block, x *[32]uint64, v2 bool) jitcall.Result {
 	} else {
 		pool = AMD64Pool(b)
 	}
-	alloc := Allocate(b, pool, AMD64Pinned(), nil)
+	alloc := helperTestAllocate(b, pool, AMD64Pinned(), nil)
 	ctx := goasm.New(goasm.AMD64)
 	ctx.Append(ctx.NewATEXT())
 	var err error
@@ -92,8 +92,10 @@ func runExhaustiveSingle(t *testing.T, name string, emitOp func(*Emitter, VReg, 
 						x1[i] = uint64(i * 111)
 						x2[i] = uint64(i * 111)
 					}
-					x1[ra] = valA; x1[rb] = valB
-					x2[ra] = valA; x2[rb] = valB
+					x1[ra] = valA
+					x1[rb] = valB
+					x2[ra] = valA
+					x2[rb] = valB
 					execBlock(t, blk, &x1, false)
 					execBlock(t, blk, &x2, true)
 
@@ -467,8 +469,9 @@ func TestExhaustive_Seq_CONST_CONST_SHR(t *testing.T) {
 }
 
 // TestExhaustive_Seq_CONST_SHR_MOV_CONST_BNE mirrors the actual ELF test pattern:
-//   CONST x[ra] = A; CONST x[rb] = B; SHR x[d1] = x[ra], x[rb];
-//   MOV x[d2] = x[d1]; CONST x[d3] = expected; compare x[d2] vs x[d3]
+//
+//	CONST x[ra] = A; CONST x[rb] = B; SHR x[d1] = x[ra], x[rb];
+//	MOV x[d2] = x[d1]; CONST x[d3] = expected; compare x[d2] vs x[d3]
 func TestExhaustive_Seq_FullTestPattern(t *testing.T) {
 	const N = 6
 	valA := uint64(0x80000000)
@@ -477,11 +480,15 @@ func TestExhaustive_Seq_FullTestPattern(t *testing.T) {
 
 	for ra := 1; ra <= N; ra++ {
 		for rb := 1; rb <= N; rb++ {
-			if ra == rb { continue }
+			if ra == rb {
+				continue
+			}
 			for d1 := 1; d1 <= N; d1++ {
 				for d2 := 1; d2 <= N; d2++ {
 					for d3 := 1; d3 <= N; d3++ {
-						if d3 == d2 { continue } // d3 holds expected, d2 holds result
+						if d3 == d2 {
+							continue
+						} // d3 holds expected, d2 holds result
 						label := fmt.Sprintf("a=%d/b=%d/d1=%d/d2=%d/d3=%d", ra, rb, d1, d2, d3)
 						t.Run(label, func(t *testing.T) {
 							e := NewEmitter()
@@ -579,7 +586,7 @@ func TestCMP_Convention(t *testing.T) {
 // TestSETImm_Convention tests SetImm (compare register against immediate).
 // SLTI x3, x1, 5 means x3 = (x1 < 5) ? 1 : 0
 func TestSETImm_Convention(t *testing.T) {
-	cases := []struct{
+	cases := []struct {
 		name string
 		val  int64
 		imm  int64
@@ -643,7 +650,7 @@ func TestSETImm_Debug(t *testing.T) {
 
 	// V1 alloc
 	pool1 := AMD64Pool(blk)
-	alloc1 := Allocate(blk, pool1, AMD64Pinned(), nil)
+	alloc1 := helperTestAllocate(blk, pool1, AMD64Pinned(), nil)
 	t.Logf("V1 allocation:")
 	for _, ia := range alloc1.IntervalMap {
 		t.Logf("  VReg(%d) [%d..%d] host=%d", ia.Interval.VReg, ia.Interval.Start, ia.Interval.End, ia.Host)
@@ -651,7 +658,7 @@ func TestSETImm_Debug(t *testing.T) {
 
 	// V2 alloc
 	pool2 := AMD64Pool_V2(blk)
-	alloc2 := Allocate(blk, pool2, AMD64Pinned(), nil)
+	alloc2 := helperTestAllocate(blk, pool2, AMD64Pinned(), nil)
 	t.Logf("V2 allocation:")
 	for _, ia := range alloc2.IntervalMap {
 		t.Logf("  VReg(%d) [%d..%d] host=%d", ia.Interval.VReg, ia.Interval.Start, ia.Interval.End, ia.Host)
