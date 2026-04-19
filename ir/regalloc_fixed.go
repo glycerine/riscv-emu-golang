@@ -1,0 +1,204 @@
+package ir
+
+// FixedStaticAllocator maps a fixed set of high-priority RISC-V registers
+// to native host registers, spilling the rest to stack slots. No liveness
+// analysis or interference graphs — just a hardcoded priority table.
+//
+// This mirrors what QEMU's TCG and other production binary translators do:
+// piggyback on the source compiler's register allocation, mapping the most
+// frequently used RISC-V registers to the limited x86-64 register file.
+type FixedStaticAllocator struct{}
+
+func NewFixedStaticAllocator() *FixedStaticAllocator {
+	return &FixedStaticAllocator{}
+}
+
+// intPriority is the RISC-V integer register priority order.
+// ABI-driven: argument/return registers first, then ABI-critical, then temps.
+var intPriority = []VReg{
+	10, 11, 12, 13, 14, 15, // a0-a5: argument/return
+	2, 1, 8, 9, // sp, ra, s0/fp, s1
+	5, 6, 7, 28, // t0, t1, t2, t3
+	16, 17, 18, 19, 20, 21, 22, 23, // s2-s9
+	29, 30, 31, // t4, t5, t6
+	3, 4, 24, 25, 26, 27, // gp, tp, s8-s11
+}
+
+// fpPriority is the RISC-V FP register priority order.
+// fa0-fa7 first (argument/return), then ft temporaries, then fs callee-saved.
+var fpPriority = []VReg{
+	32 + 10, 32 + 11, 32 + 12, 32 + 13, 32 + 14, 32 + 15, 32 + 16, 32 + 17, // fa0-fa7
+	32 + 0, 32 + 1, 32 + 2, 32 + 3, 32 + 4, 32 + 5, 32 + 6, 32 + 7, // ft0-ft7
+	32 + 28, 32 + 29, 32 + 30, 32 + 31, // ft8-ft11
+	32 + 8, 32 + 9, // fs0, fs1
+	32 + 18, 32 + 19, 32 + 20, 32 + 21, 32 + 22, 32 + 23, 32 + 24, 32 + 25, 32 + 26, 32 + 27, // fs2-fs11
+}
+
+// Allocate produces a register assignment using fixed static mapping.
+func (f *FixedStaticAllocator) Allocate(b *Block, pool RegPool, pinned map[VReg]int16, freq []float64) *Allocation {
+	if len(b.Instrs) == 0 {
+		return &Allocation{
+			Kind:      []AllocKind{AllocUnused},
+			SpillSlot: []int16{0},
+		}
+	}
+
+	n := len(b.Instrs)
+	mv := maxVReg(b)
+	for vr := range pinned {
+		if vr > mv {
+			mv = vr
+		}
+	}
+	numVRegs := int(mv) + 1
+
+	// Discover which VRegs are actually used in the block.
+	used := make([]bool, numVRegs)
+	isFP := make([]bool, numVRegs)
+	for i := range b.Instrs {
+		ins := &b.Instrs[i]
+		if ins.Dst != VRegZero && int(ins.Dst) < numVRegs {
+			used[ins.Dst] = true
+		}
+		if ins.A != VRegZero && int(ins.A) < numVRegs {
+			used[ins.A] = true
+		}
+		if ins.B != VRegZero && int(ins.B) < numVRegs {
+			used[ins.B] = true
+		}
+	}
+	// Classify FP VRegs.
+	for vr := VReg(32); vr < 64 && int(vr) < numVRegs; vr++ {
+		isFP[vr] = true
+	}
+	// Also classify by instruction type usage.
+	for i := range b.Instrs {
+		ins := &b.Instrs[i]
+		switch ins.T {
+		case F32, F64:
+			if ins.Dst != VRegZero && int(ins.Dst) < numVRegs {
+				isFP[ins.Dst] = true
+			}
+		}
+	}
+
+	// Mark pinned VRegs as used.
+	for vr := range pinned {
+		if int(vr) < numVRegs {
+			used[vr] = true
+		}
+	}
+
+	// Build the allocation.
+	kind := make([]AllocKind, numVRegs)
+	spillSlot := make([]int16, numVRegs)
+	var intervalAllocs []IntervalAlloc
+
+	// 1. Handle pinned VRegs first — they get their fixed host registers.
+	for vr, host := range pinned {
+		vi := int(vr)
+		if vi >= numVRegs {
+			continue
+		}
+		kind[vi] = AllocReg
+		intervalAllocs = append(intervalAllocs, IntervalAlloc{
+			Interval: Interval{VReg: vr, Start: 0, End: n - 1},
+			Host:     host,
+		})
+	}
+
+	// 2. Assign integer VRegs by priority.
+	intPoolIdx := 0
+	for _, vr := range intPriority {
+		if int(vr) >= numVRegs || !used[vr] || isFP[vr] {
+			continue
+		}
+		if _, isPinned := pinned[vr]; isPinned {
+			continue
+		}
+		if intPoolIdx >= len(pool.IntRegs) {
+			break
+		}
+		kind[vr] = AllocReg
+		intervalAllocs = append(intervalAllocs, IntervalAlloc{
+			Interval: Interval{VReg: vr, Start: 0, End: n - 1},
+			Host:     pool.IntRegs[intPoolIdx],
+		})
+		intPoolIdx++
+	}
+
+	// 3. Assign FP VRegs by priority.
+	fpPoolIdx := 0
+	for _, vr := range fpPriority {
+		if int(vr) >= numVRegs || !used[vr] || !isFP[vr] {
+			continue
+		}
+		if _, isPinned := pinned[vr]; isPinned {
+			continue
+		}
+		if fpPoolIdx >= len(pool.FPRegs) {
+			break
+		}
+		kind[vr] = AllocReg
+		intervalAllocs = append(intervalAllocs, IntervalAlloc{
+			Interval: Interval{VReg: vr, Start: 0, End: n - 1},
+			Host:     pool.FPRegs[fpPoolIdx],
+		})
+		fpPoolIdx++
+	}
+
+	// 4. Handle temps (VReg >= VRegTempStart) that aren't pinned.
+	//    These are JIT-internal temporaries. Assign from remaining pool registers.
+	for vr := VRegTempStart; int(vr) < numVRegs; vr++ {
+		if !used[vr] {
+			continue
+		}
+		if _, isPinned := pinned[vr]; isPinned {
+			continue
+		}
+		if isFP[vr] {
+			if fpPoolIdx < len(pool.FPRegs) {
+				kind[vr] = AllocReg
+				intervalAllocs = append(intervalAllocs, IntervalAlloc{
+					Interval: Interval{VReg: vr, Start: 0, End: n - 1},
+					Host:     pool.FPRegs[fpPoolIdx],
+				})
+				fpPoolIdx++
+				continue
+			}
+		} else {
+			if intPoolIdx < len(pool.IntRegs) {
+				kind[vr] = AllocReg
+				intervalAllocs = append(intervalAllocs, IntervalAlloc{
+					Interval: Interval{VReg: vr, Start: 0, End: n - 1},
+					Host:     pool.IntRegs[intPoolIdx],
+				})
+				intPoolIdx++
+				continue
+			}
+		}
+		// Spill if no registers left.
+		kind[vr] = AllocStack
+	}
+
+	// 5. Spill all remaining used VRegs that weren't assigned.
+	stackSlots := int16(0)
+	for vr := 1; vr < numVRegs; vr++ {
+		if !used[vr] || kind[vr] != AllocUnused {
+			continue
+		}
+		if _, isPinned := pinned[VReg(vr)]; isPinned {
+			continue
+		}
+		kind[vr] = AllocStack
+		spillSlot[vr] = stackSlots
+		stackSlots++
+	}
+
+	return &Allocation{
+		Kind:        kind,
+		SpillSlot:   spillSlot,
+		IntervalMap: intervalAllocs,
+		StackSlots:  int(stackSlots),
+	}
+}
