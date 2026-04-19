@@ -306,6 +306,17 @@ func LowerAMD64(ctx *goasm.Ctx, b *Block, alloc *Allocation) (*LowerResult, erro
 	for vr := VReg(32); vr < 64; vr++ {
 		fpSet[vr] = true
 	}
+	// Spilled FP temps: not in IntervalMap but still FP-typed.
+	// Classify by defining instruction type (same as FixedAllocation.TempIsFP).
+	for i := range b.Instrs {
+		ins := &b.Instrs[i]
+		if ins.Dst >= VRegTempStart {
+			switch ins.T {
+			case F32, F64:
+				fpSet[ins.Dst] = true
+			}
+		}
+	}
 	sort.Sort(regEntriesByStart(cxLive))
 
 	lc := &lowerCtx{

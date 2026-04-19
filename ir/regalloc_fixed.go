@@ -9,8 +9,22 @@ package ir
 // is a FixedAllocation with fixed-size arrays reused across blocks.
 
 // MaxFixedTemps is the maximum number of JIT temporaries supported by
-// FixedAllocation. Typical blocks use 10-40; the largest observed ~200.
-const MaxFixedTemps = 256
+// FixedAllocation. Typical blocks use 10-40; large blocks can reach ~300.
+const MaxFixedTemps = 512
+
+// ExceedsFixedTemps returns true if the block uses more temps than
+// MaxFixedTemps. Such blocks fall back to the heap-allocating Allocate() path.
+func ExceedsFixedTemps(b *Block) bool {
+	for i := range b.Instrs {
+		ins := &b.Instrs[i]
+		for _, vr := range [3]VReg{ins.Dst, ins.A, ins.B} {
+			if vr >= VRegTempStart && int(vr)-int(VRegTempStart) >= MaxFixedTemps {
+				return true
+			}
+		}
+	}
+	return false
+}
 
 // FixedAllocation is the zero-allocation output of FixedStaticAllocator.
 // All fields are fixed-size arrays — no heap allocation required.
@@ -100,15 +114,13 @@ func (fa *FixedAllocation) SpillSlotOf(v VReg) int16 {
 	return -1
 }
 
-// IsFP returns true if VReg v is assigned to an XMM (floating-point) register.
-// For spilled VRegs, returns whether the VReg is FP-typed (so spill loads
-// use the correct scratch register class).
+// IsFP returns true if VReg v is floating-point typed.
 func (fa *FixedAllocation) IsFP(v VReg) bool {
 	if v < 64 {
 		return fa.GuestIsFP[v]
 	}
 	ti := int(v) - int(VRegTempStart)
-	if ti >= 0 && ti < MaxFixedTemps {
+	if ti >= 0 && ti < fa.TempCount {
 		return fa.TempIsFP[ti]
 	}
 	return false
@@ -315,13 +327,19 @@ func (f *FixedStaticAllocator) AllocateFixed(b *Block, pool RegPool, pinned map[
 
 	fa := &f.scratch
 
-	// Scan which guest VRegs are actually used in the block (bitmask, no alloc).
-	var usedMask uint64 // bits 0-63 = guest VRegs 0-63
+	// Scan which VRegs are actually used in the block (bitmasks, no alloc).
+	var usedMask uint64    // bits 0-63 = guest VRegs 0-63
+	var tempUsed [MaxFixedTemps / 64]uint64 // bitmask for temps
 	for i := range b.Instrs {
 		ins := &b.Instrs[i]
 		for _, vr := range [3]VReg{ins.Dst, ins.A, ins.B} {
 			if vr > 0 && vr < 64 {
 				usedMask |= 1 << vr
+			} else if vr >= VRegTempStart {
+				ti := int(vr) - int(VRegTempStart)
+				if ti < MaxFixedTemps {
+					tempUsed[ti/64] |= 1 << uint(ti%64)
+				}
 			}
 		}
 	}
@@ -329,6 +347,11 @@ func (f *FixedStaticAllocator) AllocateFixed(b *Block, pool RegPool, pinned map[
 	for vr := range pinned {
 		if vr < 64 {
 			usedMask |= 1 << vr
+		} else if vr >= VRegTempStart {
+			ti := int(vr) - int(VRegTempStart)
+			if ti < MaxFixedTemps {
+				tempUsed[ti/64] |= 1 << uint(ti%64)
+			}
 		}
 	}
 
@@ -390,23 +413,11 @@ func (f *FixedStaticAllocator) AllocateFixed(b *Block, pool RegPool, pinned map[
 	}
 
 	// Guest spill slots are assigned AFTER temps (matching old Allocate order).
-	// Defer guest spills to after temp assignment.
 
-	// Clear temp arrays.
+	// Derive TempCount from tempUsed bitmask (find highest set bit).
 	fa.TempCount = 0
 	for i := range fa.PinnedHost {
 		fa.PinnedHost[i] = -1
-	}
-
-	// Find max temp VReg used in the block.
-	maxTemp := VReg(0)
-	for i := range b.Instrs {
-		ins := &b.Instrs[i]
-		for _, vr := range [3]VReg{ins.Dst, ins.A, ins.B} {
-			if vr >= VRegTempStart && vr > maxTemp {
-				maxTemp = vr
-			}
-		}
 	}
 
 	// Handle pinned VRegs that are temps.
@@ -426,22 +437,40 @@ func (f *FixedStaticAllocator) AllocateFixed(b *Block, pool RegPool, pinned map[
 		}
 	}
 
-	if maxTemp < VRegTempStart {
-		return fa
+	// Find max used temp from bitmask.
+	for wi := len(tempUsed) - 1; wi >= 0; wi-- {
+		if tempUsed[wi] != 0 {
+			// Find highest set bit in this word.
+			w := tempUsed[wi]
+			bit := 63
+			for w&(1<<63) == 0 {
+				w <<= 1
+				bit--
+			}
+			tc := wi*64 + bit + 1
+			if tc > fa.TempCount {
+				fa.TempCount = tc
+			}
+			break
+		}
 	}
 
-	tempCount := int(maxTemp) - int(VRegTempStart) + 1
-	if tempCount > MaxFixedTemps {
-		tempCount = MaxFixedTemps
+	if fa.TempCount == 0 {
+		fa.StackSlots = 0
+		goto guestSpills
 	}
-	if tempCount > fa.TempCount {
-		fa.TempCount = tempCount
+	if fa.TempCount > MaxFixedTemps {
+		fa.TempCount = MaxFixedTemps
+	}
+
+	// Clear temp arrays for [0, TempCount) — prevents stale data.
+	for i := 0; i < fa.TempCount; i++ {
+		fa.TempHost[i] = -1
+		fa.TempSpill[i] = -1
+		fa.TempIsFP[i] = false
 	}
 
 	// Classify temp FP-ness from defining instruction type.
-	for i := 0; i < fa.TempCount; i++ {
-		fa.TempIsFP[i] = false
-	}
 	for i := range b.Instrs {
 		ins := &b.Instrs[i]
 		if ins.Dst >= VRegTempStart {
@@ -455,59 +484,64 @@ func (f *FixedStaticAllocator) AllocateFixed(b *Block, pool RegPool, pinned map[
 		}
 	}
 
-	// Assign temps from remaining pool registers.
-	// intIdx and fpIdx already point past guest assignments.
-	stackSlots := int16(0)
-
-	for ti := 0; ti < fa.TempCount; ti++ {
-		if fa.PinnedHost[ti] != -1 {
-			fa.TempHost[ti] = -1
-			fa.TempSpill[ti] = -1
-			continue
-		}
-		if fa.TempIsFP[ti] {
-			if fpIdx < len(pool.FPRegs) {
-				h := pool.FPRegs[fpIdx]
-				fa.TempHost[ti] = h
-				fa.TempSpill[ti] = -1
-				fa.addAssignedHost(h)
-				fpIdx++
+	// Assign temps from remaining pool registers (only used ones).
+	{
+		stackSlots := int16(0)
+		for ti := 0; ti < fa.TempCount; ti++ {
+			// Skip unused temps — they don't consume pool regs or spill slots.
+			if tempUsed[ti/64]&(1<<uint(ti%64)) == 0 {
 				continue
 			}
-		} else {
-			if intIdx < len(pool.IntRegs) {
-				h := pool.IntRegs[intIdx]
-				fa.TempHost[ti] = h
-				fa.TempSpill[ti] = -1
-				fa.addAssignedHost(h)
-				if h == f.cxReg {
-					fa.CXAssigned = true
+			if fa.PinnedHost[ti] != -1 {
+				continue // pinned — already handled
+			}
+			if fa.TempIsFP[ti] {
+				if fpIdx < len(pool.FPRegs) {
+					h := pool.FPRegs[fpIdx]
+					fa.TempHost[ti] = h
+					fa.TempSpill[ti] = -1
+					fa.addAssignedHost(h)
+					fpIdx++
+					continue
 				}
-				intIdx++
-				continue
+			} else {
+				if intIdx < len(pool.IntRegs) {
+					h := pool.IntRegs[intIdx]
+					fa.TempHost[ti] = h
+					fa.TempSpill[ti] = -1
+					fa.addAssignedHost(h)
+					if h == f.cxReg {
+						fa.CXAssigned = true
+					}
+					intIdx++
+					continue
+				}
 			}
+			// Spill.
+			fa.TempSpill[ti] = stackSlots
+			stackSlots++
 		}
-		// Spill.
-		fa.TempHost[ti] = -1
-		fa.TempSpill[ti] = stackSlots
-		stackSlots++
+		fa.StackSlots = int(stackSlots)
 	}
+
+guestSpills:
 
 	// Spill slots for used guest regs without pool regs (after temps,
 	// matching old Allocate() step 5 ordering).
+	guestSpillBase := int16(fa.StackSlots)
 	for vr := VReg(1); vr < 64; vr++ {
 		if usedMask&(1<<vr) == 0 {
 			continue
 		}
 		if fa.GuestHost[vr] == -1 {
 			if _, isPinned := pinned[vr]; !isPinned {
-				fa.GuestSpill[vr] = stackSlots
-				stackSlots++
+				fa.GuestSpill[vr] = guestSpillBase
+				guestSpillBase++
 			}
 		}
 	}
+	fa.StackSlots = int(guestSpillBase)
 
-	fa.StackSlots = int(stackSlots)
 	return fa
 }
 
