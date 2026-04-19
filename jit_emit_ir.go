@@ -16,11 +16,11 @@ var testIterStart int
 var maxBlockInsns = 2048
 
 // maxBlockIRInsns limits the total IR instructions per block. Each RISC-V
-// instruction expands to ~5-10 IR ops; very large blocks hit O(N^2) in the
-// register allocator's spill phase. 8192 IR instructions covers ~1000-1600
-// RISC-V instructions — large enough for good optimization, small enough
-// for fast compilation.
-const maxBlockIRInsns = 8192
+// instruction expands to ~5-10 IR ops; very large blocks hit O(N*L) in the
+// register allocator's spill phase where L is average interval length.
+// 4096 IR instructions covers ~500-800 RISC-V instructions — large enough
+// for good optimization, small enough for fast compilation.
+const maxBlockIRInsns = 2048
 
 // emitResult holds the generated IR block and metadata.
 type emitResult struct {
