@@ -23,6 +23,26 @@ func TestJIT_BenchGuest_Smoke(t *testing.T) {
 	}
 }
 
+func TestJIT_DispatchStats(t *testing.T) {
+	elfData := loadCPUELF(t)
+	cpu, mem := newBenchCPU(t, elfData)
+	defer mem.Free()
+
+	jit := riscv.NewJIT()
+	riscv.SetDebugJIT(true) // enable emitBlock diagnostic logging
+	defer riscv.SetDebugJIT(false)
+	exitCode, insns := runJITBenchGuestWith(cpu, jit)
+	t.Logf("retired %d instructions, exit code %d", insns, exitCode)
+	t.Logf("Dispatch stats:")
+	t.Logf("  jitOK returns:   %d", jit.DispatchOK)
+	t.Logf("  other returns:   %d", jit.DispatchOther)
+	t.Logf("  interp fallback: %d", jit.DispatchInterp)
+	t.Logf("  compilations:    %d", jit.DispatchCompile)
+	t.Logf("  chains patched:  %d", jit.ChainPatched)
+	t.Logf("  insns/dispatch:  %.1f", float64(insns)/float64(jit.DispatchOK+jit.DispatchOther+jit.DispatchInterp))
+	t.Logf("  noJIT set size:  %d", jit.NoJITSize())
+}
+
 func BenchmarkCPU_FullExecution_JIT(b *testing.B) {
 	benchJITWith(b, "els")
 }

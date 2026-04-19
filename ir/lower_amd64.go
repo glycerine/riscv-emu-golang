@@ -321,7 +321,6 @@ func LowerAMD64(ctx *goasm.Ctx, b *Block, alloc *Allocation) (*LowerResult, erro
 // ── Prologue / Epilogue ──
 
 func (lc *lowerCtx) emitPrologue() {
-	// ── Normal entry (from jitcall.Call) ──
 	// Move SysV ABI args to pinned callee-saved registers.
 	// Entry ABI: RDI=sret, RSI=x[], RDX=f[], RCX=fcsr, R8=memBase, R9=memMask
 	lc.emitRR(x86.AMOVQ, goasm.REG_AMD64_SI, amd64RegXBase)   // RSI → R12
@@ -329,25 +328,16 @@ func (lc *lowerCtx) emitPrologue() {
 	lc.emitRR(x86.AMOVQ, goasm.REG_AMD64_R8, amd64RegMemBase) // R8  → R14
 	lc.emitRR(x86.AMOVQ, goasm.REG_AMD64_R9, amd64RegMemMask) // R9  → R15
 	lc.emitRR(x86.AMOVQ, goasm.REG_AMD64_DI, amd64RegSret)    // RDI → RBX
-	// Save fcsr pointer at fixed location [RBX+80] for chain entries.
-	// Offset 80 is free: sret uses 0-31, callee-saves use 32-79.
-	lc.emitMR(x86.AMOVQ, goasm.REG_AMD64_CX, amd64RegSret, 80)
-	// Initialize IC to 0 (pinned to RBP).
-	lc.emitRR(x86.AXORQ, amd64RegIC, amd64RegIC)
 
-	// ── Chain entry point (jumped to from another block's chain exit) ──
-	// Pinned regs (R12-R15, RBX) and IC (RBP) are already set.
-	lc.chainEntryProg = lc.emitNOP()
-
-	// ── Common: allocate spill frame ──
+	// Allocate spill frame if needed.
 	if lc.frameSize > 0 {
 		lc.emitRI(x86.ASUBQ, lc.frameSize, goasm.REG_AMD64_SP)
-		// Load fcsr from fixed location [RBX+80] into this block's spill slot.
-		// On normal entry: [RBX+80] was just saved above.
-		// On chain entry: [RBX+80] was saved by the first block in the chain.
-		lc.emitRM(x86.AMOVQ, amd64RegSret, 80, amd64Scratch1) // R10 = [RBX+80]
-		lc.emitMR(x86.AMOVQ, amd64Scratch1, goasm.REG_AMD64_SP, int64(lc.stackSlots)*8)
+		// Save fcsr pointer at top of frame.
+		lc.emitMR(x86.AMOVQ, goasm.REG_AMD64_CX, goasm.REG_AMD64_SP, int64(lc.stackSlots)*8)
 	}
+
+	// Initialize IC to 0 (pinned to RBP).
+	lc.emitRR(x86.AXORQ, amd64RegIC, amd64RegIC)
 }
 
 func (lc *lowerCtx) emitEpilogue() {

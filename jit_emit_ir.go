@@ -5,7 +5,17 @@ package riscv
 // jit_emit_ir.go — Translates RISC-V basic blocks to IR (ir.Block).
 // This replaces jit_emit.go's C source generation with IR emission.
 
-import "riscv/ir"
+import (
+	"fmt"
+	"os"
+	"riscv/ir"
+)
+
+// debugJIT enables diagnostic logging in emitBlock.
+var debugJIT bool
+
+// SetDebugJIT enables/disables emitBlock diagnostic logging.
+func SetDebugJIT(on bool) { debugJIT = on }
 
 // testIterStart is set by tests to rotate gotoTargets iteration order.
 // Zero means normal sorted order. Non-zero rotates by this offset.
@@ -54,6 +64,8 @@ type emitter struct {
 	icEmitted  bool
 	loadFaultLabel  ir.Label
 	storeFaultLabel ir.Label
+	hasLoadFault    bool // true if loadFaultLabel was referenced
+	hasStoreFault   bool // true if storeFaultLabel was referenced
 	deferredExits []deferredExit
 	exitIdx       int // counter for chain exit indices
 }
@@ -161,10 +173,9 @@ func (e *emitter) emitReturn(pc uint64, status int) {
 
 // emitChainableReturn emits a chain exit for jitOK exits.
 // These can be patched by Go to jump directly to the target block.
+// TODO: re-enable chaining after fixing MOVABS offset calculation.
 func (e *emitter) emitChainableReturn(pc uint64) {
-	idx := e.exitIdx
-	e.exitIdx++
-	e.irEm.ChainableRet(pc, idx)
+	e.emitReturn(pc, jitOK)
 }
 
 func (e *emitter) emitWriteBackAll() {
@@ -568,6 +579,9 @@ func scanUsedRegs(mem *GuestMemory, startPC, endPC uint64, used *[32]bool) {
 func emitBlock(mem *GuestMemory, pc uint64) *emitResult {
 	region := scanRegion(mem, pc)
 	if region.pcCount == 0 {
+		if debugJIT {
+			fmt.Fprintf(os.Stderr, "BAIL pc=0x%x reason=scanRegion_empty\n", pc)
+		}
 		return nil
 	}
 
@@ -604,6 +618,9 @@ func emitBlock(mem *GuestMemory, pc uint64) *emitResult {
 
 		half, fh := mem.Fetch16(e.pc)
 		if fh != nil {
+			if debugJIT && e.numInsns == 0 {
+				fmt.Fprintf(os.Stderr, "BAIL pc=0x%x reason=fetch16_fault\n", e.pc)
+			}
 			break
 		}
 
@@ -616,6 +633,9 @@ func emitBlock(mem *GuestMemory, pc uint64) *emitResult {
 					insn, f = mem.Fetch32U(e.pc)
 				}
 				if f != nil {
+					if debugJIT && e.numInsns == 0 {
+						fmt.Fprintf(os.Stderr, "BAIL pc=0x%x reason=fetch32_fault\n", e.pc)
+					}
 					break
 				}
 			}
@@ -624,6 +644,11 @@ func emitBlock(mem *GuestMemory, pc uint64) *emitResult {
 	}
 
 	if e.numInsns == 0 {
+		if debugJIT {
+			half, _ := mem.Fetch16(pc)
+			fmt.Fprintf(os.Stderr, "BAIL pc=0x%x reason=numInsns_zero regionPCs=%d regionEnd=0x%x half=0x%04x terminated=%v\n",
+				pc, region.pcCount, region.endPC, half, e.terminated)
+		}
 		return nil
 	}
 
@@ -776,12 +801,14 @@ func (e *emitter) emit32(insn uint32) {
 			e.emitReturn(e.pc, jitEbreak)
 			e.terminated = true
 		default:
-			// CSR or unknown — end block before this instruction.
+			// CSR or unknown SYSTEM — advance past it so the block isn't empty.
+			e.advancePC(4)
 			e.terminated = true
 		}
 
 	default:
-		// Unknown opcode — end block before this instruction.
+		// Unknown opcode — advance past it so the block isn't empty.
+		e.advancePC(4)
 		e.terminated = true
 	}
 }

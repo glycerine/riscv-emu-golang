@@ -44,6 +44,13 @@ type JIT struct {
 	trace      bool   // debug: log block executions to stderr
 
 	irAlloc ir.RegAllocator
+
+	// Dispatch counters (for diagnostics).
+	DispatchOK      uint64 // jitOK returns to Go dispatch
+	DispatchOther   uint64 // non-OK returns (ecall, fault, etc.)
+	DispatchInterp  uint64 // interpreter fallback
+	DispatchCompile uint64 // new block compilations
+	ChainPatched    uint64 // chain exits successfully patched
 }
 
 // NewJIT creates a new JIT translation cache using the Fixed Static Mapping allocator.
@@ -67,6 +74,12 @@ func (j *JIT) SetAllocStrategy(name string) {
 	j.cache = [blockCacheSize]blockCacheEntry{}
 	j.noJIT = newU64set()
 }
+
+// NoJITSize returns the number of PCs in the noJIT set (translation failures).
+func (j *JIT) NoJITSize() int { return j.noJIT.len() }
+
+// SetTrace enables/disables trace logging to stderr.
+func (j *JIT) SetTrace(on bool) { j.trace = on }
 
 // cacheIdx computes the direct-mapped cache index for a PC.
 // Shift right by 1 (not 2) because RVC instructions are 2-byte aligned.
@@ -271,6 +284,7 @@ func (j *JIT) RunJIT(cpu *CPU) error {
 
 			switch int(res.Status) {
 			case jitOK:
+				j.DispatchOK++
 				// Patch this block's chain exit to jump directly to the target.
 				// When a chain exit isn't patched, the slow stub returns here.
 				// After patching, future executions jump directly — bypassing Go.
@@ -346,14 +360,25 @@ func (j *JIT) RunJIT(cpu *CPU) error {
 			if res != nil && res.numInsns > 0 {
 				blk, err := j.jitCompileWith(res, j.UseV2)
 				if err == nil {
+					j.DispatchCompile++
 					j.insertBlock(pc, blk)
 					continue
+				}
+				if debugJIT {
+					fmt.Fprintf(os.Stderr, "COMPILE_FAIL pc=0x%x numInsns=%d err=%v\n", pc, res.numInsns, err)
+				}
+			} else if debugJIT {
+				if res == nil {
+					fmt.Fprintf(os.Stderr, "EMIT_NIL pc=0x%x\n", pc)
+				} else {
+					fmt.Fprintf(os.Stderr, "EMIT_ZERO pc=0x%x numInsns=%d\n", pc, res.numInsns)
 				}
 			}
 			j.noJIT.add(pc)
 		}
 
 		// Interpret one instruction.
+		j.DispatchInterp++
 		err := cpu.step()
 		cpu.cycle++
 		if err == nil {
@@ -379,30 +404,17 @@ func patchChainTarget(codeBase uintptr, patchOffset int, targetAddr uintptr) {
 	binary.LittleEndian.PutUint64(p[:], uint64(targetAddr))
 }
 
-var chainPatchCount int64
-var chainMissCount int64
-var chainAttemptCount int64
-
 // tryPatchChain patches a previous block's chain exit to jump directly
 // to the target block, bypassing the Go dispatch loop on future executions.
 func (j *JIT) tryPatchChain(blk *compiledBlock, targetPC uint64) {
-	chainAttemptCount++
 	target := j.lookupBlock(targetPC)
 	if target == nil || target.chainEntry == 0 {
-		chainMissCount++
 		return
 	}
 	for _, ce := range blk.chainExits {
 		if ce.targetPC == targetPC {
-			// Read back current value at patch location
-			curVal := binary.LittleEndian.Uint64(
-				unsafe.Slice((*byte)(unsafe.Pointer(blk.fn+uintptr(ce.patchOffset))), 8))
-			fmt.Fprintf(os.Stderr, "PATCH: blk.fn=0x%x exit→0x%x patchOff=%d cur=0x%x new=0x%x\n",
-				blk.fn, targetPC, ce.patchOffset, curVal, target.chainEntry)
-			// Overwrite the MOVABS imm64 with target's chain entry address.
-			// The code page is RWX, so this write is safe.
 			patchChainTarget(blk.fn, ce.patchOffset, target.chainEntry)
-			chainPatchCount++
+			j.ChainPatched++
 			break
 		}
 	}

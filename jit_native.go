@@ -9,7 +9,6 @@ package riscv
 import (
 	"encoding/binary"
 	"fmt"
-	"os"
 	"riscv/goasm"
 	"riscv/ir"
 	"syscall"
@@ -106,19 +105,13 @@ func (j *JIT) jitCompileWith(res *emitResult, useV2 bool) (*compiledBlock, error
 	// Step 6: Block chaining setup — backpatch MOVABS sentinels and record metadata.
 	if lowerResult != nil && lowerResult.ChainEntryProg != nil {
 		blk.chainEntry = codeBase + uintptr(lowerResult.ChainEntryProg.Pc)
-		fmt.Fprintf(os.Stderr, "CHAIN: block pc=0x%x codeLen=%d has %d chain exits, chainEntry offset=%d\n",
-			res.startPC, len(code), len(lowerResult.ChainExits), lowerResult.ChainEntryProg.Pc)
-
-		for i, ce := range lowerResult.ChainExits {
+		for _, ce := range lowerResult.ChainExits {
 			// The MOVABS R10, imm64 encoding is: 49 BA <8 bytes imm64>.
 			// The imm64 starts at byte offset +2 from the instruction start.
 			patchOff := int(ce.MovProg.Pc) + 2
 			stubAddr := codeBase + uintptr(ce.StubProg.Pc)
 
 			// Backpatch the sentinel to point to the slow exit stub.
-			fmt.Fprintf(os.Stderr, "  exit[%d]: targetPC=0x%x movProg.Pc=%d stubProg.Pc=%d patchOff=%d bytes@mov=%02x%02x\n",
-				i, ce.TargetPC, ce.MovProg.Pc, ce.StubProg.Pc, patchOff,
-				execMem[int(ce.MovProg.Pc)], execMem[int(ce.MovProg.Pc)+1])
 			binary.LittleEndian.PutUint64(execMem[patchOff:], uint64(stubAddr))
 
 			blk.chainExits = append(blk.chainExits, chainPatchInfo{
