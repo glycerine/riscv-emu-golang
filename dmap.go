@@ -3,7 +3,7 @@ package riscv
 import (
 	"fmt"
 	"iter"
-	"reflect"
+	//"reflect"
 	"sync/atomic"
 
 	rb "github.com/glycerine/rbtree"
@@ -542,17 +542,4 @@ func (s *dmap[K, V]) getikv(key K) (kv *ikv[K, V], found bool) {
 	}
 	kv = it.Item().(*ikv[K, V])
 	return
-}
-
-// IsNil uses reflect to to return true iff the face
-// contains a nil pointer, map, array, slice, or channel.
-func isNil(face interface{}) bool {
-	if face == nil {
-		return true
-	}
-	switch reflect.TypeOf(face).Kind() {
-	case reflect.Ptr, reflect.Array, reflect.Map, reflect.Slice, reflect.Chan:
-		return reflect.ValueOf(face).IsNil()
-	}
-	return false
 }

@@ -394,6 +394,11 @@ func (j *JIT) tryPatchChain(blk *compiledBlock, targetPC uint64) {
 	}
 	for _, ce := range blk.chainExits {
 		if ce.targetPC == targetPC {
+			// Read back current value at patch location
+			curVal := binary.LittleEndian.Uint64(
+				unsafe.Slice((*byte)(unsafe.Pointer(blk.fn+uintptr(ce.patchOffset))), 8))
+			fmt.Fprintf(os.Stderr, "PATCH: blk.fn=0x%x exit→0x%x patchOff=%d cur=0x%x new=0x%x\n",
+				blk.fn, targetPC, ce.patchOffset, curVal, target.chainEntry)
 			// Overwrite the MOVABS imm64 with target's chain entry address.
 			// The code page is RWX, so this write is safe.
 			patchChainTarget(blk.fn, ce.patchOffset, target.chainEntry)
