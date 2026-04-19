@@ -260,7 +260,7 @@ guest-elf: $(GUEST_ELF)
 $(GUEST_ELF): $(GUEST_SRC)
 	@echo "── compiling RISC-V guest ELF ──────────────────────────────────"
 	@echo "  target=$(ZIG_TARGET)"
-	$(ZIG_CC) cc $(GUEST_CFLAGS) -o $(GUEST_ELF) $(GUEST_SRC)
+	$(ZIG_CC) cc $(GUEST_CFLAGS) -T $(GUEST_DIR)/link.ld -o $(GUEST_ELF) $(GUEST_SRC)
 	@test -f $(GUEST_ELF) || { echo "  ✗ guest ELF not produced"; exit 1; }
 	@echo "  ✓ $$(file $(GUEST_ELF) | cut -d: -f2 | xargs)"
 	@echo "  ✓ size: $$(du -h $(GUEST_ELF) | cut -f1)"
