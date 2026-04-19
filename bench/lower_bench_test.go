@@ -94,10 +94,11 @@ func BenchmarkLower_V1(b *testing.B) {
 		blk   *ir.Block
 		alloc *ir.Allocation
 	}
+	allocator := ir.NewAllocator()
 	items := make([]prepped, 0, len(results))
 	for _, r := range results {
 		pool := ir.AMD64Pool(r.Block)
-		alloc := ir.Allocate(r.Block, pool, ir.AMD64Pinned(), nil)
+		alloc := allocator.Allocate(r.Block, pool, ir.AMD64Pinned(), nil)
 		items = append(items, prepped{r.Block, alloc})
 	}
 	b.Logf("collected %d IR blocks", len(items))
@@ -134,10 +135,11 @@ func BenchmarkLower_V2(b *testing.B) {
 		blk   *ir.Block
 		alloc *ir.Allocation
 	}
+	allocator := ir.NewAllocator()
 	items := make([]prepped, 0, len(results))
 	for _, r := range results {
 		pool := ir.AMD64Pool_V2(r.Block)
-		alloc := ir.Allocate(r.Block, pool, ir.AMD64Pinned(), nil)
+		alloc := allocator.Allocate(r.Block, pool, ir.AMD64Pinned(), nil)
 		items = append(items, prepped{r.Block, alloc})
 	}
 	b.Logf("collected %d IR blocks", len(items))
@@ -230,6 +232,7 @@ func TestLower_CodeSize_V1_vs_V2(t *testing.T) {
 		t.Skip("no IR blocks collected")
 	}
 
+	allocator := ir.NewAllocator()
 	var v1Total, v2Total, v1Count, v2Count int
 	var totalIRInstrs int
 	for _, r := range results {
@@ -238,7 +241,7 @@ func TestLower_CodeSize_V1_vs_V2(t *testing.T) {
 
 		// V1
 		pool1 := ir.AMD64Pool(blk)
-		alloc1 := ir.Allocate(blk, pool1, ir.AMD64Pinned(), nil)
+		alloc1 := allocator.Allocate(blk, pool1, ir.AMD64Pinned(), nil)
 		ctx1 := goasm.New(goasm.AMD64)
 		ctx1.Append(ctx1.NewATEXT())
 		if err := ir.LowerAMD64(ctx1, blk, alloc1); err == nil {
@@ -250,7 +253,7 @@ func TestLower_CodeSize_V1_vs_V2(t *testing.T) {
 
 		// V2
 		pool2 := ir.AMD64Pool_V2(blk)
-		alloc2 := ir.Allocate(blk, pool2, ir.AMD64Pinned(), nil)
+		alloc2 := allocator.Allocate(blk, pool2, ir.AMD64Pinned(), nil)
 		ctx2 := goasm.New(goasm.AMD64)
 		ctx2.Append(ctx2.NewATEXT())
 		if err := ir.LowerAMD64_V2(ctx2, blk, alloc2); err == nil {

@@ -120,6 +120,12 @@ type allocState struct {
 
 // ── Primary API ──
 
+// RegAllocator is the interface for pluggable register allocation strategies.
+type RegAllocator interface {
+	Allocate(b *Block, pool RegPool, pinned map[VReg]int16, freq []float64) *Allocation
+}
+
+// Allocator implements Extended Linear Scan register allocation.
 type Allocator struct {
 }
 

@@ -41,15 +41,29 @@ type JIT struct {
 	DebugV1V2  bool   // debug: run every block through V1 AND V2, compare results
 	trace      bool   // debug: log block executions to stderr
 
-	irAlloc *ir.Allocator
+	irAlloc ir.RegAllocator
 }
 
-// NewJIT creates a new JIT translation cache.
+// NewJIT creates a new JIT translation cache using the ELS register allocator.
 func NewJIT() *JIT {
 	return &JIT{
 		noJIT:   newU64set(),
 		irAlloc: ir.NewAllocator(),
 	}
+}
+
+// SetAllocStrategy switches the register allocator.
+// Valid strategies: "els" (Extended Linear Scan), "fixed" (Fixed Static Mapping).
+func (j *JIT) SetAllocStrategy(name string) {
+	switch name {
+	case "fixed":
+		j.irAlloc = ir.NewFixedStaticAllocator()
+	default:
+		j.irAlloc = ir.NewAllocator()
+	}
+	// Clear block cache — compiled blocks used the old allocator.
+	j.cache = [blockCacheSize]blockCacheEntry{}
+	j.noJIT = newU64set()
 }
 
 // cacheIdx computes the direct-mapped cache index for a PC.

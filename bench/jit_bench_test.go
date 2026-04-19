@@ -7,20 +7,7 @@ import (
 )
 
 func runJITBenchGuest(cpu *riscv.CPU) (exitCode int, insns uint64) {
-	jit := riscv.NewJIT()
-	defer func() {
-		if r := recover(); r != nil {
-			if ex, ok := r.(*riscv.ExitError); ok {
-				exitCode = ex.Code
-				insns = cpu.Cycle()
-				return
-			}
-			panic(r)
-		}
-	}()
-	_ = jit.RunJIT(cpu)
-	insns = cpu.Cycle()
-	return
+	return runJITBenchGuestWith(cpu, riscv.NewJIT())
 }
 
 func TestJIT_BenchGuest_Smoke(t *testing.T) {
@@ -37,6 +24,15 @@ func TestJIT_BenchGuest_Smoke(t *testing.T) {
 }
 
 func BenchmarkCPU_FullExecution_JIT(b *testing.B) {
+	benchJITWith(b, "els")
+}
+
+func BenchmarkCPU_FullExecution_JIT_Fixed(b *testing.B) {
+	benchJITWith(b, "fixed")
+}
+
+func benchJITWith(b *testing.B, strategy string) {
+	b.Helper()
 	elfData := loadCPUELF(b)
 
 	b.ReportAllocs()
@@ -45,7 +41,9 @@ func BenchmarkCPU_FullExecution_JIT(b *testing.B) {
 	totalInsns := uint64(0)
 	for i := 0; i < b.N; i++ {
 		cpu, mem := newBenchCPU(b, elfData)
-		_, insns := runJITBenchGuest(cpu)
+		jit := riscv.NewJIT()
+		jit.SetAllocStrategy(strategy)
+		_, insns := runJITBenchGuestWith(cpu, jit)
 		totalInsns += insns
 		mem.Free()
 	}
