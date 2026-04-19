@@ -463,8 +463,8 @@ bench:
 	    | awk '/MIPS/{for(i=1;i<=NF;i++){if($$i=="MIPS"){print p" MIPS";next}; p=$$i}}' \
 	    || echo "(failed)"
 	@printf "  %-44s " "native x86-64 (-O3 -march=native):"
-	@elapsed=$$((/usr/bin/time -p $(GUEST_NATIVE)) 2>&1 | awk '/^real/{print $$NF}'); \
-   awk "BEGIN{printf \"%.0f MIPS  (%.1f ms)\n\", $(NATIVE_RETIRED)/$$elapsed/1000000, $$elapsed*1000}"
+	@elapsed=$$({ /usr/bin/time -p $(GUEST_NATIVE) >/dev/null; } 2>&1 | awk '/^real/{print $$NF}'); \
+         awk "BEGIN{printf \"%.0f MIPS  (%.1f ms)\n\", $(NATIVE_RETIRED)/$$elapsed/1000000, $$elapsed*1000}"
 	@echo ""
 
 bench-summary:
