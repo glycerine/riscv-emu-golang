@@ -466,6 +466,7 @@ func computeIntervalSets(b *Block) []intervalSet {
 	// that the register allocator doesn't reuse their host registers in
 	// the gap between the loop header and their first use in the body.
 	extendLoopLiveRanges(b, result)
+	extendForwardBranchRanges(b, result)
 
 	// Sort intervals by Start for each VReg and merge adjacent/overlapping.
 	for vr := range result {
@@ -489,19 +490,13 @@ func computeIntervalSets(b *Block) []intervalSet {
 		result[vr].Intervals = merged
 	}
 
-	// Guest regs (1-63): merge all intervals into a single full-block span.
-	// Guest registers persist across blocks, so the allocator must not
-	// reuse their host registers during "gaps" in the backward scan.
-	// Without this, a temp assigned to the same register during a gap
-	// clobbers the guest reg value, producing wrong code.
+	// Guest regs (1-63): extend last interval's End to len(Instrs)-1.
+	// Guest registers persist across blocks and are written back at exits,
+	// so the last interval must reach the end of the block.
 	for vr := 1; vr <= 63 && vr < len(result); vr++ {
 		ivals := result[vr].Intervals
 		if len(ivals) > 0 {
-			result[vr].Intervals = []Interval{{
-				VReg:  VReg(vr),
-				Start: 0,
-				End:   n - 1,
-			}}
+			ivals[len(ivals)-1].End = n - 1
 		}
 	}
 
@@ -561,6 +556,55 @@ func extendLoopLiveRanges(b *Block, result []intervalSet) {
 				Start: targetIdx,
 				End:   i,
 			})
+		}
+	}
+}
+
+// extendForwardBranchRanges handles forward conditional branches.
+// When a conditional branch at instruction i targets a label at instruction
+// t > i, any VReg live at t must also be live at i — because the branch can
+// transfer control from i to t. The linear backward scan doesn't follow
+// forward edges, so we add synthetic intervals [i, t] for each VReg live
+// at the target. The subsequent merge step unifies overlapping intervals.
+//
+// This is the forward-edge counterpart to extendLoopLiveRanges (backward edges).
+// Together they ensure correct liveness for all intra-block control flow.
+func extendForwardBranchRanges(b *Block, result []intervalSet) {
+	for i := range b.Instrs {
+		ins := &b.Instrs[i]
+
+		// Only conditional branches create forward edges that matter.
+		// Unconditional jumps (IRJump) make the fall-through unreachable,
+		// so they don't require liveness extension.
+		switch ins.Op {
+		case IRBranch, IRBranchImm:
+			// ok
+		default:
+			continue
+		}
+
+		targetLabel := Label(ins.Imm)
+		targetIdx, ok := b.Labels[targetLabel]
+		if !ok || targetIdx <= i {
+			continue // backward or unknown — handled by extendLoopLiveRanges
+		}
+
+		// Forward conditional branch from i to targetIdx.
+		// Any VReg live at targetIdx must also be live at i.
+		for vr := range result {
+			if result[vr].VReg == VRegZero {
+				continue
+			}
+			for _, iv := range result[vr].Intervals {
+				if iv.Start <= targetIdx && targetIdx <= iv.End {
+					result[vr].Intervals = append(result[vr].Intervals, Interval{
+						VReg:  result[vr].VReg,
+						Start: i,
+						End:   targetIdx,
+					})
+					break
+				}
+			}
 		}
 	}
 }
@@ -894,8 +938,10 @@ func assignRegisters(st *allocState, pool RegPool, pinned map[VReg]int16) {
 		}
 
 		if len(*avail) == 0 {
-			// No register available — this shouldn't happen after spill phase.
-			// Defensive: skip this interval.
+			// No register available — spill this VReg (ELS₁ Figure 6, step 3b.ii).
+			if int(vr) < len(st.spilled) {
+				st.spilled[vr] = true
+			}
 			continue
 		}
 
