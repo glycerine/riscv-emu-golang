@@ -577,6 +577,7 @@ rebuild-libriscv:
 #   make fuzz FUZZ_TIME=5m
 
 FUZZ_TIME ?= 60s
+FUZZ_LONG_TIME ?= 4h
 
 .PHONY: fuzz
 fuzz:
@@ -585,6 +586,117 @@ fuzz:
 	    -run FuzzCPU -fuzz=FuzzCPU \
 	    -fuzztime=$(FUZZ_TIME) \
 	    . 2>&1
+
+# fuzz-all: run every fuzz target sequentially, 4h each by default.
+# Usage:
+#   make fuzz-all                    # 4h per target (19 targets ≈ 76h)
+#   make fuzz-all FUZZ_LONG_TIME=1h  # 1h per target
+#   nohup make fuzz-all &            # background overnight
+.PHONY: fuzz-all
+fuzz-all:
+	@echo ""
+	@echo "══════════════════════════════════════════════════════════════════"
+	@echo "  FUZZ ALL — $(FUZZ_LONG_TIME) per target — $$(date)"
+	@echo "══════════════════════════════════════════════════════════════════"
+	@echo ""
+	@echo "── [1/19] FuzzCPU ($(FUZZ_LONG_TIME)) ──"
+	cd $(ROOT) && FUZZ_TIMEOUT=1 $(GO) test \
+	    -run FuzzCPU -fuzz=FuzzCPU \
+	    -fuzztime=$(FUZZ_LONG_TIME) . 2>&1 || true
+	@echo ""
+	@echo "── [2/19] FuzzPeepholeTermination ($(FUZZ_LONG_TIME)) ──"
+	cd $(ROOT) && $(GO) test \
+	    -run FuzzPeepholeTermination -fuzz=FuzzPeepholeTermination \
+	    -fuzztime=$(FUZZ_LONG_TIME) ./ir/ 2>&1 || true
+	@echo ""
+	@echo "── [3/19] FuzzEmitterSequences ($(FUZZ_LONG_TIME)) ──"
+	cd $(ROOT) && $(GO) test \
+	    -run FuzzEmitterSequences -fuzz=FuzzEmitterSequences \
+	    -fuzztime=$(FUZZ_LONG_TIME) ./ir/ 2>&1 || true
+	@echo ""
+	@echo "── [4/19] FuzzBlockStructure ($(FUZZ_LONG_TIME)) ──"
+	cd $(ROOT) && $(GO) test \
+	    -run FuzzBlockStructure -fuzz=FuzzBlockStructure \
+	    -fuzztime=$(FUZZ_LONG_TIME) ./ir/ 2>&1 || true
+	@echo ""
+	@echo "── [5/19] FuzzHighLevelHelpers ($(FUZZ_LONG_TIME)) ──"
+	cd $(ROOT) && $(GO) test \
+	    -run FuzzHighLevelHelpers -fuzz=FuzzHighLevelHelpers \
+	    -fuzztime=$(FUZZ_LONG_TIME) ./ir/ 2>&1 || true
+	@echo ""
+	@echo "── [6/19] FuzzRegAllocInvariants ($(FUZZ_LONG_TIME)) ──"
+	cd $(ROOT) && $(GO) test \
+	    -run FuzzRegAllocInvariants -fuzz=FuzzRegAllocInvariants \
+	    -fuzztime=$(FUZZ_LONG_TIME) ./ir/ 2>&1 || true
+	@echo ""
+	@echo "── [7/19] FuzzLiveRangeConsistency ($(FUZZ_LONG_TIME)) ──"
+	cd $(ROOT) && $(GO) test \
+	    -run FuzzLiveRangeConsistency -fuzz=FuzzLiveRangeConsistency \
+	    -fuzztime=$(FUZZ_LONG_TIME) ./ir/ 2>&1 || true
+	@echo ""
+	@echo "── [8/19] FuzzSpillResurrection ($(FUZZ_LONG_TIME)) ──"
+	cd $(ROOT) && $(GO) test \
+	    -run FuzzSpillResurrection -fuzz=FuzzSpillResurrection \
+	    -fuzztime=$(FUZZ_LONG_TIME) ./ir/ 2>&1 || true
+	@echo ""
+	@echo "── [9/19] FuzzELS_NoConflicts ($(FUZZ_LONG_TIME)) ──"
+	cd $(ROOT) && $(GO) test \
+	    -run FuzzELS_NoConflicts -fuzz=FuzzELS_NoConflicts \
+	    -fuzztime=$(FUZZ_LONG_TIME) ./ir/ 2>&1 || true
+	@echo ""
+	@echo "── [10/19] FuzzELS_ForwardBranchLiveness ($(FUZZ_LONG_TIME)) ──"
+	cd $(ROOT) && $(GO) test \
+	    -run FuzzELS_ForwardBranchLiveness -fuzz=FuzzELS_ForwardBranchLiveness \
+	    -fuzztime=$(FUZZ_LONG_TIME) ./ir/ 2>&1 || true
+	@echo ""
+	@echo "── [11/19] FuzzELS_GuestRegExtension ($(FUZZ_LONG_TIME)) ──"
+	cd $(ROOT) && $(GO) test \
+	    -run FuzzELS_GuestRegExtension -fuzz=FuzzELS_GuestRegExtension \
+	    -fuzztime=$(FUZZ_LONG_TIME) ./ir/ 2>&1 || true
+	@echo ""
+	@echo "── [12/19] FuzzELS_SpillSlotUniqueness ($(FUZZ_LONG_TIME)) ──"
+	cd $(ROOT) && $(GO) test \
+	    -run FuzzELS_SpillSlotUniqueness -fuzz=FuzzELS_SpillSlotUniqueness \
+	    -fuzztime=$(FUZZ_LONG_TIME) ./ir/ 2>&1 || true
+	@echo ""
+	@echo "── [13/19] FuzzALUVsLibriscv ($(FUZZ_LONG_TIME)) ──"
+	cd $(ROOT) && FUZZ_TIMEOUT=1 $(GO) test \
+	    -run FuzzALUVsLibriscv -fuzz=FuzzALUVsLibriscv \
+	    -fuzztime=$(FUZZ_LONG_TIME) ./fuzzoracle/ 2>&1 || true
+	@echo ""
+	@echo "── [14/19] FuzzStoresVsLibriscv ($(FUZZ_LONG_TIME)) ──"
+	cd $(ROOT) && FUZZ_TIMEOUT=1 $(GO) test \
+	    -run FuzzStoresVsLibriscv -fuzz=FuzzStoresVsLibriscv \
+	    -fuzztime=$(FUZZ_LONG_TIME) ./fuzzoracle/ 2>&1 || true
+	@echo ""
+	@echo "── [15/19] FuzzRVCVsLibriscv ($(FUZZ_LONG_TIME)) ──"
+	cd $(ROOT) && FUZZ_TIMEOUT=1 $(GO) test \
+	    -run FuzzRVCVsLibriscv -fuzz=FuzzRVCVsLibriscv \
+	    -fuzztime=$(FUZZ_LONG_TIME) ./fuzzoracle/ 2>&1 || true
+	@echo ""
+	@echo "── [16/19] FuzzAMOVsLibriscv ($(FUZZ_LONG_TIME)) ──"
+	cd $(ROOT) && FUZZ_TIMEOUT=1 $(GO) test \
+	    -run FuzzAMOVsLibriscv -fuzz=FuzzAMOVsLibriscv \
+	    -fuzztime=$(FUZZ_LONG_TIME) ./fuzzoracle/ 2>&1 || true
+	@echo ""
+	@echo "── [17/19] FuzzFDVsLibriscv ($(FUZZ_LONG_TIME)) ──"
+	cd $(ROOT) && FUZZ_TIMEOUT=1 $(GO) test \
+	    -run FuzzFDVsLibriscv -fuzz=FuzzFDVsLibriscv \
+	    -fuzztime=$(FUZZ_LONG_TIME) ./fuzzoracle/ 2>&1 || true
+	@echo ""
+	@echo "── [18/19] FuzzCFloatVsLibriscv ($(FUZZ_LONG_TIME)) ──"
+	cd $(ROOT) && FUZZ_TIMEOUT=1 $(GO) test \
+	    -run FuzzCFloatVsLibriscv -fuzz=FuzzCFloatVsLibriscv \
+	    -fuzztime=$(FUZZ_LONG_TIME) ./fuzzoracle/ 2>&1 || true
+	@echo ""
+	@echo "── [19/19] FuzzBitmanipVsLibriscv ($(FUZZ_LONG_TIME)) ──"
+	cd $(ROOT) && FUZZ_TIMEOUT=1 $(GO) test \
+	    -run FuzzBitmanipVsLibriscv -fuzz=FuzzBitmanipVsLibriscv \
+	    -fuzztime=$(FUZZ_LONG_TIME) ./fuzzoracle/ 2>&1 || true
+	@echo ""
+	@echo "══════════════════════════════════════════════════════════════════"
+	@echo "  FUZZ ALL COMPLETE — $$(date)"
+	@echo "══════════════════════════════════════════════════════════════════"
 
 prof:
 	go test -run=xxx -bench=BenchmarkCPU_FullExecution -benchtime=1x -cpuprofile cpu.prof ./bench/
