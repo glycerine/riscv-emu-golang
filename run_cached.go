@@ -22,9 +22,9 @@ func RunCached(cpu *CPU, cache *DecoderCache, nc *NoteChain) error {
 		var err error
 		var cycles uint64
 		countdown := pollBatch
+		slot := cache.lookup(pc)
 	inner:
 		for {
-			slot := cache.lookup(pc)
 			// Single load of slot.len drives three-way dispatch. The sentinel
 			// slot for OOB PCs has len==0, which funnels through the default
 			// arm into slowStep (same code path as an un-populated cached
@@ -41,6 +41,16 @@ func RunCached(cpu *CPU, cache *DecoderCache, nc *NoteChain) error {
 			countdown--
 			if err != nil || countdown == 0 {
 				break inner
+			}
+			// Slot chaining: non-block-end insns pre-resolve their successor
+			// at decode time, so we can skip cache.lookup entirely on the
+			// ~85-90% of instructions that fall through linearly. Nil next
+			// means "branch/jump/trap or slot is uninitialized" — do a full
+			// lookup to find where control flow landed.
+			if slot.next != nil {
+				slot = slot.next
+			} else {
+				slot = cache.lookup(pc)
 			}
 		}
 		cpu.cycle += cycles
@@ -81,7 +91,7 @@ func slowStep(cpu *CPU, cache *DecoderCache, slot *DecodedInsn, pc uint64) (uint
 		return cpu.pc, err
 	}
 	// slot.len == 0 (not yet decoded) — populate and dispatch.
-	populateSlot(cpu, slot, pc)
+	populateSlot(cpu, cache, slot, pc)
 	if slot.len == 0 {
 		cpu.pc = pc
 		err := cpu.step()
@@ -98,28 +108,41 @@ func slowStep(cpu *CPU, cache *DecoderCache, slot *DecodedInsn, pc uint64) (uint
 // For RVC instructions, additionally pre-decodes register fields and
 // immediates so execRVCSlot can dispatch without re-extraction.
 //
+// After decoding, if the instruction is non-block-ending and the fall-through
+// PC lands inside the cache range, wires slot.next to the successor slot so
+// RunCached can skip cache.lookup on the linear-flow path.
+//
 //go:nosplit
-func populateSlot(cpu *CPU, slot *DecodedInsn, pc uint64) {
+func populateSlot(cpu *CPU, cache *DecoderCache, slot *DecodedInsn, pc uint64) {
 	half, fh := (&cpu.mem).Fetch16(pc)
 	if fh != nil {
 		return // leave uninitialized; slow path handles the fault
 	}
 	if half&0x3 != 0x3 {
 		decodeRVC(slot, half)
-		return
-	}
-	w, f := (&cpu.mem).Fetch32(pc)
-	if f != nil {
-		if f.Kind == FaultMisalign {
-			w, f = (&cpu.mem).Fetch32U(pc)
-		}
+	} else {
+		w, f := (&cpu.mem).Fetch32(pc)
 		if f != nil {
-			return
+			if f.Kind == FaultMisalign {
+				w, f = (&cpu.mem).Fetch32U(pc)
+			}
+			if f != nil {
+				return
+			}
+		}
+		decodeInsn32(slot, w)
+		// FENCE.I is not caught by decodeInsn32's opcode-level flagging — do it here.
+		if slot.op == 0x0F && slot.funct3 == 0x1 {
+			slot.flags |= flagBlockEnd
 		}
 	}
-	decodeInsn32(slot, w)
-	// FENCE.I is not caught by decodeInsn32's opcode-level flagging — do it here.
-	if slot.op == 0x0F && slot.funct3 == 0x1 {
-		slot.flags |= flagBlockEnd
+	// Wire up slot.next for non-block-end successors whose PC is in-range.
+	// Block-ending insns leave next==nil so RunCached does a cache.lookup
+	// after they execute (required to find the actual control-flow target).
+	if slot.len > 0 && slot.flags&flagBlockEnd == 0 {
+		succOff := pc + uint64(slot.len) - cache.base
+		if succOff < cache.size {
+			slot.next = &cache.slots[succOff>>1]
+		}
 	}
 }

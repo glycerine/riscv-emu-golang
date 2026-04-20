@@ -28,6 +28,17 @@ type DecodedInsn struct {
 	imm int32
 	// insn is the raw 32-bit bits (or 16-bit RVC bits in the low word).
 	insn uint32
+	// next is the pre-resolved fall-through successor slot. Populated by
+	// populateSlot for non-block-ending instructions whose successor PC is
+	// inside the cache range. Nil means "look up the next slot via
+	// cache.lookup(pc)" — required after branches, jumps, and at the edge
+	// of the cached range.
+	//
+	// Slot size: 16 → 24 bytes with this field. Cache density drops from 4
+	// to ~2.67 DecodedInsn per 64-byte cache line. Accepted in exchange for
+	// skipping cache.lookup on the ~85-90% of instructions that fall through
+	// linearly.
+	next *DecodedInsn
 }
 
 // flagBlockEnd is set on instructions that terminate a basic block:
