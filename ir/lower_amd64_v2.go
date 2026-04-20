@@ -774,8 +774,8 @@ func (lc *lowerCtxV2) v2MulHSU(ins *IRInstr) {
 	lc.emit2(x86.AMOVQ, a, goasm.REG_AMD64_AX) // RAX = a
 
 	// Sign correction mask: R10 = (a < 0) ? b : 0
-	lc.emitRI2(x86.ASARQ, 63, a)  // R10 = sign bits of a
-	lc.emit2(x86.AANDQ, b, a)     // R10 = (a_neg) ? b : 0
+	lc.emitRI2(x86.ASARQ, 63, a) // R10 = sign bits of a
+	lc.emit2(x86.AANDQ, b, a)    // R10 = (a_neg) ? b : 0
 
 	// Unsigned multiply: RDX:RAX = RAX * R11
 	p := lc.c.NewProg()
@@ -799,7 +799,7 @@ func (lc *lowerCtxV2) v2MulHSU(ins *IRInstr) {
 func (lc *lowerCtxV2) v2Set(ins *IRInstr) {
 	a := lc.stageInt(ins.A, 0) // R10
 	b := lc.stageInt(ins.B, 1) // R11
-	lc.emit2(x86.ACMPQ, a, b) // flags = a - b
+	lc.emit2(x86.ACMPQ, a, b)  // flags = a - b
 	dst := lc.writeDst(ins.Dst)
 	bReg := byteReg(dst)
 	setOp := predToSETcc(ins.Pred)
@@ -1078,16 +1078,16 @@ func (lc *lowerCtxV2) v2FNeg(ins *IRInstr) {
 	_ = movOp
 
 	// GPR round-trip to flip sign bit.
-	lc.emit2(x86.AMOVQ, a, v2StgA)              // R10 = XMM15 bits
+	lc.emit2(x86.AMOVQ, a, v2StgA) // R10 = XMM15 bits
 	var mask int64
 	if ins.T == F32 {
 		mask = 1 << 31
 	} else {
 		mask = -1 << 63
 	}
-	lc.loadImm(mask, v2StgB)                     // R11 = sign mask
-	lc.emit2(x86.AXORQ, v2StgB, v2StgA)         // R10 ^= R11
-	lc.emit2(x86.AMOVQ, v2StgA, a)              // XMM15 = R10
+	lc.loadImm(mask, v2StgB)            // R11 = sign mask
+	lc.emit2(x86.AXORQ, v2StgB, v2StgA) // R10 ^= R11
+	lc.emit2(x86.AMOVQ, v2StgA, a)      // XMM15 = R10
 
 	dst := lc.writeDstFP(ins.Dst)
 	if dst != a {
@@ -1107,9 +1107,9 @@ func (lc *lowerCtxV2) v2FAbs(ins *IRInstr) {
 	} else {
 		mask = 0x7FFFFFFFFFFFFFFF
 	}
-	lc.loadImm(mask, v2StgB)                     // R11 = abs mask
-	lc.emit2(x86.AANDQ, v2StgB, v2StgA)         // R10 &= R11
-	lc.emit2(x86.AMOVQ, v2StgA, a)              // XMM15 = R10
+	lc.loadImm(mask, v2StgB)            // R11 = abs mask
+	lc.emit2(x86.AANDQ, v2StgB, v2StgA) // R10 &= R11
+	lc.emit2(x86.AMOVQ, v2StgA, a)      // XMM15 = R10
 
 	dst := lc.writeDstFP(ins.Dst)
 	if dst != a {

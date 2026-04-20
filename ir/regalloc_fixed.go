@@ -44,7 +44,7 @@ func (f *FixedStaticAllocator) Allocate(b *Block, pool RegPool, pinned map[VReg]
 	}
 
 	n := len(b.Instrs)
-	mv := maxVReg(b)
+	mv := b.maxVreg
 	for vr := range pinned {
 		if vr > mv {
 			mv = vr

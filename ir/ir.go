@@ -352,6 +352,21 @@ type Block struct {
 	NextLabel Label         // fresh label allocator
 	CTab      []CSym        // external call symbols
 	VRegLive  []VRegLiveness
+
+	maxVreg VReg // uint16
+}
+
+func (b *Block) appendIns(ins IRInstr) {
+	b.Instrs = append(b.Instrs, ins)
+	if ins.Dst > b.maxVreg {
+		b.maxVreg = ins.Dst
+	}
+	if ins.A > b.maxVreg {
+		b.maxVreg = ins.A
+	}
+	if ins.B > b.maxVreg {
+		b.maxVreg = ins.B
+	}
 }
 
 // NewBlock allocates a Block with an initialized Labels map.

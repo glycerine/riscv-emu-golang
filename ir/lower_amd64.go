@@ -202,7 +202,7 @@ type ChainExitDesc struct {
 // LowerResult holds chain-related metadata produced during lowering.
 // After assembly, Prog.Pc fields contain byte offsets into the assembled code.
 type LowerResult struct {
-	ChainEntryProg *obj.Prog      // NOP at chain entry point
+	ChainEntryProg *obj.Prog       // NOP at chain entry point
 	ChainExits     []ChainExitDesc // chain exit descriptors
 }
 
@@ -213,9 +213,9 @@ type lowerCtx struct {
 	idx   int // current IR instruction index
 
 	// Fast per-VReg host register lookup (replaces linear IntervalMap scan).
-	rIdx     regIndex
-	fpSet    map[VReg]bool // precomputed: is this VReg assigned to an XMM register?
-	cxLive   []regEntry    // intervals where CX is live (sorted by start)
+	rIdx   regIndex
+	fpSet  map[VReg]bool // precomputed: is this VReg assigned to an XMM register?
+	cxLive []regEntry    // intervals where CX is live (sorted by start)
 
 	// Label resolution.
 	labelProg map[Label]*obj.Prog   // label → NOP prog at that point
@@ -1112,8 +1112,8 @@ func (lc *lowerCtx) lowerMulHSU(ins *IRInstr) {
 
 	// Compute sign correction: if a < 0, correction = b, else 0.
 	lc.emitRR(x86.AMOVQ, goasm.REG_AMD64_AX, amd64Scratch1) // R10 = a (from RAX)
-	lc.emitRI(x86.ASARQ, 63, amd64Scratch1)                  // R10 = sign(a) replicated
-	lc.emitRR(x86.AANDQ, bEff, amd64Scratch1)                // R10 = (a<0) ? b : 0
+	lc.emitRI(x86.ASARQ, 63, amd64Scratch1)                 // R10 = sign(a) replicated
+	lc.emitRR(x86.AANDQ, bEff, amd64Scratch1)               // R10 = (a<0) ? b : 0
 	p := lc.c.NewProg()
 	p.As = x86.AMULQ
 	p.From.Type = obj.TYPE_REG
@@ -1691,10 +1691,10 @@ func (lc *lowerCtx) lowerFNeg(ins *IRInstr) {
 	} else {
 		mask = -1 << 63 // 0x8000000000000000
 	}
-	lc.emitRR(x86.AMOVQ, dst, amd64Scratch1)                // XMM → GPR (R10)
-	lc.loadImm64(mask, amd64Scratch2)                        // R11 = sign mask
-	lc.emitRR(x86.AXORQ, amd64Scratch2, amd64Scratch1)      // R10 ^= R11
-	lc.emitRR(x86.AMOVQ, amd64Scratch1, dst)                // GPR → XMM
+	lc.emitRR(x86.AMOVQ, dst, amd64Scratch1)           // XMM → GPR (R10)
+	lc.loadImm64(mask, amd64Scratch2)                  // R11 = sign mask
+	lc.emitRR(x86.AXORQ, amd64Scratch2, amd64Scratch1) // R10 ^= R11
+	lc.emitRR(x86.AMOVQ, amd64Scratch1, dst)           // GPR → XMM
 
 	lc.defCommit(ins.Dst, dst)
 }

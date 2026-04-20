@@ -75,7 +75,9 @@ func (e *Emitter) opExt(op IROp, dst, a VReg, fromT Type) {
 // Returns true if the instruction (or its peephole rewrite) was retained.
 func (e *Emitter) emit(ins IRInstr) bool {
 	before := len(e.Block.Instrs)
-	e.Block.Instrs = append(e.Block.Instrs, ins)
+
+	e.Block.appendIns(ins) // only call (only append)
+
 	if ins.Op == IRLabel {
 		e.Block.Labels[Label(ins.Imm)] = len(e.Block.Instrs) - 1
 	}

@@ -146,7 +146,7 @@ func (s *Allocator) Allocate(b *Block, pool RegPool, pinned map[VReg]int16, freq
 	intervals := computeIntervalSets(b)
 
 	// Step 2: classify VRegs as int or FP.
-	mv := maxVReg(b)
+	mv := b.maxVreg
 	// Ensure mv covers all pinned VRegs (they may not appear in instructions).
 	for vr := range pinned {
 		if vr > mv {
@@ -369,6 +369,7 @@ func instrUses(ins *IRInstr) []VReg {
 	return uses
 }
 
+// useb.maxVreg instead!?
 // maxVReg returns the highest VReg number referenced in any instruction of b.
 func maxVReg(b *Block) VReg {
 	var mx VReg
@@ -390,7 +391,7 @@ func computeIntervalSets(b *Block) []intervalSet {
 		return nil
 	}
 
-	mv := maxVReg(b)
+	mv := b.maxVreg
 	n := len(b.Instrs)
 
 	// Per-VReg: track whether currently live during backward scan,
@@ -657,7 +658,7 @@ func computeCount(intervals []intervalSet, numInstrs int) []int {
 
 // classifyVRegs determines which VRegs are FP (true) vs integer (false).
 func classifyVRegs(b *Block, intervals []intervalSet) []bool {
-	mv := maxVReg(b)
+	mv := b.maxVreg
 	isFP := make([]bool, int(mv)+1)
 
 	// Guest FP regs (32-63) are trivially FP.
@@ -699,7 +700,7 @@ func BlockHasDivMul(b *Block) bool {
 
 // computeSpillCosts computes totalSpillCost(s) for each VReg.
 func computeSpillCosts(b *Block, intervals []intervalSet, freq []float64) []float64 {
-	mv := maxVReg(b)
+	mv := b.maxVreg
 	costs := make([]float64, int(mv)+1)
 
 	for i := range b.Instrs {

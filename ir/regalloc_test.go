@@ -10,6 +10,7 @@ import (
 func makeBlock(instrs ...IRInstr) *Block {
 	b := NewBlock()
 	b.Instrs = instrs
+	b.maxVreg = maxVReg(b)
 	return b
 }
 
@@ -512,7 +513,7 @@ func TestBlockHasDivMul_HasRem(t *testing.T) {
 
 func TestMaxVReg_EmptyBlock(t *testing.T) {
 	b := makeBlock()
-	if got := maxVReg(b); got != 0 {
+	if got := b.maxVreg; got != 0 {
 		t.Errorf("maxVReg(empty) = %d, want 0", got)
 	}
 }
@@ -521,7 +522,7 @@ func TestMaxVReg_HighTemp(t *testing.T) {
 	b := makeBlock(
 		IRInstr{Op: IRConst, Dst: VReg(200), Imm: 1},
 	)
-	if got := maxVReg(b); got != 200 {
+	if got := b.maxVreg; got != 200 {
 		t.Errorf("maxVReg = %d, want 200", got)
 	}
 }
