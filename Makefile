@@ -154,7 +154,7 @@ endif
 
 # ── setup pipeline ─────────────────────────────────────────────────────────
 
-bench-setup: check-tools libriscv-build guest-elf
+bench-setup: check-tools libriscv-build guest-elf libtcc-build
 	@echo "we use vendored xendor/libriscv now, and do not pull from github."
 	@echo ""
 	@echo "  ✓ bench-setup complete — run 'make bench' to start"

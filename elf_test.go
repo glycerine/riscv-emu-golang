@@ -30,7 +30,9 @@ func TestLoadELF_Header(t *testing.T) {
 	t.Logf("entry=0x%x loaded %d bytes", entry, len(data))
 
 	// Verify we can fetch an instruction at the entry point
-	insn, f := mem.Fetch32(entry)
+	// (linux vs darwin linking was producing different alignment):
+	//insn, f := mem.Fetch32(entry) // requires 4-byte alignment.
+	insn, f := mem.Fetch32U(entry) // allows 2-byte aligned C (compact) code.
 	if f != nil {
 		t.Fatalf("Fetch32 at entry 0x%x: %v", entry, f)
 	}
