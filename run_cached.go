@@ -137,12 +137,27 @@ func populateSlot(cpu *CPU, cache *DecoderCache, slot *DecodedInsn, pc uint64) {
 		}
 	}
 	// Wire up slot.next for non-block-end successors whose PC is in-range.
-	// Block-ending insns leave next==nil so RunCached does a cache.lookup
-	// after they execute (required to find the actual control-flow target).
-	if slot.len > 0 && slot.flags&flagBlockEnd == 0 {
+	// Block-ending insns normally leave next==nil so RunCached does a
+	// cache.lookup after they execute — but for unconditional direct-target
+	// branches (JAL, C.J) the target is a decode-time constant, so we can
+	// pre-resolve it and chain straight to the target slot (Phase E).
+	if slot.len == 0 {
+		return
+	}
+	if slot.flags&flagBlockEnd == 0 {
 		succOff := pc + uint64(slot.len) - cache.base
 		if succOff < cache.size {
 			slot.next = &cache.slots[succOff>>1]
+		}
+		return
+	}
+	// Block-ending, but JAL (0x6F) and C.J (opC_J) jump to pc+imm — known
+	// at decode time. If the target is inside the cache, wire next so the
+	// driver's fast chain absorbs the jump with zero lookups.
+	if slot.op == 0x6F || slot.op == opC_J {
+		tgtOff := pc + uint64(int64(slot.imm)) - cache.base
+		if tgtOff < cache.size {
+			slot.next = &cache.slots[tgtOff>>1]
 		}
 	}
 }

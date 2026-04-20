@@ -1,5 +1,7 @@
 package riscv
 
+import "unsafe"
+
 // execRVCSlot executes a pre-decoded RVC instruction. Semantically identical
 // to stepRVC(uint16(slot.insn)), but reads pre-computed fields from slot
 // instead of re-extracting them from the raw bits on every visit.
@@ -60,11 +62,18 @@ func (c *CPU) execRVCSlot(slot *DecodedInsn, pc uint64) (uint64, error) {
 		c.x[slot.rd] = uint64(int64(int32(v)))
 
 	case opC_LD:
-		v, f := (&c.mem).Load64(c.x[slot.rs1] + uint64(slot.imm))
-		if f != nil {
-			return pc, f
+		// C.LD immediate is already a multiple of 8, so the base address
+		// is naturally aligned as long as rs1 is. Inline fast path.
+		addr := c.x[slot.rs1] + uint64(slot.imm)
+		if addr&7 == 0 && (addr|(addr+7))&^c.mem.mask == 0 {
+			c.x[slot.rd] = *(*uint64)(unsafe.Pointer(c.mem.base + uintptr(addr&c.mem.mask)))
+		} else {
+			v, f := (&c.mem).Load64U(addr)
+			if f != nil {
+				return pc, f
+			}
+			c.x[slot.rd] = v
 		}
-		c.x[slot.rd] = v
 
 	case opC_SW:
 		if f := (&c.mem).Store32(c.x[slot.rs1]+uint64(slot.imm), uint32(c.x[slot.rs2])); f != nil {
@@ -72,8 +81,13 @@ func (c *CPU) execRVCSlot(slot *DecodedInsn, pc uint64) (uint64, error) {
 		}
 
 	case opC_SD:
-		if f := (&c.mem).Store64(c.x[slot.rs1]+uint64(slot.imm), c.x[slot.rs2]); f != nil {
-			return pc, f
+		addr := c.x[slot.rs1] + uint64(slot.imm)
+		if addr&7 == 0 && (addr|(addr+7))&^c.mem.mask == 0 {
+			*(*uint64)(unsafe.Pointer(c.mem.base + uintptr(addr&c.mem.mask))) = c.x[slot.rs2]
+		} else {
+			if f := (&c.mem).Store64U(addr, c.x[slot.rs2]); f != nil {
+				return pc, f
+			}
 		}
 
 	case opC_LWSP:
@@ -90,11 +104,16 @@ func (c *CPU) execRVCSlot(slot *DecodedInsn, pc uint64) (uint64, error) {
 		if slot.rd == 0 {
 			return pc, ErrIllegalInstruction
 		}
-		v, f := (&c.mem).Load64(c.x[2] + uint64(slot.imm))
-		if f != nil {
-			return pc, f
+		addr := c.x[2] + uint64(slot.imm)
+		if addr&7 == 0 && (addr|(addr+7))&^c.mem.mask == 0 {
+			c.x[slot.rd] = *(*uint64)(unsafe.Pointer(c.mem.base + uintptr(addr&c.mem.mask)))
+		} else {
+			v, f := (&c.mem).Load64U(addr)
+			if f != nil {
+				return pc, f
+			}
+			c.x[slot.rd] = v
 		}
-		c.x[slot.rd] = v
 
 	case opC_SWSP:
 		if f := (&c.mem).Store32(c.x[2]+uint64(slot.imm), uint32(c.x[slot.rs2])); f != nil {
@@ -102,8 +121,13 @@ func (c *CPU) execRVCSlot(slot *DecodedInsn, pc uint64) (uint64, error) {
 		}
 
 	case opC_SDSP:
-		if f := (&c.mem).Store64(c.x[2]+uint64(slot.imm), c.x[slot.rs2]); f != nil {
-			return pc, f
+		addr := c.x[2] + uint64(slot.imm)
+		if addr&7 == 0 && (addr|(addr+7))&^c.mem.mask == 0 {
+			*(*uint64)(unsafe.Pointer(c.mem.base + uintptr(addr&c.mem.mask))) = c.x[slot.rs2]
+		} else {
+			if f := (&c.mem).Store64U(addr, c.x[slot.rs2]); f != nil {
+				return pc, f
+			}
 		}
 
 	case opC_SLLI:

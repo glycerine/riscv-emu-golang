@@ -1,6 +1,9 @@
 package riscv
 
-import "math/bits"
+import (
+	"math/bits"
+	"unsafe"
+)
 
 // exec32Slot executes a pre-decoded 32-bit RV64 instruction from slot fields.
 // Covers the common RV64I / RV64M opcodes — LOAD, STORE, OP-IMM, OP,
@@ -47,15 +50,16 @@ func (c *CPU) exec32Slot(slot *DecodedInsn, pc uint64) (uint64, error) {
 				return pc, f
 			}
 			v = uint64(int64(int32(u)))
-		case 0x3: // LD
-			u, f := (&c.mem).Load64(addr)
-			if f != nil && f.Kind == FaultMisalign {
-				u, f = (&c.mem).Load64U(addr)
+		case 0x3: // LD — inline aligned fast path (Phase D)
+			if addr&7 == 0 && (addr|(addr+7))&^c.mem.mask == 0 {
+				v = *(*uint64)(unsafe.Pointer(c.mem.base + uintptr(addr&c.mem.mask)))
+			} else {
+				u, f := (&c.mem).Load64U(addr)
+				if f != nil {
+					return pc, f
+				}
+				v = u
 			}
-			if f != nil {
-				return pc, f
-			}
-			v = u
 		case 0x4: // LBU
 			u, f := (&c.mem).Load8(addr)
 			if f != nil {
@@ -109,13 +113,13 @@ func (c *CPU) exec32Slot(slot *DecodedInsn, pc uint64) (uint64, error) {
 			if f != nil {
 				return pc, f
 			}
-		case 0x3: // SD
-			f := (&c.mem).Store64(addr, c.x[slot.rs2])
-			if f != nil && f.Kind == FaultMisalign {
-				f = (&c.mem).Store64U(addr, c.x[slot.rs2])
-			}
-			if f != nil {
-				return pc, f
+		case 0x3: // SD — inline aligned fast path (Phase D)
+			if addr&7 == 0 && (addr|(addr+7))&^c.mem.mask == 0 {
+				*(*uint64)(unsafe.Pointer(c.mem.base + uintptr(addr&c.mem.mask))) = c.x[slot.rs2]
+			} else {
+				if f := (&c.mem).Store64U(addr, c.x[slot.rs2]); f != nil {
+					return pc, f
+				}
 			}
 		default:
 			return pc, ErrIllegalInstruction
