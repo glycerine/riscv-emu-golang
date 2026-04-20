@@ -134,6 +134,20 @@ static int setup_pmc(void) {
 
     if ((ret = kpc_force_all_ctrs_set(1)))
         { fprintf(stderr, "force_all_ctrs: %d\n", ret); return 1; }
+
+    // Fix: CYCLE_ACTIVITY.STALLS_L1D_MISS (event 0xa3, umask 0x0c) needs
+    // CMASK=12 in bits 24-31 per Intel SDM. The kpep database doesn't encode
+    // CMASK, so kpep leaves it as 0 — which counts cycles (always >=0) instead
+    // of stall cycles (>=12 pending misses). Patch it here.
+    for (usize i = 0; i < reg_count; i++) {
+        u32 evnum = regs[i] & 0xFF;
+        u32 umask = (regs[i] >> 8) & 0xFF;
+        if (evnum == 0xa3 && umask == 0x0c) {
+            regs[i] |= ((u64)0x0c << 24); // CMASK=12
+            fprintf(stderr, " DEBUG: patched reg[%zu] CMASK=12 -> 0x%llx\n", i, regs[i]);
+        }
+    }
+
     if ((classes & KPC_CLASS_CONFIGURABLE_MASK) && reg_count) {
         if ((ret = kpc_set_config(classes, regs)))
             { fprintf(stderr, "set_config: %d\n", ret); return 1; }
