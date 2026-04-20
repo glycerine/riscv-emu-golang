@@ -295,6 +295,14 @@ int main(int argc, const char *argv[]) {
     kdebug_setreg(&kdr);
     kdebug_trace_enable(1);
 
+    // Also take system-wide snapshots for cross-checking PET results
+    int ncpu = 0; { size_t sz = sizeof(ncpu); sysctlbyname("hw.ncpu", &ncpu, &sz, NULL, 0); }
+    if (ncpu <= 0) ncpu = 1;
+    u64 *syswide_before = (u64 *)calloc(ncpu * KPC_MAX_COUNTERS, sizeof(u64));
+    u64 *syswide_after  = (u64 *)calloc(ncpu * KPC_MAX_COUNTERS, sizeof(u64));
+    int curcpu = 0;
+    kpc_get_cpu_counters(true, classes, &curcpu, syswide_before);
+
     u64 time_start = mach_absolute_time();
 
     // Collect trace while child runs
@@ -357,6 +365,10 @@ int main(int argc, const char *argv[]) {
     }
 
     u64 time_end = mach_absolute_time();
+
+    // System-wide snapshot after
+    kpc_get_cpu_counters(true, classes, &curcpu, syswide_after);
+
     waitpid(child, NULL, 0); // reap if not yet
 
     // Stop everything
@@ -365,6 +377,15 @@ int main(int argc, const char *argv[]) {
     kperf_sample_set(0);
     kperf_lightweight_pet_set(0);
     teardown_pmc();
+
+    // Compute system-wide delta (sum across CPUs)
+    u64 syswide_sum[KPC_MAX_COUNTERS] = {0};
+    for (int cpu = 0; cpu < ncpu; cpu++)
+        for (u32 c = 0; c < counter_count; c++)
+            syswide_sum[c] += syswide_after[cpu*counter_count+c]
+                            - syswide_before[cpu*counter_count+c];
+    free(syswide_before);
+    free(syswide_after);
 
     if (!buf_hdr) { fprintf(stderr, "Trace buffer alloc failed\n"); return 1; }
 
@@ -469,6 +490,24 @@ int main(int argc, const char *argv[]) {
         }
         fprintf(stderr, "\n");
     }
+
+    // System-wide comparison (for debugging PET accuracy)
+    fprintf(stderr, " System-wide comparison (all CPUs, includes other processes):\n");
+    fprintf(stderr, " ─────────────────────────────────────────────────\n");
+    fprintf(stderr, " %16llu   instructions          (fixed)\n", syswide_sum[0]);
+    fprintf(stderr, " %16llu   cycles                (fixed)\n", syswide_sum[1]);
+    for (usize i = 0; i < ev_count; i++) {
+        if (!ev_arr[i]) continue;
+        usize idx = counter_map[i] + db->fixed_counter_count;
+        fprintf(stderr, " %16llu   %-22s(configurable)\n",
+            syswide_sum[idx], profile_events[i].alias);
+    }
+    u64 sw_miss = syswide_sum[counter_map[0] + db->fixed_counter_count];
+    u64 sw_hit  = syswide_sum[counter_map[1] + db->fixed_counter_count];
+    if (sw_hit + sw_miss > 0)
+        fprintf(stderr, " %15.2f%%   L1D load miss rate (system-wide)\n",
+            100.0 * sw_miss / (sw_hit + sw_miss));
+    fprintf(stderr, "\n");
 
     free(threads);
     free(buf_hdr);
