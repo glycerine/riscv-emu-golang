@@ -291,21 +291,21 @@ typedef struct {
     const char *names[EVENT_NAME_MAX];
 } event_alias;
 
+// Events for configurable counters ONLY.
+// Cycles and instructions come from fixed counters on Intel, so we don't
+// waste configurable slots on them.
 static const event_alias profile_events[] = {
-    { "cycles", {
-        "CPU_CLK_UNHALTED.THREAD",       // Intel Core
-        "FIXED_CYCLES",                   // Apple Silicon
-    }},
-    { "instructions", {
-        "INST_RETIRED.ANY",               // Intel
-        "FIXED_INSTRUCTIONS",             // Apple Silicon
-    }},
     { "L1D-misses", {
         "MEM_LOAD_RETIRED.L1_MISS",       // Intel Ice Lake / Skylake+
-        "L1D_CACHE_MISS_LD",              // alias (resolves to same)
     }},
     { "L1D-hits", {
         "MEM_LOAD_RETIRED.L1_HIT",        // Intel Ice Lake / Skylake+
+    }},
+    { "L1D-replacements", {
+        "L1D.REPLACEMENT",                // Intel Ice Lake / Skylake+
+    }},
+    { "L1D-stall-cycles", {
+        "CYCLE_ACTIVITY.STALLS_L1D_MISS", // Intel Ice Lake / Skylake+
     }},
 };
 
@@ -616,29 +616,41 @@ int main(int argc, const char *argv[]) {
     double elapsed_ns = (double)(time_end - time_start) * tb.numer / tb.denom;
     double elapsed_s  = elapsed_ns / 1e9;
 
+    // --- Read fixed counters for cycles and instructions ---
+    // Intel Ice Lake fixed counter layout (from icelake.plist):
+    //   fixed[0] = INST_RETIRED.ANY
+    //   fixed[1] = CPU_CLK_UNHALTED.THREAD
+    //   fixed[2] = CPU_CLK_UNHALTED.REF_TSC
+    //   fixed[3] = TOPDOWN.SLOTS
+    u64 val_instrs = counters_1[0] - counters_0[0];  // INST_RETIRED.ANY
+    u64 val_cycles = counters_1[1] - counters_0[1];  // CPU_CLK_UNHALTED.THREAD
+
+    // --- Read configurable counters for L1 events ---
+    u64 val_l1_miss = 0, val_l1_hit = 0;
+    u64 val_l1_repl = 0, val_l1_stall = 0;
+
+    for (usize i = 0; i < ev_count; i++) {
+        if (!ev_arr[i]) continue;
+        usize idx = counter_map[i];
+        u64 val = counters_1[idx] - counters_0[idx];
+        if (strcmp(profile_events[i].alias, "L1D-misses") == 0)       val_l1_miss = val;
+        if (strcmp(profile_events[i].alias, "L1D-hits") == 0)         val_l1_hit = val;
+        if (strcmp(profile_events[i].alias, "L1D-replacements") == 0) val_l1_repl = val;
+        if (strcmp(profile_events[i].alias, "L1D-stall-cycles") == 0) val_l1_stall = val;
+    }
+
     // --- Print results ---
     fprintf(stderr, "\n");
     fprintf(stderr, " Performance counter stats%s:\n",
         self_mode ? " (per-thread)" : " (system-wide, all CPUs)");
-    fprintf(stderr, " ─────────────────────────────────────────\n");
-
-    u64 val_cycles = 0, val_instrs = 0, val_l1_miss = 0, val_l1_hit = 0;
-
-    for (usize i = 0; i < ev_count; i++) {
-        if (!ev_arr[i]) continue;
-        const event_alias *alias = &profile_events[i];
-        usize idx = counter_map[i];
-        u64 val = counters_1[idx] - counters_0[idx];
-
-        fprintf(stderr, " %16llu   %s\n", val, alias->alias);
-
-        if (strcmp(alias->alias, "cycles") == 0)       val_cycles = val;
-        if (strcmp(alias->alias, "instructions") == 0)  val_instrs = val;
-        if (strcmp(alias->alias, "L1D-misses") == 0)    val_l1_miss = val;
-        if (strcmp(alias->alias, "L1D-hits") == 0)      val_l1_hit = val;
-    }
-
-    fprintf(stderr, " ─────────────────────────────────────────\n");
+    fprintf(stderr, " ─────────────────────────────────────────────────\n");
+    fprintf(stderr, " %16llu   instructions          (fixed)\n", val_instrs);
+    fprintf(stderr, " %16llu   cycles                (fixed)\n", val_cycles);
+    fprintf(stderr, " %16llu   L1D-misses            (configurable)\n", val_l1_miss);
+    fprintf(stderr, " %16llu   L1D-hits              (configurable)\n", val_l1_hit);
+    fprintf(stderr, " %16llu   L1D-replacements      (configurable)\n", val_l1_repl);
+    fprintf(stderr, " %16llu   L1D-stall-cycles      (configurable)\n", val_l1_stall);
+    fprintf(stderr, " ─────────────────────────────────────────────────\n");
 
     if (val_cycles > 0 && val_instrs > 0) {
         fprintf(stderr, " %16.2f   IPC (instructions per cycle)\n",
@@ -646,23 +658,16 @@ int main(int argc, const char *argv[]) {
     }
     if (val_l1_hit + val_l1_miss > 0) {
         double miss_rate = 100.0 * val_l1_miss / (val_l1_hit + val_l1_miss);
-        fprintf(stderr, " %15.2f%%   L1D cache miss rate\n", miss_rate);
+        fprintf(stderr, " %15.2f%%   L1D miss rate (misses / (hits+misses))\n", miss_rate);
+    }
+    if (val_cycles > 0 && val_l1_stall > 0) {
+        double stall_pct = 100.0 * val_l1_stall / val_cycles;
+        fprintf(stderr, " %15.2f%%   cycles stalled on L1D misses\n", stall_pct);
     }
     fprintf(stderr, " %14.6f s   elapsed time\n", elapsed_s);
     if (!self_mode) {
         fprintf(stderr, "\n Note: system-wide counters include activity from all\n"
                         " processes. Run on an idle system for best accuracy.\n");
-    }
-    fprintf(stderr, "\n");
-
-    // Also print fixed counters if available
-    fprintf(stderr, " Fixed counter values:\n");
-    for (usize i = 0; i < db->fixed_counter_count; i++) {
-        kpep_event *ev = db->fixed_event_arr[i];
-        u64 val = counters_1[i] - counters_0[i];
-        if (ev && ev->name) {
-            fprintf(stderr, " %16llu   %s (fixed)\n", val, ev->name);
-        }
     }
     fprintf(stderr, "\n");
 
