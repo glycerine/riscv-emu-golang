@@ -7,6 +7,8 @@ package riscv
 #cgo CFLAGS: -I${SRCDIR}/xendor/tcc
 #cgo LDFLAGS: -L${SRCDIR}/xendor/tcc -ltcc
 
+#cgo linux LDFLAGS: -lm
+
 #include <libtcc.h>
 #include <stdlib.h>
 #include <stdint.h>
