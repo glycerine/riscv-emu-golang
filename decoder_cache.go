@@ -43,6 +43,11 @@ type DecoderCache struct {
 	base uint64
 	size uint64 // same as len(slots)*2 — cached to avoid len() in hot path
 	slots []DecodedInsn
+	// sentinel is returned by lookup for PCs outside the cache range. It
+	// always has len==0, so the hot-path dispatch in RunCached falls through
+	// to slowStep naturally (same arm that handles un-populated slots).
+	// Having a pointer rather than nil lets the driver skip a nil check.
+	sentinel DecodedInsn
 }
 
 // NewDecoderCache allocates a cache covering [base, base+size) bytes.
@@ -57,16 +62,19 @@ func NewDecoderCache(base, size uint64) *DecoderCache {
 	}
 }
 
-// lookup returns the slot pointer for pc, or nil if pc is out of cache range.
-// Single-compare bounds check via unsigned subtract — when pc < base,
-// the subtraction underflows to a very large uint64 that still fails the
-// check against size.
+// lookup returns the slot pointer for pc. For PCs outside the cache range it
+// returns a pointer to the cache's sentinel slot (len==0) rather than nil, so
+// the hot-path dispatcher can skip a nil check. The slow path detects the
+// sentinel via a re-bounds-check and routes to cpu.step().
+//
+// Single-compare bounds via unsigned subtract: when pc < base the subtraction
+// underflows to a very large uint64 that still fails off >= dc.size.
 //
 //go:nosplit
 func (dc *DecoderCache) lookup(pc uint64) *DecodedInsn {
 	off := pc - dc.base
 	if off >= dc.size {
-		return nil
+		return &dc.sentinel
 	}
 	return &dc.slots[off>>1]
 }

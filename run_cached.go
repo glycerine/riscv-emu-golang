@@ -14,26 +14,28 @@ package riscv
 const pollBatch = 1024
 
 func RunCached(cpu *CPU, cache *DecoderCache, nc *NoteChain) error {
+	// Hoist pc into a local so the inner loop never touches cpu.pc on the hot
+	// path. cpu.pc is only written when we exit the inner loop (watchAddr /
+	// note delivery) or when a fallback into cpu.step() needs it.
+	pc := cpu.pc
 	for {
-		// Tight inner loop: run up to pollBatch instructions with no
-		// per-instruction watchAddr/note checks. Only err terminates early.
 		var err error
 		var cycles uint64
 		countdown := pollBatch
 	inner:
 		for {
-			pc := cpu.pc
 			slot := cache.lookup(pc)
-
-			if slot != nil && slot.len > 0 {
-				// Fast path: slot is populated. No branch on slot.len=0.
-				if slot.len == 2 {
-					err = cpu.execRVCSlot(slot)
-				} else {
-					err = cpu.exec32Slot(slot)
-				}
-			} else {
-				err = slowStep(cpu, cache, slot, pc)
+			// Single load of slot.len drives three-way dispatch. The sentinel
+			// slot for OOB PCs has len==0, which funnels through the default
+			// arm into slowStep (same code path as an un-populated cached
+			// slot).
+			switch slot.len {
+			case 2:
+				pc, err = cpu.execRVCSlot(slot, pc)
+			case 4:
+				pc, err = cpu.exec32Slot(slot, pc)
+			default:
+				pc, err = slowStep(cpu, cache, slot, pc)
 			}
 			cycles++
 			countdown--
@@ -42,6 +44,7 @@ func RunCached(cpu *CPU, cache *DecoderCache, nc *NoteChain) error {
 			}
 		}
 		cpu.cycle += cycles
+		cpu.pc = pc
 
 		if cpu.watchAddr != 0 {
 			if v, _ := (&cpu.mem).Load64(cpu.watchAddr); v != 0 {
@@ -54,6 +57,10 @@ func RunCached(cpu *CPU, cache *DecoderCache, nc *NoteChain) error {
 		n := noteFromStepErr(err, cpu.PC())
 		switch nc.Deliver(cpu, n) {
 		case NoteHandled:
+			// Handler may have advanced cpu.pc (e.g. ECALL returns to next
+			// instruction). Reload so the inner loop resumes from the right
+			// PC.
+			pc = cpu.pc
 			continue
 		default:
 			return err
@@ -61,24 +68,29 @@ func RunCached(cpu *CPU, cache *DecoderCache, nc *NoteChain) error {
 	}
 }
 
-// slowStep handles the cold paths: PCs outside the cache range or slots
-// that aren't yet populated. Kept out of RunCached to keep the hot loop
-// tight.
+// slowStep handles the cold paths: PCs outside the cache range (sentinel
+// slot) or slots that aren't yet populated. Returns the new pc in addition
+// to the error so the caller can keep pc in a local.
 //
 //go:noinline
-func slowStep(cpu *CPU, cache *DecoderCache, slot *DecodedInsn, pc uint64) error {
-	if slot == nil {
-		return cpu.step()
+func slowStep(cpu *CPU, cache *DecoderCache, slot *DecodedInsn, pc uint64) (uint64, error) {
+	// Sentinel slot: pc is outside the cache range. Fall back to cpu.step().
+	if slot == &cache.sentinel {
+		cpu.pc = pc
+		err := cpu.step()
+		return cpu.pc, err
 	}
 	// slot.len == 0 (not yet decoded) — populate and dispatch.
 	populateSlot(cpu, slot, pc)
 	if slot.len == 0 {
-		return cpu.step()
+		cpu.pc = pc
+		err := cpu.step()
+		return cpu.pc, err
 	}
 	if slot.len == 2 {
-		return cpu.execRVCSlot(slot)
+		return cpu.execRVCSlot(slot, pc)
 	}
-	return cpu.exec32Slot(slot)
+	return cpu.exec32Slot(slot, pc)
 }
 
 // populateSlot fetches and records the instruction at pc. Leaves slot.len

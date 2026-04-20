@@ -4,13 +4,18 @@ package riscv
 // to stepRVC(uint16(slot.insn)), but reads pre-computed fields from slot
 // instead of re-extracting them from the raw bits on every visit.
 //
-// Returns errFallback if slot.op == opFallback (meaning decodeRVC did not
-// produce a dispatchable class — the caller should invoke stepRVC as a
-// fallback for full coverage).
+// pc is passed in rather than read from c.pc — the driver already has it in a
+// register. Returns the new pc (either pc+2 for non-branches or the branch
+// target) so the driver never has to reload c.pc in the hot path. c.pc is
+// only written by the driver when it exits the inner loop (for watchAddr /
+// fault delivery) or by the stepRVC fallback for uncommon classes.
+//
+// Returns errFallback flow: when slot.op == opFallback or an uncommon class
+// lands in default, we set c.pc = pc, invoke c.stepRVC, and propagate its
+// updated c.pc back as the new pc.
 //
 //go:nosplit
-func (c *CPU) execRVCSlot(slot *DecodedInsn) error {
-	pc := c.pc
+func (c *CPU) execRVCSlot(slot *DecodedInsn, pc uint64) (uint64, error) {
 	nextPC := pc + 2
 	switch slot.op {
 
@@ -20,7 +25,7 @@ func (c *CPU) execRVCSlot(slot *DecodedInsn) error {
 
 	case opC_ADDIW: // C.ADDIW: rd != 0 by ISA; rd = sign_ext32(rd + imm)
 		if slot.rd == 0 {
-			return ErrIllegalInstruction
+			return pc, ErrIllegalInstruction
 		}
 		c.x[slot.rd] = uint64(int64(int32(c.x[slot.rd]) + slot.imm))
 
@@ -31,96 +36,93 @@ func (c *CPU) execRVCSlot(slot *DecodedInsn) error {
 	case opC_LUI_OR_ADDI16SP:
 		if slot.rd == 2 { // C.ADDI16SP
 			if slot.imm == 0 {
-				return ErrIllegalInstruction
+				return pc, ErrIllegalInstruction
 			}
 			c.x[2] = c.x[2] + uint64(int64(slot.imm))
 		} else { // C.LUI
 			if slot.rd == 0 || slot.imm == 0 {
-				return ErrIllegalInstruction
+				return pc, ErrIllegalInstruction
 			}
 			c.x[slot.rd] = uint64(int64(slot.imm))
 		}
 
 	case opC_ADDI4SPN: // C.ADDI4SPN rd' = sp + nzuimm*4
 		if slot.imm == 0 {
-			return ErrIllegalInstruction
+			return pc, ErrIllegalInstruction
 		}
 		c.x[slot.rd] = c.x[2] + uint64(slot.imm)
 
 	case opC_LW:
 		v, f := (&c.mem).Load32(c.x[slot.rs1] + uint64(slot.imm))
 		if f != nil {
-			return f
+			return pc, f
 		}
 		c.x[slot.rd] = uint64(int64(int32(v)))
 
 	case opC_LD:
 		v, f := (&c.mem).Load64(c.x[slot.rs1] + uint64(slot.imm))
 		if f != nil {
-			return f
+			return pc, f
 		}
 		c.x[slot.rd] = v
 
 	case opC_SW:
 		if f := (&c.mem).Store32(c.x[slot.rs1]+uint64(slot.imm), uint32(c.x[slot.rs2])); f != nil {
-			return f
+			return pc, f
 		}
 
 	case opC_SD:
 		if f := (&c.mem).Store64(c.x[slot.rs1]+uint64(slot.imm), c.x[slot.rs2]); f != nil {
-			return f
+			return pc, f
 		}
 
 	case opC_LWSP:
 		if slot.rd == 0 {
-			return ErrIllegalInstruction
+			return pc, ErrIllegalInstruction
 		}
 		v, f := (&c.mem).Load32(c.x[2] + uint64(slot.imm))
 		if f != nil {
-			return f
+			return pc, f
 		}
 		c.x[slot.rd] = uint64(int64(int32(v)))
 
 	case opC_LDSP:
 		if slot.rd == 0 {
-			return ErrIllegalInstruction
+			return pc, ErrIllegalInstruction
 		}
 		v, f := (&c.mem).Load64(c.x[2] + uint64(slot.imm))
 		if f != nil {
-			return f
+			return pc, f
 		}
 		c.x[slot.rd] = v
 
 	case opC_SWSP:
 		if f := (&c.mem).Store32(c.x[2]+uint64(slot.imm), uint32(c.x[slot.rs2])); f != nil {
-			return f
+			return pc, f
 		}
 
 	case opC_SDSP:
 		if f := (&c.mem).Store64(c.x[2]+uint64(slot.imm), c.x[slot.rs2]); f != nil {
-			return f
+			return pc, f
 		}
 
 	case opC_SLLI:
 		if slot.rd == 0 {
-			return ErrIllegalInstruction
+			return pc, ErrIllegalInstruction
 		}
 		c.x[slot.rd] = c.x[slot.rd] << uint(slot.imm)
 
 	case opC_J:
-		c.pc = pc + uint64(int64(slot.imm))
-		return nil
+		return pc + uint64(int64(slot.imm)), nil
 
 	case opC_BEQZ:
 		if c.x[slot.rs1] == 0 {
-			c.pc = pc + uint64(int64(slot.imm))
-			return nil
+			return pc + uint64(int64(slot.imm)), nil
 		}
 
 	case opC_BNEZ:
 		if c.x[slot.rs1] != 0 {
-			c.pc = pc + uint64(int64(slot.imm))
-			return nil
+			return pc + uint64(int64(slot.imm)), nil
 		}
 
 	case opC_MV: // C.MV: rd = rs2. By ISA, rd != 0 and rs2 != 0 for this
@@ -132,18 +134,15 @@ func (c *CPU) execRVCSlot(slot *DecodedInsn) error {
 		c.x[slot.rd] = c.x[slot.rd] + c.x[slot.rs2]
 
 	case opC_JR: // C.JR: pc = rd & ~1; rd != 0 by decode
-		c.pc = c.x[slot.rd] &^ 1
-		return nil
+		return c.x[slot.rd] &^ 1, nil
 
 	case opC_JALR: // C.JALR: x1 = nextPC; pc = rd & ~1; rd != 0 by decode
-		ret := nextPC
-		c.pc = c.x[slot.rd] &^ 1
-		c.x[1] = ret
-		return nil
+		target := c.x[slot.rd] &^ 1
+		c.x[1] = nextPC
+		return target, nil
 
 	case opC_EBREAK:
-		c.pc = nextPC
-		return ErrEbreak
+		return nextPC, ErrEbreak
 
 	case opC_MISC_ALU: // funct3=100 q1: SRLI / SRAI / ANDI / SUB / XOR / OR / AND / SUBW / ADDW
 		insn := uint16(slot.insn)
@@ -184,7 +183,7 @@ func (c *CPU) execRVCSlot(slot *DecodedInsn) error {
 				case 0b01:
 					c.x[rs1p] = uint64(int64(int32(c.x[rs1p]) + int32(c.x[rs2p])))
 				default:
-					return ErrIllegalInstruction
+					return pc, ErrIllegalInstruction
 				}
 			}
 		}
@@ -193,9 +192,11 @@ func (c *CPU) execRVCSlot(slot *DecodedInsn) error {
 
 	default:
 		// Complex/FP/uncommon paths — defer to the canonical stepRVC body.
-		return c.stepRVC(uint16(slot.insn))
+		// stepRVC reads/writes c.pc, so synchronize around the call.
+		c.pc = pc
+		err := c.stepRVC(uint16(slot.insn))
+		return c.pc, err
 	}
 
-	c.pc = nextPC
-	return nil
+	return nextPC, nil
 }

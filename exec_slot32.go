@@ -8,12 +8,13 @@ import "math/bits"
 // (SYSTEM, AMO, FP, Zb* extensions with non-zero funct7) fall back to
 // stepFromInsn which does the full decode+execute from raw bits.
 //
-// Returns without updating c.pc for block-ending instructions that set c.pc
-// directly (branch taken, JAL, JALR) — those return nil after setting c.pc.
+// pc is passed in rather than read from c.pc. Returns the new pc — pc+4 for
+// non-branches, the target for taken branches / JAL / JALR. Callers (RunCached)
+// keep pc in a local and only write cpu.pc when the driver's inner loop exits.
+// Fault cases return (pc, err) so the driver can record the faulting PC.
 //
 //go:nosplit
-func (c *CPU) exec32Slot(slot *DecodedInsn) error {
-	pc := c.pc
+func (c *CPU) exec32Slot(slot *DecodedInsn, pc uint64) (uint64, error) {
 	nextPC := pc + 4
 
 	switch slot.op {
@@ -25,7 +26,7 @@ func (c *CPU) exec32Slot(slot *DecodedInsn) error {
 		case 0x0: // LB
 			u, f := (&c.mem).Load8(addr)
 			if f != nil {
-				return f
+				return pc, f
 			}
 			v = uint64(int64(int8(u)))
 		case 0x1: // LH
@@ -34,7 +35,7 @@ func (c *CPU) exec32Slot(slot *DecodedInsn) error {
 				u, f = (&c.mem).Load16U(addr)
 			}
 			if f != nil {
-				return f
+				return pc, f
 			}
 			v = uint64(int64(int16(u)))
 		case 0x2: // LW
@@ -43,7 +44,7 @@ func (c *CPU) exec32Slot(slot *DecodedInsn) error {
 				u, f = (&c.mem).Load32U(addr)
 			}
 			if f != nil {
-				return f
+				return pc, f
 			}
 			v = uint64(int64(int32(u)))
 		case 0x3: // LD
@@ -52,13 +53,13 @@ func (c *CPU) exec32Slot(slot *DecodedInsn) error {
 				u, f = (&c.mem).Load64U(addr)
 			}
 			if f != nil {
-				return f
+				return pc, f
 			}
 			v = u
 		case 0x4: // LBU
 			u, f := (&c.mem).Load8(addr)
 			if f != nil {
-				return f
+				return pc, f
 			}
 			v = uint64(u)
 		case 0x5: // LHU
@@ -67,7 +68,7 @@ func (c *CPU) exec32Slot(slot *DecodedInsn) error {
 				u, f = (&c.mem).Load16U(addr)
 			}
 			if f != nil {
-				return f
+				return pc, f
 			}
 			v = uint64(u)
 		case 0x6: // LWU
@@ -76,11 +77,11 @@ func (c *CPU) exec32Slot(slot *DecodedInsn) error {
 				u, f = (&c.mem).Load32U(addr)
 			}
 			if f != nil {
-				return f
+				return pc, f
 			}
 			v = uint64(u)
 		default:
-			return ErrIllegalInstruction
+			return pc, ErrIllegalInstruction
 		}
 		c.x[slot.rd] = v
 		c.x[0] = 0
@@ -90,7 +91,7 @@ func (c *CPU) exec32Slot(slot *DecodedInsn) error {
 		switch slot.funct3 {
 		case 0x0: // SB
 			if f := (&c.mem).Store8(addr, uint8(c.x[slot.rs2])); f != nil {
-				return f
+				return pc, f
 			}
 		case 0x1: // SH
 			f := (&c.mem).Store16(addr, uint16(c.x[slot.rs2]))
@@ -98,7 +99,7 @@ func (c *CPU) exec32Slot(slot *DecodedInsn) error {
 				f = (&c.mem).Store16U(addr, uint16(c.x[slot.rs2]))
 			}
 			if f != nil {
-				return f
+				return pc, f
 			}
 		case 0x2: // SW
 			f := (&c.mem).Store32(addr, uint32(c.x[slot.rs2]))
@@ -106,7 +107,7 @@ func (c *CPU) exec32Slot(slot *DecodedInsn) error {
 				f = (&c.mem).Store32U(addr, uint32(c.x[slot.rs2]))
 			}
 			if f != nil {
-				return f
+				return pc, f
 			}
 		case 0x3: // SD
 			f := (&c.mem).Store64(addr, c.x[slot.rs2])
@@ -114,10 +115,10 @@ func (c *CPU) exec32Slot(slot *DecodedInsn) error {
 				f = (&c.mem).Store64U(addr, c.x[slot.rs2])
 			}
 			if f != nil {
-				return f
+				return pc, f
 			}
 		default:
-			return ErrIllegalInstruction
+			return pc, ErrIllegalInstruction
 		}
 
 	case 0x13: // OP-IMM (I-type)
@@ -152,7 +153,9 @@ func (c *CPU) exec32Slot(slot *DecodedInsn) error {
 				shamt := uint(slot.insn>>20) & 0x3F
 				c.x[slot.rd] = a << shamt
 			} else {
-				return c.stepFromInsn(slot.insn)
+				c.pc = pc
+				err := c.stepFromInsn(slot.insn)
+				return c.pc, err
 			}
 		case 0x5: // SRLI/SRAI fast path
 			shamt := uint(slot.insn>>20) & 0x3F
@@ -162,10 +165,14 @@ func (c *CPU) exec32Slot(slot *DecodedInsn) error {
 			case 0x20: // SRAI
 				c.x[slot.rd] = uint64(int64(a) >> shamt)
 			default:
-				return c.stepFromInsn(slot.insn)
+				c.pc = pc
+				err := c.stepFromInsn(slot.insn)
+				return c.pc, err
 			}
 		default:
-			return c.stepFromInsn(slot.insn)
+			c.pc = pc
+			err := c.stepFromInsn(slot.insn)
+			return c.pc, err
 		}
 		c.x[0] = 0
 
@@ -180,7 +187,9 @@ func (c *CPU) exec32Slot(slot *DecodedInsn) error {
 				shamt := uint(slot.insn>>20) & 0x1F
 				c.x[slot.rd] = uint64(int64(int32(a << shamt)))
 			} else {
-				return c.stepFromInsn(slot.insn)
+				c.pc = pc
+				err := c.stepFromInsn(slot.insn)
+				return c.pc, err
 			}
 		case 0x5: // SRLIW/SRAIW fast path
 			shamt := uint(slot.insn>>20) & 0x1F
@@ -190,10 +199,14 @@ func (c *CPU) exec32Slot(slot *DecodedInsn) error {
 			case 0x20: // SRAIW
 				c.x[slot.rd] = uint64(int64(int32(a) >> shamt))
 			default:
-				return c.stepFromInsn(slot.insn)
+				c.pc = pc
+				err := c.stepFromInsn(slot.insn)
+				return c.pc, err
 			}
 		default:
-			return c.stepFromInsn(slot.insn)
+			c.pc = pc
+			err := c.stepFromInsn(slot.insn)
+			return c.pc, err
 		}
 		c.x[0] = 0
 
@@ -235,7 +248,9 @@ func (c *CPU) exec32Slot(slot *DecodedInsn) error {
 			case 0x5:
 				c.x[slot.rd] = uint64(int64(a) >> (b & 0x3F))
 			default:
-				return c.stepFromInsn(slot.insn)
+				c.pc = pc
+				err := c.stepFromInsn(slot.insn)
+				return c.pc, err
 			}
 		case 0x01: // RV64M
 			switch slot.funct3 {
@@ -289,7 +304,9 @@ func (c *CPU) exec32Slot(slot *DecodedInsn) error {
 				}
 			}
 		default:
-			return c.stepFromInsn(slot.insn)
+			c.pc = pc
+			err := c.stepFromInsn(slot.insn)
+			return c.pc, err
 		}
 		c.x[0] = 0
 
@@ -306,7 +323,9 @@ func (c *CPU) exec32Slot(slot *DecodedInsn) error {
 			case 0x5: // SRLW
 				c.x[slot.rd] = uint64(int64(int32(a32 >> (b32 & 0x1F))))
 			default:
-				return c.stepFromInsn(slot.insn)
+				c.pc = pc
+				err := c.stepFromInsn(slot.insn)
+				return c.pc, err
 			}
 		case 0x20:
 			switch slot.funct3 {
@@ -315,7 +334,9 @@ func (c *CPU) exec32Slot(slot *DecodedInsn) error {
 			case 0x5: // SRAW
 				c.x[slot.rd] = uint64(int64(int32(a32) >> (b32 & 0x1F)))
 			default:
-				return c.stepFromInsn(slot.insn)
+				c.pc = pc
+				err := c.stepFromInsn(slot.insn)
+				return c.pc, err
 			}
 		case 0x01: // RV64M word ops
 			switch slot.funct3 {
@@ -350,10 +371,14 @@ func (c *CPU) exec32Slot(slot *DecodedInsn) error {
 					c.x[slot.rd] = uint64(int64(int32(a32 % b32)))
 				}
 			default:
-				return c.stepFromInsn(slot.insn)
+				c.pc = pc
+				err := c.stepFromInsn(slot.insn)
+				return c.pc, err
 			}
 		default:
-			return c.stepFromInsn(slot.insn)
+			c.pc = pc
+			err := c.stepFromInsn(slot.insn)
+			return c.pc, err
 		}
 		c.x[0] = 0
 
@@ -375,25 +400,22 @@ func (c *CPU) exec32Slot(slot *DecodedInsn) error {
 		case 0x7: // BGEU
 			taken = a >= b
 		default:
-			return ErrIllegalInstruction
+			return pc, ErrIllegalInstruction
 		}
 		if taken {
-			c.pc = pc + uint64(int64(slot.imm))
-			return nil
+			return pc + uint64(int64(slot.imm)), nil
 		}
 
 	case 0x6F: // JAL
 		c.x[slot.rd] = nextPC
 		c.x[0] = 0
-		c.pc = pc + uint64(int64(slot.imm))
-		return nil
+		return pc + uint64(int64(slot.imm)), nil
 
 	case 0x67: // JALR
 		target := (c.x[slot.rs1] + uint64(int64(slot.imm))) &^ 1
 		c.x[slot.rd] = nextPC
 		c.x[0] = 0
-		c.pc = target
-		return nil
+		return target, nil
 
 	case 0x37: // LUI
 		c.x[slot.rd] = uint64(int64(slot.imm))
@@ -410,9 +432,10 @@ func (c *CPU) exec32Slot(slot *DecodedInsn) error {
 		// SYSTEM (0x73), AMO (0x2F), LOAD-FP (0x07), STORE-FP (0x27),
 		// FMA family (0x43..0x4F), OP-FP (0x53), and any Zb* corner cases
 		// with unusual funct7 fall through to the full interpreter.
-		return c.stepFromInsn(slot.insn)
+		c.pc = pc
+		err := c.stepFromInsn(slot.insn)
+		return c.pc, err
 	}
 
-	c.pc = nextPC
-	return nil
+	return nextPC, nil
 }
