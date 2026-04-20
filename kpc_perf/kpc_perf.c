@@ -25,26 +25,36 @@
 //   across all threads. This gives exact per-process totals for multi-threaded
 //   programs like Go.
 //
+// Fixed counters (always on, no config needed):
+//   [0] INST_RETIRED.ANY          — retired instructions
+//   [1] CPU_CLK_UNHALTED.THREAD   — core cycles
+//   [2] CPU_CLK_UNHALTED.REF_TSC  — reference cycles
+//   [3] TOPDOWN.SLOTS
+//
+// Configurable counters (3 of 8 used):
+//   [0] MEM_INST_RETIRED.ALL_LOADS  — total retired loads
+//   [1] MEM_LOAD_RETIRED.L1_MISS   — L1D load misses
+//   [2] MEM_LOAD_RETIRED.L1_HIT    — L1D load hits
+//
 // =============================================================================
 
 #include <sys/wait.h>
 #include <mach/mach_time.h>
 #include "kperf_helpers.h"
 
-// ---- Events: only L1D in configurable slots; cycles/instrs from fixed ----
+// ---- Configurable events ----
 
 #define EVENT_NAME_MAX 8
 typedef struct { const char *alias; const char *names[EVENT_NAME_MAX]; } event_alias;
 
 static const event_alias profile_events[] = {
-    // ALL_LOADS gives us the denominator (should match Linux L1-dcache-loads)
-    { "all-loads",          { "MEM_INST_RETIRED.ALL_LOADS"         }},
-    // L1D.REPLACEMENT is the recommended reliable miss counter per Intel community
-    { "L1D-replacements",   { "L1D.REPLACEMENT"                    }},
-    // Original L1_HIT/L1_MISS for comparison (may be unreliable with HT, errata)
-    { "L1D-load-misses",    { "MEM_LOAD_RETIRED.L1_MISS"           }},
-    { "L1D-load-hits",      { "MEM_LOAD_RETIRED.L1_HIT"            }},
+    { "all-loads",       { "MEM_INST_RETIRED.ALL_LOADS"  }},
+    { "L1D-load-misses", { "MEM_LOAD_RETIRED.L1_MISS"    }},
+    { "L1D-load-hits",   { "MEM_LOAD_RETIRED.L1_HIT"     }},
 };
+#define EV_ALL_LOADS 0
+#define EV_L1_MISS   1
+#define EV_L1_HIT    2
 
 static kpep_event *get_event(kpep_db *db, const event_alias *alias) {
     for (usize j = 0; j < EVENT_NAME_MAX && alias->names[j]; j++) {
@@ -77,7 +87,7 @@ static void self_test_func(void) {
     (void)sink;
 }
 
-// ---- Setup PMC config (shared by both modes) ----
+// ---- PMC setup globals ----
 
 static kpep_db *db;
 static kpep_event *ev_arr[8];
@@ -88,6 +98,10 @@ static kpc_config_t regs[KPC_MAX_COUNTERS];
 static usize counter_map[KPC_MAX_COUNTERS];
 static u32 counter_count;
 
+static inline usize cfg_idx(usize ev_i) {
+    return counter_map[ev_i] + db->fixed_counter_count;
+}
+
 static int setup_pmc(void) {
     int ret;
     if ((ret = kpep_db_create(NULL, &db)))
@@ -95,8 +109,6 @@ static int setup_pmc(void) {
 
     fprintf(stderr, "PMC database: %s (%s)\n", db->name,
         db->marketing_name ? db->marketing_name : "?");
-    fprintf(stderr, "Fixed: %zu, Configurable: %zu\n",
-        db->fixed_counter_count, db->config_counter_count);
 
     kpep_config *cfg = NULL;
     if ((ret = kpep_config_create(db, &cfg)))
@@ -125,55 +137,19 @@ static int setup_pmc(void) {
 
     classes |= KPC_CLASS_FIXED_MASK;
 
-    // Debug
-    fprintf(stderr, " DEBUG: classes=0x%x reg_count=%zu\n", classes, reg_count);
-    for (usize i = 0; i < reg_count; i++)
-        fprintf(stderr, "   reg[%zu]=0x%llx (ev=0x%02x umask=0x%02x)\n",
-            i, regs[i], (u32)(regs[i]&0xFF), (u32)((regs[i]>>8)&0xFF));
-    fprintf(stderr, " DEBUG: counter_map:");
-    for (usize i = 0; i < ev_count; i++)
-        fprintf(stderr, " [%zu]=%zu", i, counter_map[i]);
-    fprintf(stderr, "\n");
-
     if ((ret = kpc_force_all_ctrs_set(1)))
         { fprintf(stderr, "force_all_ctrs: %d\n", ret); return 1; }
 
-    // Fix: CYCLE_ACTIVITY.STALLS_L1D_MISS (event 0xa3, umask 0x0c) needs
-    // CMASK=12 in bits 24-31 per Intel SDM. The kpep database doesn't encode
-    // CMASK, so kpep leaves it as 0 — which counts cycles (always >=0) instead
-    // of stall cycles (>=12 pending misses). Patch it here.
-    for (usize i = 0; i < reg_count; i++) {
-        u32 evnum = regs[i] & 0xFF;
-        u32 umask = (regs[i] >> 8) & 0xFF;
-        if (evnum == 0xa3 && umask == 0x0c) {
-            regs[i] |= ((u64)0x0c << 24); // CMASK=12
-            fprintf(stderr, " DEBUG: patched reg[%zu] CMASK=12 -> 0x%llx\n", i, regs[i]);
-        }
-    }
-
+    // IMPORTANT: pass CONFIGURABLE_MASK only to kpc_set_config.
+    // kpep_config_kpc fills regs starting at index 0 for configurable counters.
+    // If we pass FIXED|CONFIGURABLE, the kernel expects fixed configs first,
+    // shifting our events to the wrong physical PMC registers.
     if ((classes & KPC_CLASS_CONFIGURABLE_MASK) && reg_count) {
-        // IMPORTANT: kpc_set_config interprets the regs array relative to the
-        // classes bitmask. If we pass classes=FIXED|CONFIGURABLE, it expects
-        // fixed configs first, then configurable. But kpep_config_kpc only
-        // fills in configurable regs. So pass CONFIGURABLE_MASK only here.
         if ((ret = kpc_set_config(KPC_CLASS_CONFIGURABLE_MASK, regs)))
             { fprintf(stderr, "set_config: %d\n", ret); return 1; }
     }
 
-    // Readback: verify the kernel actually programmed what we asked
-    {
-        kpc_config_t readback[KPC_MAX_COUNTERS] = {0};
-        kpc_get_config(KPC_CLASS_CONFIGURABLE_MASK, readback);
-        fprintf(stderr, " DEBUG: config readback (configurable only):\n");
-        for (usize i = 0; i < reg_count; i++) {
-            bool match = (readback[i] == regs[i]);
-            fprintf(stderr, "   cfg[%zu] wrote=0x%08llx read=0x%08llx %s\n",
-                i, regs[i], readback[i], match ? "OK" : "MISMATCH!");
-        }
-    }
-
     counter_count = kpc_get_counter_count(classes);
-    fprintf(stderr, " DEBUG: counter_count=%u\n", counter_count);
 
     if ((ret = kpc_set_counting(classes))) return 1;
     if ((ret = kpc_set_thread_counting(classes))) return 1;
@@ -186,47 +162,29 @@ static void teardown_pmc(void) {
     kpc_force_all_ctrs_set(0);
 }
 
-// ---- Print results from a counter delta array ----
+// ---- Stats helpers ----
 
-static void print_results(u64 *sum, double elapsed_s, pid_t pid, usize n_threads) {
-    // Fixed counters (Ice Lake): [0]=INST_RETIRED [1]=CLK_UNHALTED.THREAD
-    //   [2]=CLK_UNHALTED.REF_TSC [3]=TOPDOWN.SLOTS
-    u64 instructions = sum[0];
-    u64 cycles       = sum[1];
-    u64 ref_cycles   = sum[2];
+typedef struct {
+    u64 instructions, cycles;
+    u64 all_loads, l1_miss, l1_hit;
+} thread_stats;
 
-    fprintf(stderr, "\n Performance counter stats");
-    if (pid > 0) fprintf(stderr, " (pid %d, %zu threads)", pid, n_threads);
-    fprintf(stderr, ":\n");
-    fprintf(stderr, " ─────────────────────────────────────────────────\n");
-    fprintf(stderr, " %16llu   instructions          (fixed)\n", instructions);
-    fprintf(stderr, " %16llu   cycles                (fixed)\n", cycles);
-    fprintf(stderr, " %16llu   ref-cycles            (fixed)\n", ref_cycles);
+static thread_stats thr_stats(thr_data *td) {
+    thread_stats s = {0};
+    s.instructions = td->ctrs_last[0] - td->ctrs_first[0];
+    s.cycles       = td->ctrs_last[1] - td->ctrs_first[1];
+    if (ev_arr[EV_ALL_LOADS])
+        s.all_loads = td->ctrs_last[cfg_idx(EV_ALL_LOADS)] - td->ctrs_first[cfg_idx(EV_ALL_LOADS)];
+    if (ev_arr[EV_L1_MISS])
+        s.l1_miss = td->ctrs_last[cfg_idx(EV_L1_MISS)] - td->ctrs_first[cfg_idx(EV_L1_MISS)];
+    if (ev_arr[EV_L1_HIT])
+        s.l1_hit = td->ctrs_last[cfg_idx(EV_L1_HIT)] - td->ctrs_first[cfg_idx(EV_L1_HIT)];
+    return s;
+}
 
-    u64 all_loads = 0, l1_repl = 0, l1_miss = 0, l1_hit = 0;
-    for (usize i = 0; i < ev_count; i++) {
-        if (!ev_arr[i]) continue;
-        usize idx = counter_map[i] + db->fixed_counter_count;
-        u64 val = sum[idx];
-        fprintf(stderr, " %16llu   %-22s(configurable)\n", val, profile_events[i].alias);
-        if (i == 0) all_loads = val;
-        if (i == 1) l1_repl   = val;
-        if (i == 2) l1_miss   = val;
-        if (i == 3) l1_hit    = val;
-    }
-
-    fprintf(stderr, " ─────────────────────────────────────────────────\n");
-    if (cycles > 0)
-        fprintf(stderr, " %16.2f   IPC\n", (double)instructions / cycles);
-    // Primary miss rate: L1D.REPLACEMENT / ALL_LOADS (recommended by Intel)
-    if (all_loads > 0 && l1_repl > 0)
-        fprintf(stderr, " %15.2f%%   L1D miss rate (replacements/all-loads)\n",
-            100.0 * l1_repl / all_loads);
-    // Secondary: L1_MISS / (L1_HIT + L1_MISS) for comparison
-    if (l1_hit + l1_miss > 0)
-        fprintf(stderr, " %15.2f%%   L1D miss rate (L1_MISS/(HIT+MISS)) [may be inaccurate w/ HT]\n",
-            100.0 * l1_miss / (l1_hit + l1_miss));
-    fprintf(stderr, " %14.6f s   elapsed\n\n", elapsed_s);
+static double miss_rate(thread_stats *s) {
+    u64 total = s->l1_hit + s->l1_miss;
+    return (total == 0) ? 0.0 : 100.0 * s->l1_miss / total;
 }
 
 // ---- Main ----
@@ -248,7 +206,7 @@ int main(int argc, const char *argv[]) {
 
     if (setup_pmc()) return 1;
 
-    // ==== Self-test mode: per-thread counters, no PET needed ====
+    // ==== Self-test mode ====
     if (self_mode) {
         u64 c0[KPC_MAX_COUNTERS] = {0}, c1[KPC_MAX_COUNTERS] = {0};
         kpc_get_thread_counters(0, KPC_MAX_COUNTERS, c0);
@@ -261,12 +219,27 @@ int main(int argc, const char *argv[]) {
         kpc_get_thread_counters(0, KPC_MAX_COUNTERS, c1);
         teardown_pmc();
 
-        u64 delta[KPC_MAX_COUNTERS];
-        for (u32 i = 0; i < counter_count; i++) delta[i] = c1[i] - c0[i];
+        thr_data td = { .has_first = true, .has_last = true };
+        memcpy(td.ctrs_first, c0, sizeof(c0));
+        memcpy(td.ctrs_last, c1, sizeof(c1));
+        thread_stats s = thr_stats(&td);
 
         mach_timebase_info_data_t tb; mach_timebase_info(&tb);
         double elapsed = (double)(t1-t0) * tb.numer / tb.denom / 1e9;
-        print_results(delta, elapsed, 0, 1);
+
+        fprintf(stderr, "\n Performance counter stats (self-test):\n");
+        fprintf(stderr, " ─────────────────────────────────────────────────────────\n");
+        fprintf(stderr, " %16llu   instructions\n", s.instructions);
+        fprintf(stderr, " %16llu   cycles\n", s.cycles);
+        fprintf(stderr, " %16llu   L1D loads\n", s.all_loads);
+        fprintf(stderr, " %16llu   L1D load hits\n", s.l1_hit);
+        fprintf(stderr, " %16llu   L1D load misses\n", s.l1_miss);
+        fprintf(stderr, " ─────────────────────────────────────────────────────────\n");
+        if (s.cycles > 0)
+            fprintf(stderr, " %16.2f   IPC\n", (double)s.instructions / s.cycles);
+        fprintf(stderr, " %15.2f%%   L1D load miss rate  (%llu / %llu)\n",
+            miss_rate(&s), s.l1_miss, s.l1_miss + s.l1_hit);
+        fprintf(stderr, " %14.6f s   elapsed\n\n", elapsed);
         return 0;
     }
 
@@ -276,11 +249,10 @@ int main(int argc, const char *argv[]) {
     for (int i = 1; i < argc; i++) fprintf(stderr, " [%s]", argv[i]);
     fprintf(stderr, "\n");
 
-    // Fork child — it sleeps briefly while we set up PET
     pid_t child = fork();
     if (child < 0) { perror("fork"); return 1; }
     if (child == 0) {
-        usleep(100000); // 100ms for parent to set up tracing
+        usleep(100000);
         execvp(argv[1], (char *const *)&argv[1]);
         perror("execvp");
         _exit(127);
@@ -295,7 +267,7 @@ int main(int argc, const char *argv[]) {
     kperf_action_samplers_set(actionid, KPERF_SAMPLER_PMC_THREAD);
     kperf_action_filter_set_by_pid(actionid, child);
 
-    u64 tick = kperf_ns_to_ticks(1000000); // 1ms period
+    u64 tick = kperf_ns_to_ticks(1000000); // 1ms sample period
     kperf_timer_period_set(actionid, tick);
     kperf_timer_action_set(actionid, timerid);
     kperf_timer_pet_set(timerid);
@@ -314,14 +286,6 @@ int main(int argc, const char *argv[]) {
     kdebug_setreg(&kdr);
     kdebug_trace_enable(1);
 
-    // Also take system-wide snapshots for cross-checking PET results
-    int ncpu = 0; { size_t sz = sizeof(ncpu); sysctlbyname("hw.ncpu", &ncpu, &sz, NULL, 0); }
-    if (ncpu <= 0) ncpu = 1;
-    u64 *syswide_before = (u64 *)calloc(ncpu * KPC_MAX_COUNTERS, sizeof(u64));
-    u64 *syswide_after  = (u64 *)calloc(ncpu * KPC_MAX_COUNTERS, sizeof(u64));
-    int curcpu = 0;
-    kpc_get_cpu_counters(true, classes, &curcpu, syswide_before);
-
     u64 time_start = mach_absolute_time();
 
     // Collect trace while child runs
@@ -338,7 +302,6 @@ int main(int argc, const char *argv[]) {
         if (child_done && WIFEXITED(status) && WEXITSTATUS(status) != 0)
             fprintf(stderr, "[child exited %d]\n", WEXITSTATUS(status));
 
-        // Expand buffer if needed
         if (buf_end - buf_cur < nbufs) {
             usize new_cap = buf_cap * 2;
             kd_buf *nb = (kd_buf *)realloc(buf_hdr, sizeof(kd_buf) * new_cap);
@@ -349,29 +312,26 @@ int main(int argc, const char *argv[]) {
             buf_cap = new_cap;
         }
 
-        // Read and filter trace records
         usize count = 0;
         kdebug_trace_read(buf_cur, sizeof(kd_buf) * nbufs, &count);
         for (kd_buf *b = buf_cur, *e = buf_cur + count; b < e; b++) {
-            u32 cls = KDBG_EXTRACT_CLASS(b->debugid);
-            u32 sub = KDBG_EXTRACT_SUBCLASS(b->debugid);
-            u32 cod = KDBG_EXTRACT_CODE(b->debugid);
-            if (cls == DBG_PERF && sub == PERF_KPC && cod == PERF_KPC_DATA_THREAD) {
+            if (KDBG_EXTRACT_CLASS(b->debugid) == DBG_PERF &&
+                KDBG_EXTRACT_SUBCLASS(b->debugid) == PERF_KPC &&
+                KDBG_EXTRACT_CODE(b->debugid) == PERF_KPC_DATA_THREAD) {
                 memmove(buf_cur, b, sizeof(kd_buf));
                 buf_cur++;
             }
         }
 
         if (child_done) {
-            usleep(10000); // final flush
+            usleep(10000);
             count = 0;
             if (buf_end - buf_cur >= nbufs) {
                 kdebug_trace_read(buf_cur, sizeof(kd_buf) * nbufs, &count);
                 for (kd_buf *b = buf_cur, *e = buf_cur + count; b < e; b++) {
-                    u32 cls = KDBG_EXTRACT_CLASS(b->debugid);
-                    u32 sub = KDBG_EXTRACT_SUBCLASS(b->debugid);
-                    u32 cod = KDBG_EXTRACT_CODE(b->debugid);
-                    if (cls == DBG_PERF && sub == PERF_KPC && cod == PERF_KPC_DATA_THREAD) {
+                    if (KDBG_EXTRACT_CLASS(b->debugid) == DBG_PERF &&
+                        KDBG_EXTRACT_SUBCLASS(b->debugid) == PERF_KPC &&
+                        KDBG_EXTRACT_CODE(b->debugid) == PERF_KPC_DATA_THREAD) {
                         memmove(buf_cur, b, sizeof(kd_buf));
                         buf_cur++;
                     }
@@ -380,39 +340,21 @@ int main(int argc, const char *argv[]) {
             break;
         }
 
-        usleep(2000); // 2ms poll
+        usleep(2000);
     }
 
     u64 time_end = mach_absolute_time();
+    waitpid(child, NULL, 0);
 
-    // System-wide snapshot after
-    kpc_get_cpu_counters(true, classes, &curcpu, syswide_after);
-
-    waitpid(child, NULL, 0); // reap if not yet
-
-    // Stop everything
     kdebug_trace_enable(0);
     kdebug_reset();
     kperf_sample_set(0);
     kperf_lightweight_pet_set(0);
     teardown_pmc();
 
-    // Compute system-wide delta (sum across CPUs)
-    u64 syswide_sum[KPC_MAX_COUNTERS] = {0};
-    for (int cpu = 0; cpu < ncpu; cpu++)
-        for (u32 c = 0; c < counter_count; c++)
-            syswide_sum[c] += syswide_after[cpu*counter_count+c]
-                            - syswide_before[cpu*counter_count+c];
-    free(syswide_before);
-    free(syswide_after);
-
     if (!buf_hdr) { fprintf(stderr, "Trace buffer alloc failed\n"); return 1; }
-
-    usize total_records = buf_cur - buf_hdr;
-    fprintf(stderr, " DEBUG: %zu kdebug PMC records collected\n", total_records);
-    if (total_records == 0) {
-        fprintf(stderr, "No PMC data collected. PID filter may not have matched.\n");
-        return 1;
+    if (buf_cur - buf_hdr == 0) {
+        fprintf(stderr, "No PMC data collected.\n"); return 1;
     }
 
     // Aggregate per-thread: first/last snapshot
@@ -420,12 +362,10 @@ int main(int argc, const char *argv[]) {
     thr_data *threads = (thr_data *)calloc(thr_cap, sizeof(thr_data));
 
     for (kd_buf *b = buf_hdr; b < buf_cur; b++) {
-        u32 func = b->debugid & KDBG_FUNC_MASK;
-        if (func != DBG_FUNC_START) continue;
+        if ((b->debugid & KDBG_FUNC_MASK) != DBG_FUNC_START) continue;
         u32 tid = (u32)b->arg5;
         if (!tid) continue;
 
-        // Read counter snapshot (4 values per kd_buf, continuation records follow)
         u32 ci = 0;
         u64 ctrs[KPC_MAX_COUNTERS] = {0};
         ctrs[ci++] = b->arg1; ctrs[ci++] = b->arg2;
@@ -441,9 +381,8 @@ int main(int argc, const char *argv[]) {
                 if (ci >= counter_count) break;
             }
         }
-        if (ci < counter_count) continue; // truncated
+        if (ci < counter_count) continue;
 
-        // Find or create thread entry
         thr_data *td = NULL;
         for (usize i = 0; i < thr_count; i++)
             if (threads[i].tid == tid) { td = &threads[i]; break; }
@@ -456,7 +395,6 @@ int main(int argc, const char *argv[]) {
             memset(td, 0, sizeof(*td));
             td->tid = tid;
         }
-
         if (!td->has_first) {
             td->has_first = true;
             td->ts_first = b->timestamp;
@@ -467,68 +405,58 @@ int main(int argc, const char *argv[]) {
         memcpy(td->ctrs_last, ctrs, counter_count * sizeof(u64));
     }
 
-    // Sum deltas across threads
-    u64 sum[KPC_MAX_COUNTERS] = {0};
+    // Compute totals
+    thread_stats total = {0};
     usize good_threads = 0;
     for (usize i = 0; i < thr_count; i++) {
         thr_data *td = &threads[i];
-        if (!td->has_first || !td->has_last) continue;
-        if (td->ts_first == td->ts_last) continue;
+        if (!td->has_first || !td->has_last || td->ts_first == td->ts_last) continue;
         good_threads++;
-        for (u32 c = 0; c < counter_count; c++)
-            sum[c] += td->ctrs_last[c] - td->ctrs_first[c];
+        thread_stats s = thr_stats(td);
+        total.instructions += s.instructions;
+        total.cycles       += s.cycles;
+        total.all_loads    += s.all_loads;
+        total.l1_miss      += s.l1_miss;
+        total.l1_hit       += s.l1_hit;
     }
-
-    fprintf(stderr, " DEBUG: %zu threads, %zu with >=2 snapshots\n",
-        thr_count, good_threads);
 
     mach_timebase_info_data_t tb; mach_timebase_info(&tb);
     double elapsed = (double)(time_end - time_start) * tb.numer / tb.denom / 1e9;
 
-    print_results(sum, elapsed, child, good_threads);
+    // ---- Process-wide summary ----
+    fprintf(stderr, "\n Performance counter stats (pid %d, %zu threads):\n", child, good_threads);
+    fprintf(stderr, " ─────────────────────────────────────────────────────────\n");
+    fprintf(stderr, " %16llu   instructions\n", total.instructions);
+    fprintf(stderr, " %16llu   cycles\n", total.cycles);
+    fprintf(stderr, " %16llu   L1D loads\n", total.all_loads);
+    fprintf(stderr, " %16llu   L1D load hits\n", total.l1_hit);
+    fprintf(stderr, " %16llu   L1D load misses\n", total.l1_miss);
+    fprintf(stderr, " ─────────────────────────────────────────────────────────\n");
+    if (total.cycles > 0)
+        fprintf(stderr, " %16.2f   IPC\n",
+            (double)total.instructions / total.cycles);
+    fprintf(stderr, " %15.2f%%   L1D load miss rate  (%llu / %llu)\n",
+        miss_rate(&total), total.l1_miss, total.l1_miss + total.l1_hit);
+    fprintf(stderr, " %14.6f s   elapsed\n", elapsed);
 
-    // Per-thread breakdown (if not too many)
-    if (thr_count <= 32 && good_threads > 1) {
-        fprintf(stderr, " Per-thread breakdown:\n");
-        fprintf(stderr, "   %8s %14s %14s", "TID", "instructions", "cycles");
-        for (usize i = 0; i < ev_count; i++)
-            if (ev_arr[i]) fprintf(stderr, " %16s", profile_events[i].alias);
-        fprintf(stderr, "\n");
+    // ---- Per-thread breakdown ----
+    if (good_threads > 0 && thr_count <= 64) {
+        fprintf(stderr, "\n Per-thread breakdown:\n");
+        fprintf(stderr, "   %8s  %14s  %14s  %14s  %14s  %14s  %8s\n",
+            "TID", "instructions", "cycles", "L1D-loads",
+            "L1D-misses", "L1D-hits", "miss%");
 
         for (usize t = 0; t < thr_count; t++) {
             thr_data *td = &threads[t];
             if (!td->has_first || !td->has_last || td->ts_first == td->ts_last) continue;
-            fprintf(stderr, "   %8u %14llu %14llu", td->tid,
-                td->ctrs_last[0]-td->ctrs_first[0], td->ctrs_last[1]-td->ctrs_first[1]);
-            for (usize i = 0; i < ev_count; i++) {
-                if (!ev_arr[i]) continue;
-                usize idx = counter_map[i] + db->fixed_counter_count;
-                fprintf(stderr, " %16llu", td->ctrs_last[idx]-td->ctrs_first[idx]);
-            }
-            fprintf(stderr, "\n");
+            thread_stats s = thr_stats(td);
+            fprintf(stderr, "   %8u  %14llu  %14llu  %14llu  %14llu  %14llu  %7.2f%%\n",
+                td->tid, s.instructions, s.cycles, s.all_loads,
+                s.l1_miss, s.l1_hit, miss_rate(&s));
         }
-        fprintf(stderr, "\n");
     }
 
-    // System-wide comparison (for debugging PET accuracy)
-    fprintf(stderr, " System-wide comparison (all CPUs, includes other processes):\n");
-    fprintf(stderr, " ─────────────────────────────────────────────────\n");
-    fprintf(stderr, " %16llu   instructions          (fixed)\n", syswide_sum[0]);
-    fprintf(stderr, " %16llu   cycles                (fixed)\n", syswide_sum[1]);
-    for (usize i = 0; i < ev_count; i++) {
-        if (!ev_arr[i]) continue;
-        usize idx = counter_map[i] + db->fixed_counter_count;
-        fprintf(stderr, " %16llu   %-22s(configurable)\n",
-            syswide_sum[idx], profile_events[i].alias);
-    }
-    // event[0]=all-loads, event[1]=L1D-replacements
-    u64 sw_loads = syswide_sum[counter_map[0] + db->fixed_counter_count];
-    u64 sw_repl  = syswide_sum[counter_map[1] + db->fixed_counter_count];
-    if (sw_loads > 0 && sw_repl > 0)
-        fprintf(stderr, " %15.2f%%   L1D miss rate (replacements/loads, system-wide)\n",
-            100.0 * sw_repl / sw_loads);
     fprintf(stderr, "\n");
-
     free(threads);
     free(buf_hdr);
     return 0;
