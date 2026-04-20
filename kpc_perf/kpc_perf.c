@@ -37,10 +37,13 @@
 typedef struct { const char *alias; const char *names[EVENT_NAME_MAX]; } event_alias;
 
 static const event_alias profile_events[] = {
-    { "L1D-load-misses",   { "MEM_LOAD_RETIRED.L1_MISS"          }},
-    { "L1D-load-hits",     { "MEM_LOAD_RETIRED.L1_HIT"           }},
-    { "L1D-replacements",  { "L1D.REPLACEMENT"                   }},
-    { "L1D-stall-cycles",  { "CYCLE_ACTIVITY.STALLS_L1D_MISS"    }},
+    // ALL_LOADS gives us the denominator (should match Linux L1-dcache-loads)
+    { "all-loads",          { "MEM_INST_RETIRED.ALL_LOADS"         }},
+    // L1D.REPLACEMENT is the recommended reliable miss counter per Intel community
+    { "L1D-replacements",   { "L1D.REPLACEMENT"                    }},
+    // Original L1_HIT/L1_MISS for comparison (may be unreliable with HT, errata)
+    { "L1D-load-misses",    { "MEM_LOAD_RETIRED.L1_MISS"           }},
+    { "L1D-load-hits",      { "MEM_LOAD_RETIRED.L1_HIT"            }},
 };
 
 static kpep_event *get_event(kpep_db *db, const event_alias *alias) {
@@ -184,29 +187,29 @@ static void print_results(u64 *sum, double elapsed_s, pid_t pid, usize n_threads
     fprintf(stderr, " %16llu   cycles                (fixed)\n", cycles);
     fprintf(stderr, " %16llu   ref-cycles            (fixed)\n", ref_cycles);
 
-    u64 l1_miss = 0, l1_hit = 0, l1_repl = 0, l1_stall = 0;
+    u64 all_loads = 0, l1_repl = 0, l1_miss = 0, l1_hit = 0;
     for (usize i = 0; i < ev_count; i++) {
         if (!ev_arr[i]) continue;
-        // counter_map[i] is index within configurable region (0-based).
-        // In per-thread arrays, configurable starts after fixed counters.
         usize idx = counter_map[i] + db->fixed_counter_count;
         u64 val = sum[idx];
         fprintf(stderr, " %16llu   %-22s(configurable)\n", val, profile_events[i].alias);
-        if (i == 0) l1_miss  = val;
-        if (i == 1) l1_hit   = val;
-        if (i == 2) l1_repl  = val;
-        if (i == 3) l1_stall = val;
+        if (i == 0) all_loads = val;
+        if (i == 1) l1_repl   = val;
+        if (i == 2) l1_miss   = val;
+        if (i == 3) l1_hit    = val;
     }
 
     fprintf(stderr, " ─────────────────────────────────────────────────\n");
     if (cycles > 0)
         fprintf(stderr, " %16.2f   IPC\n", (double)instructions / cycles);
+    // Primary miss rate: L1D.REPLACEMENT / ALL_LOADS (recommended by Intel)
+    if (all_loads > 0 && l1_repl > 0)
+        fprintf(stderr, " %15.2f%%   L1D miss rate (replacements/all-loads)\n",
+            100.0 * l1_repl / all_loads);
+    // Secondary: L1_MISS / (L1_HIT + L1_MISS) for comparison
     if (l1_hit + l1_miss > 0)
-        fprintf(stderr, " %15.2f%%   L1D load miss rate\n",
+        fprintf(stderr, " %15.2f%%   L1D miss rate (L1_MISS/(HIT+MISS)) [may be inaccurate w/ HT]\n",
             100.0 * l1_miss / (l1_hit + l1_miss));
-    if (cycles > 0 && l1_stall > 0)
-        fprintf(stderr, " %15.2f%%   cycles stalled on L1D\n",
-            100.0 * l1_stall / cycles);
     fprintf(stderr, " %14.6f s   elapsed\n\n", elapsed_s);
 }
 
@@ -502,11 +505,12 @@ int main(int argc, const char *argv[]) {
         fprintf(stderr, " %16llu   %-22s(configurable)\n",
             syswide_sum[idx], profile_events[i].alias);
     }
-    u64 sw_miss = syswide_sum[counter_map[0] + db->fixed_counter_count];
-    u64 sw_hit  = syswide_sum[counter_map[1] + db->fixed_counter_count];
-    if (sw_hit + sw_miss > 0)
-        fprintf(stderr, " %15.2f%%   L1D load miss rate (system-wide)\n",
-            100.0 * sw_miss / (sw_hit + sw_miss));
+    // event[0]=all-loads, event[1]=L1D-replacements
+    u64 sw_loads = syswide_sum[counter_map[0] + db->fixed_counter_count];
+    u64 sw_repl  = syswide_sum[counter_map[1] + db->fixed_counter_count];
+    if (sw_loads > 0 && sw_repl > 0)
+        fprintf(stderr, " %15.2f%%   L1D miss rate (replacements/loads, system-wide)\n",
+            100.0 * sw_repl / sw_loads);
     fprintf(stderr, "\n");
 
     free(threads);
