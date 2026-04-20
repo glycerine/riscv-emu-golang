@@ -26,7 +26,8 @@
         bench-raw bench-ours bench-cpu bench-libriscv bench-mem \
         bench-smoke bench-summary bench-lots test clean check-tools \
         libriscv-build guest-elf guest-native \
-        coremark-elf dhrystone-elf bench-coremark bench-dhrystone
+        coremark-elf dhrystone-elf bench-coremark bench-dhrystone \
+        darwin-perf
 
 # ── platform detection ─────────────────────────────────────────────────────
 
@@ -845,6 +846,6 @@ $(TCC_ARCHIVE): $(LIB_CAPI)
 
 darwin-perf: kpc_perf/kpc_perf.c
 	cd kpc_perf && clang -O2 -o ../darwin-perf kpc_perf.c -framework CoreFoundation && cd ..
-	cd bench && go test -c && cd ..
-	sudo ./darwin-perf ./bench/bench.test -test.count=1 -test.benchtime=1x -test.benchmem  -test.run=xxx -test.bench='^BenchmarkCPU_FullExecution$$'
+	cd bench && go test -c
+	cd bench && sudo ./darwin-perf ./bench.test -test.v -test.count=1 -test.benchtime=1x -test.benchmem  -test.run=xxx -test.bench='^BenchmarkCPU_FullExecution$$' 
 
