@@ -10,42 +10,25 @@ package riscv
 // dispatch directly thereafter.
 func RunCached(cpu *CPU, cache *DecoderCache, nc *NoteChain) error {
 	for {
-		// Inner block loop: run instructions until blockEnd or fault.
-		// Cycle counter and watchAddr poll are batched once per block.
-		var cycles uint64
-		var err error
-	block:
-		for {
-			pc := cpu.pc
-			slot := cache.lookup(pc)
+		pc := cpu.pc
+		slot := cache.lookup(pc)
 
-			if slot == nil {
-				err = cpu.step()
-				cycles++
-				break block // out-of-cache PCs always end the inner loop
-			}
+		var err error
+		if slot == nil {
+			err = cpu.step()
+		} else {
 			if slot.len == 0 {
 				populateSlot(cpu, slot, pc)
-				if slot.len == 0 {
-					err = cpu.step()
-					cycles++
-					break block
-				}
 			}
-
-			if slot.len == 2 {
+			if slot.len == 0 {
+				err = cpu.step()
+			} else if slot.len == 2 {
 				err = cpu.execRVCSlot(slot)
 			} else {
 				err = cpu.stepFromInsn(slot.insn)
 			}
-			cycles++
-
-			if err != nil || slot.blockEnd() {
-				break block
-			}
 		}
-
-		cpu.cycle += cycles
+		cpu.cycle++
 
 		if cpu.watchAddr != 0 {
 			if v, _ := (&cpu.mem).Load64(cpu.watchAddr); v != 0 {

@@ -10,7 +10,8 @@ package riscv
 //
 //go:nosplit
 func (c *CPU) execRVCSlot(slot *DecodedInsn) error {
-	nextPC := c.pc + 2
+	pc := c.pc
+	nextPC := pc + 2
 	switch slot.op {
 
 	case opC_ADDI: // C.ADDI rd = rd + imm (rd=0 is C.NOP — write is squashed by the x0=0 trick)
@@ -107,53 +108,42 @@ func (c *CPU) execRVCSlot(slot *DecodedInsn) error {
 		c.x[slot.rd] = c.x[slot.rd] << uint(slot.imm)
 
 	case opC_J:
-		c.pc = c.pc + uint64(int64(slot.imm))
+		c.pc = pc + uint64(int64(slot.imm))
 		return nil
 
 	case opC_BEQZ:
 		if c.x[slot.rs1] == 0 {
-			c.pc = c.pc + uint64(int64(slot.imm))
+			c.pc = pc + uint64(int64(slot.imm))
 			return nil
 		}
 
 	case opC_BNEZ:
 		if c.x[slot.rs1] != 0 {
-			c.pc = c.pc + uint64(int64(slot.imm))
+			c.pc = pc + uint64(int64(slot.imm))
 			return nil
 		}
 
-	case opC_CR_MISC:
-		// funct3=100 q2: dispatch on bit12 | rs2==0.
-		insn := uint16(slot.insn)
-		bit12 := (insn >> 12) & 1
-		rs2 := uint8((insn >> 2) & 0x1F)
-		rd := uint8((insn >> 7) & 0x1F)
-		if bit12 == 0 {
-			if rs2 == 0 { // C.JR
-				if rd == 0 {
-					return ErrIllegalInstruction
-				}
-				c.pc = c.x[rd] &^ 1
-				return nil
-			}
-			// C.MV
-			c.x[rd] = c.x[rs2]
-			c.x[0] = 0
-		} else {
-			if rd == 0 && rs2 == 0 { // C.EBREAK
-				c.pc = nextPC
-				return ErrEbreak
-			}
-			if rs2 == 0 { // C.JALR
-				ret := nextPC
-				c.pc = c.x[rd] &^ 1
-				c.x[1] = ret
-				return nil
-			}
-			// C.ADD
-			c.x[rd] = c.x[rd] + c.x[rs2]
-			c.x[0] = 0
-		}
+	case opC_MV: // C.MV: rd = rs2. By ISA, rd != 0 and rs2 != 0 for this
+		// encoding (rs2 == 0 would be C.JR, handled separately), so no
+		// x[0]=0 fixup needed.
+		c.x[slot.rd] = c.x[slot.rs2]
+
+	case opC_ADD: // C.ADD: rd = rd + rs2. Same rd != 0 / rs2 != 0 invariant.
+		c.x[slot.rd] = c.x[slot.rd] + c.x[slot.rs2]
+
+	case opC_JR: // C.JR: pc = rd & ~1; rd != 0 by decode
+		c.pc = c.x[slot.rd] &^ 1
+		return nil
+
+	case opC_JALR: // C.JALR: x1 = nextPC; pc = rd & ~1; rd != 0 by decode
+		ret := nextPC
+		c.pc = c.x[slot.rd] &^ 1
+		c.x[1] = ret
+		return nil
+
+	case opC_EBREAK:
+		c.pc = nextPC
+		return ErrEbreak
 
 	case opC_MISC_ALU: // funct3=100 q1: SRLI / SRAI / ANDI / SUB / XOR / OR / AND / SUBW / ADDW
 		insn := uint16(slot.insn)
@@ -198,7 +188,8 @@ func (c *CPU) execRVCSlot(slot *DecodedInsn) error {
 				}
 			}
 		}
-		c.x[0] = 0
+		// rs1p is always in x8..x15 (decoded from 3-bit rs1' + 8), so no
+		// x[0]=0 fixup is needed.
 
 	default:
 		// Complex/FP/uncommon paths — defer to the canonical stepRVC body.

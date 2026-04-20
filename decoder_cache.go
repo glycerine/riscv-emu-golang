@@ -40,8 +40,8 @@ func (d *DecodedInsn) blockEnd() bool { return d.flags&flagBlockEnd != 0 }
 // DecoderCache is a flat slab of DecodedInsn, indexed by (pc - base) >> 1.
 // Instructions are always ≥ 2-byte aligned, so half-word indexing is tight.
 type DecoderCache struct {
-	base  uint64
-	limit uint64
+	base uint64
+	size uint64 // same as len(slots)*2 — cached to avoid len() in hot path
 	slots []DecodedInsn
 }
 
@@ -52,19 +52,23 @@ func NewDecoderCache(base, size uint64) *DecoderCache {
 	}
 	return &DecoderCache{
 		base:  base,
-		limit: base + size,
+		size:  size,
 		slots: make([]DecodedInsn, size/2),
 	}
 }
 
 // lookup returns the slot pointer for pc, or nil if pc is out of cache range.
+// Single-compare bounds check via unsigned subtract — when pc < base,
+// the subtraction underflows to a very large uint64 that still fails the
+// check against size.
 //
 //go:nosplit
 func (dc *DecoderCache) lookup(pc uint64) *DecodedInsn {
-	if pc < dc.base || pc >= dc.limit {
+	off := pc - dc.base
+	if off >= dc.size {
 		return nil
 	}
-	return &dc.slots[(pc-dc.base)>>1]
+	return &dc.slots[off>>1]
 }
 
 // InvalidateAll clears every slot. Call before re-using the cache.

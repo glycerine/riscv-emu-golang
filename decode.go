@@ -27,7 +27,11 @@ const (
 	opC_FLDSP
 	opC_LWSP
 	opC_LDSP
-	opC_CR_MISC // funct3=100 q2: C.JR/C.MV/C.EBREAK/C.JALR/C.ADD
+	opC_JR     // funct3=100 q2: bit12=0, rs2=0, rd!=0
+	opC_MV     // funct3=100 q2: bit12=0, rs2!=0
+	opC_EBREAK // funct3=100 q2: bit12=1, rd=0, rs2=0
+	opC_JALR   // funct3=100 q2: bit12=1, rs2=0, rd!=0
+	opC_ADD    // funct3=100 q2: bit12=1, rs2!=0
 	opC_FSDSP
 	opC_SWSP
 	opC_SDSP
@@ -167,13 +171,33 @@ func decodeRVC(slot *DecodedInsn, insn uint16) {
 			slot.op = opC_LDSP
 			slot.imm = int32(((insn>>12)&1)<<5 | ((insn>>5)&3)<<3 | ((insn>>2)&7)<<6)
 		case 0b100:
-			// funct3=100 q2: C.JR / C.MV / C.EBREAK / C.JALR / C.ADD.
-			// JR/JALR/EBREAK end a block; MV/ADD do not. Conservatively
-			// mark the whole class as block-ending so we don't miscount
-			// across a jump. (False positives cost only one extra tick of
-			// driver overhead per MV/ADD, ~5% of this opcode class.)
-			slot.op = opC_CR_MISC
-			slot.flags |= flagBlockEnd
+			// funct3=100 q2 splits on bit12 + rs2 (rs2 is already in slot.rs2).
+			bit12 := (insn >> 12) & 1
+			if bit12 == 0 {
+				if slot.rs2 == 0 {
+					// C.JR — rd holds rs1 here
+					if slot.rd == 0 {
+						slot.op = opFallback // illegal; let stepRVC reject
+					} else {
+						slot.op = opC_JR
+						slot.flags |= flagBlockEnd
+					}
+				} else {
+					slot.op = opC_MV
+				}
+			} else {
+				if slot.rs2 == 0 {
+					if slot.rd == 0 {
+						slot.op = opC_EBREAK
+						slot.flags |= flagBlockEnd
+					} else {
+						slot.op = opC_JALR
+						slot.flags |= flagBlockEnd
+					}
+				} else {
+					slot.op = opC_ADD
+				}
+			}
 		case 0b101:
 			slot.op = opC_FSDSP
 			slot.imm = int32(((insn>>10)&7)<<3 | ((insn>>7)&7)<<6)
