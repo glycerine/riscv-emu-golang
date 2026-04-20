@@ -540,6 +540,8 @@ bench:
 	@elapsed=$$({ /usr/bin/time -p $(GUEST_NATIVE) >/dev/null; } 2>&1 | awk '/^real/{print $$NF}'); \
          awk "BEGIN{printf \"%.0f MIPS  (%.1f ms)\n\", $(NATIVE_RETIRED)/$$elapsed/1000000, $$elapsed*1000}"
 	@echo ""
+	#make bench-coremark
+	#make bench-dhrystone
 
 bench-summary:
 	@echo ""
