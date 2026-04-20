@@ -20,7 +20,7 @@ import (
 // pollBatch is how many instructions run between watchAddr polls. 1024 is
 // ~4 µs at 250 MIPS — negligible latency for tohost-style exit, while
 // removing per-instruction polling from the hot loop.
-const pollBatch = 1024
+const pollBatch = 10240
 
 // RunDefault is the "just run the guest" entry point used by cpu.Run().
 // It allocates a fresh 256 KB decoder cache based at the current PC and
@@ -33,8 +33,8 @@ const pollBatch = 1024
 // reasons, not a semantic one. Bisection (see git history around the
 // "recover 419 MIPS" change) established that:
 //
-//   cpu.Run()   =>  calls RunCached directly                =>  ~314 MIPS
-//   cpu.Run()   =>  calls RunDefault   (defined here)       =>  ~406 MIPS
+//	cpu.Run()   =>  calls RunCached directly                =>  ~314 MIPS
+//	cpu.Run()   =>  calls RunDefault   (defined here)       =>  ~406 MIPS
 //
 // Same RunCached source, same CPU struct, same benchmarks. The ~25%
 // slowdown is visible even in benchmarks that never call cpu.Run() (e.g.
