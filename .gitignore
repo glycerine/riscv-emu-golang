@@ -12,3 +12,4 @@ bench/libriscv_guest/bench_guest.elf
 bench/coremark.elf
 bench/dhrystone.elf
 xendor/tcc/libtcc.a
+darwin-perf
