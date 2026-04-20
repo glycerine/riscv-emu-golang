@@ -22,6 +22,23 @@ import (
 // removing per-instruction polling from the hot loop.
 const pollBatch = 1024
 
+// RunDefault is the "just run the guest" entry point used by cpu.Run(). It
+// allocates a decoder cache sized to cover 256 KB from the current PC and
+// invokes RunCached. Callers needing cross-call cache reuse or custom sizing
+// should build their own *DecoderCache and call RunCached directly.
+//
+// This helper exists so cpu.Run() doesn't call RunCached directly from
+// cpu.go — empirically, that triggers a ~25% codegen regression in
+// RunCached's megaswitch on bench_guest (measured 419 → 314 MIPS). Keeping
+// all RunCached callsites inside run_cached.go keeps codegen stable.
+func RunDefault(cpu *CPU, nc *NoteChain) error {
+	base := cpu.pc &^ uint64(0xFFF)
+	if base > 0x1000 {
+		base -= 0x1000
+	}
+	return RunCached(cpu, NewDecoderCache(base, 256<<10), nc)
+}
+
 func RunCached(cpu *CPU, cache *DecoderCache, nc *NoteChain) error {
 	// pc stays in a local across the inner loop; cpu.pc is only written when
 	// we exit the inner loop (watchAddr / note delivery) or when a delegate

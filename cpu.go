@@ -36,12 +36,17 @@ type CPU struct {
 	mcause  uint64 // 0x342: trap cause code
 	mstatus uint64 // 0x300: machine status
 	mtval   uint64 // 0x343: trap value
-	// cache is the decoder cache used by Run(). Lazily allocated on first
-	// Run() call when no explicit cache has been set via SetDecoderCache.
-	// Persisting it across Run() invocations preserves decoded slots so
-	// subsequent runs skip the one-time decode cost.
-	cache *DecoderCache
 }
+
+// Do NOT add fields to CPU. Storing a *DecoderCache here was tried and
+// reverted: the added pointer shifted Go's register allocator in the
+// RunCached megaswitch enough to cause a ~26% regression on bench_guest
+// (measured 419 → 325 MIPS). The regression was spread across the hot
+// RVC cases (C.ADDI / C.MV / C.ADD / C.BNEZ) plus the top-level switch
+// dispatch. Profile diff: /tmp/bg_9499bda.list.txt vs /tmp/bg_HEAD.list.txt.
+// Keep the CPU struct shape stable so RunCached codegen stays stable.
+// Callers that need persistent caches call RunCached(cpu, cache, nc)
+// directly with their own cache.
 
 func NewCPU(mem GuestMemory) *CPU { return &CPU{mem: mem} }
 
@@ -66,36 +71,14 @@ func (c *CPU) SetWatchAddr(addr uint64)  { c.watchAddr = addr }
 func (c *CPU) WatchAddr() uint64         { return c.watchAddr }
 
 // Run executes instructions until an unhandled note or fatal exception.
-// Uses the decoder-cached fast path (RunCached); exceptions are delivered
-// through cpu.Notes. For the reference uncached path (fetch + decode every
-// instruction), call RunWithChain directly.
-//
-// The cache auto-sizes to 256 KB of coverage centered on the current PC on
-// first call. To preconfigure size or base, call SetDecoderCache before Run.
+// Uses the decoder-cached fast path (RunCached) via RunDefault — an
+// indirection that keeps RunCached's callsites all in run_cached.go, which
+// empirically is required to keep Go's codegen for RunCached optimal.
+// (Calling RunCached directly from cpu.go's Run() method caused a ~25%
+// codegen regression in the RunCached megaswitch; root cause is some
+// cross-file analysis difference in the Go compiler.)
 func (c *CPU) Run() error {
-	return RunCached(c, c.DecoderCache(), &c.Notes)
-}
-
-// SetDecoderCache attaches a pre-allocated decoder cache to the CPU so Run
-// uses it instead of auto-allocating. Call this before Run() when you need
-// control over the cache's base address or size (e.g., a large .text that
-// exceeds the default 256 KB coverage).
-func (c *CPU) SetDecoderCache(cache *DecoderCache) { c.cache = cache }
-
-// DecoderCache returns the CPU's decoder cache, lazily allocating a default
-// one if none has been set. Default coverage: 256 KB based at (pc &^ 0xFFF)
-// minus 4 KB of guard, so typical executable segments fit entirely inside.
-// PCs outside the cache range fall through to the sentinel-slot path and
-// execute via cpu.step().
-func (c *CPU) DecoderCache() *DecoderCache {
-	if c.cache == nil {
-		base := c.pc &^ uint64(0xFFF)
-		if base > 0x1000 {
-			base -= 0x1000
-		}
-		c.cache = NewDecoderCache(base, 256<<10)
-	}
-	return c.cache
+	return RunDefault(c, &c.Notes)
 }
 
 // Step executes a single instruction. Returns ErrEbreak, ErrEcall, or ErrIllegalInstruction on halt/fault.
