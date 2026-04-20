@@ -4,7 +4,7 @@
 //
 // Based on ibireme's kpc_demo.c (public domain).
 // Adapted for Intel Ice Lake (i7-1068NG7) with L1 cache miss counters.
-// 
+//
 // https://gist.github.com/ibireme/173517c208c7dc333ba962c1f0d67d12
 // https://gist.github.com/glycerine/e3cfbaf95ba8a2d0ba7f3344dd5d946a
 //
@@ -593,6 +593,22 @@ int main(int argc, const char *argv[]) {
     kpc_set_counting(0);
     kpc_set_thread_counting(0);
     kpc_force_all_ctrs_set(0);
+
+    // --- Diagnostic dump ---
+    fprintf(stderr, "\n DEBUG: classes=0x%x, total_counter_count=%u, "
+        "fixed=%zu, configurable=%zu\n",
+        classes, total_counter_count,
+        db->fixed_counter_count, db->config_counter_count);
+    fprintf(stderr, " DEBUG: counter_map: ");
+    for (usize i = 0; i < ev_count; i++)
+        fprintf(stderr, "[%zu]=%zu ", i, counter_map[i]);
+    fprintf(stderr, "\n");
+    fprintf(stderr, " DEBUG: raw counter deltas (all %u slots):\n", total_counter_count);
+    for (u32 i = 0; i < total_counter_count && i < KPC_MAX_COUNTERS; i++) {
+        u64 val = counters_1[i] - counters_0[i];
+        fprintf(stderr, "   slot[%2u] = %16llu%s\n", i, val,
+            i < db->fixed_counter_count ? "  (fixed)" : "  (configurable)");
+    }
 
     // --- Compute elapsed time ---
     mach_timebase_info_data_t tb;
