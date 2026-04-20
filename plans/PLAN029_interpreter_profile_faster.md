@@ -25,8 +25,8 @@ Match or exceed libriscv's 891 MIPS on the same benchmark ELF, without breaking:
 
 The current `bench_guest.elf` (fib + memstress + sieve) stays as the primary regression signal. In addition, add CoreMark and Dhrystone so we can publish numbers comparable to libriscv's own.
 
-1. **CoreMark (RV64)**. libriscv ships an `examples/coremark/build_and_run.sh` that downloads `coremark-rv32g_b.elf` — RV32, not RV64. We need an RV64 build. Fetch the CoreMark source (`https://github.com/eembc/coremark`) into `bench/coremark/`, add a Makefile target `make coremark-elf` that cross-compiles with `riscv64-unknown-elf-gcc -O2 -march=rv64gc` using the same newlib setup the existing `bench/libriscv_guest/` uses. Also build `xendor/libriscv/examples/coremark/` with `-DRISCV_64I=ON -DRISCV_EXT_C=ON` so libriscv can run the same ELF.
-2. **Dhrystone (RV64)**. Not included in libriscv. Add `bench/dhrystone/` with the public Dhrystone 2.1 source (`dhry_1.c`, `dhry_2.c`, `dhry.h`), cross-compile the same way. Both emulators can run the resulting ELF through their standard ECALL/exit hooks.
+1. **CoreMark (RV64)**. libriscv ships an `examples/coremark/build_and_run.sh` that downloads `coremark-rv32g_b.elf` — RV32, not RV64. We need an RV64 build. Fetch the CoreMark source (`https://github.com/eembc/coremark`) into `xendor/coremark/` (following the existing `xendor/tcc`, `xendor/libriscv` vendoring convention). Add a Makefile target `make coremark-elf` that cross-compiles with `riscv64-unknown-elf-gcc -O2 -march=rv64gc` using the same newlib setup the existing `bench/libriscv_guest/` uses; the resulting ELF lands at `bench/coremark.elf` (build artifact, gitignored). Also build `xendor/libriscv/examples/coremark/` with `-DRISCV_64I=ON -DRISCV_EXT_C=ON` so libriscv can run the same ELF.
+2. **Dhrystone (RV64)**. Not included in libriscv. Add `xendor/dhrystone/` with the public Dhrystone 2.1 source (`dhry_1.c`, `dhry_2.c`, `dhry.h`), cross-compile the same way; resulting ELF at `bench/dhrystone.elf`. Both emulators can run the resulting ELF through their standard ECALL/exit hooks.
 3. **Benchmark runner**: add `BenchmarkCPU_CoreMark` and `BenchmarkCPU_Dhrystone` in `bench/cpu_bench_test.go` that mirror `BenchmarkCPU_FullExecution` but take `BENCH_ELF` pointing to the new ELFs. Add Makefile targets `bench-coremark` and `bench-dhrystone` that run both our emulator and libriscv for head-to-head MIPS.
 
 ## Step 2 — Profile both interpreters
@@ -135,7 +135,8 @@ Success criteria:
 - `/Users/jaten/go/src/github.com/glycerine/riscv-emu-golang/bench/cpu_bench_test.go` — add CoreMark + Dhrystone benchmarks
 - `/Users/jaten/go/src/github.com/glycerine/riscv-emu-golang/Makefile` — add `coremark-elf`, `dhrystone-elf`, `bench-coremark`, `bench-dhrystone` targets
 - new `/Users/jaten/go/src/github.com/glycerine/riscv-emu-golang/decoder_cache.go` — decoder cache slab and builder
-- new `/Users/jaten/go/src/github.com/glycerine/riscv-emu-golang/bench/coremark/` and `bench/dhrystone/` — source and build scripts
+- new `/Users/jaten/go/src/github.com/glycerine/riscv-emu-golang/xendor/coremark/` and `xendor/dhrystone/` — vendored source
+- new `bench/coremark.elf` and `bench/dhrystone.elf` — build artifacts (gitignored); Makefile build rules live alongside existing `bench-setup` targets
 
 ## Expected outcome
 
