@@ -99,9 +99,13 @@ func RunCached(cpu *CPU, cache *DecoderCache, nc *NoteChain) error {
 				var v uint64
 				var f *MemFault
 				switch slot.funct3 {
-				case 0x0: // LB
+				case 0x0: // LB — unsafe fast path (bounds check only; 1-byte always aligned)
 					var u uint8
-					u, f = (&cpu.mem).Load8(addr)
+					if addr&^cpu.mem.mask == 0 {
+						u = *(*uint8)(unsafe.Pointer(cpu.mem.base + uintptr(addr&cpu.mem.mask)))
+					} else {
+						u, f = (&cpu.mem).Load8(addr)
+					}
 					v = uint64(int64(int8(u)))
 				case 0x1: // LH
 					var u uint16
@@ -110,10 +114,11 @@ func RunCached(cpu *CPU, cache *DecoderCache, nc *NoteChain) error {
 						u, f = (&cpu.mem).Load16U(addr)
 					}
 					v = uint64(int64(int16(u)))
-				case 0x2: // LW
+				case 0x2: // LW — aligned fast path via unsafe, OOB/misalign to Load32U
 					var u uint32
-					u, f = (&cpu.mem).Load32(addr)
-					if f != nil && f.Kind == FaultMisalign {
+					if addr&3 == 0 && (addr|(addr+3))&^cpu.mem.mask == 0 {
+						u = *(*uint32)(unsafe.Pointer(cpu.mem.base + uintptr(addr&cpu.mem.mask)))
+					} else {
 						u, f = (&cpu.mem).Load32U(addr)
 					}
 					v = uint64(int64(int32(u)))

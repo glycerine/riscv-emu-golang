@@ -110,6 +110,8 @@ Files: `cpu.go` only.
 ### Phase F (optional, post-measurement) — Opcode switch reshuffling
 If the profile after C+D shows the switch dispatch itself as hot, reorder cases so the most frequent opcodes (per profile) sit at the top of the switch. Also consider splitting the switch into a fast path that handles the top-8 opcodes first. Only attempt if profile data clearly justifies it.
 
+Tried and rejected. binary-search lowering makes it a no-op.
+
 ## Step 4 — Verification
 
 Run after each phase:
