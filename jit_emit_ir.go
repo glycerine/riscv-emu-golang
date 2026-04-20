@@ -52,18 +52,18 @@ type deferredFault struct {
 
 // emitter accumulates IR for a basic block.
 type emitter struct {
-	mem        *GuestMemory
-	startPC    uint64
-	pc         uint64
-	irEm       *ir.Emitter
-	numInsns   int
-	regsUsed   [32]bool
-	terminated bool
-	visited     u64set
-	regionEnd   uint64
-	gotoTargets u64set
-	pcLabels    u64labelmap
-	icEmitted  bool
+	mem            *GuestMemory
+	startPC        uint64
+	pc             uint64
+	irEm           *ir.Emitter
+	numInsns       int
+	regsUsed       [32]bool
+	terminated     bool
+	visited        map[uint64]bool
+	regionEnd      uint64
+	gotoTargets    u64set
+	pcLabels       u64labelmap
+	icEmitted      bool
 	deferredExits  []deferredExit
 	deferredFaults []deferredFault
 	exitIdx        int // counter for chain exit indices
@@ -456,7 +456,7 @@ func (e *emitter) finalize() *emitResult {
 	// Bail labels: goto targets not emitted. Deterministic order is critical —
 	// random order changes IR indices, affecting register allocation.
 	e.gotoTargets.each(func(target uint64) {
-		if !e.visited.has(target) {
+		if !e.visited[target] {
 			e.irEm.PlaceLabel(e.getOrCreateLabel(target))
 			e.emitChainableReturn(target)
 		}
@@ -518,11 +518,17 @@ func scanUsedRegs(mem *GuestMemory, startPC, endPC uint64, used *[32]bool) {
 				switch funct3 {
 				case 0b000, 0b001, 0b010: // ADDI/ADDIW/LI
 					rd := (insn >> 7) & 0x1F
-					if rd != 0 { used[rd] = true }
+					if rd != 0 {
+						used[rd] = true
+					}
 				case 0b011: // ADDI16SP/LUI
 					rd := (insn >> 7) & 0x1F
-					if rd != 0 { used[rd] = true }
-					if rd == 2 { used[2] = true }
+					if rd != 0 {
+						used[rd] = true
+					}
+					if rd == 2 {
+						used[2] = true
+					}
 				case 0b100: // MISC-ALU
 					rs1 := 8 + ((insn >> 7) & 7)
 					rs2 := 8 + ((insn >> 2) & 7)
@@ -535,8 +541,12 @@ func scanUsedRegs(mem *GuestMemory, startPC, endPC uint64, used *[32]bool) {
 			case 0x2:
 				rd := (insn >> 7) & 0x1F
 				rs2 := (insn >> 2) & 0x1F
-				if rd != 0 { used[rd] = true }
-				if rs2 != 0 { used[rs2] = true }
+				if rd != 0 {
+					used[rd] = true
+				}
+				if rs2 != 0 {
+					used[rs2] = true
+				}
 				used[2] = true // sp used by LWSP/LDSP/SWSP/SDSP
 				// C.JR / C.JALR / C.EBREAK terminate the block
 				if funct3 == 0b100 {
@@ -569,7 +579,9 @@ func scanUsedRegs(mem *GuestMemory, startPC, endPC uint64, used *[32]bool) {
 			case 0x63, 0x23, 0x27:
 				// no rd
 			default:
-				if rd != 0 { used[rd] = true }
+				if rd != 0 {
+					used[rd] = true
+				}
 			}
 			// Mark rs1 (most formats use bits[19:15] for rs1).
 			// FENCE (0x0F), LUI (0x37), AUIPC (0x17), JAL (0x6F) don't have rs1.
@@ -577,25 +589,43 @@ func scanUsedRegs(mem *GuestMemory, startPC, endPC uint64, used *[32]bool) {
 			case 0x0F, 0x37, 0x17, 0x6F:
 				// no rs1
 			default:
-				if rs1 != 0 { used[rs1] = true }
+				if rs1 != 0 {
+					used[rs1] = true
+				}
 			}
 			// Mark rs2 for formats that use it.
 			switch opcode {
 			case 0x33, 0x3B: // OP, OP-32
-				if rs2 != 0 { used[rs2] = true }
+				if rs2 != 0 {
+					used[rs2] = true
+				}
 			case 0x63: // BRANCH
-				if rs1 != 0 { used[rs1] = true }
-				if rs2 != 0 { used[rs2] = true }
+				if rs1 != 0 {
+					used[rs1] = true
+				}
+				if rs2 != 0 {
+					used[rs2] = true
+				}
 			case 0x23: // STORE
-				if rs1 != 0 { used[rs1] = true }
-				if rs2 != 0 { used[rs2] = true }
+				if rs1 != 0 {
+					used[rs1] = true
+				}
+				if rs2 != 0 {
+					used[rs2] = true
+				}
 			case 0x27: // FP-STORE
-				if rs1 != 0 { used[rs1] = true }
+				if rs1 != 0 {
+					used[rs1] = true
+				}
 				// rs2 is FP register index, not int
 			case 0x43, 0x47, 0x4B, 0x4F: // FMA
-				if rs2 != 0 { used[rs2] = true }
+				if rs2 != 0 {
+					used[rs2] = true
+				}
 				rs3 := insn >> 27
-				if rs3 != 0 { used[rs3] = true }
+				if rs3 != 0 {
+					used[rs3] = true
+				}
 			}
 			// Stop at instructions the emitter terminates on.
 			switch opcode {
@@ -634,7 +664,7 @@ func emitBlock(mem *GuestMemory, pc uint64) *emitResult {
 		startPC:     pc,
 		pc:          pc,
 		irEm:        irEm,
-		visited:     newU64setSized(region.pcCount),
+		visited:     make(map[uint64]bool), //newU64setSized(region.pcCount),
 		regionEnd:   region.endPC,
 		gotoTargets: gt,
 		pcLabels:    newU64labelmap(),
@@ -643,13 +673,13 @@ func emitBlock(mem *GuestMemory, pc uint64) *emitResult {
 	// Emit IR (populates regsUsed via xreg/xregDst calls).
 	for e.numInsns < maxBlockInsns && !e.terminated && e.pc < e.regionEnd &&
 		len(irEm.Block.Instrs) < maxBlockIRInsns {
-		if e.visited.has(e.pc) {
+		if e.visited[e.pc] {
 			e.irEm.Jump(e.getOrCreateLabel(e.pc))
 			e.gotoTargets.add(e.pc)
 			e.terminated = true
 			break
 		}
-		e.visited.add(e.pc)
+		e.visited[e.pc] = true
 
 		half, fh := mem.Fetch16(e.pc)
 		if fh != nil {
@@ -950,7 +980,7 @@ func (e *emitter) emitOpImm(rd, rs1 uint32, imm int64, funct3, funct7 uint32) {
 				// mask = (byteVal != 0) ? 0xFF : 0
 				ne := e.irEm.Tmp()
 				e.irEm.Set(ne, byteVal, ir.VRegZero, ir.NE)
-				e.irEm.Neg(mask, ne)           // 0→0, 1→-1 (0xFFFF...)
+				e.irEm.Neg(mask, ne)            // 0→0, 1→-1 (0xFFFF...)
 				e.irEm.AndImm(mask, mask, 0xFF) // keep only low byte = 0xFF or 0
 				e.irEm.ShlImm(mask, mask, int64(i*8))
 				e.irEm.Or(dst, dst, mask)
@@ -2062,7 +2092,7 @@ func (e *emitter) emitJAL(rd uint32, offset int64, insnSize uint64) {
 		targetLabel := e.getOrCreateLabel(target)
 		// Same backward detection as emitBranch: check both PC ordering
 		// and whether the target was already emitted (visited).
-		backward := target < origPC || e.visited.has(target)
+		backward := target < origPC || e.visited[target]
 		if backward {
 			e.irEm.BudgetCheck(targetLabel, target)
 		} else {
@@ -2099,7 +2129,7 @@ func (e *emitter) emitBranch(rs1, rs2, funct3 uint32, offset int64) {
 	a := e.xreg(rs1)
 	b := e.xreg(rs2)
 
-	internal := e.visited.has(target) ||
+	internal := e.visited[target] ||
 		(e.regionEnd > 0 && target >= e.startPC && target < e.regionEnd)
 
 	if internal {
@@ -2110,7 +2140,7 @@ func (e *emitter) emitBranch(rs1, rs2, funct3 uint32, offset int64) {
 		// emitted at a higher PC but earlier in the IR. Jumping to an
 		// already-emitted label re-executes code → potential infinite loop
 		// → requires BudgetCheck.
-		backward := target < e.pc || e.visited.has(target)
+		backward := target < e.pc || e.visited[target]
 		if backward {
 			takenLabel := e.irEm.NewLabel()
 			continueLabel := e.irEm.NewLabel()

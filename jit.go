@@ -58,11 +58,11 @@ type blockCacheEntry struct {
 // JIT holds the cache of compiled basic blocks.
 type JIT struct {
 	cache      [blockCacheSize]blockCacheEntry
-	noJIT      u64set // PCs where translation failed — don't retry
-	InterpOnly bool   // debug: force all-interpreter mode
-	UseV2      bool   // bench: use V2 lowerer for comparison
-	DebugV1V2  bool   // debug: run every block through V1 AND V2, compare results
-	trace      bool   // debug: log block executions to stderr
+	noJIT      map[uint64]bool // PCs where translation failed — don't retry
+	InterpOnly bool            // debug: force all-interpreter mode
+	UseV2      bool            // bench: use V2 lowerer for comparison
+	DebugV1V2  bool            // debug: run every block through V1 AND V2, compare results
+	trace      bool            // debug: log block executions to stderr
 
 	irAlloc ir.RegAllocator
 
@@ -77,7 +77,7 @@ type JIT struct {
 // NewJIT creates a new JIT translation cache using the Fixed Static Mapping allocator.
 func NewJIT() *JIT {
 	return &JIT{
-		noJIT:   newU64set(),
+		noJIT:   make(map[uint64]bool),
 		irAlloc: ir.NewFixedStaticAllocator(),
 	}
 }
@@ -93,11 +93,11 @@ func (j *JIT) SetAllocStrategy(name string) {
 	}
 	// Clear block cache — compiled blocks used the old allocator.
 	j.cache = [blockCacheSize]blockCacheEntry{}
-	j.noJIT = newU64set()
+	j.noJIT = make(map[uint64]bool)
 }
 
 // NoJITSize returns the number of PCs in the noJIT set (translation failures).
-func (j *JIT) NoJITSize() int { return j.noJIT.len() }
+func (j *JIT) NoJITSize() int { return len(j.noJIT) }
 
 // SetTrace enables/disables trace logging to stderr.
 func (j *JIT) SetTrace(on bool) { j.trace = on }
@@ -169,7 +169,7 @@ func (j *JIT) StepBlock(cpu *CPU) (ic uint64, err error) {
 	}
 
 	// Try to translate
-	if !j.InterpOnly && !j.noJIT.has(pc) {
+	if !j.InterpOnly && !j.noJIT[pc] {
 		res := emitBlock(&cpu.mem, pc)
 		if res != nil && res.numInsns > 0 {
 			compiled, cerr := j.jitCompileWith(res, j.UseV2)
@@ -185,7 +185,7 @@ func (j *JIT) StepBlock(cpu *CPU) (ic uint64, err error) {
 				return j.StepBlock(cpu) // retry with compiled block
 			}
 		}
-		j.noJIT.add(pc)
+		j.noJIT[pc] = true
 	}
 
 	// Interpreter fallback
@@ -376,7 +376,7 @@ func (j *JIT) RunJIT(cpu *CPU) error {
 		}
 
 		// No compiled block — try to translate.
-		if !j.InterpOnly && !j.noJIT.has(pc) {
+		if !j.InterpOnly && !j.noJIT[pc] {
 			res := emitBlock(&cpu.mem, pc)
 			if res != nil && res.numInsns > 0 {
 				blk, err := j.jitCompileWith(res, j.UseV2)
@@ -395,7 +395,7 @@ func (j *JIT) RunJIT(cpu *CPU) error {
 					fmt.Fprintf(os.Stderr, "EMIT_ZERO pc=0x%x numInsns=%d\n", pc, res.numInsns)
 				}
 			}
-			j.noJIT.add(pc)
+			j.noJIT[pc] = true
 		}
 
 		// Interpret one instruction.

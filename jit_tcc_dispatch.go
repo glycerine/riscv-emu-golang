@@ -47,7 +47,7 @@ func (j *JIT) TccStepBlock(cpu *CPU) (ic uint64, err error) {
 	}
 
 	// Try to translate via TCC.
-	if !j.InterpOnly && !j.noJIT.has(pc) {
+	if !j.InterpOnly && !j.noJIT[pc] {
 		res := tccEmitBlock(&cpu.mem, pc)
 		if res != nil && res.numInsns > 0 {
 			compiled, cerr := j.tccJitCompileWith(res)
@@ -56,7 +56,7 @@ func (j *JIT) TccStepBlock(cpu *CPU) (ic uint64, err error) {
 				return j.TccStepBlock(cpu)
 			}
 		}
-		j.noJIT.add(pc)
+		j.noJIT[pc] = true
 	}
 
 	// Interpreter fallback.
@@ -150,7 +150,7 @@ func (j *JIT) TccRunJIT(cpu *CPU) error {
 		}
 
 		// No compiled block — try to translate via TCC.
-		if !j.InterpOnly && !j.noJIT.has(pc) {
+		if !j.InterpOnly && !j.noJIT[pc] {
 			res := tccEmitBlock(&cpu.mem, pc)
 			if res != nil && res.numInsns > 0 {
 				blk, err := j.tccJitCompileWith(res)
@@ -169,7 +169,7 @@ func (j *JIT) TccRunJIT(cpu *CPU) error {
 					fmt.Fprintf(os.Stderr, "TCC_EMIT_ZERO pc=0x%x numInsns=%d\n", pc, res.numInsns)
 				}
 			}
-			j.noJIT.add(pc)
+			j.noJIT[pc] = true
 		}
 
 		// Interpret one instruction.
