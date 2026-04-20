@@ -53,6 +53,7 @@ func lowerBlockV2WithRet(t *testing.T, b *Block) ([]byte, *Allocation) {
 func TestAMD64Pool_V2_NoDiv(t *testing.T) {
 	b := NewBlock()
 	b.Instrs = []IRInstr{{Op: IRAdd, T: I64, Dst: VReg(1), A: VReg(2), B: VReg(3)}}
+	MaxVReg(b)
 	pool := AMD64Pool_V2(b)
 	if len(pool.IntRegs) != 7 {
 		t.Errorf("want 7 int regs, got %d", len(pool.IntRegs))
@@ -65,6 +66,7 @@ func TestAMD64Pool_V2_NoDiv(t *testing.T) {
 func TestAMD64Pool_V2_WithDiv(t *testing.T) {
 	b := NewBlock()
 	b.Instrs = []IRInstr{{Op: IRDivS, T: I64, Dst: VReg(1), A: VReg(2), B: VReg(3)}}
+	MaxVReg(b)
 	pool := AMD64Pool_V2(b)
 	if len(pool.IntRegs) != 5 {
 		t.Errorf("want 5 int regs, got %d", len(pool.IntRegs))
