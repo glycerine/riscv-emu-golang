@@ -124,6 +124,12 @@ func (e *Emitter) SetImm(dst, a VReg, imm int64, p Pred) { e.opSetImm(IRSetImm, 
 // ── Data movement ──
 
 func (e *Emitter) Mov(dst, a VReg)              { e.op2(IRMov, I64, dst, a) }
+
+// MovT is Mov with an explicit type. Use F32/F64 when the move crosses
+// integer↔FP register classes so the regalloc places dst in the matching
+// register file (XMM for F32/F64). The lowerer emits MOVQ for cross-class
+// transfers regardless of T.
+func (e *Emitter) MovT(dst, a VReg, t Type)     { e.op2(IRMov, t, dst, a) }
 func (e *Emitter) Const(dst VReg, imm int64)    { e.opConst(dst, imm) }
 func (e *Emitter) Sext(dst, a VReg, fromT Type) { e.opExt(IRSext, dst, a, fromT) }
 func (e *Emitter) Zext(dst, a VReg, fromT Type) { e.opExt(IRZext, dst, a, fromT) }

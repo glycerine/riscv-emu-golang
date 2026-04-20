@@ -1194,3 +1194,82 @@ func TestJIT_FSD_Misaligned(t *testing.T) {
 		t.Errorf("dest bytes = %x, want %x", got, src)
 	}
 }
+
+// TestJIT_NaNBoxF32_Roundtrip is a regression test for the boxF32 / unboxF32
+// IR-emission bug.
+//
+// The bug: boxF32 emitted Or(fp-dst, int-a, int-b) and unboxF32 emitted
+// ShrImm(int-tmp, fp-src, 32). Both ops used integer ops with one XMM operand,
+// which the V1 amd64 lowerer rendered as the invalid x86 mnemonic "ORQ R11, X0"
+// (or "SHRQ ?, X?"). Any block containing FLW, FADD.S, FSUB.S, FMUL.S, FDIV.S,
+// FCMP.S, FCVT.*.S, or FMA-S instructions failed JIT compilation and silently
+// fell back to the interpreter for those blocks.
+//
+// This block exercises the full roundtrip: two FLW instructions (each emits a
+// boxF32 on the loaded value) feed a FADD.S (which unboxF32's both operands
+// and boxF32's the result). The block ends with ECALL for a clean exit.
+//
+//	x10 = 0x2000                     ; aligned data buffer
+//	FLW  f1, 0(x10)                  ; f1 = NaN-boxed 1.5     (uses boxF32)
+//	FLW  f2, 4(x10)                  ; f2 = NaN-boxed 2.5     (uses boxF32)
+//	FADD.S f3, f1, f2                ; f3 = 1.5 + 2.5 = 4.0   (uses unboxF32 ×2 + boxF32)
+//	ECALL
+//
+// The test asserts:
+//  1. The block JIT-compiled (DispatchCompile > 0).
+//     Pre-fix, this block failed at the assembler with
+//     "invalid instruction: ORQ R11, X0" and silently fell back to the
+//     interpreter (DispatchCompile would still increment, but every
+//     instruction in the block went through DispatchInterp instead).
+//  2. The interpreter was never invoked (DispatchInterp == 0).
+//  3. f3 holds the correct NaN-boxed Float32(4.0).
+func TestJIT_NaNBoxF32_Roundtrip(t *testing.T) {
+	const entryPC = 0x1000
+	const dataAddr = uint64(0x2000)
+
+	cpu, mem := newTestCPU(t, Size64MB, entryPC, []uint32{
+		uenc(opLUI, 10, 0x2000),               // LUI x10, 0x2 → x10 = 0x2000
+		ienc(0x07, 2, 1, 10, 0),               // FLW f1, 0(x10)
+		ienc(0x07, 2, 2, 10, 4),               // FLW f2, 4(x10)
+		renc(0x53, 0x07, 0x00, 3, 1, 2),       // FADD.S f3, f1, f2 (DYN rounding)
+		instrECALL,
+	})
+	defer mem.Free()
+
+	// Pre-fill 8 bytes: 1.5 (LE) at offset 0, 2.5 (LE) at offset 4.
+	a := math.Float32bits(1.5)
+	b := math.Float32bits(2.5)
+	if f := mem.WriteBytes(dataAddr, []byte{
+		byte(a), byte(a >> 8), byte(a >> 16), byte(a >> 24),
+		byte(b), byte(b >> 8), byte(b >> 16), byte(b >> 24),
+	}); f != nil {
+		t.Fatalf("WriteBytes setup: %v", f)
+	}
+
+	cpu.Notes.Push(func(cpu *CPU, n Note) NoteDisposition {
+		if n.Cause == CauseEcallU {
+			return NoteFatal
+		}
+		t.Errorf("unexpected fault cause=%d tval=0x%x pc=0x%x text=%s",
+			n.Cause, n.Tval, n.PC, n.Text)
+		return NoteFatal
+	})
+
+	jit := NewJIT()
+	_ = jit.RunJIT(cpu)
+
+	if jit.DispatchCompile == 0 {
+		t.Fatal("JIT did not compile any block — boxF32/unboxF32 lowering regressed")
+	}
+	if jit.DispatchInterp != 0 {
+		t.Errorf("interpreter was invoked %d times — JIT block(s) fell back due to compile failure (boxF32/unboxF32 lowering regressed?)",
+			jit.DispatchInterp)
+	}
+
+	const nanBoxHi = uint64(0xFFFFFFFF00000000)
+	wantBoxed := nanBoxHi | uint64(math.Float32bits(4.0))
+	if got := cpu.FReg(3); got != wantBoxed {
+		t.Errorf("f3 = 0x%016x, want 0x%016x (NaN-boxed Float32(4.0))",
+			got, wantBoxed)
+	}
+}

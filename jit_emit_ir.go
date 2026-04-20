@@ -128,6 +128,9 @@ func (e *emitter) boxF32(rd uint32, val ir.VReg) {
 // The FP source is first moved to an integer temp so the upper-half check
 // (SHR + CMP) can run on integer registers; running these directly on the
 // XMM source would emit an integer SHRQ with an XMM operand, which is invalid.
+// The returned VReg is FP-classified (defined by an F32-typed Mov) so callers
+// like FAdd / FSub / FMul / FDiv / FCmp see it in an XMM register and can lower
+// to ADDSS / SUBSS / etc. without bridging.
 func (e *emitter) unboxF32(rs uint32) ir.VReg {
 	src := e.freg(rs)
 	srcInt := e.irEm.Tmp()
@@ -136,16 +139,20 @@ func (e *emitter) unboxF32(rs uint32) ir.VReg {
 	e.irEm.ShrImm(upper, srcInt, 32)
 	check := e.irEm.Tmp()
 	e.irEm.Const(check, 0xFFFFFFFF)
-	result := e.irEm.Tmp()
+	intResult := e.irEm.Tmp()
 	okLabel := e.irEm.NewLabel()
 	doneLabel := e.irEm.NewLabel()
 	e.irEm.Branch(upper, check, ir.EQ, okLabel)
-	e.irEm.Const(result, 0x7FC00000) // canonical NaN
+	e.irEm.Const(intResult, 0x7FC00000) // canonical NaN
 	e.irEm.Jump(doneLabel)
 	e.irEm.PlaceLabel(okLabel)
-	e.irEm.Zext(result, srcInt, ir.I32)
+	e.irEm.Zext(intResult, srcInt, ir.I32)
 	e.irEm.PlaceLabel(doneLabel)
-	return result
+	// Transfer the unboxed bits to an FP-typed VReg so downstream FP ops
+	// (FAdd/FSub/...) place it in an XMM register.
+	fpResult := e.irEm.Tmp()
+	e.irEm.MovT(fpResult, intResult, ir.F32)
+	return fpResult
 }
 
 // ── Control flow helpers ───────────────────────────────────────────────
