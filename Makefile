@@ -850,5 +850,5 @@ darwin-perf: kpc_perf/kpc_perf.c
 	cd bench && sudo ./darwin-perf ./bench.test -test.v -test.count=1 -test.benchtime=1x -test.benchmem  -test.run=xxx -test.bench='^BenchmarkCPU_FullExecution$$' 
 
 linux-perf:
-	cd bench && go test -c && sudo ./perf_l1.sh ./bench.test -test.v -test.count=1 -test.benchtime=1x -test.benchmem -test.run=xxx '-test.bench=^BenchmarkCPU_FullExecution$'
+	cd bench && go test -c && sudo ./perf_l1.sh ./bench.test -test.v -test.count=1 -test.benchtime=1x -test.benchmem -test.run=xxx -test.bench='^BenchmarkCPU_FullExecution$$'
 
