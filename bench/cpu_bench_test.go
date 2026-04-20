@@ -178,6 +178,148 @@ func BenchmarkCPU_FullExecution(b *testing.B) {
 	}
 }
 
+// loadELFFrom reads an ELF whose path is either in BENCH_ELF_<name> env var
+// or defaults to the given relative path.
+func loadELFFrom(tb testing.TB, envVar, defaultPath string) []byte {
+	tb.Helper()
+	path := os.Getenv(envVar)
+	if path == "" {
+		path = defaultPath
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		tb.Skipf("ELF not found at %q — build it first (see Makefile): %v", path, err)
+	}
+	return data
+}
+
+// ── CoreMark benchmarks ───────────────────────────────────────────────────
+
+// TestCPU_CoreMark_Smoke verifies the CoreMark guest ELF runs to completion
+// via the cached driver.
+func TestCPU_CoreMark_Smoke(t *testing.T) {
+	elfData := loadELFFrom(t, "CM_ELF", "coremark.elf")
+	cpu, mem := newBenchCPU(t, elfData)
+	defer mem.Free()
+	code, insns := runCachedBenchGuest(cpu)
+	if code != 0 {
+		t.Fatalf("coremark exited with %d, want 0", code)
+	}
+	if insns == 0 {
+		t.Fatal("retired 0 instructions")
+	}
+	t.Logf("coremark: retired %d instructions (exit %d)", insns, code)
+}
+
+// BenchmarkCPU_CoreMark runs CoreMark through the cached interpreter.
+// Reports MIPS — directly comparable to BenchmarkCPU_FullExecution_Cached
+// on the bench_guest workload.
+func BenchmarkCPU_CoreMark(b *testing.B) {
+	elfData := loadELFFrom(b, "CM_ELF", "coremark.elf")
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	totalInsns := uint64(0)
+	for i := 0; i < b.N; i++ {
+		cpu, mem := newBenchCPU(b, elfData)
+		_, insns := runCachedBenchGuest(cpu)
+		totalInsns += insns
+		mem.Free()
+	}
+
+	b.StopTimer()
+	elapsed := b.Elapsed().Seconds()
+	if elapsed > 0 && totalInsns > 0 {
+		mips := float64(totalInsns) / elapsed / 1e6
+		b.ReportMetric(mips, "MIPS")
+	}
+}
+
+// BenchmarkCPU_CoreMark_Uncached runs CoreMark through the un-cached
+// interpreter (RunWithChain) — direct comparison with BenchmarkCPU_CoreMark.
+func BenchmarkCPU_CoreMark_Uncached(b *testing.B) {
+	elfData := loadELFFrom(b, "CM_ELF", "coremark.elf")
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	totalInsns := uint64(0)
+	for i := 0; i < b.N; i++ {
+		cpu, mem := newBenchCPU(b, elfData)
+		_, insns := runBenchGuest(cpu)
+		totalInsns += insns
+		mem.Free()
+	}
+
+	b.StopTimer()
+	elapsed := b.Elapsed().Seconds()
+	if elapsed > 0 && totalInsns > 0 {
+		mips := float64(totalInsns) / elapsed / 1e6
+		b.ReportMetric(mips, "MIPS")
+	}
+}
+
+// ── Dhrystone benchmarks ──────────────────────────────────────────────────
+
+func TestCPU_Dhrystone_Smoke(t *testing.T) {
+	elfData := loadELFFrom(t, "DHRY_ELF", "dhrystone.elf")
+	cpu, mem := newBenchCPU(t, elfData)
+	defer mem.Free()
+	code, insns := runCachedBenchGuest(cpu)
+	if code != 0 {
+		t.Fatalf("dhrystone exited with %d, want 0", code)
+	}
+	if insns == 0 {
+		t.Fatal("retired 0 instructions")
+	}
+	t.Logf("dhrystone: retired %d instructions (exit %d)", insns, code)
+}
+
+func BenchmarkCPU_Dhrystone(b *testing.B) {
+	elfData := loadELFFrom(b, "DHRY_ELF", "dhrystone.elf")
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	totalInsns := uint64(0)
+	for i := 0; i < b.N; i++ {
+		cpu, mem := newBenchCPU(b, elfData)
+		_, insns := runCachedBenchGuest(cpu)
+		totalInsns += insns
+		mem.Free()
+	}
+
+	b.StopTimer()
+	elapsed := b.Elapsed().Seconds()
+	if elapsed > 0 && totalInsns > 0 {
+		mips := float64(totalInsns) / elapsed / 1e6
+		b.ReportMetric(mips, "MIPS")
+	}
+}
+
+func BenchmarkCPU_Dhrystone_Uncached(b *testing.B) {
+	elfData := loadELFFrom(b, "DHRY_ELF", "dhrystone.elf")
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	totalInsns := uint64(0)
+	for i := 0; i < b.N; i++ {
+		cpu, mem := newBenchCPU(b, elfData)
+		_, insns := runBenchGuest(cpu)
+		totalInsns += insns
+		mem.Free()
+	}
+
+	b.StopTimer()
+	elapsed := b.Elapsed().Seconds()
+	if elapsed > 0 && totalInsns > 0 {
+		mips := float64(totalInsns) / elapsed / 1e6
+		b.ReportMetric(mips, "MIPS")
+	}
+}
+
 // BenchmarkCPU_FullExecution_Cached runs the same workload through the
 // decoder-cache driver (RunCached). Used to measure the skip-fetch speedup
 // vs the un-cached BenchmarkCPU_FullExecution above.

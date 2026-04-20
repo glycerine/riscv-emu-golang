@@ -1,5 +1,68 @@
 package riscv
 
+// decodeInsn32 pre-decodes a 32-bit RV64 instruction into a slot.
+// Populates slot.op (= opcode), rd/rs1/rs2/rs3, funct3/funct7, and imm
+// (sign-extended per the instruction format: I / S / B / U / J).
+// Sets flagBlockEnd on control-transfer and system opcodes.
+//
+//go:nosplit
+func decodeInsn32(slot *DecodedInsn, insn uint32) {
+	slot.len = 4
+	slot.insn = insn
+	slot.op = uint8(insn & 0x7F)
+	slot.rd = uint8((insn >> 7) & 0x1F)
+	slot.funct3 = uint8((insn >> 12) & 0x07)
+	slot.rs1 = uint8((insn >> 15) & 0x1F)
+	slot.rs2 = uint8((insn >> 20) & 0x1F)
+	slot.rs3 = uint8((insn >> 27) & 0x1F)
+	slot.funct7 = uint8((insn >> 25) & 0x7F)
+
+	switch slot.op {
+	case 0x03, 0x13, 0x1B, 0x67, 0x73, 0x07, 0x0F:
+		// I-type immediate: bits[31:20] sign-extended.
+		slot.imm = int32(insn) >> 20
+	case 0x23, 0x27:
+		// S-type immediate: bits[31:25]|bits[11:7].
+		slot.imm = (int32(insn&0xFE000000) >> 20) | int32((insn>>7)&0x1F)
+	case 0x63:
+		// B-type immediate: bits[31|7|30:25|11:8]|0.
+		bit12 := int32(insn>>31) & 1
+		bit11 := int32(insn>>7) & 1
+		bits10_5 := int32(insn>>25) & 0x3F
+		bits4_1 := int32(insn>>8) & 0xF
+		imm := (bit12 << 12) | (bit11 << 11) | (bits10_5 << 5) | (bits4_1 << 1)
+		if bit12 != 0 {
+			imm |= ^0x1FFF
+		}
+		slot.imm = imm
+		slot.flags |= flagBlockEnd
+	case 0x6F:
+		// J-type immediate: bits[31|19:12|20|30:21]|0.
+		bit20 := int32(insn>>31) & 1
+		bits10_1 := int32(insn>>21) & 0x3FF
+		bit11 := int32(insn>>20) & 1
+		bits19_12 := int32(insn>>12) & 0xFF
+		imm := (bit20 << 20) | (bits19_12 << 12) | (bit11 << 11) | (bits10_1 << 1)
+		if bit20 != 0 {
+			imm |= ^0x1FFFFF
+		}
+		slot.imm = imm
+		slot.flags |= flagBlockEnd
+	case 0x37, 0x17:
+		// U-type immediate: bits[31:12] << 12, sign-extended.
+		slot.imm = int32(insn & 0xFFFFF000)
+	default:
+		// R-type / AMO / F-ops don't carry an immediate we need to pre-decode.
+		slot.imm = 0
+	}
+
+	// Also flag JALR (0x67) and SYSTEM (0x73) as block-ending — they always
+	// redirect control flow (jump / ecall / ebreak / mret).
+	if slot.op == 0x67 || slot.op == 0x73 {
+		slot.flags |= flagBlockEnd
+	}
+}
+
 // Synthetic opcode classes for RVC instructions. Real RV32 opcodes occupy
 // 0x00..0x7F; RVC classes start at 0x80 so they don't collide.
 //

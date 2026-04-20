@@ -30,7 +30,7 @@ func RunCached(cpu *CPU, cache *DecoderCache, nc *NoteChain) error {
 				if slot.len == 2 {
 					err = cpu.execRVCSlot(slot)
 				} else {
-					err = cpu.stepFromInsn(slot.insn)
+					err = cpu.exec32Slot(slot)
 				}
 			} else {
 				err = slowStep(cpu, cache, slot, pc)
@@ -78,7 +78,7 @@ func slowStep(cpu *CPU, cache *DecoderCache, slot *DecodedInsn, pc uint64) error
 	if slot.len == 2 {
 		return cpu.execRVCSlot(slot)
 	}
-	return cpu.stepFromInsn(slot.insn)
+	return cpu.exec32Slot(slot)
 }
 
 // populateSlot fetches and records the instruction at pc. Leaves slot.len
@@ -105,15 +105,9 @@ func populateSlot(cpu *CPU, slot *DecodedInsn, pc uint64) {
 			return
 		}
 	}
-	slot.insn = w
-	slot.len = 4
-	// Set blockEnd for 32-bit control-transfer / system opcodes.
-	switch uint8(w & 0x7F) {
-	case 0x63, 0x67, 0x6F, 0x73: // BRANCH, JALR, JAL, SYSTEM
+	decodeInsn32(slot, w)
+	// FENCE.I is not caught by decodeInsn32's opcode-level flagging — do it here.
+	if slot.op == 0x0F && slot.funct3 == 0x1 {
 		slot.flags |= flagBlockEnd
-	case 0x0F: // MISC-MEM — FENCE.I invalidates icache; conservatively end block
-		if uint8((w>>12)&0x7) == 0x1 { // funct3 = FENCE.I
-			slot.flags |= flagBlockEnd
-		}
 	}
 }
