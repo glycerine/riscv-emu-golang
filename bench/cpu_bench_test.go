@@ -121,7 +121,29 @@ func runCachedBenchGuest(cpu *riscv.CPU) (exitCode int, insns uint64) {
 	return
 }
 
+// runBenchGuest runs the guest via the default interpreter path — cpu.Run(),
+// which internally uses the decoder-cached RunCached driver. Measures what
+// a typical CLI user would get by default.
 func runBenchGuest(cpu *riscv.CPU) (exitCode int, insns uint64) {
+	defer func() {
+		if r := recover(); r != nil {
+			if ex, ok := r.(*riscv.ExitError); ok {
+				exitCode = ex.Code
+				insns = cpu.Cycle()
+				return
+			}
+			panic(r)
+		}
+	}()
+	_ = cpu.Run()
+	insns = cpu.Cycle()
+	return
+}
+
+// runUncachedBenchGuest bypasses the decoder cache and uses the reference
+// uncached driver (RunWithChain). Kept for head-to-head comparison with the
+// default path; not what a typical user would run.
+func runUncachedBenchGuest(cpu *riscv.CPU) (exitCode int, insns uint64) {
 	defer func() {
 		if r := recover(); r != nil {
 			if ex, ok := r.(*riscv.ExitError); ok {
@@ -156,6 +178,8 @@ func TestCPU_BenchGuest_Smoke(t *testing.T) {
 
 // ── MIPS benchmark ─────────────────────────────────────────────────────────
 
+// BenchmarkCPU_FullExecution measures the default interpreter path on
+// bench_guest.elf — cpu.Run() with its auto-allocated decoder cache.
 func BenchmarkCPU_FullExecution(b *testing.B) {
 	elfData := loadCPUELF(b)
 
@@ -166,6 +190,30 @@ func BenchmarkCPU_FullExecution(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		cpu, mem := newBenchCPU(b, elfData)
 		_, insns := runBenchGuest(cpu)
+		totalInsns += insns
+		mem.Free()
+	}
+
+	b.StopTimer()
+	elapsed := b.Elapsed().Seconds()
+	if elapsed > 0 && totalInsns > 0 {
+		mips := float64(totalInsns) / elapsed / 1e6
+		b.ReportMetric(mips, "MIPS")
+	}
+}
+
+// BenchmarkCPU_FullExecution_Uncached measures the un-cached reference path
+// (RunWithChain) on bench_guest.elf, for head-to-head vs the default.
+func BenchmarkCPU_FullExecution_Uncached(b *testing.B) {
+	elfData := loadCPUELF(b)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	totalInsns := uint64(0)
+	for i := 0; i < b.N; i++ {
+		cpu, mem := newBenchCPU(b, elfData)
+		_, insns := runUncachedBenchGuest(cpu)
 		totalInsns += insns
 		mem.Free()
 	}
@@ -247,7 +295,7 @@ func BenchmarkCPU_CoreMark_Uncached(b *testing.B) {
 	totalInsns := uint64(0)
 	for i := 0; i < b.N; i++ {
 		cpu, mem := newBenchCPU(b, elfData)
-		_, insns := runBenchGuest(cpu)
+		_, insns := runUncachedBenchGuest(cpu)
 		totalInsns += insns
 		mem.Free()
 	}
@@ -307,7 +355,7 @@ func BenchmarkCPU_Dhrystone_Uncached(b *testing.B) {
 	totalInsns := uint64(0)
 	for i := 0; i < b.N; i++ {
 		cpu, mem := newBenchCPU(b, elfData)
-		_, insns := runBenchGuest(cpu)
+		_, insns := runUncachedBenchGuest(cpu)
 		totalInsns += insns
 		mem.Free()
 	}
