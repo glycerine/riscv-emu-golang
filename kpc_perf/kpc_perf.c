@@ -156,6 +156,18 @@ static int setup_pmc(void) {
             { fprintf(stderr, "set_config: %d\n", ret); return 1; }
     }
 
+    // Readback: verify the kernel actually programmed what we asked
+    {
+        kpc_config_t readback[KPC_MAX_COUNTERS] = {0};
+        kpc_get_config(KPC_CLASS_CONFIGURABLE_MASK, readback);
+        fprintf(stderr, " DEBUG: config readback (configurable only):\n");
+        for (usize i = 0; i < reg_count; i++) {
+            bool match = (readback[i] == regs[i]);
+            fprintf(stderr, "   cfg[%zu] wrote=0x%08llx read=0x%08llx %s\n",
+                i, regs[i], readback[i], match ? "OK" : "MISMATCH!");
+        }
+    }
+
     counter_count = kpc_get_counter_count(classes);
     fprintf(stderr, " DEBUG: counter_count=%u\n", counter_count);
 
