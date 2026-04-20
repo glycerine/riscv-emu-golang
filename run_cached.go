@@ -8,27 +8,40 @@ package riscv
 // PCs outside the cache range fall back to cpu.step() which performs its
 // own fetch. PCs inside the cache range pay one fetch (on first visit) and
 // dispatch directly thereafter.
+// pollBatch is how many instructions run between watchAddr polls.
+// 1024 ≈ 4 µs at 250 MIPS — negligible latency for tohost-style exit,
+// while removing the per-instruction polling overhead from the hot loop.
+const pollBatch = 1024
+
 func RunCached(cpu *CPU, cache *DecoderCache, nc *NoteChain) error {
 	for {
-		pc := cpu.pc
-		slot := cache.lookup(pc)
-
+		// Tight inner loop: run up to pollBatch instructions with no
+		// per-instruction watchAddr/note checks. Only err terminates early.
 		var err error
-		if slot == nil {
-			err = cpu.step()
-		} else {
-			if slot.len == 0 {
-				populateSlot(cpu, slot, pc)
-			}
-			if slot.len == 0 {
-				err = cpu.step()
-			} else if slot.len == 2 {
-				err = cpu.execRVCSlot(slot)
+		var cycles uint64
+		countdown := pollBatch
+	inner:
+		for {
+			pc := cpu.pc
+			slot := cache.lookup(pc)
+
+			if slot != nil && slot.len > 0 {
+				// Fast path: slot is populated. No branch on slot.len=0.
+				if slot.len == 2 {
+					err = cpu.execRVCSlot(slot)
+				} else {
+					err = cpu.stepFromInsn(slot.insn)
+				}
 			} else {
-				err = cpu.stepFromInsn(slot.insn)
+				err = slowStep(cpu, cache, slot, pc)
+			}
+			cycles++
+			countdown--
+			if err != nil || countdown == 0 {
+				break inner
 			}
 		}
-		cpu.cycle++
+		cpu.cycle += cycles
 
 		if cpu.watchAddr != 0 {
 			if v, _ := (&cpu.mem).Load64(cpu.watchAddr); v != 0 {
@@ -46,6 +59,26 @@ func RunCached(cpu *CPU, cache *DecoderCache, nc *NoteChain) error {
 			return err
 		}
 	}
+}
+
+// slowStep handles the cold paths: PCs outside the cache range or slots
+// that aren't yet populated. Kept out of RunCached to keep the hot loop
+// tight.
+//
+//go:noinline
+func slowStep(cpu *CPU, cache *DecoderCache, slot *DecodedInsn, pc uint64) error {
+	if slot == nil {
+		return cpu.step()
+	}
+	// slot.len == 0 (not yet decoded) — populate and dispatch.
+	populateSlot(cpu, slot, pc)
+	if slot.len == 0 {
+		return cpu.step()
+	}
+	if slot.len == 2 {
+		return cpu.execRVCSlot(slot)
+	}
+	return cpu.stepFromInsn(slot.insn)
 }
 
 // populateSlot fetches and records the instruction at pc. Leaves slot.len
