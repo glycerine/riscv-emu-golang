@@ -843,7 +843,7 @@ $(TCC_ARCHIVE): $(LIB_CAPI)
 	@echo "  ✓ $(TCC_ARCHIVE): $$(du -h $(TCC_ARCHIVE) | cut -f1)"
 	@echo "  ✓ $$(file $(TCC_ARCHIVE) | cut -d: -f2- | xargs)"
 
-darwin-perf:
+darwin-perf: kpc_perf/kpc_perf.c
 	cd kpc_perf && clang -O2 -o ../darwin-perf kpc_perf.c -framework CoreFoundation && cd ..
 	cd bench && go test -c && cd ..
 	sudo ./darwin-perf ./bench/bench.test -test.count=1 -test.benchtime=1x -test.benchmem  -test.run=xxx -test.bench='^BenchmarkCPU_FullExecution$$'

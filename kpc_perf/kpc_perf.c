@@ -3,6 +3,13 @@
 // Measures L1D cache misses, hits, cycles, and instructions for a child process.
 //
 // Based on ibireme's kpc_demo.c (public domain).
+// 
+// https://gist.github.com/ibireme/173517c208c7dc333ba962c1f0d67d12
+// https://gist.github.com/glycerine/e3cfbaf95ba8a2d0ba7f3344dd5d946a
+//
+// Created by YaoYuan <ibireme@gmail.com> on 2021.
+// Released into the public domain (unlicense.org).
+//
 // Adapted for Intel Ice Lake (i7-1068NG7) with L1 cache miss counters.
 //
 // Build:
@@ -343,7 +350,44 @@ static void self_test_func(void) {
 
 // -----------------------------------------------------------------------------
 // Main: "perf stat" style wrapper
+//
+// Strategy:
+//   -self mode: uses kpc_get_thread_counters (precise, same thread)
+//   child mode: uses kpc_get_cpu_counters (system-wide, all CPUs summed)
+//               This includes noise from other processes, but for a short
+//               benchmark that dominates the CPU it's a good approximation.
+//               Think of it like "perf stat -a" (system-wide).
 // -----------------------------------------------------------------------------
+
+/// Read system-wide counters summed across all CPUs.
+/// buf must hold at least ncpu * counter_count entries.
+/// out[] receives the per-counter sums (counter_count entries).
+static int read_cpu_counters_summed(u32 classes, u32 counter_count,
+                                     u64 *out) {
+    // Get CPU count
+    int ncpu = 0;
+    size_t sz = sizeof(ncpu);
+    sysctlbyname("hw.ncpu", &ncpu, &sz, NULL, 0);
+    if (ncpu <= 0) ncpu = 1;
+
+    u64 *all = (u64 *)calloc(ncpu * KPC_MAX_COUNTERS, sizeof(u64));
+    if (!all) return -1;
+
+    int curcpu = 0;
+    int ret = kpc_get_cpu_counters(true, classes, &curcpu, all);
+    if (ret != 0) { free(all); return ret; }
+
+    // Sum across CPUs for each counter slot
+    memset(out, 0, sizeof(u64) * KPC_MAX_COUNTERS);
+    for (int cpu = 0; cpu < ncpu; cpu++) {
+        for (u32 c = 0; c < counter_count && c < KPC_MAX_COUNTERS; c++) {
+            out[c] += all[cpu * counter_count + c];
+        }
+    }
+
+    free(all);
+    return 0;
+}
 
 int main(int argc, const char *argv[]) {
     int ret = 0;
@@ -354,8 +398,10 @@ int main(int argc, const char *argv[]) {
             "Usage: sudo %s <command> [args...]\n"
             "       sudo %s -self           (built-in cache-miss test)\n"
             "\n"
-            "Measures CPU cycles, instructions, L1D cache hits & misses\n"
-            "for the given command (or built-in test).\n",
+            "Measures CPU cycles, instructions, L1D cache hits & misses.\n"
+            "  -self mode:  precise per-thread counters\n"
+            "  child mode:  system-wide counters (like 'perf stat -a')\n"
+            "               Best results when system is otherwise idle.\n",
             argv[0], argv[0]);
         return 1;
     }
@@ -476,10 +522,22 @@ int main(int argc, const char *argv[]) {
         return 1;
     }
 
+    // Total counter count (fixed + configurable)
+    u32 total_counter_count = kpc_get_counter_count(classes);
+
     // --- Read counters BEFORE ---
-    if ((ret = kpc_get_thread_counters(0, KPC_MAX_COUNTERS, counters_0))) {
-        fprintf(stderr, "Failed to read counters (before): %d\n", ret);
-        return 1;
+    if (self_mode) {
+        // Per-thread: precise
+        if ((ret = kpc_get_thread_counters(0, KPC_MAX_COUNTERS, counters_0))) {
+            fprintf(stderr, "Failed to read counters (before): %d\n", ret);
+            return 1;
+        }
+    } else {
+        // System-wide: sum across all CPUs
+        if ((ret = read_cpu_counters_summed(classes, total_counter_count, counters_0))) {
+            fprintf(stderr, "Failed to read CPU counters (before): %d\n", ret);
+            return 1;
+        }
     }
 
     u64 time_start = mach_absolute_time();
@@ -513,9 +571,16 @@ int main(int argc, const char *argv[]) {
     u64 time_end = mach_absolute_time();
 
     // --- Read counters AFTER ---
-    if ((ret = kpc_get_thread_counters(0, KPC_MAX_COUNTERS, counters_1))) {
-        fprintf(stderr, "Failed to read counters (after): %d\n", ret);
-        return 1;
+    if (self_mode) {
+        if ((ret = kpc_get_thread_counters(0, KPC_MAX_COUNTERS, counters_1))) {
+            fprintf(stderr, "Failed to read counters (after): %d\n", ret);
+            return 1;
+        }
+    } else {
+        if ((ret = read_cpu_counters_summed(classes, total_counter_count, counters_1))) {
+            fprintf(stderr, "Failed to read CPU counters (after): %d\n", ret);
+            return 1;
+        }
     }
 
     // --- Stop counting ---
@@ -531,7 +596,8 @@ int main(int argc, const char *argv[]) {
 
     // --- Print results ---
     fprintf(stderr, "\n");
-    fprintf(stderr, " Performance counter stats:\n");
+    fprintf(stderr, " Performance counter stats%s:\n",
+        self_mode ? " (per-thread)" : " (system-wide, all CPUs)");
     fprintf(stderr, " ─────────────────────────────────────────\n");
 
     u64 val_cycles = 0, val_instrs = 0, val_l1_miss = 0, val_l1_hit = 0;
@@ -542,7 +608,7 @@ int main(int argc, const char *argv[]) {
         usize idx = counter_map[i];
         u64 val = counters_1[idx] - counters_0[idx];
 
-        fprintf(stderr, " %'16llu   %s\n", val, alias->alias);
+        fprintf(stderr, " %16llu   %s\n", val, alias->alias);
 
         if (strcmp(alias->alias, "cycles") == 0)       val_cycles = val;
         if (strcmp(alias->alias, "instructions") == 0)  val_instrs = val;
@@ -561,6 +627,10 @@ int main(int argc, const char *argv[]) {
         fprintf(stderr, " %15.2f%%   L1D cache miss rate\n", miss_rate);
     }
     fprintf(stderr, " %14.6f s   elapsed time\n", elapsed_s);
+    if (!self_mode) {
+        fprintf(stderr, "\n Note: system-wide counters include activity from all\n"
+                        " processes. Run on an idle system for best accuracy.\n");
+    }
     fprintf(stderr, "\n");
 
     // Also print fixed counters if available
@@ -569,7 +639,7 @@ int main(int argc, const char *argv[]) {
         kpep_event *ev = db->fixed_event_arr[i];
         u64 val = counters_1[i] - counters_0[i];
         if (ev && ev->name) {
-            fprintf(stderr, " %'16llu   %s (fixed)\n", val, ev->name);
+            fprintf(stderr, " %16llu   %s (fixed)\n", val, ev->name);
         }
     }
     fprintf(stderr, "\n");
