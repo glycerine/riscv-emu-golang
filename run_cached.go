@@ -22,15 +22,44 @@ import (
 // removing per-instruction polling from the hot loop.
 const pollBatch = 1024
 
-// RunDefault is the "just run the guest" entry point used by cpu.Run(). It
-// allocates a decoder cache sized to cover 256 KB from the current PC and
-// invokes RunCached. Callers needing cross-call cache reuse or custom sizing
-// should build their own *DecoderCache and call RunCached directly.
+// RunDefault is the "just run the guest" entry point used by cpu.Run().
+// It allocates a fresh 256 KB decoder cache based at the current PC and
+// hands off to RunCached. Callers needing cross-call cache reuse or custom
+// sizing should build their own *DecoderCache and call RunCached directly.
 //
-// This helper exists so cpu.Run() doesn't call RunCached directly from
-// cpu.go — empirically, that triggers a ~25% codegen regression in
-// RunCached's megaswitch on bench_guest (measured 419 → 314 MIPS). Keeping
-// all RunCached callsites inside run_cached.go keeps codegen stable.
+// ── Why this helper exists (performance footgun) ─────────────────────────
+//
+// This function is a deliberate indirection layer for code-generation
+// reasons, not a semantic one. Bisection (see git history around the
+// "recover 419 MIPS" change) established that:
+//
+//   cpu.Run()   =>  calls RunCached directly                =>  ~314 MIPS
+//   cpu.Run()   =>  calls RunDefault   (defined here)       =>  ~406 MIPS
+//
+// Same RunCached source, same CPU struct, same benchmarks. The ~25%
+// slowdown is visible even in benchmarks that never call cpu.Run() (e.g.
+// BenchmarkCPU_FullExecution_Cached calls riscv.RunCached directly from
+// the bench package). Per-line pprof listing shows the hit is spread
+// across the top of the megaswitch: `switch slot.op`, the hot RVC cases
+// (C.ADDI / C.MV / C.ADD / C.BNEZ), and the slot.next fallback — a
+// register-allocation shift in the megaswitch itself.
+//
+// The likely mechanism is some package-level analysis in the Go compiler
+// (inliner cost model, call-graph weighting, function ordering) that
+// changes how RunCached is compiled once it has an in-file caller inside
+// cpu.go. The threshold isn't documented and isn't stable across Go
+// versions. What IS stable: keeping every RunCached callsite inside
+// run_cached.go preserves the fast codegen.
+//
+// Rules for maintainers:
+//   - Do NOT call RunCached from any file in this package other than
+//     run_cached.go. Route through RunDefault (or add a new helper here).
+//   - When adding a new "default run" entry point on CPU or elsewhere,
+//     have it land in run_cached.go and chain from there.
+//   - Regression gate: BenchmarkCPU_FullExecution_Cached must stay
+//     ≥ 400 MIPS on the baseline developer machine (i7 Ice Lake class).
+//     If it drops without an obvious source-level explanation, look for
+//     a new cross-file call into RunCached.
 func RunDefault(cpu *CPU, nc *NoteChain) error {
 	base := cpu.pc &^ uint64(0xFFF)
 	if base > 0x1000 {

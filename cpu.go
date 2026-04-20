@@ -38,15 +38,43 @@ type CPU struct {
 	mtval   uint64 // 0x343: trap value
 }
 
-// Do NOT add fields to CPU. Storing a *DecoderCache here was tried and
-// reverted: the added pointer shifted Go's register allocator in the
-// RunCached megaswitch enough to cause a ~26% regression on bench_guest
-// (measured 419 → 325 MIPS). The regression was spread across the hot
-// RVC cases (C.ADDI / C.MV / C.ADD / C.BNEZ) plus the top-level switch
-// dispatch. Profile diff: /tmp/bg_9499bda.list.txt vs /tmp/bg_HEAD.list.txt.
-// Keep the CPU struct shape stable so RunCached codegen stays stable.
-// Callers that need persistent caches call RunCached(cpu, cache, nc)
-// directly with their own cache.
+// ── Performance footgun: don't call RunCached from this file ─────────────
+//
+// The interpreter's hot path is the megaswitch inside RunCached (see
+// run_cached.go). It's a very large function and its generated machine code
+// is unusually sensitive to compilation context.
+//
+// Specifically: when cpu.Run() (in this file) is written as a direct call
+// like `return RunCached(c, NewDecoderCache(…), &c.Notes)`, the Go compiler
+// emits visibly worse code for RunCached itself — ~25% slower on
+// bench_guest (measured 419 MIPS → 314 MIPS). The slowdown is spread across
+// the hottest RVC cases (C.ADDI / C.MV / C.ADD / C.BNEZ) and the top-level
+// `switch slot.op` dispatch, a fingerprint consistent with altered register
+// allocation in the megaswitch. The regression appears *even on benchmarks
+// that never invoke cpu.Run()* (e.g. BenchmarkCPU_FullExecution_Cached,
+// which calls riscv.RunCached directly from the bench package) — RunCached's
+// machine code itself is what changes, not its call site.
+//
+// The root cause is likely Go's package-level inliner/cost-model treating
+// RunCached differently when it has an in-package caller. We haven't fully
+// characterized it, and the threshold isn't documented anywhere in the Go
+// toolchain.
+//
+// The workaround: cpu.Run() routes through RunDefault (defined in
+// run_cached.go) instead of calling RunCached directly. Keeping *all*
+// RunCached callsites confined to run_cached.go preserves the fast codegen.
+//
+// Rules to keep performance:
+//   - Do NOT add `RunCached(...)` call sites to cpu.go or any other file
+//     in the riscv package outside run_cached.go.
+//   - If you need a new cpu.go entry point that runs the guest, have it
+//     call RunDefault (or another helper defined in run_cached.go).
+//   - When in doubt, re-run: go test -bench='^BenchmarkCPU_FullExecution_Cached$'
+//     -benchtime=10s ./bench/ — target ≥ 400 MIPS on this host class.
+//
+// Adding fields to CPU is fine. An earlier investigation blamed a new
+// `cache *DecoderCache` field; bisection proved the field is innocent and
+// the direct in-file RunCached call is the actual cause.
 
 func NewCPU(mem GuestMemory) *CPU { return &CPU{mem: mem} }
 
@@ -70,13 +98,17 @@ func (c *CPU) ResetCycle()               { c.cycle = 0 }
 func (c *CPU) SetWatchAddr(addr uint64)  { c.watchAddr = addr }
 func (c *CPU) WatchAddr() uint64         { return c.watchAddr }
 
-// Run executes instructions until an unhandled note or fatal exception.
-// Uses the decoder-cached fast path (RunCached) via RunDefault — an
-// indirection that keeps RunCached's callsites all in run_cached.go, which
-// empirically is required to keep Go's codegen for RunCached optimal.
-// (Calling RunCached directly from cpu.go's Run() method caused a ~25%
-// codegen regression in the RunCached megaswitch; root cause is some
-// cross-file analysis difference in the Go compiler.)
+// Run executes the guest until an unhandled note or fatal exception.
+// Exceptions are delivered through cpu.Notes; see NoteChain and RunWithChain.
+//
+// Dispatches through RunDefault (in run_cached.go) which auto-allocates a
+// 256 KB decoder cache at the current PC and invokes RunCached. This one
+// level of indirection is load-bearing for performance — do NOT inline the
+// RunCached call here. See the long-form comment above CPU for why.
+//
+// Callers that want the uncached reference path call RunWithChain directly.
+// Callers that want a persistent or custom-sized decoder cache call
+// RunCached(cpu, cache, &cpu.Notes) directly.
 func (c *CPU) Run() error {
 	return RunDefault(c, &c.Notes)
 }
