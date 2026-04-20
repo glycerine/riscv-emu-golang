@@ -3,14 +3,13 @@
 // Measures L1D cache misses, hits, cycles, and instructions for a child process.
 //
 // Based on ibireme's kpc_demo.c (public domain).
+// Adapted for Intel Ice Lake (i7-1068NG7) with L1 cache miss counters.
 // 
 // https://gist.github.com/ibireme/173517c208c7dc333ba962c1f0d67d12
 // https://gist.github.com/glycerine/e3cfbaf95ba8a2d0ba7f3344dd5d946a
 //
 // Created by YaoYuan <ibireme@gmail.com> on 2021.
 // Released into the public domain (unlicense.org).
-//
-// Adapted for Intel Ice Lake (i7-1068NG7) with L1 cache miss counters.
 //
 // Build:
 //   clang -O2 -o kpc_perf kpc_perf.c -framework CoreFoundation
@@ -547,6 +546,13 @@ int main(int argc, const char *argv[]) {
         fprintf(stderr, "\nRunning built-in self-test (L1 cache stress)...\n\n");
         self_test_func();
     } else {
+        // Print what we're about to exec
+        fprintf(stderr, "exec: ");
+        for (int i = 1; i < argc; i++) {
+            fprintf(stderr, "%s[%s]%s", i == 1 ? "" : " ", argv[i],
+                i == argc - 1 ? "\n" : "");
+        }
+
         // Fork and exec, then wait
         pid_t pid = fork();
         if (pid < 0) {
