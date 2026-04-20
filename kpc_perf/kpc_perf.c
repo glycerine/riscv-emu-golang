@@ -152,7 +152,11 @@ static int setup_pmc(void) {
     }
 
     if ((classes & KPC_CLASS_CONFIGURABLE_MASK) && reg_count) {
-        if ((ret = kpc_set_config(classes, regs)))
+        // IMPORTANT: kpc_set_config interprets the regs array relative to the
+        // classes bitmask. If we pass classes=FIXED|CONFIGURABLE, it expects
+        // fixed configs first, then configurable. But kpep_config_kpc only
+        // fills in configurable regs. So pass CONFIGURABLE_MASK only here.
+        if ((ret = kpc_set_config(KPC_CLASS_CONFIGURABLE_MASK, regs)))
             { fprintf(stderr, "set_config: %d\n", ret); return 1; }
     }
 
