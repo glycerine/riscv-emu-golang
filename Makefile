@@ -25,7 +25,8 @@
 .PHONY: all help bench-setup bench bench-quick \
         bench-raw bench-ours bench-cpu bench-libriscv bench-mem \
         bench-smoke bench-summary bench-lots test clean check-tools \
-        libriscv-build guest-elf guest-native
+        libriscv-build guest-elf guest-native \
+        coremark-elf dhrystone-elf bench-coremark bench-dhrystone
 
 # ── platform detection ─────────────────────────────────────────────────────
 
@@ -83,6 +84,25 @@ GUEST_DIR   := $(ROOT)bench/libriscv_guest
 GUEST_SRC   := $(GUEST_DIR)/bench_guest.c
 GUEST_ELF   := $(GUEST_DIR)/bench_guest.elf
 GUEST_NATIVE := $(GUEST_DIR)/bench_guest.native
+
+# ── CoreMark / Dhrystone RV64 ELFs ────────────────────────────────────────
+# Sources vendored at xendor/coremark and xendor/dhrystone. Freestanding port
+# layers live under bench/{coremark,dhrystone}_guest. Built ELFs are artifacts
+# at bench/*.elf (gitignored).
+
+CM_VENDOR   := $(ROOT)xendor/coremark
+CM_PORT     := $(ROOT)bench/coremark_guest
+CM_ELF      := $(ROOT)bench/coremark.elf
+CM_SRCS     := $(CM_VENDOR)/core_main.c $(CM_VENDOR)/core_list_join.c \
+               $(CM_VENDOR)/core_matrix.c $(CM_VENDOR)/core_state.c \
+               $(CM_VENDOR)/core_util.c \
+               $(CM_PORT)/core_portme.c $(CM_PORT)/start.c
+
+DHRY_VENDOR := $(ROOT)xendor/dhrystone
+DHRY_PORT   := $(ROOT)bench/dhrystone_guest
+DHRY_ELF    := $(ROOT)bench/dhrystone.elf
+DHRY_SRCS   := $(DHRY_VENDOR)/dhrystone.c $(DHRY_VENDOR)/dhrystone_main.c \
+               $(DHRY_PORT)/port.c
 RESULTS_DIR := /tmp/riscv-bench
 #PATCH_STAMP := $(VENDOR)/.patched
 
@@ -143,6 +163,12 @@ endif
 	@echo "    make bench-libriscv   libriscv calibration only"
 	@echo "    make bench-mem        memory pair head-to-head only"
 	@echo "    make bench-smoke      quick sanity check (~3s)"
+	@echo "    make bench-coremark   CoreMark RV64 (cached vs uncached interpreter)"
+	@echo "    make bench-dhrystone  Dhrystone RV64 (cached vs uncached interpreter)"
+	@echo ""
+	@echo "  Guest ELFs (normally auto-built by the bench targets):"
+	@echo "    make coremark-elf     build bench/coremark.elf from xendor/coremark"
+	@echo "    make dhrystone-elf    build bench/dhrystone.elf from xendor/dhrystone"
 	@echo ""
 	@echo "  Other:"
 	@echo "    make test             unit tests"
@@ -276,6 +302,40 @@ $(GUEST_NATIVE): $(GUEST_SRC)
 	@echo "  ✓ $$(file $(GUEST_NATIVE) | cut -d: -f2 | xargs)"
 	@echo "  ✓ size: $$(du -h $(GUEST_NATIVE) | cut -f1)"
 
+# ── CoreMark ELF ──────────────────────────────────────────────────────────
+coremark-elf: $(CM_ELF)
+$(CM_ELF): $(CM_SRCS) $(CM_PORT)/core_portme.h $(CM_PORT)/link.ld
+	@echo "── compiling CoreMark RV64 ELF ─────────────────────────────────"
+	$(ZIG_CC) cc -O2 -target riscv64-freestanding \
+	    -mcpu=generic_rv64+m+a+f+d+c -mabi=lp64d -mcmodel=medany \
+	    -nostdlib -static \
+	    -T $(CM_PORT)/link.ld \
+	    -I $(CM_VENDOR) -I $(CM_PORT) \
+	    -DITERATIONS=1000 -DPERFORMANCE_RUN=1 -DFLAGS_STR=\"-O2\" \
+	    -o $(CM_ELF) $(CM_SRCS)
+	@test -f $(CM_ELF) || { echo "  ✗ coremark ELF not produced"; exit 1; }
+	@echo "  ✓ $$(file $(CM_ELF) | cut -d: -f2 | xargs)"
+	@echo "  ✓ size: $$(du -h $(CM_ELF) | cut -f1)"
+
+# ── Dhrystone ELF ─────────────────────────────────────────────────────────
+# The vendored dhry header pulls in <stdio.h>/<string.h>, so we inject our
+# own self-contained header via -include before the vendored one can be
+# (accidentally) pulled in via the file-local include search path.
+dhrystone-elf: $(DHRY_ELF)
+$(DHRY_ELF): $(DHRY_SRCS) $(DHRY_PORT)/dhrystone.h $(DHRY_PORT)/util.h $(DHRY_PORT)/alloca.h $(DHRY_PORT)/link.ld
+	@echo "── compiling Dhrystone RV64 ELF ────────────────────────────────"
+	$(ZIG_CC) cc -O2 -std=gnu89 -target riscv64-freestanding \
+	    -mcpu=generic_rv64+m+a+f+d+c -mabi=lp64d -mcmodel=medany \
+	    -nostdlib -static \
+	    -T $(DHRY_PORT)/link.ld \
+	    -include $(DHRY_PORT)/dhrystone.h \
+	    -I $(DHRY_PORT) \
+	    -DTIME=1 -DNUMBER_OF_RUNS=500000 -Wno-everything \
+	    -o $(DHRY_ELF) $(DHRY_SRCS)
+	@test -f $(DHRY_ELF) || { echo "  ✗ dhrystone ELF not produced"; exit 1; }
+	@echo "  ✓ $$(file $(DHRY_ELF) | cut -d: -f2 | xargs)"
+	@echo "  ✓ size: $$(du -h $(DHRY_ELF) | cut -f1)"
+
 
 # ── benchmark targets ──────────────────────────────────────────────────────
 
@@ -353,6 +413,20 @@ bench-cpu: guest-elf
 	cd $(ROOT) && BENCH_ELF=$(GUEST_ELF) \
 	    $(GO) test -count=1 -benchtime=1x -benchmem \
 	        -run='^$$' -bench='^BenchmarkCPU' \
+	        ./bench/ 2>&1
+
+bench-coremark: coremark-elf
+	@echo "── CoreMark (cached vs uncached) ───────────────────────────────"
+	cd $(ROOT) && CM_ELF=$(CM_ELF) \
+	    $(GO) test -count=1 -benchtime=1x -benchmem \
+	        -run='^$$' -bench='^BenchmarkCPU_CoreMark' \
+	        ./bench/ 2>&1
+
+bench-dhrystone: dhrystone-elf
+	@echo "── Dhrystone (cached vs uncached) ──────────────────────────────"
+	cd $(ROOT) && DHRY_ELF=$(DHRY_ELF) \
+	    $(GO) test -count=1 -benchtime=1x -benchmem \
+	        -run='^$$' -bench='^BenchmarkCPU_Dhrystone' \
 	        ./bench/ 2>&1
 
 bench-ours:
