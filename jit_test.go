@@ -2,6 +2,7 @@ package riscv
 
 import (
 	"bytes"
+	"math"
 	"testing"
 )
 
@@ -970,29 +971,226 @@ func TestJIT_InstructionBudget_JForward_Loop(t *testing.T) {
 // ── Test 14: Fault address correctness ───────────────────────────────────
 
 func TestJIT_FaultAddress(t *testing.T) {
-	cpu, mem := newTestCPU(t, Size64MB, 0x1000, []uint32{
-		ienc(opOPIMM, 0, 10, 0, 1),    // ADDI x10, x0, 1
-		ienc(opOPIMM, 1, 10, 10, 26),  // SLLI x10, x10, 26 → 0x4000000
-		ienc(opOPIMM, 0, 10, 10, 8),   // ADDI x10, x10, 8 → 0x4000008
-		ienc(opLOAD, 2, 11, 10, 0),    // LW x11, 0(x10) → fault at 0x4000008
+	const entryPC = 0x1000
+	const faultInsnPC = entryPC + 4*3 // LW is the 4th instruction (index 3)
+	const expectFaultAddr = uint64(0x4000008)
+
+	cpu, mem := newTestCPU(t, Size64MB, entryPC, []uint32{
+		ienc(opOPIMM, 0, 10, 0, 1),   // ADDI x10, x0, 1
+		ienc(opOPIMM, 1, 10, 10, 26), // SLLI x10, x10, 26 → 0x4000000
+		ienc(opOPIMM, 0, 10, 10, 8),  // ADDI x10, x10, 8 → 0x4000008
+		ienc(opLOAD, 2, 11, 10, 0),   // LW x11, 0(x10) → fault at 0x4000008
 		instrECALL,
 	})
 	defer mem.Free()
 
-	var faultAddr uint64
+	var (
+		gotCause uint64
+		gotTval  uint64
+		gotNotePC uint64
+	)
 	cpu.Notes.Push(func(cpu *CPU, n Note) NoteDisposition {
 		if n.Cause == CauseLoadFault {
-			faultAddr = n.Tval
+			gotCause = n.Cause
+			gotTval = n.Tval
+			gotNotePC = n.PC
 			return NoteFatal
 		}
 		return NoteForward
 	})
 
 	jit := NewJIT()
-	err := jit.RunJIT(cpu)
+	_ = jit.RunJIT(cpu)
 
-	if faultAddr == 0 && err == nil {
-		t.Fatal("expected load fault")
+	if gotCause != CauseLoadFault {
+		t.Fatalf("no load fault delivered (cause=%d)", gotCause)
 	}
-	t.Logf("fault addr = 0x%x", faultAddr)
+	if gotTval != expectFaultAddr {
+		t.Errorf("fault Tval = 0x%x, want 0x%x (was 0 before per-call-site fault tail fix)",
+			gotTval, expectFaultAddr)
+	}
+	if gotNotePC != faultInsnPC {
+		t.Errorf("fault Note.PC = 0x%x, want 0x%x (faulting LW instruction; was block startPC before fix)",
+			gotNotePC, faultInsnPC)
+	}
+	if cpu.PC() != faultInsnPC {
+		t.Errorf("cpu.PC after fault = 0x%x, want 0x%x (faulting LW instruction)",
+			cpu.PC(), faultInsnPC)
+	}
+}
+
+// TestJIT_StoreFaultAddress is the store-side counterpart to TestJIT_FaultAddress.
+// Verifies the IR JIT reports the actual faulting store instruction's PC and
+// the exact faulting guest address (not block startPC and not 0).
+func TestJIT_StoreFaultAddress(t *testing.T) {
+	const entryPC = 0x1000
+	const faultInsnPC = entryPC + 4*3 // SW is the 4th instruction (index 3)
+	const expectFaultAddr = uint64(0x4000010)
+
+	cpu, mem := newTestCPU(t, Size64MB, entryPC, []uint32{
+		ienc(opOPIMM, 0, 10, 0, 1),     // ADDI x10, x0, 1
+		ienc(opOPIMM, 1, 10, 10, 26),   // SLLI x10, x10, 26 → 0x4000000
+		ienc(opOPIMM, 0, 10, 10, 16),   // ADDI x10, x10, 16 → 0x4000010
+		senc(opSTORE, 2, 10, 11, 0),    // SW x11, 0(x10) → fault at 0x4000010
+		instrECALL,
+	})
+	defer mem.Free()
+
+	var (
+		gotCause  uint64
+		gotTval   uint64
+		gotNotePC uint64
+	)
+	cpu.Notes.Push(func(cpu *CPU, n Note) NoteDisposition {
+		if n.Cause == CauseStoreFault {
+			gotCause = n.Cause
+			gotTval = n.Tval
+			gotNotePC = n.PC
+			return NoteFatal
+		}
+		return NoteForward
+	})
+
+	jit := NewJIT()
+	_ = jit.RunJIT(cpu)
+
+	if gotCause != CauseStoreFault {
+		t.Fatalf("no store fault delivered (cause=%d)", gotCause)
+	}
+	if gotTval != expectFaultAddr {
+		t.Errorf("fault Tval = 0x%x, want 0x%x", gotTval, expectFaultAddr)
+	}
+	if gotNotePC != faultInsnPC {
+		t.Errorf("fault Note.PC = 0x%x, want 0x%x (faulting SW instruction)",
+			gotNotePC, faultInsnPC)
+	}
+	if cpu.PC() != faultInsnPC {
+		t.Errorf("cpu.PC after fault = 0x%x, want 0x%x", cpu.PC(), faultInsnPC)
+	}
+}
+
+// TestJIT_FLW_Misaligned exercises the FP byte-by-byte misalign path for FLW.
+// An FLW from an address whose low 2 bits are non-zero must succeed and load
+// a correctly NaN-boxed 32-bit value via byte-by-byte reads.
+func TestJIT_FLW_Misaligned(t *testing.T) {
+	const entryPC = 0x1000
+	const dataAddr = uint64(0x2001) // deliberately misaligned
+
+	cpu, mem := newTestCPU(t, Size64MB, entryPC, []uint32{
+		uenc(opLUI, 10, 0x2000),
+		ienc(opOPIMM, 0, 10, 10, 1),
+		ienc(0x07, 2, 1, 10, 0), // FLW f1, 0(x10) — funct3=2
+		instrECALL,
+	})
+	defer mem.Free()
+
+	want32 := uint32(0xDEADBEEF)
+	if f := mem.WriteBytes(dataAddr, []byte{
+		byte(want32), byte(want32 >> 8), byte(want32 >> 16), byte(want32 >> 24),
+	}); f != nil {
+		t.Fatalf("WriteBytes setup failed: %v", f)
+	}
+
+	cpu.Notes.Push(func(cpu *CPU, n Note) NoteDisposition {
+		if n.Cause == CauseEcallU {
+			return NoteFatal
+		}
+		t.Errorf("unexpected fault cause=%d tval=0x%x pc=0x%x",
+			n.Cause, n.Tval, n.PC)
+		return NoteFatal
+	})
+
+	jit := NewJIT()
+	_ = jit.RunJIT(cpu)
+
+	got := cpu.FReg(1)
+	wantBoxed := uint64(0xFFFFFFFF00000000) | uint64(want32)
+	if got != wantBoxed {
+		t.Errorf("f1 = 0x%016x, want 0x%016x (NaN-boxed 0x%08x from misaligned FLW)",
+			got, wantBoxed, want32)
+	}
+}
+
+// TestJIT_FLD_Misaligned exercises the FP byte-by-byte misalign path: an FLD
+// from an address whose low 3 bits are non-zero must succeed and load the
+// correct 64-bit value (no fault). Before Fix 2, the JIT trapped on misaligned
+// FP loads via the buggy shared fault label; now it falls through to
+// emitMisalignedFPLoad which does a byte-by-byte read.
+func TestJIT_FLD_Misaligned(t *testing.T) {
+	const entryPC = 0x1000
+	const dataAddr = uint64(0x2001) // deliberately misaligned (low 3 bits != 0)
+
+	cpu, mem := newTestCPU(t, Size64MB, entryPC, []uint32{
+		uenc(opLUI, 10, 0x2000),     // LUI x10, 0x2 → x10 = 0x2000
+		ienc(opOPIMM, 0, 10, 10, 1), // ADDI x10, x10, 1 → x10 = 0x2001
+		ienc(0x07, 3, 1, 10, 0),     // FLD f1, 0(x10) — funct3=3
+		instrECALL,
+	})
+	defer mem.Free()
+
+	bytes := []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08}
+	if f := mem.WriteBytes(dataAddr, bytes); f != nil {
+		t.Fatalf("WriteBytes setup failed: %v", f)
+	}
+
+	cpu.Notes.Push(func(cpu *CPU, n Note) NoteDisposition {
+		if n.Cause == CauseEcallU {
+			return NoteFatal // expected — clean termination
+		}
+		t.Errorf("unexpected fault cause=%d tval=0x%x pc=0x%x",
+			n.Cause, n.Tval, n.PC)
+		return NoteFatal
+	})
+
+	jit := NewJIT()
+	_ = jit.RunJIT(cpu)
+
+	got := cpu.FReg(1)
+	want := uint64(0x0807060504030201)
+	if got != want {
+		t.Errorf("f1 = 0x%016x, want 0x%016x (little-endian bytes from 0x2001)",
+			got, want)
+	}
+}
+
+// TestJIT_FSD_Misaligned exercises the byte-by-byte misaligned store path.
+func TestJIT_FSD_Misaligned(t *testing.T) {
+	const entryPC = 0x1000
+	const dataAddr = uint64(0x2001) // deliberately misaligned
+
+	// Pre-fill f1 via FLD from an aligned address, then FSD to a misaligned one.
+	cpu, mem := newTestCPU(t, Size64MB, entryPC, []uint32{
+		uenc(opLUI, 10, 0x3000),     // x10 = 0x3000 (aligned source)
+		uenc(opLUI, 11, 0x2000),     // x11 = 0x2000
+		ienc(opOPIMM, 0, 11, 11, 1), // x11 = 0x2001 (misaligned dest)
+		ienc(0x07, 3, 1, 10, 0),     // FLD f1, 0(x10) — from aligned
+		senc(0x27, 3, 11, 1, 0),     // FSD f1, 0(x11) — to misaligned
+		instrECALL,
+	})
+	defer mem.Free()
+
+	src := []byte{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22}
+	if f := mem.WriteBytes(0x3000, src); f != nil {
+		t.Fatalf("WriteBytes setup failed: %v", f)
+	}
+
+	cpu.Notes.Push(func(cpu *CPU, n Note) NoteDisposition {
+		if n.Cause == CauseEcallU {
+			return NoteFatal
+		}
+		t.Errorf("unexpected fault cause=%d tval=0x%x pc=0x%x",
+			n.Cause, n.Tval, n.PC)
+		return NoteFatal
+	})
+
+	jit := NewJIT()
+	_ = jit.RunJIT(cpu)
+
+	got := make([]byte, 8)
+	if f := mem.ReadBytes(dataAddr, got); f != nil {
+		t.Fatalf("ReadBytes: %v", f)
+	}
+	if !bytes.Equal(got, src) {
+		t.Errorf("dest bytes = %x, want %x", got, src)
+	}
 }

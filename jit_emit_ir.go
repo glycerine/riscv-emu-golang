@@ -40,6 +40,16 @@ type deferredExit struct {
 	targetPC uint64
 }
 
+// deferredFault holds a per-load/store fault exit to emit at finalize time.
+// Each load/store registers one so the fault tail returns its own PC and the
+// live VReg holding the faulting guest address (matches jit_emit.go behavior).
+type deferredFault struct {
+	label  ir.Label
+	pc     uint64  // PC of the faulting RISC-V instruction
+	addrVR ir.VReg // VReg holding the computed guest address
+	status int     // jitLoadFault or jitStoreFault
+}
+
 // emitter accumulates IR for a basic block.
 type emitter struct {
 	mem        *GuestMemory
@@ -54,12 +64,9 @@ type emitter struct {
 	gotoTargets u64set
 	pcLabels    u64labelmap
 	icEmitted  bool
-	loadFaultLabel  ir.Label
-	storeFaultLabel ir.Label
-	hasLoadFault    bool // true if loadFaultLabel was referenced
-	hasStoreFault   bool // true if storeFaultLabel was referenced
-	deferredExits []deferredExit
-	exitIdx       int // counter for chain exit indices
+	deferredExits  []deferredExit
+	deferredFaults []deferredFault
+	exitIdx        int // counter for chain exit indices
 }
 
 // ── Register access helpers ────────────────────────────────────────────
@@ -101,20 +108,32 @@ func (e *emitter) fregDst(r uint32) ir.VReg {
 // ── NaN-boxing helpers ─────────────────────────────────────────────────
 
 // boxF32 NaN-boxes a 32-bit value into f[rd].
+//
+// The boxed quadword is built in an integer temp (low 32 = val, high 32 = all
+// ones), then moved into the FP destination register. Building it directly
+// into the FP register would emit an integer ORQ with an XMM destination,
+// which the lowerer cannot encode.
 func (e *emitter) boxF32(rd uint32, val ir.VReg) {
 	dst := e.fregDst(rd)
-	masked := e.irEm.Tmp()
-	e.irEm.AndImm(masked, val, 0xFFFFFFFF)
+	boxed := e.irEm.Tmp()
+	e.irEm.AndImm(boxed, val, 0xFFFFFFFF)
 	hi := e.irEm.Tmp()
 	e.irEm.Const(hi, -4294967296) // 0xFFFFFFFF00000000 as int64
-	e.irEm.Or(dst, masked, hi)
+	e.irEm.Or(boxed, boxed, hi)
+	e.irEm.Mov(dst, boxed)
 }
 
 // unboxF32 extracts 32-bit float bits; canonical NaN if improperly boxed.
+//
+// The FP source is first moved to an integer temp so the upper-half check
+// (SHR + CMP) can run on integer registers; running these directly on the
+// XMM source would emit an integer SHRQ with an XMM operand, which is invalid.
 func (e *emitter) unboxF32(rs uint32) ir.VReg {
 	src := e.freg(rs)
+	srcInt := e.irEm.Tmp()
+	e.irEm.Mov(srcInt, src)
 	upper := e.irEm.Tmp()
-	e.irEm.ShrImm(upper, src, 32)
+	e.irEm.ShrImm(upper, srcInt, 32)
 	check := e.irEm.Tmp()
 	e.irEm.Const(check, 0xFFFFFFFF)
 	result := e.irEm.Tmp()
@@ -124,7 +143,7 @@ func (e *emitter) unboxF32(rs uint32) ir.VReg {
 	e.irEm.Const(result, 0x7FC00000) // canonical NaN
 	e.irEm.Jump(doneLabel)
 	e.irEm.PlaceLabel(okLabel)
-	e.irEm.Zext(result, src, ir.I32)
+	e.irEm.Zext(result, srcInt, ir.I32)
 	e.irEm.PlaceLabel(doneLabel)
 	return result
 }
@@ -161,6 +180,18 @@ func (e *emitter) advancePC(size uint64) {
 func (e *emitter) emitReturn(pc uint64, status int) {
 	e.irEm.WriteBackAll()
 	e.irEm.Ret(pc, status, ir.VRegZero)
+}
+
+// allocFaultLabel allocates a per-call-site fault label and registers its
+// (PC, addrVR, status) tuple so finalize() emits a tail returning the actual
+// faulting instruction's PC and the live faulting address. Mirrors the TCC
+// emitter's per-call-site `return (JITResult){pc, ic, status, addr}` pattern.
+func (e *emitter) allocFaultLabel(addr ir.VReg, status int) ir.Label {
+	l := e.irEm.NewLabel()
+	e.deferredFaults = append(e.deferredFaults, deferredFault{
+		label: l, pc: e.pc, addrVR: addr, status: status,
+	})
+	return l
 }
 
 // emitChainableReturn emits a chain exit for jitOK exits.
@@ -430,16 +461,13 @@ func (e *emitter) finalize() *emitResult {
 		e.emitChainableReturn(de.targetPC)
 	}
 
-	// Fault handlers: place labels only if the block contains loads/stores.
-	if e.hasLoadFault {
-		e.irEm.PlaceLabel(e.loadFaultLabel)
+	// Per-call-site fault tails. Each load/store registered its own
+	// (label, pc, addr, status); emit one tail apiece so the dispatch loop
+	// receives the faulting instruction's PC and the actual fault address.
+	for _, df := range e.deferredFaults {
+		e.irEm.PlaceLabel(df.label)
 		e.irEm.WriteBackAll()
-		e.irEm.Ret(e.startPC, jitLoadFault, ir.VRegZero)
-	}
-	if e.hasStoreFault {
-		e.irEm.PlaceLabel(e.storeFaultLabel)
-		e.irEm.WriteBackAll()
-		e.irEm.Ret(e.startPC, jitStoreFault, ir.VRegZero)
+		e.irEm.Ret(df.pc, df.status, df.addrVR)
 	}
 
 	return &emitResult{
@@ -604,10 +632,6 @@ func emitBlock(mem *GuestMemory, pc uint64) *emitResult {
 		gotoTargets: gt,
 		pcLabels:    newU64labelmap(),
 	}
-
-	// Pre-allocate fault labels.
-	e.loadFaultLabel = irEm.NewLabel()
-	e.storeFaultLabel = irEm.NewLabel()
 
 	// Emit IR (populates regsUsed via xreg/xregDst calls).
 	for e.numInsns < maxBlockInsns && !e.terminated && e.pc < e.regionEnd &&
@@ -1385,27 +1409,31 @@ func (e *emitter) emitLoad(rd, rs1 uint32, imm int64, funct3 uint32) {
 	if width > 1 {
 		addr := e.irEm.Tmp()
 		e.irEm.AddImm(addr, base, imm)
+		faultLabel := e.allocFaultLabel(addr, jitLoadFault)
 		misalignLabel := e.irEm.NewLabel()
 		alignBits := e.irEm.Tmp()
 		e.irEm.AndImm(alignBits, addr, int64(width-1))
 		e.irEm.Branch(alignBits, ir.VRegZero, ir.NE, misalignLabel)
-		e.irEm.MaskedLoad(dst, base, e.irEm.MemBase(), e.irEm.MemMask(), imm, width, signed, e.loadFaultLabel)
-		e.hasLoadFault = true
+		e.irEm.MaskedLoad(dst, base, e.irEm.MemBase(), e.irEm.MemMask(), imm, width, signed, faultLabel)
 		doneLabel := e.irEm.NewLabel()
 		e.irEm.Jump(doneLabel)
 		e.irEm.PlaceLabel(misalignLabel)
 		// Misaligned load: byte-by-byte little-endian read.
-		e.emitMisalignedLoad(dst, addr, width, signed)
+		e.emitMisalignedLoad(dst, addr, width, signed, faultLabel)
 		e.irEm.PlaceLabel(doneLabel)
 	} else {
-		e.irEm.MaskedLoad(dst, base, e.irEm.MemBase(), e.irEm.MemMask(), imm, 1, signed, e.loadFaultLabel)
-		e.hasLoadFault = true
+		// Byte load: compute addr externally so the fault tail can report it.
+		addr := e.irEm.Tmp()
+		e.irEm.AddImm(addr, base, imm)
+		faultLabel := e.allocFaultLabel(addr, jitLoadFault)
+		e.irEm.MaskedLoad(dst, base, e.irEm.MemBase(), e.irEm.MemMask(), imm, 1, signed, faultLabel)
 	}
 }
 
 // emitMisalignedLoad emits byte-by-byte loads for a misaligned address.
 // addr is a VReg holding the guest virtual address (already computed).
-func (e *emitter) emitMisalignedLoad(dst ir.VReg, addr ir.VReg, width int, signed bool) {
+// faultLabel is the per-call-site fault tail (already registered with addr).
+func (e *emitter) emitMisalignedLoad(dst ir.VReg, addr ir.VReg, width int, signed bool, faultLabel ir.Label) {
 	memBase := e.irEm.MemBase()
 	mask := e.irEm.MemMask()
 
@@ -1416,8 +1444,7 @@ func (e *emitter) emitMisalignedLoad(dst ir.VReg, addr ir.VReg, width int, signe
 	maskNot := e.irEm.Tmp()
 	e.irEm.Not(maskNot, mask)
 	e.irEm.And(tmp1, tmp1, maskNot)
-	e.irEm.Branch(tmp1, ir.VRegZero, ir.NE, e.loadFaultLabel)
-	e.hasLoadFault = true
+	e.irEm.Branch(tmp1, ir.VRegZero, ir.NE, faultLabel)
 
 	// Load byte 0.
 	m0 := e.irEm.Tmp()
@@ -1466,26 +1493,30 @@ func (e *emitter) emitStore(rs1, rs2 uint32, imm int64, funct3 uint32) {
 	if width > 1 {
 		addr := e.irEm.Tmp()
 		e.irEm.AddImm(addr, base, imm)
+		faultLabel := e.allocFaultLabel(addr, jitStoreFault)
 		misalignLabel := e.irEm.NewLabel()
 		alignBits := e.irEm.Tmp()
 		e.irEm.AndImm(alignBits, addr, int64(width-1))
 		e.irEm.Branch(alignBits, ir.VRegZero, ir.NE, misalignLabel)
-		e.irEm.GuestStore(base, e.irEm.MemBase(), e.irEm.MemMask(), imm, src, width, e.storeFaultLabel)
-		e.hasStoreFault = true
+		e.irEm.GuestStore(base, e.irEm.MemBase(), e.irEm.MemMask(), imm, src, width, faultLabel)
 		doneLabel := e.irEm.NewLabel()
 		e.irEm.Jump(doneLabel)
 		e.irEm.PlaceLabel(misalignLabel)
 		// Misaligned store: byte-by-byte little-endian write.
-		e.emitMisalignedStore(addr, src, width)
+		e.emitMisalignedStore(addr, src, width, faultLabel)
 		e.irEm.PlaceLabel(doneLabel)
 	} else {
-		e.irEm.GuestStore(base, e.irEm.MemBase(), e.irEm.MemMask(), imm, src, 1, e.storeFaultLabel)
-		e.hasStoreFault = true
+		// Byte store: compute addr externally so the fault tail can report it.
+		addr := e.irEm.Tmp()
+		e.irEm.AddImm(addr, base, imm)
+		faultLabel := e.allocFaultLabel(addr, jitStoreFault)
+		e.irEm.GuestStore(base, e.irEm.MemBase(), e.irEm.MemMask(), imm, src, 1, faultLabel)
 	}
 }
 
 // emitMisalignedStore emits byte-by-byte stores for a misaligned address.
-func (e *emitter) emitMisalignedStore(addr, src ir.VReg, width int) {
+// faultLabel is the per-call-site fault tail (already registered with addr).
+func (e *emitter) emitMisalignedStore(addr, src ir.VReg, width int, faultLabel ir.Label) {
 	memBase := e.irEm.MemBase()
 	mask := e.irEm.MemMask()
 
@@ -1496,8 +1527,7 @@ func (e *emitter) emitMisalignedStore(addr, src ir.VReg, width int) {
 	maskNot := e.irEm.Tmp()
 	e.irEm.Not(maskNot, mask)
 	e.irEm.And(tmp1, tmp1, maskNot)
-	e.irEm.Branch(tmp1, ir.VRegZero, ir.NE, e.storeFaultLabel)
-	e.hasStoreFault = true
+	e.irEm.Branch(tmp1, ir.VRegZero, ir.NE, faultLabel)
 
 	// Store each byte.
 	for i := 0; i < width; i++ {
@@ -1533,21 +1563,39 @@ func (e *emitter) emitFPLoad(rd, rs1 uint32, imm int64, funct3 uint32) {
 	}
 
 	base := e.xreg(rs1)
-	// FP loads fault on misalignment — combine alignment + OOB into one check.
 	addr := e.irEm.Tmp()
 	e.irEm.AddImm(addr, base, imm)
+	faultLabel := e.allocFaultLabel(addr, jitLoadFault)
+
+	misalignLabel := e.irEm.NewLabel()
 	alignBits := e.irEm.Tmp()
 	e.irEm.AndImm(alignBits, addr, int64(width-1))
-	e.irEm.Branch(alignBits, ir.VRegZero, ir.NE, e.loadFaultLabel)
+	e.irEm.Branch(alignBits, ir.VRegZero, ir.NE, misalignLabel)
 
 	if funct3 == 2 { // FLW — load 32 bits, NaN-box
 		tmp := e.irEm.Tmp()
-		e.irEm.MaskedLoad(tmp, base, e.irEm.MemBase(), e.irEm.MemMask(), imm, 4, false, e.loadFaultLabel)
-		e.hasLoadFault = true
+		e.irEm.MaskedLoad(tmp, base, e.irEm.MemBase(), e.irEm.MemMask(), imm, 4, false, faultLabel)
 		e.boxF32(rd, tmp)
 	} else { // FLD
-		e.irEm.MaskedLoad(e.fregDst(rd), base, e.irEm.MemBase(), e.irEm.MemMask(), imm, 8, false, e.loadFaultLabel)
-		e.hasLoadFault = true
+		e.irEm.MaskedLoad(e.fregDst(rd), base, e.irEm.MemBase(), e.irEm.MemMask(), imm, 8, false, faultLabel)
+	}
+	doneLabel := e.irEm.NewLabel()
+	e.irEm.Jump(doneLabel)
+	e.irEm.PlaceLabel(misalignLabel)
+	// Misaligned FP load: byte-by-byte little-endian read.
+	e.emitMisalignedFPLoad(rd, addr, width, faultLabel)
+	e.irEm.PlaceLabel(doneLabel)
+}
+
+// emitMisalignedFPLoad emits a byte-by-byte FP load (FLW or FLD) at a
+// misaligned address. faultLabel is the per-call-site fault tail.
+func (e *emitter) emitMisalignedFPLoad(rd uint32, addr ir.VReg, width int, faultLabel ir.Label) {
+	tmp := e.irEm.Tmp()
+	e.emitMisalignedLoad(tmp, addr, width, false, faultLabel)
+	if width == 4 { // FLW: NaN-box low 32 bits into f[rd]
+		e.boxF32(rd, tmp)
+	} else { // FLD: copy raw bits to f[rd]
+		e.irEm.Mov(e.fregDst(rd), tmp)
 	}
 }
 
@@ -1568,18 +1616,37 @@ func (e *emitter) emitFPStore(rs1, rs2 uint32, imm int64, funct3 uint32) {
 	base := e.xreg(rs1)
 	addr := e.irEm.Tmp()
 	e.irEm.AddImm(addr, base, imm)
+	faultLabel := e.allocFaultLabel(addr, jitStoreFault)
+
+	misalignLabel := e.irEm.NewLabel()
 	alignBits := e.irEm.Tmp()
 	e.irEm.AndImm(alignBits, addr, int64(width-1))
-	e.irEm.Branch(alignBits, ir.VRegZero, ir.NE, e.storeFaultLabel)
+	e.irEm.Branch(alignBits, ir.VRegZero, ir.NE, misalignLabel)
 
 	if funct3 == 2 { // FSW — extract low 32 bits
 		tmp := e.irEm.Tmp()
 		e.irEm.Zext(tmp, e.freg(rs2), ir.I32)
-		e.irEm.GuestStore(base, e.irEm.MemBase(), e.irEm.MemMask(), imm, tmp, 4, e.storeFaultLabel)
-		e.hasStoreFault = true
+		e.irEm.GuestStore(base, e.irEm.MemBase(), e.irEm.MemMask(), imm, tmp, 4, faultLabel)
 	} else { // FSD
-		e.irEm.GuestStore(base, e.irEm.MemBase(), e.irEm.MemMask(), imm, e.freg(rs2), 8, e.storeFaultLabel)
-		e.hasStoreFault = true
+		e.irEm.GuestStore(base, e.irEm.MemBase(), e.irEm.MemMask(), imm, e.freg(rs2), 8, faultLabel)
+	}
+	doneLabel := e.irEm.NewLabel()
+	e.irEm.Jump(doneLabel)
+	e.irEm.PlaceLabel(misalignLabel)
+	// Misaligned FP store: byte-by-byte little-endian write.
+	e.emitMisalignedFPStore(rs2, addr, width, faultLabel)
+	e.irEm.PlaceLabel(doneLabel)
+}
+
+// emitMisalignedFPStore emits a byte-by-byte FP store (FSW or FSD) at a
+// misaligned address. faultLabel is the per-call-site fault tail.
+func (e *emitter) emitMisalignedFPStore(rs2 uint32, addr ir.VReg, width int, faultLabel ir.Label) {
+	if width == 4 { // FSW: extract low 32 bits, then byte-by-byte
+		src := e.irEm.Tmp()
+		e.irEm.Zext(src, e.freg(rs2), ir.I32)
+		e.emitMisalignedStore(addr, src, 4, faultLabel)
+	} else { // FSD: store all 64 bits
+		e.emitMisalignedStore(addr, e.freg(rs2), 8, faultLabel)
 	}
 }
 
