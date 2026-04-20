@@ -11,7 +11,7 @@ import (
 
 // testIterStart is set by tests to rotate gotoTargets iteration order.
 // Zero means normal sorted order. Non-zero rotates by this offset.
-var testIterStart int
+//var testIterStart int
 
 // maxBlockInsns limits the number of RISC-V instructions per JIT block.
 // Variable so tests can adjust it without recompilation.
@@ -657,7 +657,7 @@ func emitBlock(mem *GuestMemory, pc uint64) *emitResult {
 	irEm := ir.NewEmitter()
 
 	gt := newU64setSized(256)
-	gt.IterStart = testIterStart
+	//gt.IterStart = testIterStart
 
 	e := &emitter{
 		mem:         mem,

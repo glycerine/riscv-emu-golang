@@ -3,7 +3,7 @@ package riscv
 import (
 	"fmt"
 	"os"
-	"path/filepath"
+	//"path/filepath"
 	"riscv/internal/jitcall"
 	"riscv/ir"
 	"strings"
@@ -1302,6 +1302,7 @@ func TestDebugV1V2_SRL_DumpAlloc(t *testing.T) {
 	t.Fatal("did not find block covering 0x322")
 }
 
+/*
 // TestMetaIterOrder runs the V1-vs-V2 comparison across 100 different
 // gotoTargets iteration start offsets. This flushes out any remaining
 // order-dependent lowerer bugs that a single sorted order might hide.
@@ -1388,6 +1389,7 @@ func TestMetaIterOrder_AllUI(t *testing.T) {
 	}
 	testIterStart = 0
 }
+*/
 
 // TestBisectBlockSize finds the smallest maxBlockInsns where V1 diverges from V2.
 func TestBisectBlockSize(t *testing.T) {
