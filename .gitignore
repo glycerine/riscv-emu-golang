@@ -8,3 +8,4 @@ mem.prof
 *test
 bench/libriscv_guest/bench_guest.native
 bench/libriscv_guest/bench_guest.elf
+xendor/tcc/libtcc.a
