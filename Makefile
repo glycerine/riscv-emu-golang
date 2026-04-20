@@ -73,7 +73,6 @@ GUEST_CFLAGS := -O2 -target $(ZIG_TARGET) -static -mcpu=generic_rv64+m+a+f+d+c \
             -I riscv-elf-tests/isa/macros/scalar \
             -nostdlib
 
-
 # ── paths ──────────────────────────────────────────────────────────────────
 
 ROOT        := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
@@ -85,6 +84,11 @@ GUEST_DIR   := $(ROOT)bench/libriscv_guest
 GUEST_SRC   := $(GUEST_DIR)/bench_guest.c
 GUEST_ELF   := $(GUEST_DIR)/bench_guest.elf
 GUEST_NATIVE := $(GUEST_DIR)/bench_guest.native
+
+# -- profile guided optimization
+
+PGO_FILE := $(ROOT)default.pgo
+PGO_FLAG := $(if $(wildcard $(PGO_FILE)),-pgo=$(PGO_FILE),)
 
 # ── CoreMark / Dhrystone RV64 ELFs ────────────────────────────────────────
 # Sources vendored at xendor/coremark and xendor/dhrystone. Freestanding port
@@ -491,28 +495,28 @@ bench:
 	@printf "  %-44s %s\n" "────────────────────────────────────────────" "──────────"
 	@printf "  %-44s " "Go interpreter (no JIT):"
 	@cd $(ROOT) && BENCH_ELF=$(GUEST_ELF) \
-	    $(GO) test -count=1 -benchtime=1x -benchmem \
+	    $(GO) test $(PGO_FLAG) -count=1 -benchtime=1x -benchmem \
 	        -run='^$$' -bench='^BenchmarkCPU_FullExecution$$' \
 	        ./bench/ 2>&1 \
 	    | awk '/MIPS/{for(i=1;i<=NF;i++){if($$i=="MIPS"){print p" MIPS";next}; p=$$i}}' \
 	    || echo "(failed)"
 	@printf "  %-44s " "Go JIT — ELS allocator (native):"
 	@cd $(ROOT) && BENCH_ELF=$(GUEST_ELF) \
-	    $(GO) test -count=1 -benchtime=1x -benchmem \
+	    $(GO) test $(PGO_FLAG) -count=1 -benchtime=1x -benchmem \
 	        -run='^$$' -bench='^BenchmarkCPU_FullExecution_JIT$$' \
 	        ./bench/ 2>&1 \
 	    | awk '/MIPS/{for(i=1;i<=NF;i++){if($$i=="MIPS"){print p" MIPS";next}; p=$$i}}' \
 	    || echo "(failed)"
 	@printf "  %-44s " "Go JIT — Fixed Static Mapping (native):"
 	@cd $(ROOT) && BENCH_ELF=$(GUEST_ELF) \
-	    $(GO) test -count=1 -benchtime=1x -benchmem \
+	    $(GO) test $(PGO_FLAG) -count=1 -benchtime=1x -benchmem \
 	        -run='^$$' -bench='^BenchmarkCPU_FullExecution_JIT_Fixed$$' \
 	        ./bench/ 2>&1 \
 	    | awk '/MIPS/{for(i=1;i<=NF;i++){if($$i=="MIPS"){print p" MIPS";next}; p=$$i}}' \
 	    || echo "(failed)"
 	@printf "  %-44s " "Go JIT — TCC backend:"
 	@cd $(ROOT) && BENCH_ELF=$(GUEST_ELF) CGO_ENABLED=1 \
-	    $(GO) test -count=1 -benchtime=1x -benchmem \
+	    $(GO) test $(PGO_FLAG) -count=1 -benchtime=1x -benchmem \
 	        -run='^$$' -bench='^BenchmarkCPU_FullExecution_JIT_TCC$$' \
 	        ./bench/ 2>&1 \
 	    | awk '/MIPS/{for(i=1;i<=NF;i++){if($$i=="MIPS"){print p" MIPS";next}; p=$$i}}' \
@@ -522,7 +526,7 @@ bench:
 	    CGO_CFLAGS="$(CGO_CFLAGS_VAL)" \
 	    CGO_LDFLAGS="$(CGO_LDFLAGS_VAL)" \
 	    BENCH_ELF=$(GUEST_ELF) \
-	    $(GO) test -tags libriscv -count=1 -benchtime=1x -benchmem \
+	    $(GO) test $(PGO_FLAG) -tags libriscv -count=1 -benchtime=1x -benchmem \
 	        -run='^$$' -bench='^BenchmarkLibriscv_FullExecution_Steady$$' \
 	        ./bench/libriscv/ 2>&1 \
 	    | awk '/MIPS/{for(i=1;i<=NF;i++){if($$i=="MIPS"){print p" MIPS";next}; p=$$i}}' \
@@ -532,7 +536,7 @@ bench:
 	    CGO_CFLAGS="$(CGO_CFLAGS_VAL)" \
 	    CGO_LDFLAGS="$(CGO_LDFLAGS_VAL)" \
 	    BENCH_ELF=$(GUEST_ELF) \
-	    $(GO) test -tags libriscv -count=1 -benchtime=1x -benchmem \
+	    $(GO) test $(PGO_FLAG) -tags libriscv -count=1 -benchtime=1x -benchmem \
 	        -run='^$$' -bench='^BenchmarkLibriscv_FullExecution_NoJIT$$' \
 	        ./bench/libriscv/ 2>&1 \
 	    | awk '/MIPS/{for(i=1;i<=NF;i++){if($$i=="MIPS"){print p" MIPS";next}; p=$$i}}' \
