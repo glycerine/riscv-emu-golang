@@ -42,8 +42,15 @@ func NewCPU(mem GuestMemory) *CPU { return &CPU{mem: mem} }
 
 func (c *CPU) SetPC(addr uint64)        { c.pc = addr }
 func (c *CPU) PC() uint64               { return c.pc }
-func (c *CPU) SetReg(r uint8, v uint64) { if r != 0 { c.x[r] = v } }
-func (c *CPU) Reg(r uint8) uint64       { if r == 0 { return 0 }; return c.x[r] }
+// SetReg writes a GPR. Uses the "always write, always zero x[0]" trick to
+// avoid a conditional branch. The trailing `c.x[0] = 0` preserves the RISC-V
+// invariant that x0 reads as zero; when r != 0, it's a dead store the CPU
+// store buffer absorbs cheaply.
+func (c *CPU) SetReg(r uint8, v uint64) { c.x[r] = v; c.x[0] = 0 }
+
+// Reg reads a GPR. Relies on the invariant that x[0] is always 0, maintained
+// by SetReg above.
+func (c *CPU) Reg(r uint8) uint64 { return c.x[r] }
 func (c *CPU) SetFReg(r uint8, v uint64) { c.f[r] = v }
 func (c *CPU) FReg(r uint8) uint64       { return c.f[r] }
 func (c *CPU) FCSR() uint32              { return c.fcsr }
@@ -78,9 +85,20 @@ func (c *CPU) step() error {
 		if f.Kind == FaultMisalign {
 			insn, f = (&c.mem).Fetch32U(c.pc)
 		}
-		if f != nil { return f }
+		if f != nil {
+			return f
+		}
 	}
+	return c.stepFromInsn(insn)
+}
 
+// stepFromInsn executes one 32-bit RV64 instruction whose encoded bits have
+// already been fetched into insn. Callers must verify the instruction is
+// non-compressed (bits[1:0] == 0b11) before invoking.
+//
+// Used by RunCached and other fast-path drivers to bypass the guest-memory
+// fetch that step() would otherwise redo on every visit to a given PC.
+func (c *CPU) stepFromInsn(insn uint32) error {
 	opcode := uint8(insn & 0x7F)
 	rd     := uint8((insn >> 7) & 0x1F)
 	funct3 := uint8((insn >> 12) & 0x07)

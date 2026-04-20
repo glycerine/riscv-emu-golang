@@ -96,6 +96,31 @@ func runTccJITBenchGuestWith(cpu *riscv.CPU, jit *riscv.JIT) (exitCode int, insn
 	return
 }
 
+// runCachedBenchGuest uses the decoder cache (RunCached) instead of the
+// un-cached RunWithChain. The cache is sized to cover typical executable
+// segments (~256 KB) based at the ELF entry.
+func runCachedBenchGuest(cpu *riscv.CPU) (exitCode int, insns uint64) {
+	defer func() {
+		if r := recover(); r != nil {
+			if ex, ok := r.(*riscv.ExitError); ok {
+				exitCode = ex.Code
+				insns = cpu.Cycle()
+				return
+			}
+			panic(r)
+		}
+	}()
+	// Cache covers [entry-4K, entry+256K). Anything outside falls back to step().
+	base := cpu.PC() & ^uint64(0xFFF)
+	if base > 0x1000 {
+		base -= 0x1000
+	}
+	cache := riscv.NewDecoderCache(base, 256<<10)
+	_ = riscv.RunCached(cpu, cache, &cpu.Notes)
+	insns = cpu.Cycle()
+	return
+}
+
 func runBenchGuest(cpu *riscv.CPU) (exitCode int, insns uint64) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -141,6 +166,31 @@ func BenchmarkCPU_FullExecution(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		cpu, mem := newBenchCPU(b, elfData)
 		_, insns := runBenchGuest(cpu)
+		totalInsns += insns
+		mem.Free()
+	}
+
+	b.StopTimer()
+	elapsed := b.Elapsed().Seconds()
+	if elapsed > 0 && totalInsns > 0 {
+		mips := float64(totalInsns) / elapsed / 1e6
+		b.ReportMetric(mips, "MIPS")
+	}
+}
+
+// BenchmarkCPU_FullExecution_Cached runs the same workload through the
+// decoder-cache driver (RunCached). Used to measure the skip-fetch speedup
+// vs the un-cached BenchmarkCPU_FullExecution above.
+func BenchmarkCPU_FullExecution_Cached(b *testing.B) {
+	elfData := loadCPUELF(b)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	totalInsns := uint64(0)
+	for i := 0; i < b.N; i++ {
+		cpu, mem := newBenchCPU(b, elfData)
+		_, insns := runCachedBenchGuest(cpu)
 		totalInsns += insns
 		mem.Free()
 	}

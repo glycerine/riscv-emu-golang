@@ -5,6 +5,7 @@ next_plan.md
 bench.test
 cpu.prof
 mem.prof
+prof_findings.md
 *test
 bench/libriscv_guest/bench_guest.native
 bench/libriscv_guest/bench_guest.elf
