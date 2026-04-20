@@ -402,8 +402,7 @@ func runLockstep(t *testing.T, elfPath string) {
 	interpCPU := NewCPU(*interpMem)
 	interpCPU.SetPC(interpEntry)
 
-	t.Logf("jitMem base=%#x interpMem base=%#x size=%#x",
-		jitMem.Base(), interpMem.Base(), jitMem.Size())
+	//t.Logf("jitMem base=%#x interpMem base=%#x size=%#x", jitMem.Base(), interpMem.Base(), jitMem.Size())
 
 	jit := NewJIT()
 	maxCycles := uint64(10_000_000)
@@ -416,8 +415,7 @@ func runLockstep(t *testing.T, elfPath string) {
 		}
 
 		if blockNum >= 59 && blockNum <= 63 {
-			t.Logf("BEFORE block %d pc=0x%x JIT: x[3]=0x%x x[7]=0x%x x[11]=0x%x x[12]=0x%x x[14]=0x%x",
-				blockNum, jitCPU.pc, jitCPU.x[3], jitCPU.x[7], jitCPU.x[11], jitCPU.x[12], jitCPU.x[14])
+			//t.Logf("BEFORE block %d pc=0x%x JIT: x[3]=0x%x x[7]=0x%x x[11]=0x%x x[12]=0x%x x[14]=0x%x", blockNum, jitCPU.pc, jitCPU.x[3], jitCPU.x[7], jitCPU.x[11], jitCPU.x[12], jitCPU.x[14])
 		}
 		// JIT: one dispatch cycle
 		jitIC, jitErr := jit.StepBlock(jitCPU)
@@ -493,7 +491,7 @@ func runLockstep(t *testing.T, elfPath string) {
 		blockNum++
 	}
 
-	t.Logf("lockstep complete: %d blocks, %d instructions", blockNum, jitCPU.Cycle())
+	//t.Logf("lockstep complete: %d blocks, %d instructions", blockNum, jitCPU.Cycle())
 }
 
 func TestRISCVTests_Lockstep_UI(t *testing.T) {

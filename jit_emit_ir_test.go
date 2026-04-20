@@ -249,7 +249,7 @@ func TestMixedExecution_Block2_Compile(t *testing.T) {
 	if res.block == nil {
 		t.Fatal("block is nil")
 	}
-	t.Logf("block has %d IR instructions", len(res.block.Instrs))
+	//t.Logf("block has %d IR instructions", len(res.block.Instrs))
 
 	// Compile it
 	j := NewJIT()
@@ -269,7 +269,8 @@ func TestMixedExecution_Block2_Compile(t *testing.T) {
 
 	result := jitcallCall(compiled.fn, &cpu.x, &cpu.f, &cpu.fcsr,
 		cpu.mem.Base(), cpu.mem.Mask())
-	t.Logf("result: PC=0x%x IC=%d Status=%d", result.PC, result.IC, result.Status)
+	_ = result
+	//t.Logf("result: PC=0x%x IC=%d Status=%d", result.PC, result.IC, result.Status)
 
 	if cpu.Reg(4) != 30 {
 		t.Errorf("x4 = %d, want 30", cpu.Reg(4))
@@ -295,9 +296,10 @@ func TestMixedExecution_Block1_Dump(t *testing.T) {
 	if res == nil {
 		t.Fatal("emitBlock returned nil")
 	}
-	t.Logf("IR instructions: %d", len(res.block.Instrs))
+	//t.Logf("IR instructions: %d", len(res.block.Instrs))
 	for i, ins := range res.block.Instrs {
-		t.Logf("  [%d] %s", i, ins.String())
+		_, _ = i, ins
+		//t.Logf("  [%d] %s", i, ins.String())
 	}
 
 	j := NewJIT()
@@ -305,15 +307,15 @@ func TestMixedExecution_Block1_Dump(t *testing.T) {
 	if err != nil {
 		t.Fatalf("jitCompile: %v", err)
 	}
-	t.Logf("compiled block fn=%x", compiled.fn)
+	//t.Logf("compiled block fn=%x", compiled.fn)
 
 	// Run it
 	cpu := NewCPU(*mem)
 	cpu.SetPC(0x1000)
 	result := jitcallCall(compiled.fn, &cpu.x, &cpu.f, &cpu.fcsr,
 		cpu.mem.Base(), cpu.mem.Mask())
-	t.Logf("result: PC=0x%x IC=%d Status=%d x1=%d x2=%d",
-		result.PC, result.IC, result.Status, cpu.Reg(1), cpu.Reg(2))
+	_ = result
+	//t.Logf("result: PC=0x%x IC=%d Status=%d x1=%d x2=%d", result.PC, result.IC, result.Status, cpu.Reg(1), cpu.Reg(2))
 }
 
 // TestMixedExecution_FullSequence reproduces the full TestJIT_MixedExecution
@@ -334,22 +336,22 @@ func TestMixedExecution_FullSequence(t *testing.T) {
 	jit := NewJIT()
 
 	// Step 1: compile and run block 1 (ADDI x1; ADDI x2; bail at CSR)
-	t.Log("Step 1: first block")
+	//t.Log("Step 1: first block")
 	ic1, err1 := jit.StepBlock(cpu)
-	t.Logf("  after block1: pc=0x%x ic=%d err=%v x1=%d x2=%d",
-		cpu.PC(), ic1, err1, cpu.Reg(1), cpu.Reg(2))
+	_, _ = ic1, err1
+	//t.Logf("  after block1: pc=0x%x ic=%d err=%v x1=%d x2=%d", cpu.PC(), ic1, err1, cpu.Reg(1), cpu.Reg(2))
 
 	// Step 2: interpreter handles CSR
-	t.Log("Step 2: interpreter step (CSR)")
+	//t.Log("Step 2: interpreter step (CSR)")
 	ic2, err2 := jit.StepBlock(cpu)
-	t.Logf("  after CSR: pc=0x%x ic=%d err=%v x3=%d",
-		cpu.PC(), ic2, err2, cpu.Reg(3))
+	_, _ = ic2, err2
+	//t.Logf("  after CSR: pc=0x%x ic=%d err=%v x3=%d", cpu.PC(), ic2, err2, cpu.Reg(3))
 
 	// Step 3: compile and run block 2 (ADDI x4; ADD x5; ECALL)
-	t.Log("Step 3: second block")
+	//t.Log("Step 3: second block")
 	ic3, err3 := jit.StepBlock(cpu)
-	t.Logf("  after block2: pc=0x%x ic=%d err=%v x4=%d x5=%d",
-		cpu.PC(), ic3, err3, cpu.Reg(4), cpu.Reg(5))
+	_, _ = ic3, err3
+	//t.Logf("  after block2: pc=0x%x ic=%d err=%v x4=%d x5=%d", cpu.PC(), ic3, err3, cpu.Reg(4), cpu.Reg(5))
 }
 
 // TestSrc1EqDest tests SUB x1, x1, x2 (rd==rs1 aliasing).
@@ -392,25 +394,27 @@ func TestSubELF_Block39(t *testing.T) {
 	for block := 0; block < 39; block++ {
 		pc := cpu.PC()
 		ic, err := jit.StepBlock(cpu)
+		_, _ = pc, ic
 		if err != nil {
-			t.Logf("block %d: pc=0x%x ic=%d err=%v gp=%d", block, pc, ic, err, cpu.Reg(3))
+			//t.Logf("block %d: pc=0x%x ic=%d err=%v gp=%d", block, pc, ic, err, cpu.Reg(3))
 			break
 		}
 	}
 
 	// Now at block 39
-	t.Logf("block 39 starts at PC=0x%x, gp=%d", cpu.PC(), cpu.Reg(3))
+	//t.Logf("block 39 starts at PC=0x%x, gp=%d", cpu.PC(), cpu.Reg(3))
 
 	// Dump next instructions
 	pc := cpu.PC()
 	for i := 0; i < 20; i++ {
 		half, _ := mem.Fetch16(pc)
 		if half&3 != 3 {
-			t.Logf("  0x%04x: %04x (RVC)", pc, half)
+			//t.Logf("  0x%04x: %04x (RVC)", pc, half)
 			pc += 2
 		} else {
 			insn, _ := mem.Fetch32(pc)
-			t.Logf("  0x%04x: %08x", pc, insn)
+			_ = insn
+			//t.Logf("  0x%04x: %08x", pc, insn)
 			pc += 4
 		}
 	}
@@ -421,10 +425,10 @@ func TestSubELF_Block39(t *testing.T) {
 	if res == nil {
 		t.Fatal("emitBlock returned nil for block 39")
 	}
-	t.Logf("block 39 IR: %d instructions", len(res.block.Instrs))
-	for i, ins := range res.block.Instrs {
-		t.Logf("  [%d] %s", i, ins.String())
-	}
+	//t.Logf("block 39 IR: %d instructions", len(res.block.Instrs))
+	//for i, ins := range res.block.Instrs {
+	//t.Logf("  [%d] %s", i, ins.String())
+	//}
 }
 
 // TestCLI_NoCorruption verifies C.LI x7, 3 doesn't corrupt other registers.
@@ -548,13 +552,13 @@ func TestLW_ELF_Block39(t *testing.T) {
 	for block := 0; block < 50; block++ {
 		pc := cpu.PC()
 		ic, err := jit.StepBlock(cpu)
-		_ = ic
+		_, _ = ic, pc
 		if err != nil {
-			t.Logf("block %d: pc=0x%x exit err=%v gp=%d", block, pc, err, cpu.Reg(3))
+			//t.Logf("block %d: pc=0x%x exit err=%v gp=%d", block, pc, err, cpu.Reg(3))
 			break
 		}
 	}
-	t.Logf("final: pc=0x%x gp=%d x10=%d", cpu.PC(), cpu.Reg(3), cpu.Reg(10))
+	//t.Logf("final: pc=0x%x gp=%d x10=%d", cpu.PC(), cpu.Reg(3), cpu.Reg(10))
 }
 
 // TestSRL_ZeroSrc tests SRL x2, x0, x1 (shifting zero).
@@ -599,10 +603,11 @@ func TestLUI_SRLI_TwoInsn(t *testing.T) {
 
 	jit := NewJIT()
 	_, jitErr := jit.StepBlock(cpu)
+	_ = jitErr
 
 	want := uint64(0x01FFFFFFFF000000)
 	got := cpu.x[7]
-	t.Logf("x7 = 0x%x (want 0x%x), jitErr=%v, pc=0x%x", got, want, jitErr, cpu.pc)
+	//t.Logf("x7 = 0x%x (want 0x%x), jitErr=%v, pc=0x%x", got, want, jitErr, cpu.pc)
 	if got != want {
 		t.Fatalf("x7 = 0x%x, want 0x%x", got, want)
 	}
@@ -635,7 +640,7 @@ func TestSRL_LargeValue_Block(t *testing.T) {
 
 	want := uint64(0xFFFFFFFF80000000)
 	got := cpu.x[14]
-	t.Logf("x[14]=0x%x (want 0x%x), x[11]=0x%x, x[12]=0x%x", got, want, cpu.x[11], cpu.x[12])
+	//t.Logf("x[14]=0x%x (want 0x%x), x[11]=0x%x, x[12]=0x%x", got, want, cpu.x[11], cpu.x[12])
 	if got != want {
 		t.Fatalf("x[14]=0x%x, want 0x%x", got, want)
 	}
@@ -671,7 +676,8 @@ func TestSRL_CrossBlock_Writeback(t *testing.T) {
 
 	// Block 1
 	_, err1 := jit.StepBlock(cpu)
-	t.Logf("after block 1: x[11]=0x%x, pc=0x%x, err=%v", cpu.x[11], cpu.pc, err1)
+	_ = err1
+	//t.Logf("after block 1: x[11]=0x%x, pc=0x%x, err=%v", cpu.x[11], cpu.pc, err1)
 	if cpu.x[11] != 0xFFFFFFFF80000000 {
 		t.Fatalf("block 1: x[11]=0x%x, want 0xFFFFFFFF80000000", cpu.x[11])
 	}
@@ -680,8 +686,8 @@ func TestSRL_CrossBlock_Writeback(t *testing.T) {
 
 	// Block 2
 	_, err2 := jit.StepBlock(cpu)
-	t.Logf("after block 2: x[14]=0x%x, x[11]=0x%x, x[12]=0x%x, pc=0x%x, err=%v",
-		cpu.x[14], cpu.x[11], cpu.x[12], cpu.pc, err2)
+	_ = err2
+	//t.Logf("after block 2: x[14]=0x%x, x[11]=0x%x, x[12]=0x%x, pc=0x%x, err=%v", cpu.x[14], cpu.x[11], cpu.x[12], cpu.pc, err2)
 
 	want := uint64(0xFFFFFFFF80000000)
 	if cpu.x[14] != want {
@@ -757,7 +763,7 @@ func TestSRL_ExactIR(t *testing.T) {
 	x[12] = 0
 
 	res := jitcallCall(compiled.fn, &x, &f, &fcsr, mem.Base(), mem.Mask())
-	t.Logf("PC=0x%x IC=%d Status=%d x[14]=0x%x x[7]=0x%x", res.PC, res.IC, res.Status, x[14], x[7])
+	//t.Logf("PC=0x%x IC=%d Status=%d x[14]=0x%x x[7]=0x%x", res.PC, res.IC, res.Status, x[14], x[7])
 
 	if x[14] != 0xFFFFFFFF80000000 {
 		t.Fatalf("x[14]=0x%x, want 0xFFFFFFFF80000000", x[14])
@@ -812,7 +818,8 @@ func TestSRL_ExactIR_V2(t *testing.T) {
 	x[11] = 0xFFFFFFFF80000000
 
 	res := jitcallCall(compiled.fn, &x, &f, &fcsr, mem.Base(), mem.Mask())
-	t.Logf("V2: PC=0x%x IC=%d x[14]=0x%x x[7]=0x%x", res.PC, res.IC, x[14], x[7])
+	_ = res
+	//t.Logf("V2: PC=0x%x IC=%d x[14]=0x%x x[7]=0x%x", res.PC, res.IC, x[14], x[7])
 
 	if x[14] != 0xFFFFFFFF80000000 {
 		t.Fatalf("V2: x[14]=0x%x, want 0xFFFFFFFF80000000", x[14])
@@ -851,15 +858,16 @@ func TestSRL_ExactIR_DumpAlloc(t *testing.T) {
 	j := NewJIT()
 	alloc := j.irAlloc.Allocate(blk, pool, pinned, nil)
 
-	t.Logf("StackSlots=%d", alloc.StackSlots)
+	//t.Logf("StackSlots=%d", alloc.StackSlots)
 	for i, k := range alloc.Kind {
+		_ = i
 		if k != ir.AllocUnused {
-			t.Logf("VReg(%d): kind=%v spill=%d", i, k, alloc.SpillSlot[i])
+			//t.Logf("VReg(%d): kind=%v spill=%d", i, k, alloc.SpillSlot[i])
 		}
 	}
 	for _, ia := range alloc.IntervalMap {
-		t.Logf("  interval: VReg(%d) [%d..%d] -> host=%d",
-			ia.Interval.VReg, ia.Interval.Start, ia.Interval.End, ia.Host)
+		_ = ia
+		//t.Logf("  interval: VReg(%d) [%d..%d] -> host=%d", ia.Interval.VReg, ia.Interval.Start, ia.Interval.End, ia.Host)
 	}
 }
 
@@ -974,8 +982,8 @@ func TestSRL_Block61_V1vV2(t *testing.T) {
 	}
 	r2 := jitcallCall(c2.fn, &x2v, &f2v, &fcsr2, mem.Base(), mem.Mask())
 
-	t.Logf("V1: PC=0x%x IC=%d x[3]=%d x[6]=0x%x x[14]=0x%x", r1.PC, r1.IC, x1v[3], x1v[6], x1v[14])
-	t.Logf("V2: PC=0x%x IC=%d x[3]=%d x[6]=0x%x x[14]=0x%x", r2.PC, r2.IC, x2v[3], x2v[6], x2v[14])
+	//t.Logf("V1: PC=0x%x IC=%d x[3]=%d x[6]=0x%x x[14]=0x%x", r1.PC, r1.IC, x1v[3], x1v[6], x1v[14])
+	//t.Logf("V2: PC=0x%x IC=%d x[3]=%d x[6]=0x%x x[14]=0x%x", r2.PC, r2.IC, x2v[3], x2v[6], x2v[14])
 
 	if x1v[6] != x2v[6] {
 		t.Errorf("x[6] V1=0x%x V2=0x%x", x1v[6], x2v[6])
@@ -1085,8 +1093,8 @@ func TestSRL_Block61_V1vV2b(t *testing.T) {
 	}
 	r2 := jitcallCall(c2.fn, &xv2, &fv2, &fc2, mem.Base(), mem.Mask())
 
-	t.Logf("V1: PC=0x%x IC=%d x[3]=%d x[6]=0x%x x[14]=0x%x", r1.PC, r1.IC, xv1[3], xv1[6], xv1[14])
-	t.Logf("V2: PC=0x%x IC=%d x[3]=%d x[6]=0x%x x[14]=0x%x", r2.PC, r2.IC, xv2[3], xv2[6], xv2[14])
+	//t.Logf("V1: PC=0x%x IC=%d x[3]=%d x[6]=0x%x x[14]=0x%x", r1.PC, r1.IC, xv1[3], xv1[6], xv1[14])
+	//t.Logf("V2: PC=0x%x IC=%d x[3]=%d x[6]=0x%x x[14]=0x%x", r2.PC, r2.IC, xv2[3], xv2[6], xv2[14])
 
 	if r1.PC != r2.PC {
 		t.Errorf("PC mismatch: V1=0x%x V2=0x%x", r1.PC, r2.PC)
@@ -1166,7 +1174,7 @@ func TestSRL_RealBlock_V1vV2(t *testing.T) {
 			break
 		}
 	}
-	t.Logf("V1 vs V2 lockstep passed, pc=0x%x cycles=%d", cpu1.pc, cpu1.Cycle())
+	//t.Logf("V1 vs V2 lockstep passed, pc=0x%x cycles=%d", cpu1.pc, cpu1.Cycle())
 }
 
 // TestSRL_Block39_Alloc dumps the register allocation for the real block 39.
@@ -1192,13 +1200,13 @@ func TestSRL_Block39_Alloc(t *testing.T) {
 	}
 	// Now cpu.pc is at the start of block 39.
 	pc := cpu.pc
-	t.Logf("block 39 starts at pc=0x%x", pc)
+	//t.Logf("block 39 starts at pc=0x%x", pc)
 
 	res := emitBlock(&cpu.mem, pc)
 	if res == nil {
 		t.Fatal("emitBlock returned nil")
 	}
-	t.Logf("block: numInsns=%d, %d IR instrs", res.numInsns, len(res.block.Instrs))
+	//t.Logf("block: numInsns=%d, %d IR instrs", res.numInsns, len(res.block.Instrs))
 
 	pool := ir.AMD64Pool(res.block)
 	j := NewJIT()
@@ -1207,13 +1215,14 @@ func TestSRL_Block39_Alloc(t *testing.T) {
 	// Find all intervals for x1.
 	for _, ia := range alloc.IntervalMap {
 		if ia.Interval.VReg == ir.VReg(1) {
-			t.Logf("x1 interval: [%d..%d] host=%d", ia.Interval.Start, ia.Interval.End, ia.Host)
+			//t.Logf("x1 interval: [%d..%d] host=%d", ia.Interval.Start, ia.Interval.End, ia.Host)
 		}
 	}
 	// Print first 30 IR instructions with their vreg uses/defs.
 	for i := 0; i < 30 && i < len(res.block.Instrs); i++ {
 		ins := &res.block.Instrs[i]
-		t.Logf("[%d] %v", i, ins)
+		_ = ins
+		//t.Logf("[%d] %v", i, ins)
 	}
 }
 
@@ -1246,11 +1255,11 @@ func TestDebugV1V2_SRL(t *testing.T) {
 	for i := 0; i < 500; i++ {
 		_, err := jit.StepBlock(cpu)
 		if err != nil {
-			t.Logf("exit at block %d pc=0x%x: %v", i, cpu.PC(), err)
+			//t.Logf("exit at block %d pc=0x%x: %v", i, cpu.PC(), err)
 			return
 		}
 	}
-	t.Logf("passed %d blocks, pc=0x%x", 500, cpu.PC())
+	//t.Logf("passed %d blocks, pc=0x%x", 500, cpu.PC())
 }
 
 func TestDebugV1V2_SRL_DumpAlloc(t *testing.T) {
@@ -1276,14 +1285,13 @@ func TestDebugV1V2_SRL_DumpAlloc(t *testing.T) {
 		if cpu.pc == 0x322 || (cpu.pc < 0x322 && cpu.pc+0x400 > 0x322) {
 			res := emitBlock(&cpu.mem, cpu.pc)
 			if res != nil && res.startPC <= 0x322 && res.endPC > 0x322 {
-				t.Logf("found block: startPC=0x%x endPC=0x%x numInsns=%d irLen=%d",
-					res.startPC, res.endPC, res.numInsns, len(res.block.Instrs))
+				//t.Logf("found block: startPC=0x%x endPC=0x%x numInsns=%d irLen=%d", res.startPC, res.endPC, res.numInsns, len(res.block.Instrs))
 				pool := ir.AMD64Pool(res.block)
 				alloc := j.irAlloc.Allocate(res.block, pool, ir.AMD64Pinned(), nil)
 				for _, ia := range alloc.IntervalMap {
 					vr := ia.Interval.VReg
 					if vr == ir.VReg(11) || vr == ir.VReg(12) {
-						t.Logf("  VReg(%d) [%d..%d] host=%d", vr, ia.Interval.Start, ia.Interval.End, ia.Host)
+						//t.Logf("  VReg(%d) [%d..%d] host=%d", vr, ia.Interval.Start, ia.Interval.End, ia.Host)
 					}
 				}
 				return
@@ -1422,7 +1430,8 @@ func TestBisectBlockSize(t *testing.T) {
 
 	for _, n := range []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 15, 20, 30, 50, 100, 200, 500, 2048} {
 		pass := trySize(n)
-		t.Logf("maxBlockInsns=%d: %v", n, map[bool]string{true: "PASS", false: "FAIL"}[pass])
+		_ = pass
+		//t.Logf("maxBlockInsns=%d: %v", n, map[bool]string{true: "PASS", false: "FAIL"}[pass])
 	}
 }
 
@@ -1467,10 +1476,11 @@ func TestBisectBlockSize2(t *testing.T) {
 
 	for n := 11; n <= 14; n++ {
 		pass, detail := trySize(n)
+		_ = detail
 		if pass {
-			t.Logf("n=%d: PASS", n)
+			//t.Logf("n=%d: PASS", n)
 		} else {
-			t.Logf("n=%d: FAIL %s", n, detail)
+			//t.Logf("n=%d: FAIL %s", n, detail)
 		}
 	}
 }
@@ -1515,10 +1525,11 @@ func TestBisectBlockSize3(t *testing.T) {
 
 	for n := 11; n <= 16; n++ {
 		pass, pc, detail := trySize(n)
+		_, _ = pc, detail
 		if pass {
-			t.Logf("n=%d: PASS", n)
+			//t.Logf("n=%d: PASS", n)
 		} else {
-			t.Logf("n=%d: FAIL at pc=0x%x: %s", n, pc, detail)
+			//t.Logf("n=%d: FAIL at pc=0x%x: %s", n, pc, detail)
 		}
 	}
 }
@@ -1548,13 +1559,13 @@ func TestDumpBlock_0x34e(t *testing.T) {
 		}
 		jit.StepBlock(cpu)
 	}
-	t.Logf("stopped at pc=0x%x", cpu.pc)
+	//t.Logf("stopped at pc=0x%x", cpu.pc)
 	if cpu.pc != 0x34e {
 		// Search nearby
 		for pc := uint64(0x340); pc <= 0x360; pc += 2 {
 			res := emitBlock(&cpu.mem, pc)
 			if res != nil && res.startPC <= 0x34e && res.endPC > 0x34e {
-				t.Logf("block at 0x%x covers 0x34e: numInsns=%d irLen=%d", res.startPC, res.numInsns, len(res.block.Instrs))
+				//t.Logf("block at 0x%x covers 0x34e: numInsns=%d irLen=%d", res.startPC, res.numInsns, len(res.block.Instrs))
 				pool := ir.AMD64Pool(res.block)
 				alloc := jit.irAlloc.Allocate(res.block, pool, ir.AMD64Pinned(), nil)
 				// Print IR and allocation for shift instructions
@@ -1563,8 +1574,8 @@ func TestDumpBlock_0x34e(t *testing.T) {
 						aHost := findHost(alloc, ins.A, i)
 						bHost := findHost(alloc, ins.B, i)
 						dHost := findHost(alloc, ins.Dst, i)
-						t.Logf("  [%d] %v  a=VR%d→%s b=VR%d→%s dst=VR%d→%s",
-							i, ins, ins.A, regName(aHost), ins.B, regName(bHost), ins.Dst, regName(dHost))
+						_, _, _ = aHost, bHost, dHost
+						//t.Logf("  [%d] %v  a=VR%d→%s b=VR%d→%s dst=VR%d→%s", i, ins, ins.A, regName(aHost), ins.B, regName(bHost), ins.Dst, regName(dHost))
 					}
 				}
 				break
@@ -1613,7 +1624,7 @@ func TestDumpBlock_0x34e_v2(t *testing.T) {
 	if res == nil {
 		t.Fatal("emitBlock returned nil")
 	}
-	t.Logf("block: start=0x%x end=0x%x insns=%d irLen=%d", res.startPC, res.endPC, res.numInsns, len(res.block.Instrs))
+	//t.Logf("block: start=0x%x end=0x%x insns=%d irLen=%d", res.startPC, res.endPC, res.numInsns, len(res.block.Instrs))
 
 	j := NewJIT()
 	pool := ir.AMD64Pool(res.block)
@@ -1623,8 +1634,8 @@ func TestDumpBlock_0x34e_v2(t *testing.T) {
 			aHost := findHost(alloc, ins.A, i)
 			bHost := findHost(alloc, ins.B, i)
 			dHost := findHost(alloc, ins.Dst, i)
-			t.Logf("  [%d] %v  a=VR%d→%s b=VR%d→%s dst=VR%d→%s",
-				i, ins, ins.A, regName(aHost), ins.B, regName(bHost), ins.Dst, regName(dHost))
+			_, _, _ = aHost, bHost, dHost
+			//t.Logf("  [%d] %v  a=VR%d→%s b=VR%d→%s dst=VR%d→%s", i, ins, ins.A, regName(aHost), ins.B, regName(bHost), ins.Dst, regName(dHost))
 		}
 	}
 }
@@ -1652,23 +1663,23 @@ func TestDumpBlock_0x34e_v3(t *testing.T) {
 	j := NewJIT()
 	alloc := j.irAlloc.Allocate(res.block, pool, ir.AMD64Pinned(), nil)
 
-	t.Logf("StackSlots=%d", alloc.StackSlots)
+	//t.Logf("StackSlots=%d", alloc.StackSlots)
 	for i := 0; i < len(alloc.Kind); i++ {
 		if alloc.Kind[i] != ir.AllocUnused {
-			t.Logf("  VReg(%d): kind=%d spill=%d", i, alloc.Kind[i], alloc.SpillSlot[i])
+			//t.Logf("  VReg(%d): kind=%d spill=%d", i, alloc.Kind[i], alloc.SpillSlot[i])
 		}
 	}
 	// Print ALL intervals for VReg 1 and 2
 	for _, ia := range alloc.IntervalMap {
 		vr := ia.Interval.VReg
 		if vr == ir.VReg(1) || vr == ir.VReg(2) || vr == ir.VReg(14) {
-			t.Logf("  interval VR%d [%d..%d] host=%s", vr, ia.Interval.Start, ia.Interval.End, regName(ia.Host))
+			//t.Logf("  interval VR%d [%d..%d] host=%s", vr, ia.Interval.Start, ia.Interval.End, regName(ia.Host))
 		}
 	}
 
 	// Print the IR around instruction 28
 	for i := 25; i <= 32 && i < len(res.block.Instrs); i++ {
-		t.Logf("  [%d] %v", i, res.block.Instrs[i])
+		//t.Logf("  [%d] %v", i, res.block.Instrs[i])
 	}
 }
 
@@ -1700,14 +1711,13 @@ func TestNativeTrace_0x34e(t *testing.T) {
 	if res == nil {
 		t.Fatal("could not find block covering 0x34e")
 	}
-	t.Logf("block: start=0x%x end=0x%x insns=%d irLen=%d",
-		res.startPC, res.endPC, res.numInsns, len(res.block.Instrs))
+	//t.Logf("block: start=0x%x end=0x%x insns=%d irLen=%d", res.startPC, res.endPC, res.numInsns, len(res.block.Instrs))
 
 	// Print IR for the block.
-	t.Logf("=== IR ===")
-	for i, ins := range res.block.Instrs {
-		t.Logf("  [%2d] %v", i, ins)
-	}
+	//t.Logf("=== IR ===")
+	//for i, ins := range res.block.Instrs {
+	//t.Logf("  [%2d] %v", i, ins)
+	//}
 
 	// Compile with V1.
 	j := NewJIT()
@@ -1723,24 +1733,24 @@ func TestNativeTrace_0x34e(t *testing.T) {
 	}
 
 	// Dump Prog listings.
-	t.Logf("=== V1 Progs ===")
+	//t.Logf("=== V1 Progs ===")
 	for _, line := range strings.Split(v1dbg.progs, "\n") {
 		if line != "" {
-			t.Logf("  %s", line)
+			//t.Logf("  %s", line)
 		}
 	}
-	t.Logf("=== V2 Progs ===")
+	//t.Logf("=== V2 Progs ===")
 	for _, line := range strings.Split(v2dbg.progs, "\n") {
 		if line != "" {
-			t.Logf("  %s", line)
+			//t.Logf("  %s", line)
 		}
 	}
 
 	// Dump hex of assembled bytes.
-	t.Logf("=== V1 code (%d bytes) ===", len(v1dbg.code))
-	t.Logf("  % x", v1dbg.code)
-	t.Logf("=== V2 code (%d bytes) ===", len(v2dbg.code))
-	t.Logf("  % x", v2dbg.code)
+	//t.Logf("=== V1 code (%d bytes) ===", len(v1dbg.code))
+	//t.Logf("  % x", v1dbg.code)
+	//t.Logf("=== V2 code (%d bytes) ===", len(v2dbg.code))
+	//t.Logf("  % x", v2dbg.code)
 
 	// Now actually execute both and compare results.
 	cpu := NewCPU(*mem)
@@ -1769,7 +1779,7 @@ func TestNativeTrace_0x34e(t *testing.T) {
 		t.Fatal(err)
 	}
 	r1 := jitcallCall(blkV1.fn, &cpu.x, &cpu.f, &cpu.fcsr, cpu.mem.Base(), cpu.mem.Mask())
-
+	_ = r1
 	var x1 [32]uint64
 	copy(x1[:], cpu.x[:])
 
@@ -1780,21 +1790,21 @@ func TestNativeTrace_0x34e(t *testing.T) {
 		t.Fatal(err)
 	}
 	r2 := jitcallCall(blkV2.fn, &cpu.x, &cpu.f, &cpu.fcsr, cpu.mem.Base(), cpu.mem.Mask())
-
+	_ = r2
 	// Compare.
-	t.Logf("V1: pc=0x%x ic=%d status=%d", r1.PC, r1.IC, r1.Status)
-	t.Logf("V2: pc=0x%x ic=%d status=%d", r2.PC, r2.IC, r2.Status)
+	//t.Logf("V1: pc=0x%x ic=%d status=%d", r1.PC, r1.IC, r1.Status)
+	//t.Logf("V2: pc=0x%x ic=%d status=%d", r2.PC, r2.IC, r2.Status)
 	mismatch := false
 	for i := 0; i < 32; i++ {
 		if x1[i] != cpu.x[i] {
-			t.Logf("  x[%d] V1=0x%x V2=0x%x", i, x1[i], cpu.x[i])
+			//t.Logf("  x[%d] V1=0x%x V2=0x%x", i, x1[i], cpu.x[i])
 			mismatch = true
 		}
 	}
 	if mismatch {
 		t.Error("V1/V2 register mismatch!")
 	} else {
-		t.Log("V1/V2 registers match.")
+		//t.Log("V1/V2 registers match.")
 	}
 }
 
@@ -1828,14 +1838,13 @@ func TestDumpBlock_ld_st_0x1a0(t *testing.T) {
 	if res == nil {
 		t.Fatal("could not emit block covering 0x1a0")
 	}
-	t.Logf("block: start=0x%x end=0x%x insns=%d irLen=%d",
-		res.startPC, res.endPC, res.numInsns, len(res.block.Instrs))
+	//t.Logf("block: start=0x%x end=0x%x insns=%d irLen=%d", res.startPC, res.endPC, res.numInsns, len(res.block.Instrs))
 
 	// Dump full IR.
-	t.Logf("=== IR (%d instructions) ===", len(res.block.Instrs))
-	for i, ins := range res.block.Instrs {
-		t.Logf("  [%3d] %v", i, ins)
-	}
+	//t.Logf("=== IR (%d instructions) ===", len(res.block.Instrs))
+	//for i, ins := range res.block.Instrs {
+	//t.Logf("  [%3d] %v", i, ins)
+	//}
 
 	// Count backward jumps and budget checks.
 	budgetChecks := 0
@@ -1856,7 +1865,7 @@ func TestDumpBlock_ld_st_0x1a0(t *testing.T) {
 			budgetChecks++
 		}
 	}
-	t.Logf("jumps=%d branches=%d budgetChecks=%d", jumps, branches, budgetChecks)
+	//t.Logf("jumps=%d branches=%d budgetChecks=%d", jumps, branches, budgetChecks)
 
 	// Also dump the Prog listing.
 	j := NewJIT()
@@ -1865,10 +1874,10 @@ func TestDumpBlock_ld_st_0x1a0(t *testing.T) {
 		t.Fatalf("V1 compile: %v", cerr)
 	}
 	progLines := strings.Split(dbg.progs, "\n")
-	t.Logf("=== V1 Progs (%d lines, %d bytes) ===", len(progLines), len(dbg.code))
+	//t.Logf("=== V1 Progs (%d lines, %d bytes) ===", len(progLines), len(dbg.code))
 	for _, line := range progLines {
 		if line != "" {
-			t.Logf("  %s", line)
+			//t.Logf("  %s", line)
 		}
 	}
 }
@@ -1900,11 +1909,11 @@ func TestDispatchTrace_sraw(t *testing.T) {
 	cpu.SetPC(entry)
 	if addr, ok := FindSymbolAddr(data, "tohost"); ok {
 		cpu.SetWatchAddr(addr)
-		t.Logf("tohost=0x%x", addr)
+		//t.Logf("tohost=0x%x", addr)
 	}
 	cpu.Notes.Push(func(c *CPU, n Note) NoteDisposition {
 		if IsEcall(n) {
-			t.Logf("ECALL at pc=0x%x a7=%d a0=%d", n.PC, c.Reg(17), c.Reg(10))
+			//t.Logf("ECALL at pc=0x%x a7=%d a0=%d", n.PC, c.Reg(17), c.Reg(10))
 			return NoteFatal
 		}
 		return NoteForward
@@ -1914,15 +1923,16 @@ func TestDispatchTrace_sraw(t *testing.T) {
 	for i := 0; i < maxCycles; i++ {
 		pc := cpu.pc
 		ic, serr := jit.StepBlock(cpu)
-		t.Logf("cycle %d: pc=0x%x -> pc=0x%x ic=%d err=%v", i, pc, cpu.pc, ic, serr)
+		_, _, _ = pc, ic, serr
+		//t.Logf("cycle %d: pc=0x%x -> pc=0x%x ic=%d err=%v", i, pc, cpu.pc, ic, serr)
 		if serr != nil {
-			t.Logf("  stopped: %v", serr)
+			//t.Logf("  stopped: %v", serr)
 			break
 		}
 		// Check tohost
 		if cpu.WatchAddr() != 0 {
 			if v, _ := (&cpu.mem).Load64(cpu.WatchAddr()); v != 0 {
-				t.Logf("  tohost=0x%x at cycle %d", v, i)
+				//t.Logf("  tohost=0x%x at cycle %d", v, i)
 				break
 			}
 		}
@@ -1954,6 +1964,7 @@ func testNativeTraceW(t *testing.T, elfPath string, targetBlock int) {
 	cpu.Notes.Push(func(c *CPU, note Note) NoteDisposition { return NoteHandled })
 	jit := NewJIT()
 	var lastPC uint64
+	_ = lastPC
 	for i := 0; i < targetBlock; i++ {
 		lastPC = cpu.pc
 		ic, jerr := jit.StepBlock(cpu)
@@ -1965,7 +1976,7 @@ func testNativeTraceW(t *testing.T, elfPath string, targetBlock int) {
 			}
 		}
 	}
-	t.Logf("at block %d, pc=0x%x (prev=0x%x)", targetBlock, cpu.pc, lastPC)
+	//t.Logf("at block %d, pc=0x%x (prev=0x%x)", targetBlock, cpu.pc, lastPC)
 
 	// Snapshot state.
 	var xSnap [32]uint64
@@ -1977,8 +1988,7 @@ func testNativeTraceW(t *testing.T, elfPath string, targetBlock int) {
 	if res == nil {
 		t.Fatal("emitBlock returned nil")
 	}
-	t.Logf("block: start=0x%x end=0x%x insns=%d irLen=%d",
-		res.startPC, res.endPC, res.numInsns, len(res.block.Instrs))
+	//t.Logf("block: start=0x%x end=0x%x insns=%d irLen=%d", res.startPC, res.endPC, res.numInsns, len(res.block.Instrs))
 
 	// Compile with V1 and V2.
 	blkV1, v1dbg, err := jit.jitCompileDebug(res, false)
@@ -2001,22 +2011,23 @@ func testNativeTraceW(t *testing.T, elfPath string, targetBlock int) {
 	copy(cpu.x[:], xSnap[:])
 	cpu.pc = pcSnap
 	r2 := jitcallCall(blkV2.fn, &cpu.x, &cpu.f, &cpu.fcsr, cpu.mem.Base(), cpu.mem.Mask())
+	_ = r2
 	var xV2 [32]uint64
 	copy(xV2[:], cpu.x[:])
 
-	t.Logf("V1: pc=0x%x ic=%d status=%d", r1.PC, r1.IC, r1.Status)
-	t.Logf("V2: pc=0x%x ic=%d status=%d", r2.PC, r2.IC, r2.Status)
+	//t.Logf("V1: pc=0x%x ic=%d status=%d", r1.PC, r1.IC, r1.Status)
+	//t.Logf("V2: pc=0x%x ic=%d status=%d", r2.PC, r2.IC, r2.Status)
 
 	// Compare V1 vs V2.
 	v1v2Match := true
 	for i := 0; i < 32; i++ {
 		if xV1[i] != xV2[i] {
-			t.Logf("  V1!=V2 x[%d]: V1=0x%x V2=0x%x", i, xV1[i], xV2[i])
+			//t.Logf("  V1!=V2 x[%d]: V1=0x%x V2=0x%x", i, xV1[i], xV2[i])
 			v1v2Match = false
 		}
 	}
 	if v1v2Match {
-		t.Log("V1==V2 (both lowerers agree)")
+		//t.Log("V1==V2 (both lowerers agree)")
 	}
 
 	// Run interpreter for the same IC steps.
@@ -2028,34 +2039,34 @@ func testNativeTraceW(t *testing.T, elfPath string, targetBlock int) {
 		interpErr = cpu.step()
 		cpu.cycle++
 		if interpErr != nil {
-			t.Logf("interpreter error at step %d: %v (pc=0x%x)", i, interpErr, cpu.pc)
+			//t.Logf("interpreter error at step %d: %v (pc=0x%x)", i, interpErr, cpu.pc)
 			break
 		}
 	}
-	t.Logf("interp: pc=0x%x after %d steps", cpu.pc, interpIC)
+	//t.Logf("interp: pc=0x%x after %d steps", cpu.pc, interpIC)
 
 	// Compare V1 vs interpreter.
 	v1InterpMatch := true
 	for i := 0; i < 32; i++ {
 		if xV1[i] != cpu.x[i] {
-			t.Logf("  V1!=interp x[%d]: V1=0x%x interp=0x%x", i, xV1[i], cpu.x[i])
+			//t.Logf("  V1!=interp x[%d]: V1=0x%x interp=0x%x", i, xV1[i], cpu.x[i])
 			v1InterpMatch = false
 		}
 	}
 	if v1InterpMatch {
-		t.Log("V1==interp (JIT and interpreter agree)")
+		//t.Log("V1==interp (JIT and interpreter agree)")
 	} else {
-		t.Log("V1!=interp — DIVERGENCE")
+		//t.Log("V1!=interp — DIVERGENCE")
 		// Dump first few progs for debugging.
 		lines := strings.Split(v1dbg.progs, "\n")
 		limit := 30
 		if len(lines) < limit {
 			limit = len(lines)
 		}
-		t.Logf("=== V1 Progs (first %d) ===", limit)
+		//t.Logf("=== V1 Progs (first %d) ===", limit)
 		for _, line := range lines[:limit] {
 			if line != "" {
-				t.Logf("  %s", line)
+				//t.Logf("  %s", line)
 			}
 		}
 	}
