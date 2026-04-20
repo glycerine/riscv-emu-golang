@@ -735,6 +735,7 @@ func emitBlock(mem *GuestMemory, pc uint64) *emitResult {
 		for lab, idx := range e.irEm.Block.Labels {
 			e.irEm.Block.Labels[lab] = idx + len(loads)
 		}
+		ir.MaxVReg(e.irEm.Block)
 	}
 
 	return e.finalize()

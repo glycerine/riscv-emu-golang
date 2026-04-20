@@ -10,7 +10,7 @@ import (
 func makeBlock(instrs ...IRInstr) *Block {
 	b := NewBlock()
 	b.Instrs = instrs
-	b.maxVreg = maxVReg(b)
+	MaxVReg(b)
 	return b
 }
 

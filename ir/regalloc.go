@@ -369,9 +369,9 @@ func instrUses(ins *IRInstr) []VReg {
 	return uses
 }
 
-// useb.maxVreg instead!?
-// maxVReg returns the highest VReg number referenced in any instruction of b.
-func maxVReg(b *Block) VReg {
+// MaxVReg returns the highest VReg number referenced in any instruction of b.
+// Sets b.maxVreg to this value too.
+func MaxVReg(b *Block) VReg {
 	var mx VReg
 	for i := range b.Instrs {
 		ins := &b.Instrs[i]
@@ -381,6 +381,7 @@ func maxVReg(b *Block) VReg {
 			}
 		}
 	}
+	b.maxVreg = mx
 	return mx
 }
 
