@@ -27,7 +27,8 @@ static void jit_trace(const char *label, uint64_t addr, uint64_t val) {
     buf[i++] = ' '; buf[i++] = 'v'; buf[i++] = '='; buf[i++] = '0'; buf[i++] = 'x';
     for (int s = 60; s >= 0; s -= 4) buf[i++] = hex[(val >> s) & 0xF];
     buf[i++] = '\n';
-    write(2, buf, i);
+    ssize_t n = write(2, buf, i);
+    (void)n; // avoid warning on gcc about ignoring write return value.
 }
 
 // compile_block compiles C source to native code in memory.
@@ -83,7 +84,7 @@ func tccCompile(csrc string) (*compiledBlock, error) {
 		return nil, fmt.Errorf("jit: TCC compilation failed")
 	}
 	return &compiledBlock{
-		fn:    uintptr(fn),
+		fn:       uintptr(fn),
 		tccState: unsafe.Pointer(state),
 	}, nil
 }
