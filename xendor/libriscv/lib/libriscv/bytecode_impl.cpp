@@ -512,6 +512,26 @@ INSTRUCTION(RV32F_BC_FSD, rv32i_fsd) {
 	CPU().memory().template write<uint64_t> (addr, src.i64);
 	NEXT_INSTR();
 }
+// RISC-V ISA §11.3: any FP operation whose result is NaN must return
+// the canonical qNaN (0x7FC00000 for f32, 0x7FF8000000000000 for f64),
+// not a payload-propagating NaN. These bytecode fast paths skip the
+// FLOAT_INSTR fallback path's fsflags() canonicalization, so we
+// canonicalize inline here too. Non-NaN fast path: one branch.
+//
+// The FLPUT_F32 / FLPUT_F64 macros pattern-match the FMADD bytecode
+// (see RV32F_BC_FMADD below) so all five arithmetic bytecodes share
+// the same shape.
+#define FLPUT_F32(dst, expr) do { \
+	float _r = (expr); \
+	if (std::isnan(_r)) { (dst).load_u32(0x7FC00000u); } \
+	else { (dst).set_float(_r); } \
+} while(0)
+#define FLPUT_F64(dst, expr) do { \
+	double _r = (expr); \
+	if (std::isnan(_r)) { (dst).load_u64(0x7FF8000000000000ull); } \
+	else { (dst).f64 = _r; } \
+} while(0)
+
 INSTRUCTION(RV32F_BC_FADD, rv32f_fadd) {
 	VIEW_INSTR_AS(fi, FasterFloatType);
 	#define FLREGS() \
@@ -521,11 +541,11 @@ INSTRUCTION(RV32F_BC_FADD, rv32f_fadd) {
 	FLREGS();
 	if (fi.func == 0x0)
 	{ // float32
-		dst.set_float(rs1.f32[0] + rs2.f32[0]);
+		FLPUT_F32(dst, rs1.f32[0] + rs2.f32[0]);
 	}
 	else
 	{ // float64
-		dst.f64 = rs1.f64 + rs2.f64;
+		FLPUT_F64(dst, rs1.f64 + rs2.f64);
 	}
 	NEXT_INSTR();
 }
@@ -534,11 +554,11 @@ INSTRUCTION(RV32F_BC_FSUB, rv32f_fsub) {
 	FLREGS();
 	if (fi.func == 0x0)
 	{ // float32
-		dst.set_float(rs1.f32[0] - rs2.f32[0]);
+		FLPUT_F32(dst, rs1.f32[0] - rs2.f32[0]);
 	}
 	else
 	{ // float64
-		dst.f64 = rs1.f64 - rs2.f64;
+		FLPUT_F64(dst, rs1.f64 - rs2.f64);
 	}
 	NEXT_INSTR();
 }
@@ -547,11 +567,11 @@ INSTRUCTION(RV32F_BC_FMUL, rv32f_fmul) {
 	FLREGS();
 	if (fi.func == 0x0)
 	{ // float32
-		dst.set_float(rs1.f32[0] * rs2.f32[0]);
+		FLPUT_F32(dst, rs1.f32[0] * rs2.f32[0]);
 	}
 	else
 	{ // float64
-		dst.f64 = rs1.f64 * rs2.f64;
+		FLPUT_F64(dst, rs1.f64 * rs2.f64);
 	}
 	NEXT_INSTR();
 }
@@ -560,11 +580,11 @@ INSTRUCTION(RV32F_BC_FDIV, rv32f_fdiv) {
 	FLREGS();
 	if (fi.func == 0x0)
 	{ // float32
-		dst.set_float(rs1.f32[0] / rs2.f32[0]);
+		FLPUT_F32(dst, rs1.f32[0] / rs2.f32[0]);
 	}
 	else
 	{ // float64
-		dst.f64 = rs1.f64 / rs2.f64;
+		FLPUT_F64(dst, rs1.f64 / rs2.f64);
 	}
 	NEXT_INSTR();
 }
@@ -579,27 +599,46 @@ INSTRUCTION(RV32F_BC_FMADD, rv32f_fmadd) {
 	// RISC-V spec §11.6: FMA must round only once. std::fma is the
 	// IEEE 754 fused multiply-add (single rounding). Prior code used
 	// `a * b + c`, which does two roundings — spec violation, visible
-	// as 1-ULP divergences in the fuzz oracle.
-	//
-	// Spec §11.3: any FP operation whose result is a NaN must produce
-	// the canonical qNaN (F32 0x7FC00000 / F64 0x7FF8000000000000), not
-	// a payload-propagating NaN. The FLOAT_INSTR fallback path does this
-	// via fsflags(); this fast-path skipped fsflags, so we canonicalize
-	// inline here too.
+	// as 1-ULP divergences in the fuzz oracle. §11.3: NaN results go
+	// through FLPUT_F{32,64} which emits the canonical qNaN.
+	//   FMADD  =  rs1*rs2 + rs3 →  fma(rs1, rs2,  rs3)
 	if (fi.R4type.funct2 == 0x0) { // float32
-		float r = std::fma(rs1.f32[0], rs2.f32[0], rs3.f32[0]);
-		if (std::isnan(r)) {
-			dst.load_u32(0x7FC00000u);
-		} else {
-			dst.set_float(r);
-		}
+		FLPUT_F32(dst, std::fma(rs1.f32[0], rs2.f32[0], rs3.f32[0]));
 	} else if (fi.R4type.funct2 == 0x1) { // float64
-		double r = std::fma(rs1.f64, rs2.f64, rs3.f64);
-		if (std::isnan(r)) {
-			dst.load_u64(0x7FF8000000000000ull);
-		} else {
-			dst.f64 = r;
-		}
+		FLPUT_F64(dst, std::fma(rs1.f64, rs2.f64, rs3.f64));
+	}
+	NEXT_INSTR();
+}
+// FMSUB  =  rs1*rs2 - rs3 → fma(rs1, rs2, -rs3)
+INSTRUCTION(RV32F_BC_FMSUB, rv32f_fmsub) {
+	VIEW_INSTR_AS(fi, rv32f_instruction);
+	FMAREGS();
+	if (fi.R4type.funct2 == 0x0) {
+		FLPUT_F32(dst, std::fma(rs1.f32[0], rs2.f32[0], -rs3.f32[0]));
+	} else if (fi.R4type.funct2 == 0x1) {
+		FLPUT_F64(dst, std::fma(rs1.f64, rs2.f64, -rs3.f64));
+	}
+	NEXT_INSTR();
+}
+// FNMADD = -(rs1*rs2 + rs3) → -fma(rs1, rs2, rs3)
+INSTRUCTION(RV32F_BC_FNMADD, rv32f_fnmadd) {
+	VIEW_INSTR_AS(fi, rv32f_instruction);
+	FMAREGS();
+	if (fi.R4type.funct2 == 0x0) {
+		FLPUT_F32(dst, -std::fma(rs1.f32[0], rs2.f32[0], rs3.f32[0]));
+	} else if (fi.R4type.funct2 == 0x1) {
+		FLPUT_F64(dst, -std::fma(rs1.f64, rs2.f64, rs3.f64));
+	}
+	NEXT_INSTR();
+}
+// FNMSUB = -(rs1*rs2 - rs3) = -rs1*rs2 + rs3 → fma(-rs1, rs2, rs3)
+INSTRUCTION(RV32F_BC_FNMSUB, rv32f_fnmsub) {
+	VIEW_INSTR_AS(fi, rv32f_instruction);
+	FMAREGS();
+	if (fi.R4type.funct2 == 0x0) {
+		FLPUT_F32(dst, std::fma(-rs1.f32[0], rs2.f32[0], rs3.f32[0]));
+	} else if (fi.R4type.funct2 == 0x1) {
+		FLPUT_F64(dst, std::fma(-rs1.f64, rs2.f64, rs3.f64));
 	}
 	NEXT_INSTR();
 }

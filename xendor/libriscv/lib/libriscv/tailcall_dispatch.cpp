@@ -354,6 +354,9 @@ namespace riscv
 		[RV32F_BC_FMUL]    = rv32f_fmul,
 		[RV32F_BC_FDIV]    = rv32f_fdiv,
 		[RV32F_BC_FMADD]   = rv32f_fmadd,
+		[RV32F_BC_FMSUB]   = rv32f_fmsub,
+		[RV32F_BC_FNMADD]  = rv32f_fnmadd,
+		[RV32F_BC_FNMSUB]  = rv32f_fnmsub,
 #ifdef RISCV_EXT_VECTOR
 		[RV32V_BC_VLE32]   = rv32v_vle32,
 		[RV32V_BC_VSE32]   = rv32v_vse32,

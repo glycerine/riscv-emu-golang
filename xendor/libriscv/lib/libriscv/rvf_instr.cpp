@@ -424,47 +424,35 @@ namespace riscv
 			double r = std::fmax(a, b); uint64_t rb; __builtin_memcpy(&rb, &r, 8); return rb;
 		};
 
+		// RISC-V spec §11.3: FMIN/FMAX on two NaN operands returns the
+		// canonical qNaN. This is unconditional — not gated on
+		// fcsr_emulation (which only governs whether we additionally
+		// update fflags; the canonical output is always required).
 		switch (fi.R4type.funct3 | (fi.R4type.funct2 << 4))
 		{
 		case 0x0: // FMIN.S
-			if constexpr (fcsr_emulation) {
-				if (std::isnan(rs1.f32[0]) && std::isnan(rs2.f32[0]))
-					dst.load_u32(CANONICAL_NAN_F32);
-				else
-					dst.load_u32(fmin32(rs1.i32[0], rs2.i32[0]));
-			} else {
+			if (std::isnan(rs1.f32[0]) && std::isnan(rs2.f32[0]))
+				dst.load_u32(CANONICAL_NAN_F32);
+			else
 				dst.load_u32(fmin32(rs1.i32[0], rs2.i32[0]));
-			}
 			break;
 		case 0x1: // FMAX.S
-			if constexpr (fcsr_emulation) {
-				if (std::isnan(rs1.f32[0]) && std::isnan(rs2.f32[0]))
-					dst.load_u32(CANONICAL_NAN_F32);
-				else
-					dst.load_u32(fmax32(rs1.i32[0], rs2.i32[0]));
-			} else {
+			if (std::isnan(rs1.f32[0]) && std::isnan(rs2.f32[0]))
+				dst.load_u32(CANONICAL_NAN_F32);
+			else
 				dst.load_u32(fmax32(rs1.i32[0], rs2.i32[0]));
-			}
 			break;
 		case 0x10: // FMIN.D
-			if constexpr (fcsr_emulation) {
-				if (std::isnan(rs1.f64) && std::isnan(rs2.f64))
-					dst.load_u64(CANONICAL_NAN_F64);
-				else
-					dst.load_u64(fmin64(rs1.i64, rs2.i64));
-			} else {
+			if (std::isnan(rs1.f64) && std::isnan(rs2.f64))
+				dst.load_u64(CANONICAL_NAN_F64);
+			else
 				dst.load_u64(fmin64(rs1.i64, rs2.i64));
-			}
 			break;
 		case 0x11: // FMAX.D
-			if constexpr (fcsr_emulation) {
-				if (std::isnan(rs1.f64) && std::isnan(rs2.f64))
-					dst.load_u64(CANONICAL_NAN_F64);
-				else
-					dst.load_u64(fmax64(rs1.i64, rs2.i64));
-			} else {
+			if (std::isnan(rs1.f64) && std::isnan(rs2.f64))
+				dst.load_u64(CANONICAL_NAN_F64);
+			else
 				dst.load_u64(fmax64(rs1.i64, rs2.i64));
-			}
 			break;
 		default:
 			cpu.trigger_exception(ILLEGAL_OPERATION);

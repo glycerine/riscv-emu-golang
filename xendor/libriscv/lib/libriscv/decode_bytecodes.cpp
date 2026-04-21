@@ -478,9 +478,11 @@ size_t CPU<W>::computed_index_for(rv32i_instruction instr) noexcept
 		case RV32F_FMADD:
 			return RV32F_BC_FMADD;
 		case RV32F_FMSUB:
+			return RV32F_BC_FMSUB;
 		case RV32F_FNMADD:
+			return RV32F_BC_FNMADD;
 		case RV32F_FNMSUB:
-			return RV32I_BC_FUNCTION;
+			return RV32F_BC_FNMSUB;
 		case RV32F_FPFUNC:
 			if (rv32f_instruction{instr}.R4type.funct2 >= 2)
 				return RV32I_BC_FUNCTION;

@@ -304,8 +304,13 @@ namespace riscv
 				instr.whole = rewritten.whole;
 				return bytecode;
 			}
-			case RV32F_BC_FMADD: {
-				// It's unclear how to optimize this instruction
+			case RV32F_BC_FMADD:
+			case RV32F_BC_FMSUB:
+			case RV32F_BC_FNMADD:
+			case RV32F_BC_FNMSUB: {
+				// Pass-through: the fast-path bytecode already decodes
+				// the full rv32f_instruction; no rewrite compaction
+				// applies here.
 				return bytecode;
 			}
 			/** Vector instructions **/

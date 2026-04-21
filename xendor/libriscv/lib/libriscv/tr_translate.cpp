@@ -1457,9 +1457,16 @@ CallbackTable<W> create_bintr_callback_table(DecodedExecuteSegment<W>&)
 			}
 			return r;
 		},
-		// FMIN/FMAX with RISC-V -0.0 < +0.0 convention. std::fmin/fmax
-		// leave the ±0 case implementation-defined.
+		// FMIN/FMAX with two RISC-V-specific rules:
+		//   1. §11.6 ordering: -0.0 < +0.0 (std::fmin/fmax leaves that
+		//      case implementation-defined).
+		//   2. §11.3 canonicalization: if both operands are NaN, return
+		//      the canonical qNaN — not a payload-propagating NaN.
 		.fmin32_rv = [] (float a, float b) -> float {
+			if (std::isnan(a) && std::isnan(b)) {
+				uint32_t canon = 0x7FC00000u; float r;
+				__builtin_memcpy(&r, &canon, 4); return r;
+			}
 			if (a == 0.0f && b == 0.0f) {
 				uint32_t ab, bb;
 				__builtin_memcpy(&ab, &a, 4); __builtin_memcpy(&bb, &b, 4);
@@ -1469,6 +1476,10 @@ CallbackTable<W> create_bintr_callback_table(DecodedExecuteSegment<W>&)
 			return std::fmin(a, b);
 		},
 		.fmax32_rv = [] (float a, float b) -> float {
+			if (std::isnan(a) && std::isnan(b)) {
+				uint32_t canon = 0x7FC00000u; float r;
+				__builtin_memcpy(&r, &canon, 4); return r;
+			}
 			if (a == 0.0f && b == 0.0f) {
 				uint32_t ab, bb;
 				__builtin_memcpy(&ab, &a, 4); __builtin_memcpy(&bb, &b, 4);
@@ -1478,6 +1489,10 @@ CallbackTable<W> create_bintr_callback_table(DecodedExecuteSegment<W>&)
 			return std::fmax(a, b);
 		},
 		.fmin64_rv = [] (double a, double b) -> double {
+			if (std::isnan(a) && std::isnan(b)) {
+				uint64_t canon = 0x7FF8000000000000ull; double r;
+				__builtin_memcpy(&r, &canon, 8); return r;
+			}
 			if (a == 0.0 && b == 0.0) {
 				uint64_t ab, bb;
 				__builtin_memcpy(&ab, &a, 8); __builtin_memcpy(&bb, &b, 8);
@@ -1487,6 +1502,10 @@ CallbackTable<W> create_bintr_callback_table(DecodedExecuteSegment<W>&)
 			return std::fmin(a, b);
 		},
 		.fmax64_rv = [] (double a, double b) -> double {
+			if (std::isnan(a) && std::isnan(b)) {
+				uint64_t canon = 0x7FF8000000000000ull; double r;
+				__builtin_memcpy(&r, &canon, 8); return r;
+			}
 			if (a == 0.0 && b == 0.0) {
 				uint64_t ab, bb;
 				__builtin_memcpy(&ab, &a, 8); __builtin_memcpy(&bb, &b, 8);
