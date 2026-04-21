@@ -1,0 +1,9 @@
+4a22050df9e76a28ef904382e4b4c69578973cd5	not-for-merge	branch 'master' of ssh://github.com/plctlab/LuaJIT
+2f606e41383ef539ab02e1bc38c6ed6bf3bd7b09	not-for-merge	branch 'quick-and-dirty-patches' of ssh://github.com/plctlab/LuaJIT
+e7fdaf39dabe49a0c2338ce520928d6552d81fec	not-for-merge	branch 'riscv' of ssh://github.com/plctlab/LuaJIT
+a57a8ed5997a4b4b969a7566ddf7a814e7a50477	not-for-merge	branch 'riscv-stub' of ssh://github.com/plctlab/LuaJIT
+e9c0b90b64df769a53fda125c4fff31557091762	not-for-merge	branch 'riscv64-v2.1-branch' of ssh://github.com/plctlab/LuaJIT
+7dc3850e78493eed1e85fa7bc0b96068ae7fb9f4	not-for-merge	branch 'v2.0' of ssh://github.com/plctlab/LuaJIT
+e17ee83326f73d2bbfce5750ae8dc592a3b63c27	not-for-merge	branch 'v2.1' of ssh://github.com/plctlab/LuaJIT
+e9c0b90b64df769a53fda125c4fff31557091762	not-for-merge	branch 'v2.1-riscv64' of ssh://github.com/plctlab/LuaJIT
+e12d41f20f8d103e622c394b66a0d3c84925fcb8	not-for-merge	branch 'v2.1-riscv64-pr' of ssh://github.com/plctlab/LuaJIT

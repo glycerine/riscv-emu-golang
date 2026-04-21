@@ -1,0 +1,18 @@
+[core]
+	repositoryformatversion = 0
+	filemode = true
+	bare = false
+	logallrefupdates = true
+	precomposeunicode = true
+[remote "origin"]
+	url = https://github.com/LuaJIT/LuaJIT
+	fetch = +refs/heads/*:refs/remotes/origin/*
+[branch "v2.1"]
+	remote = origin
+	merge = refs/heads/v2.1
+[remote "riscv"]
+	url = https://github.com/plctlab/LuaJIT
+	fetch = +refs/heads/*:refs/remotes/riscv/*
+[branch "riscv64-v2.1-branch"]
+	remote = riscv
+	merge = refs/heads/riscv64-v2.1-branch
