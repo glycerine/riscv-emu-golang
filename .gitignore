@@ -13,3 +13,4 @@ bench/coremark.elf
 bench/dhrystone.elf
 xendor/tcc/libtcc.a
 darwin-perf
+hellobench
