@@ -1863,18 +1863,23 @@ void Emitter<W>::emit()
 				this->reset_tracked_register(fi.R4type.rd);
 				break;
 			case RV32F__FMIN_MAX:
+				// Route through api.{fmin,fmax}{32,64}_rv so the emitted
+				// C honors RISC-V's -0.0 < +0.0 convention for FMIN/FMAX
+				// (std::fmin/fmax leave the ±0 case implementation-
+				// defined; the host's fminf/fmaxf would otherwise return
+				// a sign that disagrees with the spec).
 				switch (fi.R4type.funct3 | (fi.R4type.funct2 << 4)) {
 				case 0x0: // FMIN.S
-					code += "set_fl(&" + dst + ", fminf(" + rs1 + ".f32[0], " + rs2 + ".f32[0]));\n";
+					code += "set_fl(&" + dst + ", api.fmin32_rv(" + rs1 + ".f32[0], " + rs2 + ".f32[0]));\n";
 					break;
 				case 0x1: // FMAX.S
-					code += "set_fl(&" + dst + ", fmaxf(" + rs1 + ".f32[0], " + rs2 + ".f32[0]));\n";
+					code += "set_fl(&" + dst + ", api.fmax32_rv(" + rs1 + ".f32[0], " + rs2 + ".f32[0]));\n";
 					break;
 				case 0x10: // FMIN.D
-					code += "set_dbl(&" + dst + ", fmin(" + rs1 + ".f64, " + rs2 + ".f64));\n";
+					code += "set_dbl(&" + dst + ", api.fmin64_rv(" + rs1 + ".f64, " + rs2 + ".f64));\n";
 					break;
 				case 0x11: // FMAX.D
-					code += "set_dbl(&" + dst + ", fmax(" + rs1 + ".f64, " + rs2 + ".f64));\n";
+					code += "set_dbl(&" + dst + ", api.fmax64_rv(" + rs1 + ".f64, " + rs2 + ".f64));\n";
 					break;
 				default:
 					UNKNOWN_INSTRUCTION();

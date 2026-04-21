@@ -384,7 +384,6 @@ namespace riscv
 	FLOAT_INSTR(FMIN_FMAX,
 	[] (auto& cpu, rv32i_instruction instr) RVINSTR_COLDATTR
 	{
-		fprintf(stderr, "DEBUG FLOAT_INSTR(FMIN_FMAX) called!\n");
 		const rv32f_instruction fi { instr };
 		auto& rs1 = cpu.registers().getfl(fi.R4type.rs1);
 		auto& rs2 = cpu.registers().getfl(fi.R4type.rs2);
@@ -403,7 +402,6 @@ namespace riscv
 			float r = std::fmin(a, b); uint32_t rb; __builtin_memcpy(&rb, &r, 4); return rb;
 		};
 		auto fmax32 = [&](uint32_t ab, uint32_t bb) -> uint32_t {
-			fprintf(stderr, "DEBUG fmax32 a=0x%X b=0x%X\n", ab, bb);
 			float a, b; __builtin_memcpy(&a, &ab, 4); __builtin_memcpy(&b, &bb, 4);
 			if (a == 0.0f && b == 0.0f) {
 				// -0 < +0 → return +0 if either is non-negative.

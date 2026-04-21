@@ -28,7 +28,6 @@ static RISCVMachine *new_machine(const void *elf, size_t elf_size) {
     libriscv_set_defaults(&opts);
     opts.max_memory     = 64 * 1024 * 1024;
     opts.strict_sandbox = 1;
-    opts.no_translate   = 1; // DEBUG: disable BT to isolate path
     opts.error          = null_error;
     opts.output         = null_stdout;
     return libriscv_new(elf, (unsigned)elf_size, &opts);
