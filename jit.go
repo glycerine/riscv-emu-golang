@@ -28,11 +28,26 @@ type chainPatchInfo struct {
 // and cache_fn is the corresponding block's chainEntry. Shift-policy
 // tryPatchJalrIC fills slot 0 with the most recent miss target,
 // demoting the old slot-0 contents to slot 1.
+//
+// A miss counter per site drives thrash deopt: after
+// jalrICDeoptThreshold patches, the site is considered polymorphic
+// (rotating across >2 targets) and further patching stops. The inline
+// check still runs — sites cache whatever they last held — but the
+// self-modifying-code (SMC) stalls caused by repeated patching stop.
 type jalrICPatchInfo struct {
 	siteIdx     int
 	pcPatchOff  [2]int // byte offsets of cache_pc[0], cache_pc[1]
 	fnPatchOff  [2]int // byte offsets of cache_fn[0], cache_fn[1]
+	missStreak  uint32 // total patch attempts for this site
 }
+
+// jalrICDeoptThreshold is the number of miss-patches a JALR IC site
+// will accept before it gives up and stops patching. Rationale: a
+// monomorphic site settles with 1 patch; a bi-modal site with 2.
+// Anything that keeps missing past this threshold is almost certainly
+// 3+ target rotating — patching just thrashes the I-cache without
+// buying hit rate.
+const jalrICDeoptThreshold uint32 = 16
 
 // compiledBlock holds a compiled function pointer (native IR or TCC).
 type compiledBlock struct {
@@ -91,6 +106,7 @@ type JIT struct {
 	ChainPatched     uint64 // chain exits successfully patched
 	ChainPatchedJalr uint64 // JALR IC sites successfully patched
 	JalrICMisses     uint64 // JALR IC returns to Go (site not warm or polymorphic)
+	JalrICDeopts     uint64 // JALR IC sites that crossed the deopt threshold
 }
 
 // NewJIT creates a new JIT translation cache using the Fixed Static Mapping allocator.
@@ -489,14 +505,17 @@ func (j *JIT) tryPatchChain(blk *compiledBlock, targetPC uint64) {
 //
 // Called from the dispatch loop on jitOKJalrMiss returns.
 func (j *JIT) tryPatchJalrIC(blk *compiledBlock, siteIdx int, targetPC uint64) {
+	if siteIdx < 0 || siteIdx >= len(blk.jalrICs) {
+		return
+	}
+	ic := &blk.jalrICs[siteIdx]
+	if ic.missStreak >= jalrICDeoptThreshold {
+		return // deopted site: stop patching; inline check still runs.
+	}
 	target := j.lookupBlock(targetPC)
 	if target == nil || target.chainEntry == 0 {
 		return
 	}
-	if siteIdx < 0 || siteIdx >= len(blk.jalrICs) {
-		return
-	}
-	ic := blk.jalrICs[siteIdx]
 
 	// Read current slot 0 so we can demote it to slot 1.
 	pc0Old := readJalrICSlot(blk.fn, ic.pcPatchOff[0])
@@ -508,6 +527,10 @@ func (j *JIT) tryPatchJalrIC(blk *compiledBlock, siteIdx int, targetPC uint64) {
 	patchChainTarget(blk.fn, ic.pcPatchOff[0], uintptr(targetPC))
 	patchChainTarget(blk.fn, ic.fnPatchOff[0], target.chainEntry)
 	j.ChainPatchedJalr++
+	ic.missStreak++
+	if ic.missStreak == jalrICDeoptThreshold {
+		j.JalrICDeopts++
+	}
 }
 
 // readJalrICSlot reads 8 bytes from JIT code memory at the given

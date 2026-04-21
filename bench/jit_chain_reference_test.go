@@ -57,6 +57,8 @@ func runChainReference(t *testing.T, elfData []byte, workload string) {
 		jit.ChainPatched)
 	t.Logf("  ChainPatchedJalr  : %d   (JALR IC site patches)", jit.ChainPatchedJalr)
 	t.Logf("  JalrICMisses      : %d   (JALR IC misses returning to Go)", jit.JalrICMisses)
+	t.Logf("  JalrICDeopts      : %d   (JALR IC sites crossed deopt threshold)",
+		jit.JalrICDeopts)
 	insnsPerJalrMiss := 0.0
 	if jit.JalrICMisses > 0 {
 		insnsPerJalrMiss = float64(insns) / float64(jit.JalrICMisses)

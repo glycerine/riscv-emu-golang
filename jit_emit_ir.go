@@ -2123,11 +2123,9 @@ func (e *emitter) emitJALR(rd, rs1 uint32, imm int64, insnSize uint64) {
 		e.irEm.Const(e.xregDst(rd), int64(e.pc+insnSize))
 	}
 	e.advancePC(insnSize)
-	// Emit a 2-way inline-cache dispatch (Phase 1.5). On hit the site's
-	// direct JMP skips the Go round-trip; on miss the stub returns with
-	// Status=jitOKJalrMiss so the dispatcher can shift-patch the cache.
-	e.irEm.DynChainableRet(tgt, e.jalrSiteIdx)
-	e.jalrSiteIdx++
+	// TEMP: baseline measurement.
+	e.irEm.WriteBackAll()
+	e.irEm.RetDyn(tgt, jitOK, ir.VRegZero)
 	e.terminated = true
 }
 

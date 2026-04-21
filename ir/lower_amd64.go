@@ -480,8 +480,12 @@ func (lc *lowerCtx) lowerJalrIC(ins *IRInstr) {
 	// which we need for MOVABS.
 	tgt := lc.use(ins.A, 1)
 
-	// MOVQ tgt, 0(RBX) — sret.PC. Needed on miss; harmless on hit.
-	lc.emitMR(x86.AMOVQ, tgt, amd64RegSret, 0)
+	// Stash tgt into R11 (amd64Scratch2). The hit path no longer writes
+	// sret.PC — target block doesn't consume it. The miss stub reads R11
+	// to populate sret.PC on its way out. If tgt is already in R11 (e.g.
+	// because it was spilled and lc.use loaded it there), the MOVQ is a
+	// self-copy and the assembler emits a 3-byte NOP-equivalent.
+	lc.emitRR(x86.AMOVQ, tgt, amd64Scratch2)
 
 	const sentinel = int64(0x7BADC0DE7BADC0DE)
 
@@ -569,18 +573,21 @@ func (lc *lowerCtx) emitJalrMissStub(siteIdx int) *obj.Prog {
 		firstProg = p
 	}
 
-	// MOVQ RBP, 8(RBX) — sret.IC
-	ic := lc.c.NewProg()
-	ic.As = x86.AMOVQ
-	ic.From.Type = obj.TYPE_REG
-	ic.From.Reg = amd64RegIC
-	ic.To.Type = obj.TYPE_MEM
-	ic.To.Reg = amd64RegSret
-	ic.To.Offset = 8
-	lc.c.Append(ic)
+	// MOVQ R11, 0(RBX) — sret.PC (target PC was stashed in R11 by lowerJalrIC).
+	pcWrite := lc.c.NewProg()
+	pcWrite.As = x86.AMOVQ
+	pcWrite.From.Type = obj.TYPE_REG
+	pcWrite.From.Reg = amd64Scratch2
+	pcWrite.To.Type = obj.TYPE_MEM
+	pcWrite.To.Reg = amd64RegSret
+	pcWrite.To.Offset = 0
+	lc.c.Append(pcWrite)
 	if firstProg == nil {
-		firstProg = ic
+		firstProg = pcWrite
 	}
+
+	// MOVQ RBP, 8(RBX) — sret.IC
+	lc.emitMR(x86.AMOVQ, amd64RegIC, amd64RegSret, 8)
 
 	// MOVQ $JitOKJalrMiss, 16(RBX) — sret.Status
 	lc.emitMI(x86.AMOVQ, JitOKJalrMiss, amd64RegSret, 16)

@@ -181,6 +181,65 @@ func TestJITJalrIC_Foundation_ShiftSemantics(t *testing.T) {
 	}
 }
 
+// JF4 — Thrash deopt: after jalrICDeoptThreshold patches, tryPatchJalrIC
+// stops patching and sets JalrICDeopts. Verifies the site's code stays
+// at the value set just before deopt.
+func TestJITJalrIC_Foundation_ThrashDeopt(t *testing.T) {
+	blk := buildJalrICOnlyBlock(0)
+	j := NewJIT()
+	compiled, err := j.jitCompileWith(&emitResult{block: blk, numInsns: 0}, false)
+	if err != nil {
+		t.Fatalf("jitCompileWith: %v", err)
+	}
+
+	// Register distinct target blocks at non-colliding cache slots.
+	// cacheIdx = (pc>>1) & 0xFFF; pc = 0x1000 + i*4 gives hash =
+	// (0x800 + i*2) & 0xFFF, distinct for i in [0, 2047].
+	var targets [jalrICDeoptThreshold + 4]uint64
+	for i := range targets {
+		targets[i] = uint64(0x1000) + uint64(i)*4
+		j.insertBlock(targets[i], &compiledBlock{
+			fn:         compiled.fn,
+			chainEntry: compiled.chainEntry + uintptr(i+1),
+		})
+	}
+
+	ic := compiled.jalrICs[0]
+
+	// Feed a rotating stream of distinct targets — every miss is a "new"
+	// target, causing a patch each time.
+	for i := uint32(0); i < jalrICDeoptThreshold; i++ {
+		j.tryPatchJalrIC(compiled, 0, targets[i])
+	}
+	if j.ChainPatchedJalr != uint64(jalrICDeoptThreshold) {
+		t.Errorf("ChainPatchedJalr = %d, want %d", j.ChainPatchedJalr,
+			jalrICDeoptThreshold)
+	}
+	if j.JalrICDeopts != 1 {
+		t.Errorf("JalrICDeopts = %d, want 1 (site should have tipped into deopt)",
+			j.JalrICDeopts)
+	}
+	// Capture the current slot-0 PC.
+	pcBeforeExcess := readSlot(compiled.fn, ic.pcPatchOff[0])
+
+	// Further patches must be no-ops: counter doesn't rise, slots don't change.
+	for i := uint32(0); i < 4; i++ {
+		j.tryPatchJalrIC(compiled, 0, targets[jalrICDeoptThreshold+i])
+	}
+	if j.ChainPatchedJalr != uint64(jalrICDeoptThreshold) {
+		t.Errorf("ChainPatchedJalr after deopt = %d, want unchanged %d",
+			j.ChainPatchedJalr, jalrICDeoptThreshold)
+	}
+	if j.JalrICDeopts != 1 {
+		t.Errorf("JalrICDeopts = %d, want 1 (should fire exactly once)",
+			j.JalrICDeopts)
+	}
+	pcAfterExcess := readSlot(compiled.fn, ic.pcPatchOff[0])
+	if pcAfterExcess != pcBeforeExcess {
+		t.Errorf("slot 0 changed post-deopt: 0x%x → 0x%x", pcBeforeExcess, pcAfterExcess)
+	}
+}
+
 // JF2 — patchChainTarget (generic 8-byte writer) works on all four
 // slots independently; readback matches.
 func TestJITJalrIC_Foundation_PatchRoundtrip(t *testing.T) {
