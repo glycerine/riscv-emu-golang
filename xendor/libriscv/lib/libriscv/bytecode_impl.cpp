@@ -2,6 +2,8 @@
  * Popular instructions
 */
 
+#include <cmath> // std::fma for spec-compliant FMA (rv32f_fmadd)
+
 #ifdef RISCV_EXT_COMPRESSED
 INSTRUCTION(RV32C_BC_ADDI, rv32c_addi) {
 	VIEW_INSTR_AS(fi, FasterItype);
@@ -574,10 +576,14 @@ INSTRUCTION(RV32F_BC_FMADD, rv32f_fmadd) {
 		auto& rs2 = REGISTERS().getfl(fi.R4type.rs2); \
 		auto& rs3 = REGISTERS().getfl(fi.R4type.rs3);
 	FMAREGS();
+	// RISC-V spec §11.6: FMA must round only once. std::fma is the
+	// IEEE 754 fused multiply-add (single rounding). Prior code used
+	// `a * b + c`, which does two roundings — spec violation, visible
+	// as 1-ULP divergences in the fuzz oracle.
 	if (fi.R4type.funct2 == 0x0) { // float32
-		dst.set_float(rs1.f32[0] * rs2.f32[0] + rs3.f32[0]);
+		dst.set_float(std::fma(rs1.f32[0], rs2.f32[0], rs3.f32[0]));
 	} else if (fi.R4type.funct2 == 0x1) { // float64
-		dst.f64 = rs1.f64 * rs2.f64 + rs3.f64;
+		dst.f64 = std::fma(rs1.f64, rs2.f64, rs3.f64);
 	}
 	NEXT_INSTR();
 }

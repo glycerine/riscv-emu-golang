@@ -1435,6 +1435,12 @@ CallbackTable<W> create_bintr_callback_table(DecodedExecuteSegment<W>&)
 		.sqrtf64 = [] (double d) -> double {
 			return std::sqrt(d);
 		},
+		.fmaf32 = [] (float a, float b, float c) -> float {
+			return std::fma(a, b, c);
+		},
+		.fmaf64 = [] (double a, double b, double c) -> double {
+			return std::fma(a, b, c);
+		},
 		.clz = [] (uint32_t x) -> int {
 #ifdef RISCV_HAS_BITOPS
 			return std::countl_zero(x);

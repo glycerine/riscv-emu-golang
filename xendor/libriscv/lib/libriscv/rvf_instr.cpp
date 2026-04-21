@@ -120,11 +120,13 @@ namespace riscv
 		auto& rs1 = cpu.registers().getfl(fi.R4type.rs1);
 		auto& rs2 = cpu.registers().getfl(fi.R4type.rs2);
 		auto& rs3 = cpu.registers().getfl(fi.R4type.rs3);
+		// RISC-V spec §11.6: FMA must round only once (fused).
+		// std::fma is IEEE 754 fused multiply-add.
 		if (fi.R4type.funct2 == 0x0) { // float32
-			dst.set_float(rs1.f32[0] * rs2.f32[0] + rs3.f32[0]);
+			dst.set_float(std::fma(rs1.f32[0], rs2.f32[0], rs3.f32[0]));
 			fsflags(cpu, (double)rs1.f32[0] * (double)rs2.f32[0] + (double)rs3.f32[0], dst.f32[0]);
 		} else if (fi.R4type.funct2 == 0x1) { // float64
-			dst.f64 = rs1.f64 * rs2.f64 + rs3.f64;
+			dst.f64 = std::fma(rs1.f64, rs2.f64, rs3.f64);
 			fsflags(cpu, (long double)rs1.f64 * (long double)rs2.f64 + (long double)rs3.f64, dst.f64);
 		} else {
 			cpu.trigger_exception(ILLEGAL_OPERATION);
@@ -150,11 +152,13 @@ namespace riscv
 		auto& rs1 = cpu.registers().getfl(fi.R4type.rs1);
 		auto& rs2 = cpu.registers().getfl(fi.R4type.rs2);
 		auto& rs3 = cpu.registers().getfl(fi.R4type.rs3);
+		// RISC-V spec §11.6: FMA must round only once (fused).
+		// FMSUB = rs1*rs2 - rs3 = fma(rs1, rs2, -rs3).
 		if (fi.R4type.funct2 == 0x0) { // float32
-			dst.set_float(rs1.f32[0] * rs2.f32[0] - rs3.f32[0]);
+			dst.set_float(std::fma(rs1.f32[0], rs2.f32[0], -rs3.f32[0]));
 			fsflags(cpu, (double)rs1.f32[0] * (double)rs2.f32[0] - (double)rs3.f32[0], dst.f32[0]);
 		} else if (fi.R4type.funct2 == 0x1) { // float64
-			dst.f64 = rs1.f64 * rs2.f64 - rs3.f64;
+			dst.f64 = std::fma(rs1.f64, rs2.f64, -rs3.f64);
 			fsflags(cpu, (long double)rs1.f64 * (long double)rs2.f64 - (long double)rs3.f64, dst.f64);
 		} else {
 			cpu.trigger_exception(ILLEGAL_OPERATION);
@@ -180,11 +184,13 @@ namespace riscv
 		auto& rs1 = cpu.registers().getfl(fi.R4type.rs1);
 		auto& rs2 = cpu.registers().getfl(fi.R4type.rs2);
 		auto& rs3 = cpu.registers().getfl(fi.R4type.rs3);
+		// RISC-V spec §11.6: FMA must round only once (fused).
+		// FNMADD = -(rs1*rs2) - rs3 = -fma(rs1, rs2, rs3).
 		if (fi.R4type.funct2 == 0x0) { // float32
-			dst.set_float(-(rs1.f32[0] * rs2.f32[0]) - rs3.f32[0]);
+			dst.set_float(-std::fma(rs1.f32[0], rs2.f32[0], rs3.f32[0]));
 			fsflags(cpu, (double)-rs1.f32[0] * (double)rs2.f32[0] - (double)rs3.f32[0], dst.f32[0]);
 		} else if (fi.R4type.funct2 == 0x1) { // float64
-			dst.f64 = -(rs1.f64 * rs2.f64) - rs3.f64;
+			dst.f64 = -std::fma(rs1.f64, rs2.f64, rs3.f64);
 			fsflags(cpu, (long double)-rs1.f64 * (long double)rs2.f64 - (long double)rs3.f64, dst.f64);
 		} else {
 			cpu.trigger_exception(ILLEGAL_OPERATION);
@@ -209,11 +215,13 @@ namespace riscv
 		auto& rs1 = cpu.registers().getfl(fi.R4type.rs1);
 		auto& rs2 = cpu.registers().getfl(fi.R4type.rs2);
 		auto& rs3 = cpu.registers().getfl(fi.R4type.rs3);
+		// RISC-V spec §11.6: FMA must round only once (fused).
+		// FNMSUB = -(rs1*rs2) + rs3 = fma(-rs1, rs2, rs3).
 		if (fi.R4type.funct2 == 0x0) { // float32
-			dst.set_float(-(rs1.f32[0] * rs2.f32[0]) + rs3.f32[0]);
+			dst.set_float(std::fma(-rs1.f32[0], rs2.f32[0], rs3.f32[0]));
 			fsflags(cpu, (double)-rs1.f32[0] * (double)rs2.f32[0] + (double)rs3.f32[0], dst.f32[0]);
 		} else if (fi.R4type.funct2 == 0x1) { // float64
-			dst.f64 = -(rs1.f64 * rs2.f64) + rs3.f64;
+			dst.f64 = std::fma(-rs1.f64, rs2.f64, rs3.f64);
 			fsflags(cpu, (long double)-rs1.f64 * (long double)rs2.f64 + (long double)rs3.f64, dst.f64);
 		} else {
 			cpu.trigger_exception(ILLEGAL_OPERATION);

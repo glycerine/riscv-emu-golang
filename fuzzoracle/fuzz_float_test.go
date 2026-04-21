@@ -206,13 +206,7 @@ func FuzzFDVsLibriscv(f *testing.F) {
 			insn = r4(0x43, 0, rm, 1, 2, 3, 4)
 			initF[2] = nb32(f2clean)
 			initF[3] = nb32(f3clean)
-			// cleanF32 on f4 to match cases 26/27/29 — otherwise an sNaN
-			// input triggers the known NaN-canonicalization divergence:
-			// RISC-V spec §11.2.3 mandates the canonical qNaN 0x7FC00000
-			// as the FP result when the output is a NaN, but libriscv
-			// propagates the source NaN's sign + payload instead. The
-			// other fused-multiply cases already cleanF* for this reason.
-			initF[4] = nb32(cleanF32(uint32(xival)))
+			initF[4] = nb32(uint32(xival))
 		case 29: // FMADD.D
 			insn = r4(0x43, 1, rm, 1, 2, 3, 4)
 			initF[2] = f2cleanD
