@@ -52,6 +52,7 @@ import "C"
 
 import (
 	"fmt"
+	"riscv/ir"
 	"runtime"
 	"unsafe"
 )
@@ -201,6 +202,36 @@ func (m *GuestMemory) Free() {
 		m.base = 0
 		runtime.SetFinalizer(m, nil)
 	}
+}
+
+// CowClone returns a new GuestMemory whose contents are a copy-on-write
+// view of m's. Shared physical pages stay shared until either side
+// writes; after a side writes to a given page, that side's page is
+// private. Used by Machine.Clone to fork sandboxes cheaply.
+//
+// Unlike NewGuestMemory, the returned *GuestMemory has NO runtime
+// finalizer — the caller must call Free() explicitly to release the
+// CoW mapping. (A finalizer would race with the parent's Free and
+// with CPU.mem value-copies that still reference the underlying
+// mapping.)
+//
+// The child inherits m's size, mask, and a copy of its execRegions.
+// The child's scratch MemFault is fresh (zero value).
+func (m *GuestMemory) CowClone() (*GuestMemory, error) {
+	newBase, err := ir.COWRemap(m.size, m.base)
+	if err != nil {
+		return nil, fmt.Errorf("guestmem: CowClone: %w", err)
+	}
+	var execRegionsCopy []ExecRegion
+	if len(m.execRegions) > 0 {
+		execRegionsCopy = append(execRegionsCopy, m.execRegions...)
+	}
+	return &GuestMemory{
+		base:        newBase,
+		mask:        m.mask,
+		size:        m.size,
+		execRegions: execRegionsCopy,
+	}, nil
 }
 
 // Size returns the guest address space size in bytes.

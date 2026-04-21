@@ -9,9 +9,12 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// COWRemap creates a copy-on-write mapping of the memory at sourceAddr with
-// the given size. The returned pointer refers to a MAP_PRIVATE mapping backed
-// by a memfd, so writes to it trigger CoW and do not affect the source.
+// COWRemap creates a copy-on-write mapping of the memory at sourceAddr
+// with the given size. The returned pointer refers to a MAP_PRIVATE
+// mapping backed by a memfd, so writes to it trigger CoW and do not
+// affect the source.
+//
+// Release with COWUnmap when done.
 func COWRemap(size uint64, sourceAddr uintptr) (uintptr, error) {
 	// 1. Create anonymous file
 	fd, err := unix.MemfdCreate("cow", 0)
@@ -39,11 +42,20 @@ func COWRemap(size uint64, sourceAddr uintptr) (uintptr, error) {
 		return 0, fmt.Errorf("munmap shared: %w", err)
 	}
 
-	// 4. Re-map as MAP_PRIVATE (CoW)
+	// 4. Re-map as MAP_PRIVATE (CoW). The memfd keeps a kernel
+	// refcount; closing fd (deferred) will not unmap.
 	cow, err := unix.Mmap(fd, 0, int(size), unix.PROT_READ|unix.PROT_WRITE, unix.MAP_PRIVATE)
 	if err != nil {
 		return 0, fmt.Errorf("mmap private: %w", err)
 	}
 
 	return uintptr(unsafe.Pointer(&cow[0])), nil
+}
+
+// COWUnmap releases a region returned by COWRemap.
+func COWUnmap(addr uintptr, size uint64) error {
+	// Reconstruct the []byte slice header over the region and
+	// call unix.Munmap.
+	b := unsafe.Slice((*byte)(unsafe.Pointer(addr)), size)
+	return unix.Munmap(b)
 }

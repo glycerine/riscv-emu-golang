@@ -2,19 +2,19 @@
 
 package ir
 
-// The Mach VM mach_vm_remap approach on MacOS/darwin
-// to get CoW memory.
+// Copy-on-write remapping on Darwin via the Mach VM API.
 //
-// If you are looking for true Copy-on-Write (CoW)
-// between specific memory regions without using a
-// File Descriptor at all, Darwin’s Mach kernel
-// provides a specialized API called mach_vm_remap.
+// mach_vm_remap duplicates a range of virtual memory from one
+// address to another within the current task. With copy=TRUE
+// the new mapping is copy-on-write: writes on either side
+// trigger the kernel to allocate a private page; the other side
+// retains its fork-time view. With copy=FALSE the mapping is
+// shared (changes visible both ways). For Phase 2c Machine.Clone
+// we always use the CoW form.
 //
-// This is what Darwin uses internally for high-performance
-// memory sharing. It allows you to "copy" a range of
-// virtual memory from one address to another (or one
-// process to another) using CoW, so physical pages
-// are only duplicated when one side writes.
+// The matching deallocator is mach_vm_deallocate. POSIX munmap
+// also works (Darwin's munmap calls mach_vm_deallocate for Mach
+// VM regions), but using the matched API is cleaner.
 
 /*
 #include <mach/mach.h>
@@ -24,36 +24,30 @@ import "C"
 
 import (
 	"fmt"
-	//"log"
-	//"unsafe"
 )
 
-func MachVMRemap(size uint64, sourceAddr uintptr) (uintptr, error) {
+// COWRemap creates a copy-on-write remap of [sourceAddr, sourceAddr+size)
+// within the current task. Returns the target virtual address on success.
+//
+// Writes through the returned address are private to the clone; the source
+// region is unaffected. After either side writes to a given page, the pages
+// are decoupled — writes to the source from that point on are not observed
+// by the clone and vice versa.
+//
+// Release with COWUnmap when done.
+func COWRemap(size uint64, sourceAddr uintptr) (uintptr, error) {
 	var targetAddr C.mach_vm_address_t
 	var curProt, maxProt C.vm_prot_t
-
-	// mach_vm_remap arguments:
-	// 1. Target task (self)
-	// 2. Pointer to target address (0 + VM_FLAGS_ANYWHERE means kernel picks)
-	// 3. Size of region
-	// 4. Alignment mask
-	// 5. Flags (ANYWHERE to let OS find a slot)
-	// 6. Source task (self)
-	// 7. Source address to copy from
-	// 8. Copy flag (FALSE = Shared, TRUE = Copy/CoW)
-	// 9. Pointer to return current protection
-	// 10. Pointer to return max protection
-	// 11. Inheritance (default)
 
 	kr := C.mach_vm_remap(
 		C.mach_task_self_,
 		&targetAddr,
 		C.mach_vm_size_t(size),
-		0,
-		C.VM_FLAGS_ANYWHERE,
+		0,                    // alignment mask: 0 = no alignment constraint
+		C.VM_FLAGS_ANYWHERE,  // let the kernel pick the target address
 		C.mach_task_self_,
 		C.mach_vm_address_t(sourceAddr),
-		C.boolean_t(0), // Set to 1 for an actual physical copy; 0 for CoW/Shared
+		C.boolean_t(1),       // copy=TRUE ⇒ copy-on-write (not shared)
 		&curProt,
 		&maxProt,
 		C.VM_INHERIT_DEFAULT,
@@ -66,20 +60,15 @@ func MachVMRemap(size uint64, sourceAddr uintptr) (uintptr, error) {
 	return uintptr(targetAddr), nil
 }
 
-/* example:
-func main() {
-	// Example: Imagine we have some memory at a pointer
-	// This is a conceptual demonstration
-	data := []byte("Hello, Mach CoW!")
-	sourcePtr := uintptr(unsafe.Pointer(&data[0]))
-	size := uint64(len(data))
-
-	remappedAddr, err := MachVMRemap(size, sourcePtr)
-	if err != nil {
-		log.Fatal(err)
+// COWUnmap releases a region returned by COWRemap.
+func COWUnmap(addr uintptr, size uint64) error {
+	kr := C.mach_vm_deallocate(
+		C.mach_task_self_,
+		C.mach_vm_address_t(addr),
+		C.mach_vm_size_t(size),
+	)
+	if kr != C.KERN_SUCCESS {
+		return fmt.Errorf("mach_vm_deallocate failed with error code: %d", int(kr))
 	}
-
-	fmt.Printf("Source Address: %p\n", unsafe.Pointer(sourcePtr))
-	fmt.Printf("Remapped Address: 0x%x\n", remappedAddr)
+	return nil
 }
-*/

@@ -277,6 +277,32 @@ func (j *JIT) InstallAOT(mem *GuestMemory, elfBytes []byte) error {
 	return nil
 }
 
+// CloneShared returns a new JIT that shares j's AOT segments (each
+// Retain'd) but has its own lazy block cache. Safe to install more
+// AOT segments or lazy-compile blocks in the clone without affecting
+// j, because Phase 2b segments are structurally immutable after
+// install (blocks map read-only, decoder_cache mprotect RO, native
+// code already patched).
+//
+// The clone's debug flags (InterpOnly, UseV2, DebugV1V2, trace) start
+// at zero values; set them on the returned JIT if desired. Counters
+// also start at zero so the clone gets its own measurement baseline.
+//
+// The noJIT failure set starts empty in the clone; it may re-discover
+// untranslatable PCs the parent already found, at tiny cost.
+func (j *JIT) CloneShared() *JIT {
+	child := &JIT{
+		aotSegments: append([]*DecodedExecuteSegment(nil), j.aotSegments...),
+		noJIT:       make(map[uint64]bool),
+		irAlloc:     j.irAlloc, // stateless; sharing is safe
+	}
+	for _, s := range child.aotSegments {
+		s.Retain()
+	}
+	child.refreshSoleSegment()
+	return child
+}
+
 // Close releases every AOT segment owned by this JIT. Safe to call
 // multiple times; subsequent calls are no-ops. After Close, the JIT
 // must not dispatch — the native code mmaps are gone.

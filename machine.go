@@ -1,0 +1,98 @@
+package riscv
+
+// machine.go — Machine bundles a CPU and its (optional) JIT for the
+// fork API. Existing code that uses *CPU + *JIT directly continues
+// to work; the Machine type is purely additive, needed only when
+// callers want Clone semantics.
+//
+// Clone() mirrors libriscv's Machine(const Machine&) constructor:
+// the parent must outlive the clone (or at least outlive the clone's
+// access to any shared state), guest memory is copy-on-write via the
+// OS (mach_vm_remap on darwin, memfd + MAP_PRIVATE on linux), and
+// AOT segments are shared through atomic ref-counting from Phase 2b.
+// CPU register state is eagerly copied.
+
+// Machine is a forkable sandbox: a CPU with embedded GuestMemory,
+// plus an optional JIT. The zero value is not useful; construct via
+// NewMachine or obtain a fork via (*Machine).Clone.
+type Machine struct {
+	CPU *CPU
+	JIT *JIT // nil ⇒ interpreter-only sandbox
+
+	// ownedMem is the *GuestMemory for a Machine whose memory was
+	// allocated by Clone (via CowClone). Close frees it. For Machines
+	// constructed by wrapping an externally-allocated CPU (via
+	// NewMachine), ownedMem is nil and the caller is responsible for
+	// freeing the guest memory.
+	ownedMem *GuestMemory
+}
+
+// NewMachine wraps an existing CPU (with any embedded GuestMemory it
+// already has) and optional JIT into a Machine. The Machine does NOT
+// take ownership of the CPU's memory in this constructor — a
+// subsequent Close() will not call Free. Use this when the caller
+// already has a working CPU+JIT and wants to Clone it.
+func NewMachine(cpu *CPU, jit *JIT) *Machine {
+	return &Machine{CPU: cpu, JIT: jit}
+}
+
+// Clone returns a child Machine whose guest memory is a copy-on-write
+// view of this Machine's, whose JIT (if any) shares AOT segments via
+// Retain, and whose CPU register/CSR state equals this Machine's at
+// fork time. The parent and child are fully independent after the
+// call: writes on either side don't cross the fence.
+//
+// The child's NoteChain is fresh — the caller is responsible for
+// installing whatever exception/syscall handlers are appropriate for
+// the child context. (The parent's handlers likely capture the parent
+// *CPU in closures; they cannot be shared safely.)
+//
+// The returned Machine owns its guest memory; Close will release it.
+func (m *Machine) Clone() (*Machine, error) {
+	childMem, err := m.CPU.mem.CowClone()
+	if err != nil {
+		return nil, err
+	}
+	childCPU := &CPU{
+		mem:       *childMem, // value-copy base+mask+size+execRegions into the new CPU
+		pc:        m.CPU.pc,
+		x:         m.CPU.x,
+		f:         m.CPU.f,
+		fcsr:      m.CPU.fcsr,
+		cycle:     m.CPU.cycle,
+		resvAddr:  m.CPU.resvAddr,
+		resvValid: m.CPU.resvValid,
+		watchAddr: m.CPU.watchAddr,
+		mtvec:     m.CPU.mtvec,
+		mepc:      m.CPU.mepc,
+		mcause:    m.CPU.mcause,
+		mstatus:   m.CPU.mstatus,
+		mtval:     m.CPU.mtval,
+		// Notes: zero value (empty NoteChain). Caller reinstalls handlers.
+	}
+	var childJIT *JIT
+	if m.JIT != nil {
+		childJIT = m.JIT.CloneShared()
+	}
+	return &Machine{
+		CPU:      childCPU,
+		JIT:      childJIT,
+		ownedMem: childMem,
+	}, nil
+}
+
+// Close releases resources this Machine owns: ref-decrements every
+// shared AOT segment in the JIT (via JIT.Close), then frees the guest
+// memory if the Machine owns it (i.e., was produced by Clone).
+//
+// After Close, the Machine's CPU and JIT must not be used.
+// Idempotent — subsequent calls are no-ops.
+func (m *Machine) Close() {
+	if m.JIT != nil {
+		m.JIT.Close()
+	}
+	if m.ownedMem != nil {
+		m.ownedMem.Free()
+		m.ownedMem = nil
+	}
+}
