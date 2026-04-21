@@ -420,8 +420,17 @@ func (j *JIT) RunJIT(cpu *CPU) error {
 
 		blk := j.lookupBlock(pc)
 		if blk != nil {
-			res := jitcall.Call(blk.fn, &cpu.x, &cpu.f, &cpu.fcsr,
-				cpu.mem.Base(), cpu.mem.Mask())
+			var res jitcall.Result
+			if j.aotSegment != nil {
+				seg := j.aotSegment
+				res = jitcall.CallAOT(blk.fn, &cpu.x, &cpu.f, &cpu.fcsr,
+					cpu.mem.Base(), cpu.mem.Mask(),
+					seg.decoderCacheBase, seg.decoderCacheMask,
+					seg.vaddrBegin, seg.vaddrEnd-seg.vaddrBegin)
+			} else {
+				res = jitcall.Call(blk.fn, &cpu.x, &cpu.f, &cpu.fcsr,
+					cpu.mem.Base(), cpu.mem.Mask())
+			}
 			cpu.pc = res.PC
 			cpu.cycle += res.IC
 

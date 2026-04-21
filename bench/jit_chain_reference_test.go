@@ -18,11 +18,32 @@ import (
 //                                     dominant exit, not a chainable one
 func runChainReference(t *testing.T, elfData []byte, workload string) {
 	t.Helper()
+	runChainReferenceMode(t, elfData, workload, false)
+}
+
+// runChainReferenceAOT is the AOT-enabled variant: installs the
+// whole-program AOT segment at startup, then runs. Dispatches to
+// AOT-compiled blocks use the map; JALRs still use the 2-way IC
+// (Phase 2a — Part F's decoder_cache JALR hot path is Step 7, not
+// yet wired).
+func runChainReferenceAOT(t *testing.T, elfData []byte, workload string) {
+	t.Helper()
+	runChainReferenceMode(t, elfData, workload, true)
+}
+
+func runChainReferenceMode(t *testing.T, elfData []byte, workload string, aot bool) {
+	t.Helper()
 	cpu, mem := newBenchCPU(t, elfData)
 	defer mem.Free()
 
 	jit := riscv.NewJIT()
 	jit.SetAllocStrategy("fixed") // production path
+
+	if aot {
+		if err := jit.InstallAOT(mem, elfData); err != nil {
+			t.Fatalf("InstallAOT: %v", err)
+		}
+	}
 
 	t0 := time.Now()
 	exitCode, insns := runJITBenchGuestWith(cpu, jit)
@@ -46,7 +67,11 @@ func runChainReference(t *testing.T, elfData []byte, workload string) {
 		mips = float64(insns) / elapsed.Seconds() / 1e6
 	}
 
-	t.Logf("─── Chain reference (%s, Fixed Static Mapping) ───", workload)
+	mode := "lazy"
+	if aot {
+		mode = "AOT"
+	}
+	t.Logf("─── Chain reference (%s, Fixed Static Mapping, %s) ───", workload, mode)
 	t.Logf("  elapsed           : %v", elapsed)
 	t.Logf("  retired insns     : %d", insns)
 	t.Logf("  DispatchOK        : %d   (jitOK returns to Go)", jit.DispatchOK)
@@ -91,4 +116,22 @@ func TestJIT_CoreMark_ChainReference(t *testing.T) {
 // Run: go test -run TestJIT_Dhrystone_ChainReference -v ./bench/
 func TestJIT_Dhrystone_ChainReference(t *testing.T) {
 	runChainReference(t, loadELFFrom(t, "DHRY_ELF", "dhrystone.elf"), "dhrystone")
+}
+
+// AOT-enabled variants: install the whole-program AOT segment at startup
+// (Phase 2a) and measure dispatch counters + MIPS. Expect modest gain
+// over the lazy variants (chain-exit pre-resolution reduces first-call
+// round-trips); larger gain arrives with Step 7 (JALR decoder_cache
+// hot path).
+
+func TestJIT_ChainReference_AOT(t *testing.T) {
+	runChainReferenceAOT(t, loadCPUELF(t), "bench_guest")
+}
+
+func TestJIT_CoreMark_ChainReference_AOT(t *testing.T) {
+	runChainReferenceAOT(t, loadELFFrom(t, "CM_ELF", "coremark.elf"), "coremark")
+}
+
+func TestJIT_Dhrystone_ChainReference_AOT(t *testing.T) {
+	runChainReferenceAOT(t, loadELFFrom(t, "DHRY_ELF", "dhrystone.elf"), "dhrystone")
 }

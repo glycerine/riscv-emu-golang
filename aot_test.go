@@ -202,17 +202,15 @@ func TestAOTCompile_Dhrystone(t *testing.T) {
 	// Pre-patched static chain exits: for every chain exit whose target
 	// is in the segment, the 8 bytes at patchOffset must equal the target's
 	// chainEntry (not the chain-exit sentinel 0x7BADC0DE7BADC0DE).
+	// patchOffset is relative to blk.fn (matches patchChainTarget
+	// convention). To read the slot we use blk.fn + patchOffset.
 	prePatched := 0
 	unpatched := 0
 	const sentinel = uint64(0x7BADC0DE7BADC0DE)
 	for pc, blk := range seg.blocks {
 		for _, ce := range blk.chainExits {
-			if ce.patchOffset+8 > seg.nativeCodeSize {
-				t.Errorf("pc=0x%x: chainExit patchOffset out of range", pc)
-				continue
-			}
 			//nolint:gosec // test-only inspection of JIT code bytes
-			slot := (*[8]byte)(unsafe.Pointer(seg.nativeCodeBase + uintptr(ce.patchOffset)))
+			slot := (*[8]byte)(unsafe.Pointer(blk.fn + uintptr(ce.patchOffset)))
 			got := binary.LittleEndian.Uint64(slot[:])
 			if got == sentinel {
 				t.Errorf("pc=0x%x → 0x%x: MOVABS imm64 still the sentinel",
@@ -223,8 +221,6 @@ func TestAOTCompile_Dhrystone(t *testing.T) {
 				if got == uint64(target.chainEntry) {
 					prePatched++
 				} else {
-					// Not the target — must be the slow-exit stub.
-					// That's acceptable (we couldn't pre-patch for some reason).
 					unpatched++
 				}
 			} else {
@@ -248,6 +244,72 @@ func TestAOTCompile_Dhrystone(t *testing.T) {
 	// match expectations; SIGSEGV-based testing is deferred to an
 	// integration test.
 	_ = seg.decoderCacheMask // sanity touch
+}
+
+// TestAOTInstall_RunDhrystone installs the AOT segment, runs the
+// dhrystone guest through RunJIT, and verifies it completes with exit
+// code 0 — proving the AOT dispatch path produces the correct
+// execution semantics end-to-end.
+func TestAOTInstall_RunDhrystone(t *testing.T) {
+	data, err := os.ReadFile("bench/dhrystone.elf")
+	if err != nil {
+		t.Skipf("bench/dhrystone.elf: %v", err)
+	}
+	mem, err := NewGuestMemory(Size64MB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mem.Free()
+	entry, lerr := LoadELFBytes(mem, data)
+	if lerr != nil {
+		t.Fatalf("LoadELFBytes: %v", lerr)
+	}
+
+	cpu := NewCPU(*mem)
+	cpu.SetPC(entry)
+	cpu.SetReg(2, 0x03F00000) // sp
+
+	o := NewOS()
+	o.HandleSyscall(93, LinuxExit)
+	o.HandleSyscall(94, LinuxExit)
+	o.HandleSyscall(214, func(_ *CPU, _ SyscallArgs) (SyscallResult, bool) { return 0, true })
+	o.HandleSyscall(96, func(_ *CPU, _ SyscallArgs) (SyscallResult, bool) { return 1, true })
+	cpu.Notes.Push(o.Handle)
+
+	j := NewJIT()
+	if err := j.InstallAOT(mem, data); err != nil {
+		t.Fatalf("InstallAOT: %v", err)
+	}
+	if j.aotSegment == nil {
+		t.Fatal("InstallAOT: aotSegment is nil")
+	}
+	t.Logf("AOT installed: %d blocks, %d bytes native, decoder_cache=%d bytes",
+		len(j.aotSegment.blocks), j.aotSegment.nativeCodeSize,
+		len(j.aotSegment.decoderCacheMmap))
+
+	// Run. Expect ExitError with code 0.
+	var gotErr error
+	var gotPanic any
+	func() {
+		defer func() {
+			gotPanic = recover()
+		}()
+		gotErr = j.RunJIT(cpu)
+	}()
+	if gotPanic != nil {
+		ex, ok := gotPanic.(*ExitError)
+		if !ok {
+			panic(gotPanic)
+		}
+		if ex.Code != 0 {
+			t.Errorf("exit code = %d, want 0", ex.Code)
+		}
+	} else {
+		t.Errorf("guest did not exit via ExitError: err=%v, pc=0x%x, cycle=%d",
+			gotErr, cpu.PC(), cpu.Cycle())
+	}
+
+	t.Logf("dhrystone AOT run: retired %d insns", cpu.Cycle())
 }
 
 // TestAOTCompile_Coremark mirrors TestAOTCompile_Dhrystone.

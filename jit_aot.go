@@ -54,9 +54,12 @@ func (j *JIT) jitCompileAOTSegment(
 		alloc := j.irAlloc.Allocate(res.block, pool, pinned, nil)
 
 		// Fresh Ctx per block — assembled bytes accumulate independently.
+		// Use LowerAMD64AOT so every JALR emits the decoder_cache fast
+		// path that reads from the sret extension published by
+		// jitcall.CallAOT.
 		ctx := goasm.New(goasm.AMD64)
 		ctx.Append(ctx.NewATEXT())
-		lowerResult, lowerErr := ir.LowerAMD64(ctx, res.block, alloc)
+		lowerResult, lowerErr := ir.LowerAMD64AOT(ctx, res.block, alloc)
 		if lowerErr != nil {
 			continue // lowering failed — skip
 		}
@@ -100,20 +103,27 @@ func (j *JIT) jitCompileAOTSegment(
 		bc.blk.chainEntry = blockBase + uintptr(bc.lowerResult.ChainEntryProg.Pc)
 
 		// Backpatch chain-exit sentinels → slow-exit stub addresses.
-		// Same as jitCompileWith but offsets are into the big mmap (add
-		// bc.baseOffset); addresses land inside the same unified mmap.
+		//
+		// Offsets are stored RELATIVE TO blk.fn (i.e., just
+		// ce.MovProg.Pc + 2), not absolute into the big mmap. This
+		// matches the existing patchChainTarget invariant:
+		// `patchChainTarget(blk.fn, offset, ...)` computes blk.fn +
+		// offset. In the big-mmap AOT layout, blk.fn already includes
+		// baseOffset, so the offset field must not include it again.
+		//
+		// For the initial sentinel write below, we need the absolute
+		// position into execMem — that's bc.baseOffset + patchOff.
 		for _, ce := range bc.lowerResult.ChainExits {
-			patchOff := bc.baseOffset + int(ce.MovProg.Pc) + 2
+			patchOff := int(ce.MovProg.Pc) + 2
 			stubAddr := blockBase + uintptr(ce.StubProg.Pc)
-			binary.LittleEndian.PutUint64(execMem[patchOff:], uint64(stubAddr))
+			binary.LittleEndian.PutUint64(execMem[bc.baseOffset+patchOff:], uint64(stubAddr))
 			bc.blk.chainExits = append(bc.blk.chainExits, chainPatchInfo{
 				targetPC:    ce.TargetPC,
 				patchOffset: patchOff,
 			})
 		}
 
-		// JALR IC sentinel init (same shape as existing backpatchJalrICs
-		// but offsets rebased into the big mmap).
+		// JALR IC sentinel init — same offset convention.
 		aotBackpatchJalrICs(execMem, blockBase, bc.baseOffset, bc.lowerResult, bc.blk)
 
 		blocks[bc.startPC] = bc.blk
@@ -124,6 +134,9 @@ func (j *JIT) jitCompileAOTSegment(
 	// overwriting the slow-exit-stub address written in Pass 2. At run
 	// time the chain JMP goes directly to the target block's chainEntry
 	// with no Go round-trip or runtime patching.
+	//
+	// ce.patchOffset is relative to bc.blk.fn, so the absolute
+	// offset into execMem is bc.baseOffset + ce.patchOffset.
 	prePatches := 0
 	for _, bc := range compiles {
 		for _, ce := range bc.blk.chainExits {
@@ -131,7 +144,10 @@ func (j *JIT) jitCompileAOTSegment(
 			if !ok || target.chainEntry == 0 {
 				continue
 			}
-			binary.LittleEndian.PutUint64(execMem[ce.patchOffset:], uint64(target.chainEntry))
+			binary.LittleEndian.PutUint64(
+				execMem[bc.baseOffset+ce.patchOffset:],
+				uint64(target.chainEntry),
+			)
 			prePatches++
 		}
 	}
@@ -190,9 +206,12 @@ func (j *JIT) jitCompileAOTSegment(
 }
 
 // aotBackpatchJalrICs initializes JALR IC sentinel slots for one
-// AOT-compiled block, writing patch offsets relative to the big
-// mmap (not the block's own buffer). Parallel to backpatchJalrICs
-// in jit_native.go but accepts a baseOffset for rebasing.
+// AOT-compiled block.
+//
+// Patch offsets stored on blk are RELATIVE to blk.fn (matching the
+// existing readJalrICSlot / patchChainTarget conventions). For the
+// initial sentinel write, we need absolute position into execMem,
+// which is baseOffset + patchOff.
 func aotBackpatchJalrICs(
 	execMem []byte,
 	blockBase uintptr,
@@ -208,12 +227,14 @@ func aotBackpatchJalrICs(
 			if ic.PcMov[k] == nil || ic.FnMov[k] == nil {
 				continue
 			}
-			pcOff := baseOffset + int(ic.PcMov[k].Pc) + 2
-			fnOff := baseOffset + int(ic.FnMov[k].Pc) + 2
+			// Relative to blk.fn:
+			pcOff := int(ic.PcMov[k].Pc) + 2
+			fnOff := int(ic.FnMov[k].Pc) + 2
 			info.pcPatchOff[k] = pcOff
 			info.fnPatchOff[k] = fnOff
-			binary.LittleEndian.PutUint64(execMem[pcOff:], ^uint64(0))
-			binary.LittleEndian.PutUint64(execMem[fnOff:], uint64(stubAddr))
+			// Absolute into execMem for the initial write:
+			binary.LittleEndian.PutUint64(execMem[baseOffset+pcOff:], ^uint64(0))
+			binary.LittleEndian.PutUint64(execMem[baseOffset+fnOff:], uint64(stubAddr))
 		}
 		blk.jalrICs = append(blk.jalrICs, info)
 	}

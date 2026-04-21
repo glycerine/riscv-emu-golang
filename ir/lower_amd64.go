@@ -267,6 +267,14 @@ type lowerCtx struct {
 	chainEntryProg *obj.Prog       // NOP marking chain entry point
 	chainExits     []chainExitInfo // chain exit metadata for backpatching
 	jalrICs        []jalrICInfo    // JALR IC site metadata for backpatching
+
+	// AOT decoder_cache dispatch. When true, JALR lowering emits a
+	// mask-bounded lookup into the trampoline-published decoder_cache
+	// (sret[88..112]) before falling through to the 2-way IC. The
+	// caller (JIT) sets this when an AOT segment is installed and
+	// clears it for lazy-compile paths that use plain jitcall.Call
+	// (which doesn't populate sret[88..112]).
+	emitDecoderCacheAttempt bool
 }
 
 // ── Exported API ──
@@ -276,7 +284,24 @@ type lowerCtx struct {
 // Returns a LowerResult with chain entry/exit metadata for block chaining.
 //
 // The caller must have already appended an ATEXT prog to ctx.
+//
+// JALR emission uses the 2-way IC only (no AOT decoder_cache
+// lookup). Callers wanting the AOT fast path use LowerAMD64AOT.
 func LowerAMD64(ctx *goasm.Ctx, b *Block, alloc *Allocation) (*LowerResult, error) {
+	return lowerAMD64Impl(ctx, b, alloc, false)
+}
+
+// LowerAMD64AOT is LowerAMD64 with the AOT-aware JALR lowering: each
+// JALR site emits a decoder_cache attempt against the segment state
+// published by jitcall.CallAOT into sret[88..112] before falling
+// through to the existing 2-way IC sequence. Intended for blocks
+// that will be invoked via CallAOT (i.e., compiled as part of an
+// AOT segment).
+func LowerAMD64AOT(ctx *goasm.Ctx, b *Block, alloc *Allocation) (*LowerResult, error) {
+	return lowerAMD64Impl(ctx, b, alloc, true)
+}
+
+func lowerAMD64Impl(ctx *goasm.Ctx, b *Block, alloc *Allocation, aot bool) (*LowerResult, error) {
 	if alloc == nil {
 		return nil, fmt.Errorf("ir.LowerAMD64: nil allocation")
 	}
@@ -307,15 +332,16 @@ func LowerAMD64(ctx *goasm.Ctx, b *Block, alloc *Allocation) (*LowerResult, erro
 	sort.Sort(regEntriesByStart(cxLive))
 
 	lc := &lowerCtx{
-		blk:        b,
-		alloc:      alloc,
-		c:          ctx,
-		rIdx:       rIdx,
-		fpSet:      fpSet,
-		cxLive:     cxLive,
-		labelProg:  make(map[Label]*obj.Prog),
-		pending:    make(map[Label][]*obj.Prog),
-		stackSlots: alloc.StackSlots,
+		blk:                     b,
+		alloc:                   alloc,
+		c:                       ctx,
+		rIdx:                    rIdx,
+		fpSet:                   fpSet,
+		cxLive:                  cxLive,
+		labelProg:               make(map[Label]*obj.Prog),
+		pending:                 make(map[Label][]*obj.Prog),
+		stackSlots:              alloc.StackSlots,
+		emitDecoderCacheAttempt: aot,
 	}
 
 	// Compute frame size: spill slots only. The fcsr pointer lives in
@@ -480,6 +506,31 @@ func (lc *lowerCtx) lowerJalrIC(ins *IRInstr) {
 	// which we need for MOVABS.
 	tgt := lc.use(ins.A, 1)
 
+	// ── Decoder_cache attempt (AOT fast path) ──
+	// If the trampoline published AOT state at [RBX+88..112], try a
+	// mask-bounded lookup. On hit, JMP directly to the target block's
+	// chainEntry. On miss (bounds fail OR slot holds zero), fall through
+	// into the 2-way IC sequence below.
+	//
+	// Scratch usage at this point: R10 and R11 are both free. tgt is in
+	// an allocated reg (guaranteed not R10/R11 by the register pool).
+	// This sequence overwrites R10 and R11; the IC stash below
+	// re-initializes R11 to tgt, and MOVABS re-initializes R10.
+	//
+	// When AOT is not installed, sret[88..112] is whatever the trampoline
+	// left (jitcall.Call zeroes nothing there). For safety, callers that
+	// don't install AOT must use jitcall.Call (which doesn't write
+	// 88..112) — the sequence then reads stale/uninitialized bytes.
+	// This is *only* a problem if those bytes happen to form a valid
+	// (segSize, mask, base) tuple that passes the bounds check and
+	// matches a guest PC. In practice: with size=0 default on
+	// CallAOT-passing-zeros, the bounds check always fails → fallback.
+	// With plain Call → undefined behavior in the decoder_cache sequence.
+	// We therefore condition emission on a flag set by the JIT.
+	if lc.emitDecoderCacheAttempt {
+		emitDecoderCacheLookup(lc, tgt)
+	}
+
 	// Stash tgt into R11 (amd64Scratch2). The hit path no longer writes
 	// sret.PC — target block doesn't consume it. The miss stub reads R11
 	// to populate sret.PC on its way out. If tgt is already in R11 (e.g.
@@ -531,6 +582,118 @@ func (lc *lowerCtx) lowerJalrIC(ins *IRInstr) {
 		jne1Prog: jne1,
 		hit0Prog: hit0,
 	})
+}
+
+// emitDecoderCacheLookup emits the AOT decoder_cache dispatch
+// sequence at the top of a JALR site. On hit, JMPs directly to the
+// target block's chainEntry (the guest-PC → native-entry mapping
+// built at AOT load). On miss (bounds fail or slot is zero), falls
+// through to the existing 2-way IC sequence emitted by the caller.
+//
+// Reads segment state from the sret-buffer extension published by
+// jitcall.CallAOT (trampoline at internal/jitcall/call_amd64.s):
+//   [RBX+88]   decoder_cache base (host pointer)
+//   [RBX+96]   decoder_cache mask (power-of-two size - 1)
+//   [RBX+104]  vaddrBegin (current segment's guest-VA start)
+//   [RBX+112]  segSize    (current segment's guest-VA size)
+//
+// Scratch usage: R10 only. R11 is intentionally untouched because
+// the caller's `tgt` may live in R11 when the VReg was loaded from a
+// spill slot via lc.use(_, 1). If we clobbered R11 and `tgt` aliased
+// it, the IC fallback below would then re-stash a garbage value.
+//
+// Sandboxing: the decoder_cache load is `base + (idx & mask)` —
+// identical in shape to a guest `lw` — so a wild `tgt` from a
+// broken guest cannot read past the decoder_cache mmap region.
+// A range check on `tgt` vs segSize is emitted first for
+// correctness (so out-of-segment targets take the fallback instead
+// of aliased-slot dispatch).
+func emitDecoderCacheLookup(lc *lowerCtx, tgt int16) {
+	// MOVQ tgt, R10                ; R10 = working copy of tgt
+	lc.emitRR(x86.AMOVQ, tgt, amd64Scratch1)
+
+	// SUBQ [RBX+104], R10          ; R10 = tgt - vaddrBegin (may underflow)
+	sub := lc.c.NewProg()
+	sub.As = x86.ASUBQ
+	sub.From.Type = obj.TYPE_MEM
+	sub.From.Reg = amd64RegSret
+	sub.From.Offset = 104
+	sub.To.Type = obj.TYPE_REG
+	sub.To.Reg = amd64Scratch1
+	lc.c.Append(sub)
+
+	// CMPQ R10, [RBX+112]          ; unsigned: R10 < segSize ?
+	cmpSize := lc.c.NewProg()
+	cmpSize.As = x86.ACMPQ
+	cmpSize.From.Type = obj.TYPE_REG
+	cmpSize.From.Reg = amd64Scratch1
+	cmpSize.To.Type = obj.TYPE_MEM
+	cmpSize.To.Reg = amd64RegSret
+	cmpSize.To.Offset = 112
+	lc.c.Append(cmpSize)
+
+	// JAE .dc_miss                  ; unsigned above-or-equal → out of range
+	jae := lc.c.NewProg()
+	jae.As = x86.AJCC
+	jae.To.Type = obj.TYPE_BRANCH
+	lc.c.Append(jae)
+
+	// SHRQ $1, R10                 ; R10 = insn-slot index
+	lc.emitRI(x86.ASHRQ, 1, amd64Scratch1)
+	// SHLQ $3, R10                 ; R10 = byte offset (idx * 8)
+	lc.emitRI(x86.ASHLQ, 3, amd64Scratch1)
+	// ANDQ [RBX+96], R10           ; R10 &= decoder_cache mask
+	andMask := lc.c.NewProg()
+	andMask.As = x86.AANDQ
+	andMask.From.Type = obj.TYPE_MEM
+	andMask.From.Reg = amd64RegSret
+	andMask.From.Offset = 96
+	andMask.To.Type = obj.TYPE_REG
+	andMask.To.Reg = amd64Scratch1
+	lc.c.Append(andMask)
+
+	// ADDQ [RBX+88], R10           ; R10 += decoder_cache base → slot address
+	addBase := lc.c.NewProg()
+	addBase.As = x86.AADDQ
+	addBase.From.Type = obj.TYPE_MEM
+	addBase.From.Reg = amd64RegSret
+	addBase.From.Offset = 88
+	addBase.To.Type = obj.TYPE_REG
+	addBase.To.Reg = amd64Scratch1
+	lc.c.Append(addBase)
+
+	// MOVQ (R10), R10              ; R10 = chainEntry  (or 0 if slot empty)
+	loadEntry := lc.c.NewProg()
+	loadEntry.As = x86.AMOVQ
+	loadEntry.From.Type = obj.TYPE_MEM
+	loadEntry.From.Reg = amd64Scratch1
+	loadEntry.From.Offset = 0
+	loadEntry.To.Type = obj.TYPE_REG
+	loadEntry.To.Reg = amd64Scratch1
+	lc.c.Append(loadEntry)
+
+	// TESTQ R10, R10               ; set ZF if R10 == 0
+	lc.emitRR(x86.ATESTQ, amd64Scratch1, amd64Scratch1)
+
+	// JZ .dc_miss                  ; slot empty → fallback
+	jz := lc.c.NewProg()
+	jz.As = x86.AJEQ
+	jz.To.Type = obj.TYPE_BRANCH
+	lc.c.Append(jz)
+
+	// ADDQ $frameSize, RSP         ; dealloc our spill frame (if any)
+	if lc.frameSize > 0 {
+		lc.emitRI(x86.AADDQ, lc.frameSize, goasm.REG_AMD64_SP)
+	}
+	// JMP R10                      ; direct jump to target's chainEntry
+	lc.emitJmpReg(amd64Scratch1)
+
+	// .dc_miss landing: NOP. Targets for JAE and JZ. Execution falls
+	// through from here into the existing 2-way IC sequence that the
+	// caller emits next.
+	dcMiss := lc.emitNOP()
+	jae.To.SetTarget(dcMiss)
+	jz.To.SetTarget(dcMiss)
 }
 
 // emitMovabsSentinel emits a `MOVABS R10, 0x7BADC0DE7BADC0DE` — the
