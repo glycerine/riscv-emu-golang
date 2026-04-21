@@ -377,11 +377,11 @@ $(LUAJIT_ELF):
 	    CROSS="" \
 	    STATIC_CC="$(ZIG_CC) cc -target riscv64-linux-musl" \
 	    DYNAMIC_CC="$(ZIG_CC) cc -target riscv64-linux-musl -fPIC" \
-	    TARGET_LD="$(ZIG_CC) cc -target riscv64-linux-musl -static" \
+	    TARGET_LD="$(ZIG_CC) cc -target riscv64-linux-musl -static -s" \
 	    TARGET_AR="$(ZIG_CC) ar rcus" \
 	    TARGET_STRIP=":" \
 	    TARGET_SYS=Linux \
-	    TARGET_CFLAGS="-DLUAJIT_NO_UNWIND" \
+	    TARGET_CFLAGS="-DLUAJIT_NO_UNWIND -fno-asynchronous-unwind-tables -fno-unwind-tables" \
 	    BUILDMODE=static
 	cp $(LUAJIT_SRC)/src/luajit $(LUAJIT_ELF)
 	@test -f $(LUAJIT_ELF) || { echo "  ✗ luajit ELF not produced"; exit 1; }
