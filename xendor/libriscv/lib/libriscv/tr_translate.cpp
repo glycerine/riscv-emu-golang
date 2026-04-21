@@ -1435,11 +1435,27 @@ CallbackTable<W> create_bintr_callback_table(DecodedExecuteSegment<W>&)
 		.sqrtf64 = [] (double d) -> double {
 			return std::sqrt(d);
 		},
+		// RISC-V spec §11.6 (fused, single rounding) + §11.3 (NaN
+		// outputs must be canonicalized to the canonical qNaN).
 		.fmaf32 = [] (float a, float b, float c) -> float {
-			return std::fma(a, b, c);
+			float r = std::fma(a, b, c);
+			if (std::isnan(r)) {
+				uint32_t canon = 0x7FC00000u;
+				float out;
+				__builtin_memcpy(&out, &canon, 4);
+				return out;
+			}
+			return r;
 		},
 		.fmaf64 = [] (double a, double b, double c) -> double {
-			return std::fma(a, b, c);
+			double r = std::fma(a, b, c);
+			if (std::isnan(r)) {
+				uint64_t canon = 0x7FF8000000000000ull;
+				double out;
+				__builtin_memcpy(&out, &canon, 8);
+				return out;
+			}
+			return r;
 		},
 		.clz = [] (uint32_t x) -> int {
 #ifdef RISCV_HAS_BITOPS

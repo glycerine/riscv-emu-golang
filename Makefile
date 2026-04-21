@@ -281,6 +281,7 @@ $(LIB_CAPI): # $(PATCH_STAMP)
 	    -DCMAKE_BUILD_TYPE=Release \
 	    -DCMAKE_CXX_FLAGS="-O2 -DNDEBUG" \
 	    -DCMAKE_C_FLAGS="-O2 -DNDEBUG" \
+	    -DRISCV_FCSR=ON \
 	    -Wno-dev \
 	    2>&1 | grep -E "^(--|Configuring|Generating|Build)" | sed 's/^/  /'
 	cd $(BUILD) && $(MAKE) -j$(NPROC) 2>&1 \

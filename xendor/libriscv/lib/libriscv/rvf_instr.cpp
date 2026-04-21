@@ -389,6 +389,42 @@ namespace riscv
 		auto& rs2 = cpu.registers().getfl(fi.R4type.rs2);
 		auto& dst = cpu.registers().getfl(fi.R4type.rd);
 
+		// RISC-V spec §11.6 FMIN/FMAX: treat -0.0 < +0.0 (IEEE 754
+		// fmin/fmax leave ±0 ordering implementation-defined). We
+		// disambiguate by inspecting sign bits whenever both operands
+		// compare equal to zero.
+		auto fmin32 = [&](uint32_t ab, uint32_t bb) -> uint32_t {
+			float a, b; __builtin_memcpy(&a, &ab, 4); __builtin_memcpy(&b, &bb, 4);
+			if (a == 0.0f && b == 0.0f) {
+				// -0 < +0 → return -0 if either is negative.
+				return ((ab | bb) & 0x80000000u) ? 0x80000000u : 0x00000000u;
+			}
+			float r = std::fmin(a, b); uint32_t rb; __builtin_memcpy(&rb, &r, 4); return rb;
+		};
+		auto fmax32 = [&](uint32_t ab, uint32_t bb) -> uint32_t {
+			fprintf(stderr, "DEBUG fmax32 a=0x%X b=0x%X\n", ab, bb);
+			float a, b; __builtin_memcpy(&a, &ab, 4); __builtin_memcpy(&b, &bb, 4);
+			if (a == 0.0f && b == 0.0f) {
+				// -0 < +0 → return +0 if either is non-negative.
+				return (~(ab & bb) & 0x80000000u) ? 0x00000000u : 0x80000000u;
+			}
+			float r = std::fmax(a, b); uint32_t rb; __builtin_memcpy(&rb, &r, 4); return rb;
+		};
+		auto fmin64 = [&](uint64_t ab, uint64_t bb) -> uint64_t {
+			double a, b; __builtin_memcpy(&a, &ab, 8); __builtin_memcpy(&b, &bb, 8);
+			if (a == 0.0 && b == 0.0) {
+				return ((ab | bb) & 0x8000000000000000ull) ? 0x8000000000000000ull : 0x0ull;
+			}
+			double r = std::fmin(a, b); uint64_t rb; __builtin_memcpy(&rb, &r, 8); return rb;
+		};
+		auto fmax64 = [&](uint64_t ab, uint64_t bb) -> uint64_t {
+			double a, b; __builtin_memcpy(&a, &ab, 8); __builtin_memcpy(&b, &bb, 8);
+			if (a == 0.0 && b == 0.0) {
+				return (~(ab & bb) & 0x8000000000000000ull) ? 0x0ull : 0x8000000000000000ull;
+			}
+			double r = std::fmax(a, b); uint64_t rb; __builtin_memcpy(&rb, &r, 8); return rb;
+		};
+
 		switch (fi.R4type.funct3 | (fi.R4type.funct2 << 4))
 		{
 		case 0x0: // FMIN.S
@@ -396,9 +432,9 @@ namespace riscv
 				if (std::isnan(rs1.f32[0]) && std::isnan(rs2.f32[0]))
 					dst.load_u32(CANONICAL_NAN_F32);
 				else
-					dst.set_float(std::fmin(rs1.f32[0], rs2.f32[0]));
+					dst.load_u32(fmin32(rs1.i32[0], rs2.i32[0]));
 			} else {
-				dst.set_float(std::fmin(rs1.f32[0], rs2.f32[0]));
+				dst.load_u32(fmin32(rs1.i32[0], rs2.i32[0]));
 			}
 			break;
 		case 0x1: // FMAX.S
@@ -406,9 +442,9 @@ namespace riscv
 				if (std::isnan(rs1.f32[0]) && std::isnan(rs2.f32[0]))
 					dst.load_u32(CANONICAL_NAN_F32);
 				else
-					dst.set_float(std::fmax(rs1.f32[0], rs2.f32[0]));
+					dst.load_u32(fmax32(rs1.i32[0], rs2.i32[0]));
 			} else {
-				dst.set_float(std::fmax(rs1.f32[0], rs2.f32[0]));
+				dst.load_u32(fmax32(rs1.i32[0], rs2.i32[0]));
 			}
 			break;
 		case 0x10: // FMIN.D
@@ -416,9 +452,9 @@ namespace riscv
 				if (std::isnan(rs1.f64) && std::isnan(rs2.f64))
 					dst.load_u64(CANONICAL_NAN_F64);
 				else
-					dst.f64 = std::fmin(rs1.f64, rs2.f64);
+					dst.load_u64(fmin64(rs1.i64, rs2.i64));
 			} else {
-				dst.f64 = std::fmin(rs1.f64, rs2.f64);
+				dst.load_u64(fmin64(rs1.i64, rs2.i64));
 			}
 			break;
 		case 0x11: // FMAX.D
@@ -426,9 +462,9 @@ namespace riscv
 				if (std::isnan(rs1.f64) && std::isnan(rs2.f64))
 					dst.load_u64(CANONICAL_NAN_F64);
 				else
-					dst.f64 = std::fmax(rs1.f64, rs2.f64);
+					dst.load_u64(fmax64(rs1.i64, rs2.i64));
 			} else {
-				dst.f64 = std::fmax(rs1.f64, rs2.f64);
+				dst.load_u64(fmax64(rs1.i64, rs2.i64));
 			}
 			break;
 		default:
