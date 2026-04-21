@@ -27,7 +27,7 @@
         bench-smoke bench-summary bench-lots test clean check-tools \
         libriscv-build guest-elf guest-native guest-wasm \
         coremark-elf dhrystone-elf bench-coremark bench-dhrystone \
-        darwin-perf
+        darwin-perf bench-wasm
 
 # ── platform detection ─────────────────────────────────────────────────────
 
@@ -313,6 +313,9 @@ $(GUEST_NATIVE): $(GUEST_SRC)
 	@test -f $(GUEST_NATIVE) || { echo "  ✗ guest native not produced"; exit 1; }
 	@echo "  ✓ $$(file $(GUEST_NATIVE) | cut -d: -f2 | xargs)"
 	@echo "  ✓ size: $$(du -h $(GUEST_NATIVE) | cut -f1)"
+
+bench-wasm:
+	go run ./bench/wazero_bench $(ROOT)/bench/libriscv_guest/bench_guest.wasm
 
 # ── CoreMark ELF ──────────────────────────────────────────────────────────
 coremark-elf: $(CM_ELF)
