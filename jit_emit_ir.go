@@ -67,6 +67,7 @@ type emitter struct {
 	deferredExits  []deferredExit
 	deferredFaults []deferredFault
 	exitIdx        int // counter for chain exit indices
+	jalrSiteIdx    int // counter for JALR inline-cache site indices
 }
 
 // ── Register access helpers ────────────────────────────────────────────
@@ -2122,6 +2123,12 @@ func (e *emitter) emitJALR(rd, rs1 uint32, imm int64, insnSize uint64) {
 		e.irEm.Const(e.xregDst(rd), int64(e.pc+insnSize))
 	}
 	e.advancePC(insnSize)
+	// NB: JALR IC infrastructure (IRJalrIC / DynChainableRet) is wired and
+	// tested but NOT enabled by default — measurements showed 1-entry site
+	// IC thrashes on polymorphic returns (Dhrystone/CoreMark hit rates
+	// 50-66%), causing net MIPS regression because self-modifying code
+	// invalidations on every miss-repatch outweigh the saved round-trips.
+	// A Phase 1.5 will add 2-way IC or thrash deopt; see the plan file.
 	e.irEm.WriteBackAll()
 	e.irEm.RetDyn(tgt, jitOK, ir.VRegZero)
 	e.terminated = true

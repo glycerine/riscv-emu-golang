@@ -207,11 +207,31 @@ type ChainExitDesc struct {
 	StubProg *obj.Prog // first Prog of the slow exit stub
 }
 
+// jalrICInfo records a JALR inline-cache site for post-assembly backpatching.
+type jalrICInfo struct {
+	siteIdx  int
+	pcMov    *obj.Prog // first MOVABS (imm64 = cache_pc patch slot)
+	fnMov    *obj.Prog // second MOVABS (imm64 = cache_fn patch slot)
+	jneProg  *obj.Prog // JNE to miss stub; target set during finalize
+	stubProg *obj.Prog // first Prog of the miss stub (set during finalize)
+}
+
+// JalrICDesc describes a JALR inline-cache site for the caller.
+// After assembly, use PcMov.Pc + 2 and FnMov.Pc + 2 to compute patch offsets
+// into the imm64 fields; StubProg.Pc gives the miss stub address.
+type JalrICDesc struct {
+	SiteIdx  int
+	PcMov    *obj.Prog // MOVABS for cache_pc slot
+	FnMov    *obj.Prog // MOVABS for cache_fn slot
+	StubProg *obj.Prog // first Prog of the miss stub
+}
+
 // LowerResult holds chain-related metadata produced during lowering.
 // After assembly, Prog.Pc fields contain byte offsets into the assembled code.
 type LowerResult struct {
 	ChainEntryProg *obj.Prog       // NOP at chain entry point
 	ChainExits     []ChainExitDesc // chain exit descriptors
+	JalrICs        []JalrICDesc    // JALR inline-cache descriptors
 }
 
 type lowerCtx struct {
@@ -240,6 +260,7 @@ type lowerCtx struct {
 	// Block chaining.
 	chainEntryProg *obj.Prog       // NOP marking chain entry point
 	chainExits     []chainExitInfo // chain exit metadata for backpatching
+	jalrICs        []jalrICInfo    // JALR IC site metadata for backpatching
 }
 
 // ── Exported API ──
@@ -319,6 +340,18 @@ func LowerAMD64(ctx *goasm.Ctx, b *Block, alloc *Allocation) (*LowerResult, erro
 			TargetPC: lc.chainExits[i].targetPC,
 			MovProg:  lc.chainExits[i].movProg,
 			StubProg: lc.chainExits[i].stubProg,
+		})
+	}
+
+	// Emit miss stubs for JALR IC sites and wire JNE targets.
+	for i := range lc.jalrICs {
+		lc.jalrICs[i].stubProg = lc.emitJalrMissStub(lc.jalrICs[i].siteIdx)
+		lc.jalrICs[i].jneProg.To.SetTarget(lc.jalrICs[i].stubProg)
+		result.JalrICs = append(result.JalrICs, JalrICDesc{
+			SiteIdx:  lc.jalrICs[i].siteIdx,
+			PcMov:    lc.jalrICs[i].pcMov,
+			FnMov:    lc.jalrICs[i].fnMov,
+			StubProg: lc.jalrICs[i].stubProg,
 		})
 	}
 
@@ -409,6 +442,127 @@ func (lc *lowerCtx) lowerChainExit(ins *IRInstr) {
 	lc.emitJmpReg(amd64Scratch1)
 }
 
+// lowerJalrIC emits a JALR-site inline cache: compare the runtime target
+// PC against a patchable cached PC; on match, direct-jump to the cached
+// target block's chainEntry; on mismatch, fall through to a miss stub
+// that returns to Go with the site index.
+//
+//	MOVQ   tgt, 0(RBX)              ; write sret.PC (harmless on hit)
+//	MOVABS R10, <cache_pc_sentinel> ; imm64 = patch slot 1
+//	CMPQ   tgt, R10
+//	JNE    .miss                    ; set to missStub during finalize
+//	ADDQ   $frameSize, RSP          ; dealloc our frame (if frameSize > 0)
+//	MOVABS R10, <cache_fn_sentinel> ; imm64 = patch slot 2
+//	JMP    R10                      ; → target block's chainEntry
+//
+// jit_native.go backpatches both sentinels: cache_pc to an unmatchable
+// value and cache_fn to the miss stub. The Go dispatcher later patches
+// them to a real target on first miss.
+func (lc *lowerCtx) lowerJalrIC(ins *IRInstr) {
+	// Load target PC. Use slot 1 (R11) so spilled VRegs don't clobber R10,
+	// which we need for MOVABS.
+	tgt := lc.use(ins.A, 1)
+
+	// Write target PC to sret.PC. Needed on miss; harmless on hit since the
+	// target block re-populates sret on its own exits.
+	lc.emitMR(x86.AMOVQ, tgt, amd64RegSret, 0)
+
+	// MOVABS R10, <cache_pc_sentinel>. Sentinel > int32 forces 10-byte
+	// encoding so the imm64 starts at offset +2 (patchable).
+	const sentinel = int64(0x7BADC0DE7BADC0DE)
+	pcMov := lc.c.NewProg()
+	pcMov.As = x86.AMOVQ
+	pcMov.From.Type = obj.TYPE_CONST
+	pcMov.From.Offset = sentinel
+	pcMov.To.Type = obj.TYPE_REG
+	pcMov.To.Reg = amd64Scratch1
+	lc.c.Append(pcMov)
+
+	// CMPQ tgt, R10.
+	lc.emitRR(x86.ACMPQ, tgt, amd64Scratch1)
+
+	// JNE .miss (target set during finalize).
+	jne := lc.c.NewProg()
+	jne.As = x86.AJNE
+	jne.To.Type = obj.TYPE_BRANCH
+	lc.c.Append(jne)
+
+	// Hit path: dealloc our spill frame so target block's prologue sees a
+	// clean RSP (matches chain-exit convention).
+	if lc.frameSize > 0 {
+		lc.emitRI(x86.AADDQ, lc.frameSize, goasm.REG_AMD64_SP)
+	}
+
+	// MOVABS R10, <cache_fn_sentinel>.
+	fnMov := lc.c.NewProg()
+	fnMov.As = x86.AMOVQ
+	fnMov.From.Type = obj.TYPE_CONST
+	fnMov.From.Offset = sentinel
+	fnMov.To.Type = obj.TYPE_REG
+	fnMov.To.Reg = amd64Scratch1
+	lc.c.Append(fnMov)
+
+	// JMP R10.
+	lc.emitJmpReg(amd64Scratch1)
+
+	lc.jalrICs = append(lc.jalrICs, jalrICInfo{
+		siteIdx: int(ins.Imm),
+		pcMov:   pcMov,
+		fnMov:   fnMov,
+		jneProg: jne,
+	})
+}
+
+// emitJalrMissStub emits the per-site miss stub, appended after the
+// block's main code. It writes the miss status + site index to sret
+// and RETs. The Go dispatcher reads sret.Status == JitOKJalrMiss and
+// sret.FaultAddr (repurposed) to find the site to patch.
+//
+// On entry sret.PC was already written by lowerJalrIC.
+//
+//	ADDQ   $frameSize, RSP          ; if frameSize > 0
+//	MOVQ   RBP, 8(RBX)              ; sret.IC
+//	MOVQ   $JitOKJalrMiss, 16(RBX)  ; sret.Status
+//	MOVQ   $siteIdx, 24(RBX)        ; sret.FaultAddr (repurposed for siteIdx)
+//	RET
+func (lc *lowerCtx) emitJalrMissStub(siteIdx int) *obj.Prog {
+	var firstProg *obj.Prog
+	if lc.frameSize > 0 {
+		p := lc.c.NewProg()
+		p.As = x86.AADDQ
+		p.From.Type = obj.TYPE_CONST
+		p.From.Offset = lc.frameSize
+		p.To.Type = obj.TYPE_REG
+		p.To.Reg = goasm.REG_AMD64_SP
+		lc.c.Append(p)
+		firstProg = p
+	}
+
+	// MOVQ RBP, 8(RBX) — sret.IC
+	ic := lc.c.NewProg()
+	ic.As = x86.AMOVQ
+	ic.From.Type = obj.TYPE_REG
+	ic.From.Reg = amd64RegIC
+	ic.To.Type = obj.TYPE_MEM
+	ic.To.Reg = amd64RegSret
+	ic.To.Offset = 8
+	lc.c.Append(ic)
+	if firstProg == nil {
+		firstProg = ic
+	}
+
+	// MOVQ $JitOKJalrMiss, 16(RBX) — sret.Status
+	lc.emitMI(x86.AMOVQ, JitOKJalrMiss, amd64RegSret, 16)
+	// MOVQ $siteIdx, 24(RBX) — sret.FaultAddr repurposed
+	lc.emitMI(x86.AMOVQ, int64(siteIdx), amd64RegSret, 24)
+
+	ret := lc.c.NewProg()
+	ret.As = obj.ARET
+	lc.c.Append(ret)
+
+	return firstProg
+}
+
 // emitSlowExitStub emits a slow exit stub that writes Result to sret and RETs.
 // Called when a chain exit hasn't been patched yet.
 func (lc *lowerCtx) emitSlowExitStub(targetPC uint64) *obj.Prog {
@@ -442,7 +596,7 @@ func (lc *lowerCtx) lowerInstr(ins *IRInstr) error {
 		IRShl, IRShr, IRSar, // may save CX to R11
 		IRLoadX, IRStoreX, // R10/R11 for address computation
 		IRLabel, IRBranch, IRBranchImm, IRJump, // control flow
-		IRRet, IRRetDyn, IRChainExit, IRCall, // exits/calls
+		IRRet, IRRetDyn, IRChainExit, IRJalrIC, IRCall, // exits/calls
 		IRFAdd, IRFSub, IRFMul, IRFDiv, IRFSqrt, IRFNeg, IRFAbs, IRFCmp, // FP uses FP scratch
 		IRFCvtToI, IRFCvtToU, IRFCvtFromI, IRFCvtFromU, IRFCvtFF: // FP conversions
 		lc.invalidateScratchCache()
@@ -574,6 +728,8 @@ func (lc *lowerCtx) lowerInstr(ins *IRInstr) error {
 		lc.lowerRetDyn(ins)
 	case IRChainExit:
 		lc.lowerChainExit(ins)
+	case IRJalrIC:
+		lc.lowerJalrIC(ins)
 	case IRCall:
 		lc.lowerCall(ins)
 

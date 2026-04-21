@@ -247,6 +247,19 @@ func (e *Emitter) ChainExit(targetPC uint64, exitIdx int) {
 	e.emit(IRInstr{Op: IRChainExit, Imm: int64(targetPC), Imm2: int64(exitIdx)})
 }
 
+// JalrIC emits a JALR-site inline cache. The lowerer emits a
+// compare-and-direct-jump sequence with two MOVABS-imm64 patch slots
+// (cache_pc, cache_fn). On first execution the compare misses, control
+// flows to a per-site miss stub that returns to Go with the site idx in
+// sret.FaultAddr. Go patches both slots; subsequent dispatches with the
+// same target PC jump directly to the target block's chainEntry.
+//
+// Caller must emit WriteBackAll before JalrIC — block-to-block state
+// transfer goes through x[]/f[] arrays, not pinned host regs.
+func (e *Emitter) JalrIC(target VReg, siteIdx int) {
+	e.emit(IRInstr{Op: IRJalrIC, A: target, Imm: int64(siteIdx)})
+}
+
 // ── Floating point ──
 
 func (e *Emitter) FAdd(dst, a, b VReg, t Type) { e.op3(IRFAdd, t, dst, a, b) }

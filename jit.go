@@ -23,13 +23,25 @@ type chainPatchInfo struct {
 	patchOffset int    // byte offset of imm64 in MOVABS within the code page
 }
 
+// jalrICPatchInfo describes a JALR inline-cache site with two patchable
+// imm64 slots inside adjacent MOVABS R10 instructions:
+//   - cache_pc slot (at pcPatchOffset): the cached target PC.
+//   - cache_fn slot (at fnPatchOffset): the cached block's chainEntry.
+// On a miss, the Go dispatcher calls patchJalrIC to update both slots.
+type jalrICPatchInfo struct {
+	siteIdx        int
+	pcPatchOffset  int // byte offset of cache_pc imm64 in code page
+	fnPatchOffset  int // byte offset of cache_fn imm64 in code page
+}
+
 // compiledBlock holds a compiled function pointer (native IR or TCC).
 type compiledBlock struct {
-	fn         uintptr          // native function pointer
-	chainEntry uintptr          // entry point for chaining (native IR only)
-	chainExits []chainPatchInfo // chain exits for patching (native IR only)
-	tccState   unsafe.Pointer   // *C.TCCState for TCC-compiled blocks (nil for native)
-	shadow     *compiledBlock   // V2 shadow block for DebugV1V2 comparison
+	fn         uintptr           // native function pointer
+	chainEntry uintptr           // entry point for chaining (native IR only)
+	chainExits []chainPatchInfo  // chain exits for patching (native IR only)
+	jalrICs    []jalrICPatchInfo // JALR IC sites for patching (native IR only)
+	tccState   unsafe.Pointer    // *C.TCCState for TCC-compiled blocks (nil for native)
+	shadow     *compiledBlock    // V2 shadow block for DebugV1V2 comparison
 }
 
 // JIT status codes returned by compiled blocks.
@@ -40,6 +52,11 @@ const (
 	jitLoadFault  = 3
 	jitStoreFault = 4
 	jitIllegal    = 5
+	// jitOKJalrMiss is emitted by a JALR-IC miss stub. sret.PC holds the
+	// target PC; sret.FaultAddr (repurposed) holds the site index. Go
+	// dispatcher patches the site's IC slots, then dispatch continues.
+	// Must agree with ir.JitOKJalrMiss.
+	jitOKJalrMiss = ir.JitOKJalrMiss
 )
 
 // Block cache: direct-mapped array replaces map[uint64]*compiledBlock.
@@ -67,11 +84,13 @@ type JIT struct {
 	irAlloc ir.RegAllocator
 
 	// Dispatch counters (for diagnostics).
-	DispatchOK      uint64 // jitOK returns to Go dispatch
-	DispatchOther   uint64 // non-OK returns (ecall, fault, etc.)
-	DispatchInterp  uint64 // interpreter fallback
-	DispatchCompile uint64 // new block compilations
-	ChainPatched    uint64 // chain exits successfully patched
+	DispatchOK       uint64 // jitOK returns to Go dispatch
+	DispatchOther    uint64 // non-OK returns (ecall, fault, etc.)
+	DispatchInterp   uint64 // interpreter fallback
+	DispatchCompile  uint64 // new block compilations
+	ChainPatched     uint64 // chain exits successfully patched
+	ChainPatchedJalr uint64 // JALR IC sites successfully patched
+	JalrICMisses     uint64 // JALR IC returns to Go (site not warm or polymorphic)
 }
 
 // NewJIT creates a new JIT translation cache using the Fixed Static Mapping allocator.
@@ -145,6 +164,11 @@ func (j *JIT) StepBlock(cpu *CPU) (ic uint64, err error) {
 
 		switch int(res.Status) {
 		case jitOK:
+			return res.IC, nil
+		case jitOKJalrMiss:
+			// Same as jitOK — state is valid, PC points at target. The
+			// site patch in RunJIT is a performance optimization; StepBlock
+			// skips it and simply returns.
 			return res.IC, nil
 		case jitEcall:
 			if cpu.mtvec != 0 {
@@ -225,9 +249,15 @@ func (j *JIT) stepBlockDebugV1V2(cpu *CPU, pc uint64, blk *compiledBlock) (uint6
 	r2 := jitcall.Call(blk.shadow.fn, &x2, &f2, &fcsr2,
 		cpu.mem.Base(), cpu.mem.Mask())
 
-	// Compare.
+	// Compare. jitOKJalrMiss (V1 JALR IC miss) is semantically equivalent
+	// to jitOK for V2, which doesn't implement the IC — normalize before
+	// comparison so DebugV1V2 doesn't flag this as a mismatch.
+	s1 := r1.Status
+	if int(s1) == jitOKJalrMiss {
+		s1 = jitOK
+	}
 	mismatch := false
-	if r1.PC != r2.PC || r1.IC != r2.IC || r1.Status != r2.Status {
+	if r1.PC != r2.PC || r1.IC != r2.IC || s1 != r2.Status {
 		fmt.Fprintf(os.Stderr, "DEBUG V1V2 pc=0x%x: Result mismatch\n", pc)
 		fmt.Fprintf(os.Stderr, "  V1: PC=0x%x IC=%d Status=%d\n", r1.PC, r1.IC, r1.Status)
 		fmt.Fprintf(os.Stderr, "  V2: PC=0x%x IC=%d Status=%d\n", r2.PC, r2.IC, r2.Status)
@@ -312,6 +342,15 @@ func (j *JIT) RunJIT(cpu *CPU) error {
 				if len(blk.chainExits) > 0 {
 					j.tryPatchChain(blk, cpu.pc)
 				}
+				continue
+
+			case jitOKJalrMiss:
+				// JALR inline-cache miss: sret.PC = computed target PC (already
+				// written to cpu.pc above); sret.FaultAddr = site index.
+				// Patch the site so the next JALR to the same target takes the
+				// direct-jump path, then continue dispatch.
+				j.JalrICMisses++
+				j.tryPatchJalrIC(blk, int(res.FaultAddr), cpu.pc)
 				continue
 
 			case jitEcall:
@@ -439,4 +478,26 @@ func (j *JIT) tryPatchChain(blk *compiledBlock, targetPC uint64) {
 			break
 		}
 	}
+}
+
+// tryPatchJalrIC updates the given block's JALR IC site to jump directly
+// to target on future executions with the same target PC. Called from
+// the dispatch loop on jitOKJalrMiss returns.
+//
+// On success, cache_pc = targetPC and cache_fn = target.chainEntry,
+// turning the next JALR-to-same-target into a single-JMP dispatch.
+// Polymorphic sites (site sees multiple targets) will repeatedly
+// re-patch — correct, but no speedup for that site.
+func (j *JIT) tryPatchJalrIC(blk *compiledBlock, siteIdx int, targetPC uint64) {
+	target := j.lookupBlock(targetPC)
+	if target == nil || target.chainEntry == 0 {
+		return
+	}
+	if siteIdx < 0 || siteIdx >= len(blk.jalrICs) {
+		return
+	}
+	ic := blk.jalrICs[siteIdx]
+	patchChainTarget(blk.fn, ic.pcPatchOffset, uintptr(targetPC))
+	patchChainTarget(blk.fn, ic.fnPatchOffset, target.chainEntry)
+	j.ChainPatchedJalr++
 }

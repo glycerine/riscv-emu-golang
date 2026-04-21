@@ -1,5 +1,13 @@
 package ir
 
+// JitOKJalrMiss is the Result.Status value written by a JALR inline-cache
+// miss stub. The Go dispatcher reads this to distinguish an IC miss from a
+// normal jitOK return, and reads Result.FaultAddr (repurposed) as the
+// site index for patching. Must not collide with any status constant in
+// jit.go (jitOK=0, jitEcall=1, jitEbreak=2, jitLoadFault=3, jitStoreFault=4,
+// jitIllegal=5).
+const JitOKJalrMiss = 6
+
 // MaxIC is the maximum instruction count before a backward branch forces
 // a block exit. This ensures GC preemption windows and prevents infinite loops
 // inside a single JIT block.
@@ -105,6 +113,15 @@ func (e *Emitter) FaultExit(pc uint64, status int, faultAddr VReg) {
 func (e *Emitter) ChainableRet(targetPC uint64, exitIdx int) {
 	e.WriteBackAll()
 	e.ChainExit(targetPC, exitIdx)
+}
+
+// DynChainableRet emits writeback of all dirty vregs followed by a JALR
+// inline-cache dispatch. Used for JALR exits where the target PC is
+// computed at runtime. On IC hit, jumps directly to the target block's
+// chainEntry. On miss, returns to Go with siteIdx so Go can patch.
+func (e *Emitter) DynChainableRet(target VReg, siteIdx int) {
+	e.WriteBackAll()
+	e.JalrIC(target, siteIdx)
 }
 
 // BudgetCheck emits a backward-branch budget check:

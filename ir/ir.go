@@ -190,6 +190,7 @@ const (
 	IRRet       // return {pc=Imm, status=Imm2, faultAddr=A}
 	IRRetDyn    // return {pc=A, status=Imm, faultAddr=B}  — dynamic PC from VReg
 	IRChainExit // chain exit: {targetPC=Imm, exitIdx=Imm2}. WriteBackAll must precede.
+	IRJalrIC    // JALR site inline cache: {targetVReg=A, siteIdx=Imm}. WriteBackAll must precede.
 
 	// Floating point
 	IRFAdd      // Dst = A + B       (FP, type T)
@@ -273,6 +274,7 @@ var irOpNames = [...]string{
 	IRRet:       "ret",
 	IRRetDyn:    "ret_dyn",
 	IRChainExit: "chain_exit",
+	IRJalrIC:    "jalr_ic",
 	IRFAdd:      "fadd",
 	IRFSub:      "fsub",
 	IRFMul:      "fmul",
@@ -337,6 +339,8 @@ func (ins IRInstr) String() string {
 		return fmt.Sprintf("%s pc=%d status=%d fault=%s", ins.Op, ins.Imm, ins.Imm2, ins.A)
 	case IRRetDyn:
 		return fmt.Sprintf("%s pc=%s status=%d fault=%s", ins.Op, ins.A, ins.Imm, ins.B)
+	case IRJalrIC:
+		return fmt.Sprintf("%s target=%s site=%d", ins.Op, ins.A, ins.Imm)
 	default:
 		if ins.B != VRegZero {
 			return fmt.Sprintf("%s.%s %s = %s, %s", ins.Op, ins.T, ins.Dst, ins.A, ins.B)

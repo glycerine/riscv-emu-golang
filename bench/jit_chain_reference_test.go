@@ -55,6 +55,13 @@ func runChainReference(t *testing.T, elfData []byte, workload string) {
 	t.Logf("  DispatchCompile   : %d   (block compilations)", jit.DispatchCompile)
 	t.Logf("  ChainPatched      : %d   (patches of MOVABS sentinel → target chainEntry)",
 		jit.ChainPatched)
+	t.Logf("  ChainPatchedJalr  : %d   (JALR IC site patches)", jit.ChainPatchedJalr)
+	t.Logf("  JalrICMisses      : %d   (JALR IC misses returning to Go)", jit.JalrICMisses)
+	insnsPerJalrMiss := 0.0
+	if jit.JalrICMisses > 0 {
+		insnsPerJalrMiss = float64(insns) / float64(jit.JalrICMisses)
+	}
+	t.Logf("  insns/JalrICMiss  : %.1f   (higher = more monomorphic)", insnsPerJalrMiss)
 	t.Logf("  insns/DispatchOK  : %.1f", insnsPerDispatchOK)
 	t.Logf("  insns/all-disp    : %.1f", insnsPerTotalDispatch)
 	t.Logf("  MIPS              : %.1f", mips)

@@ -103,9 +103,35 @@ func (j *JIT) jitCompileWith(res *emitResult, useV2 bool) (*compiledBlock, error
 				patchOffset: patchOff,
 			})
 		}
+		backpatchJalrICs(execMem, codeBase, lowerResult, blk)
 	}
 
 	return blk, nil
+}
+
+// backpatchJalrICs initializes each JALR IC site's patchable slots and
+// records site metadata on the block. Before backpatch both MOVABS slots
+// hold the sentinel 0x7BADC0DE7BADC0DE. After:
+//   - cache_pc slot = 0xFFFFFFFFFFFFFFFF (unmatchable → first CMPQ misses)
+//   - cache_fn slot = address of the per-site miss stub
+// On first miss the Go dispatcher calls patchJalrIC to swap in a real
+// target.
+func backpatchJalrICs(execMem []byte, codeBase uintptr, lowerResult *ir.LowerResult, blk *compiledBlock) {
+	for _, ic := range lowerResult.JalrICs {
+		// Both MOVABS imm64 slots live at Pc + 2 of their respective MOVABS.
+		pcPatchOff := int(ic.PcMov.Pc) + 2
+		fnPatchOff := int(ic.FnMov.Pc) + 2
+		stubAddr := codeBase + uintptr(ic.StubProg.Pc)
+
+		binary.LittleEndian.PutUint64(execMem[pcPatchOff:], ^uint64(0))
+		binary.LittleEndian.PutUint64(execMem[fnPatchOff:], uint64(stubAddr))
+
+		blk.jalrICs = append(blk.jalrICs, jalrICPatchInfo{
+			siteIdx:       ic.SiteIdx,
+			pcPatchOffset: pcPatchOff,
+			fnPatchOffset: fnPatchOff,
+		})
+	}
 }
 
 // compileDebugInfo holds debug artifacts from compilation.
@@ -182,6 +208,7 @@ func (j *JIT) jitCompileDebug(res *emitResult, useV2 bool) (*compiledBlock, *com
 				patchOffset: patchOff,
 			})
 		}
+		backpatchJalrICs(execMem, codeBase, lowerResult, blk)
 	}
 
 	dbg := &compileDebugInfo{code: code, progs: progDump}

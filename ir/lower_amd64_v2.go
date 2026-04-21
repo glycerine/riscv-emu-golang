@@ -532,6 +532,9 @@ func (lc *lowerCtxV2) lowerInstr(ins *IRInstr) error {
 	case IRChainExit:
 		// V2 doesn't support chaining — lower as a regular ret.
 		lc.v2Ret(&IRInstr{Op: IRRet, Imm: ins.Imm, Imm2: 0, A: VRegZero})
+	case IRJalrIC:
+		// V2 doesn't support the JALR inline cache — lower as a dynamic ret.
+		lc.v2RetDyn(&IRInstr{Op: IRRetDyn, A: ins.A, Imm: 0, B: VRegZero})
 	case IRCall:
 		lc.v2Call(ins)
 
