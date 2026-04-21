@@ -28,7 +28,7 @@
         libriscv-build guest-elf guest-native guest-wasm \
         coremark-elf dhrystone-elf bench-coremark bench-dhrystone \
         bench-jit-coremark bench-jit-dhrystone bench-chain-ref \
-        darwin-perf bench-wasm
+        darwin-perf bench-wasm build-luajit-riscv
 
 # ── platform detection ─────────────────────────────────────────────────────
 
@@ -177,8 +177,9 @@ endif
 	@echo "    make bench-chain-ref      chain-counter reference (all 3 workloads)"
 	@echo ""
 	@echo "  Guest ELFs (normally auto-built by the bench targets):"
-	@echo "    make coremark-elf     build bench/coremark.elf from xendor/coremark"
-	@echo "    make dhrystone-elf    build bench/dhrystone.elf from xendor/dhrystone"
+	@echo "    make coremark-elf        build bench/coremark.elf from xendor/coremark"
+	@echo "    make dhrystone-elf       build bench/dhrystone.elf from xendor/dhrystone"
+	@echo "    make build-luajit-riscv  cross-compile LuaJIT → bench/luajit.elf"
 	@echo ""
 	@echo "  Other:"
 	@echo "    make test             unit tests"
@@ -356,6 +357,36 @@ $(DHRY_ELF): $(DHRY_SRCS) $(DHRY_PORT)/dhrystone.h $(DHRY_PORT)/util.h $(DHRY_PO
 	@test -f $(DHRY_ELF) || { echo "  ✗ dhrystone ELF not produced"; exit 1; }
 	@echo "  ✓ $$(file $(DHRY_ELF) | cut -d: -f2 | xargs)"
 	@echo "  ✓ size: $$(du -h $(DHRY_ELF) | cut -f1)"
+
+# ── LuaJIT riscv64 ELF ────────────────────────────────────────────────────
+# Cross-compile the LJRV fork (plctlab LuaJIT RISC-V port, vendored at
+# xendor/LuaJIT) into a standalone riscv64-linux-musl binary. Host tools
+# (minilua, buildvm) build with the native cc; all target objects and the
+# final link go through `zig cc -target riscv64-linux-musl -static`.
+# Output: bench/luajit.elf.
+
+LUAJIT_SRC := $(ROOT)xendor/LuaJIT
+LUAJIT_ELF := $(ROOT)bench/luajit.elf
+
+build-luajit-riscv: $(LUAJIT_ELF)
+$(LUAJIT_ELF):
+	@echo "── cross-compiling LuaJIT → riscv64-linux-musl ─────────────────"
+	$(MAKE) -C $(LUAJIT_SRC)/src clean TARGET_SYS=Linux
+	$(MAKE) -C $(LUAJIT_SRC)/src \
+	    HOST_CC="cc" \
+	    CROSS="" \
+	    STATIC_CC="$(ZIG_CC) cc -target riscv64-linux-musl" \
+	    DYNAMIC_CC="$(ZIG_CC) cc -target riscv64-linux-musl -fPIC" \
+	    TARGET_LD="$(ZIG_CC) cc -target riscv64-linux-musl -static" \
+	    TARGET_AR="$(ZIG_CC) ar rcus" \
+	    TARGET_STRIP=":" \
+	    TARGET_SYS=Linux \
+	    TARGET_CFLAGS="-DLUAJIT_NO_UNWIND" \
+	    BUILDMODE=static
+	cp $(LUAJIT_SRC)/src/luajit $(LUAJIT_ELF)
+	@test -f $(LUAJIT_ELF) || { echo "  ✗ luajit ELF not produced"; exit 1; }
+	@echo "  ✓ $$(file $(LUAJIT_ELF) | cut -d: -f2 | xargs)"
+	@echo "  ✓ size: $$(du -h $(LUAJIT_ELF) | cut -f1)"
 
 
 # ── benchmark targets ──────────────────────────────────────────────────────
@@ -624,7 +655,7 @@ test:
 
 clean:
 	@echo "── cleaning ────────────────────────────────────────────────────"
-	rm -rf $(BUILD) $(GUEST_ELF) $(RESULTS_DIR)
+	rm -rf $(BUILD) $(GUEST_ELF) $(LUAJIT_ELF) $(RESULTS_DIR)
 	@echo "  ✓ done"
 
 # ── fuzz oracle targets (fuzzoracle package, CGO always on) ───────────────
