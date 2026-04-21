@@ -525,12 +525,10 @@ static void gc_call_finalizer(global_State *g, lua_State *L,
   if (LJ_HASPROFILE && (oldh & HOOK_PROFILE)) lj_dispatch_update(g);
   g->gc.threshold = oldt;  /* Restore GC threshold. */
   if (errcode) {
-    TValue tmp;
-    copyTV(VL, &tmp, VL->top-1);
-    VL->top--;
     lj_vmevent_send(g, ERRFIN,
-      copyTV(V, V->top++, &tmp);
+      copyTV(V, V->top++, L->top-1);
     );
+    L->top--;
   }
 }
 

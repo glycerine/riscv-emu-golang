@@ -100,8 +100,8 @@
 
 #if LJ_GC64
 #define LJ_ALLOC_MBITS		47	/* 128 TB in LJ_GC64 mode. */
-#elif LJ_TARGET_X64
-/* Due to limitations in the x64 non-GC64 VM. */
+#elif LJ_TARGET_X64 && LJ_HASJIT
+/* Due to limitations in the x64 compiler backend. */
 #define LJ_ALLOC_MBITS		31	/* 2 GB on x64 with !LJ_GC64. */
 #else
 #define LJ_ALLOC_MBITS		32	/* 4 GB on other archs with !LJ_GC64. */
@@ -365,7 +365,7 @@ static void *CALL_MREMAP_(void *ptr, size_t osz, size_t nsz, int flags)
 #define CALL_MREMAP(addr, osz, nsz, mv) CALL_MREMAP_((addr), (osz), (nsz), (mv))
 #define CALL_MREMAP_NOMOVE	0
 #define CALL_MREMAP_MAYMOVE	1
-#if LJ_64 && (!LJ_GC64 || LJ_TARGET_ARM64)
+#if LJ_64 && (!LJ_GC64 || LJ_TARGET_ARM64 || LJ_TARGET_RISCV64)
 #define CALL_MREMAP_MV		CALL_MREMAP_NOMOVE
 #else
 #define CALL_MREMAP_MV		CALL_MREMAP_MAYMOVE
