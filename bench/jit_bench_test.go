@@ -73,7 +73,33 @@ func BenchmarkCPU_FullExecution_JIT_TCC(b *testing.B) {
 
 func benchJITWith(b *testing.B, strategy string) {
 	b.Helper()
-	elfData := loadCPUELF(b)
+	benchJITELF(b, loadCPUELF(b), strategy)
+}
+
+// ── CoreMark JIT benchmarks ───────────────────────────────────────────────
+
+func BenchmarkJIT_CoreMark_Fixed(b *testing.B) {
+	benchJITELF(b, loadELFFrom(b, "CM_ELF", "coremark.elf"), "fixed")
+}
+
+func BenchmarkJIT_CoreMark_ELS(b *testing.B) {
+	benchJITELF(b, loadELFFrom(b, "CM_ELF", "coremark.elf"), "els")
+}
+
+// ── Dhrystone JIT benchmarks ──────────────────────────────────────────────
+
+func BenchmarkJIT_Dhrystone_Fixed(b *testing.B) {
+	benchJITELF(b, loadELFFrom(b, "DHRY_ELF", "dhrystone.elf"), "fixed")
+}
+
+func BenchmarkJIT_Dhrystone_ELS(b *testing.B) {
+	benchJITELF(b, loadELFFrom(b, "DHRY_ELF", "dhrystone.elf"), "els")
+}
+
+// benchJITELF runs the JIT benchmark loop against an arbitrary guest
+// ELF. Used by the bench_guest, CoreMark, and Dhrystone JIT benchmarks.
+func benchJITELF(b *testing.B, elfData []byte, strategy string) {
+	b.Helper()
 
 	b.ReportAllocs()
 	b.ResetTimer()

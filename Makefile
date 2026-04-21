@@ -27,6 +27,7 @@
         bench-smoke bench-summary bench-lots test clean check-tools \
         libriscv-build guest-elf guest-native guest-wasm \
         coremark-elf dhrystone-elf bench-coremark bench-dhrystone \
+        bench-jit-coremark bench-jit-dhrystone bench-chain-ref \
         darwin-perf bench-wasm
 
 # ── platform detection ─────────────────────────────────────────────────────
@@ -171,6 +172,9 @@ endif
 	@echo "    make bench-smoke      quick sanity check (~3s)"
 	@echo "    make bench-coremark   CoreMark RV64 (cached vs uncached interpreter)"
 	@echo "    make bench-dhrystone  Dhrystone RV64 (cached vs uncached interpreter)"
+	@echo "    make bench-jit-coremark   CoreMark under JIT (Fixed vs ELS)"
+	@echo "    make bench-jit-dhrystone  Dhrystone under JIT (Fixed vs ELS)"
+	@echo "    make bench-chain-ref      chain-counter reference (all 3 workloads)"
 	@echo ""
 	@echo "  Guest ELFs (normally auto-built by the bench targets):"
 	@echo "    make coremark-elf     build bench/coremark.elf from xendor/coremark"
@@ -444,6 +448,27 @@ bench-dhrystone: dhrystone-elf
 	cd $(ROOT) && DHRY_ELF=$(DHRY_ELF) \
 	    $(GO) test -count=1 -benchtime=1x -benchmem \
 	        -run='^$$' -bench='^BenchmarkCPU_Dhrystone' \
+	        ./bench/ 2>&1
+
+bench-jit-coremark: coremark-elf
+	@echo "── CoreMark (JIT, Fixed vs ELS) ────────────────────────────────"
+	cd $(ROOT) && CM_ELF=$(CM_ELF) \
+	    $(GO) test -count=1 -benchtime=1x -benchmem \
+	        -run='^$$' -bench='^BenchmarkJIT_CoreMark' \
+	        ./bench/ 2>&1
+
+bench-jit-dhrystone: dhrystone-elf
+	@echo "── Dhrystone (JIT, Fixed vs ELS) ───────────────────────────────"
+	cd $(ROOT) && DHRY_ELF=$(DHRY_ELF) \
+	    $(GO) test -count=1 -benchtime=1x -benchmem \
+	        -run='^$$' -bench='^BenchmarkJIT_Dhrystone' \
+	        ./bench/ 2>&1
+
+bench-chain-ref: coremark-elf dhrystone-elf
+	@echo "── Chain-counter reference (bench_guest + CoreMark + Dhrystone) ─"
+	cd $(ROOT) && CM_ELF=$(CM_ELF) DHRY_ELF=$(DHRY_ELF) \
+	    $(GO) test -count=1 -v \
+	        -run='^TestJIT_(ChainReference|CoreMark_ChainReference|Dhrystone_ChainReference)$$' \
 	        ./bench/ 2>&1
 
 bench-ours:
