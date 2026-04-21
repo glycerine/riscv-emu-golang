@@ -25,7 +25,7 @@
 .PHONY: all help bench-setup bench bench-quick \
         bench-raw bench-ours bench-cpu bench-libriscv bench-mem \
         bench-smoke bench-summary bench-lots test clean check-tools \
-        libriscv-build guest-elf guest-native \
+        libriscv-build guest-elf guest-native guest-wasm \
         coremark-elf dhrystone-elf bench-coremark bench-dhrystone \
         darwin-perf
 
@@ -84,6 +84,7 @@ GUEST_DIR   := $(ROOT)bench/libriscv_guest
 GUEST_SRC   := $(GUEST_DIR)/bench_guest.c
 GUEST_ELF   := $(GUEST_DIR)/bench_guest.elf
 GUEST_NATIVE := $(GUEST_DIR)/bench_guest.native
+GUEST_WASM   := $(GUEST_DIR)/bench_guest.wasm
 
 # -- profile guided optimization
 
@@ -298,6 +299,12 @@ $(GUEST_ELF): $(GUEST_SRC)
 	@test -f $(GUEST_ELF) || { echo "  ✗ guest ELF not produced"; exit 1; }
 	@echo "  ✓ $$(file $(GUEST_ELF) | cut -d: -f2 | xargs)"
 	@echo "  ✓ size: $$(du -h $(GUEST_ELF) | cut -f1)"
+
+guest-wasm: $(GUEST_SRC)
+	$(WASI_SDK)/bin/clang -O3 -D__linux__ \
+      --target=wasm32-wasi \
+      --sysroot=$(WASI_SDK)/share/wasi-sysroot \
+      -o $(GUEST_WASM) $(GUEST_SRC)
 
 guest-native: $(GUEST_NATIVE)
 $(GUEST_NATIVE): $(GUEST_SRC)

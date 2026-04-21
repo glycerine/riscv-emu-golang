@@ -163,9 +163,9 @@ func rvcSignedImm6(insn uint16) int64 {
 // rvcJOffset extracts the CJ-type signed offset for C.J/C.JAL.
 func rvcJOffset(insn uint16) int64 {
 	o := int64(insn)
-	off := ((o >> 12) & 1) << 11 | ((o >> 11) & 1) << 4 | ((o >> 9) & 3) << 8 |
-		((o >> 8) & 1) << 10 | ((o >> 7) & 1) << 6 | ((o >> 6) & 1) << 7 |
-		((o >> 3) & 7) << 1 | ((o >> 2) & 1) << 5
+	off := ((o>>12)&1)<<11 | ((o>>11)&1)<<4 | ((o>>9)&3)<<8 |
+		((o>>8)&1)<<10 | ((o>>7)&1)<<6 | ((o>>6)&1)<<7 |
+		((o>>3)&7)<<1 | ((o>>2)&1)<<5
 	if off&(1<<11) != 0 {
 		off |= -1 << 12
 	}
@@ -175,8 +175,8 @@ func rvcJOffset(insn uint16) int64 {
 // rvcBOffset extracts the CB-type signed offset for C.BEQZ/C.BNEZ.
 func rvcBOffset(insn uint16) int64 {
 	o := int64(insn)
-	off := ((o >> 12) & 1) << 8 | ((o >> 10) & 3) << 3 | ((o >> 5) & 3) << 6 |
-		((o >> 3) & 3) << 1 | ((o >> 2) & 1) << 5
+	off := ((o>>12)&1)<<8 | ((o>>10)&3)<<3 | ((o>>5)&3)<<6 |
+		((o>>3)&3)<<1 | ((o>>2)&1)<<5
 	if off&(1<<8) != 0 {
 		off |= -1 << 9
 	}
