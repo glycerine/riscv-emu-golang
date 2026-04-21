@@ -4,6 +4,7 @@ extern void test_custom_machine();
 extern void test_crashes();
 extern void test_rv32i();
 extern void test_rv32c();
+extern void test_fp_nan_canon();
 
 int main()
 {
@@ -15,6 +16,8 @@ int main()
 	test_rv32i();
 	printf("* Test RV32C\n");
 	test_rv32c();
+	printf("* Test FP NaN canonicalization\n");
+	test_fp_nan_canon();
 	printf("Tests passed!\n");
 	return 0;
 }

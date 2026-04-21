@@ -915,8 +915,11 @@ void CPU<W>::try_translate(const MachineOptions<W>& options, const std::string& 
 			if (libtcc_enabled && options.translate_invoke_compiler) {
 				extern void* libtcc_compile(const std::string&, int arch, const std::unordered_map<std::string, std::string>& defines, const std::string&);
 				// XXX: Debugging: write the compiled code to a file
-				if constexpr (false) {
-					std::ofstream ofs("libtcc_output.c", std::ios::out | std::ios::trunc);
+				if constexpr (true) {
+					static int _dump_counter = 0;
+					char _dump_name[64];
+					snprintf(_dump_name, sizeof(_dump_name), "libtcc_output_%03d.c", _dump_counter++);
+					std::ofstream ofs(_dump_name, std::ios::out | std::ios::trunc);
 					if (ofs.is_open()) {
 						ofs << shared_library_code;
 						ofs.close();

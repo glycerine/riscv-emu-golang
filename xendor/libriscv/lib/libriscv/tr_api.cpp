@@ -174,37 +174,48 @@ typedef union {
 } fp64reg;
 
 #ifdef RISCV_NANBOXING
-#define load_fl(reg, iv) \
-	(reg)->i32[0] = (iv);
-	(reg)->i32[1] = 0;
-#define set_fl(reg, fv) \
-	(reg)->f32[0] = (fv);
-	(reg)->i32[1] = 0;
-#define set_fl_canon(reg, fv) \
-	{ float __v = (fv); \
-	  if (((*(uint32_t*)&__v) & 0x7fffffffu) > 0x7f800000u) { \
-	    uint32_t __u = 0x7fc00000u; __builtin_memcpy(&__v, &__u, 4); } \
-	  (reg)->f32[0] = __v; (reg)->i32[1] = 0; }
+/* NaN-boxing upper word: RISC-V unprivileged ISA §11.2 mandates
+   all-ones (0xFFFFFFFF) in the high 32 bits of a NaN-boxed f32.
+   NOTE: these do{}while(0) wrappers fix a pre-existing bug — the
+   original definitions had only one line-continuation backslash,
+   so the i32[1] assignment escaped the macro and sat at file scope
+   with an undefined `reg` identifier. The original also used 0 for
+   the upper word, which contradicts §11.2. Both issues are fixed
+   here. */
+#define load_fl(reg, iv) do { \
+	(reg)->i32[0] = (iv); \
+	(reg)->i32[1] = 0xFFFFFFFF; \
+} while(0)
+#define set_fl(reg, fv) do { \
+	(reg)->f32[0] = (fv); \
+	(reg)->i32[1] = 0xFFFFFFFF; \
+} while(0)
+/* set_fl_canon: stores fv then rewrites the result to the RISC-V
+   canonical f32 qNaN (0x7FC00000) per ISA §11.3 if it came out NaN.
+   Uses the fp64reg union's own i32/f32 aliasing — no local temps.
+   Non-NaN fast path: store + compare + well-predicted not-taken branch. */
+#define set_fl_canon(reg, fv) do { \
+	(reg)->f32[0] = (fv); \
+	if (((reg)->i32[0] & 0x7fffffffu) > 0x7f800000u) (reg)->i32[0] = 0x7fc00000u; \
+	(reg)->i32[1] = 0xFFFFFFFF; \
+} while(0)
 #else
 #define load_fl(reg, fv) (reg)->i32[0] = (fv)
 #define set_fl(reg, fv)  (reg)->f32[0] = (fv)
-#define set_fl_canon(reg, fv) \
-	{ float __v = (fv); \
-	  if (((*(uint32_t*)&__v) & 0x7fffffffu) > 0x7f800000u) { \
-	    uint32_t __u = 0x7fc00000u; __builtin_memcpy(&__v, &__u, 4); } \
-	  (reg)->f32[0] = __v; }
+#define set_fl_canon(reg, fv) do { \
+	(reg)->f32[0] = (fv); \
+	if (((reg)->i32[0] & 0x7fffffffu) > 0x7f800000u) (reg)->i32[0] = 0x7fc00000u; \
+} while(0)
 #endif
 
 #define load_dbl(reg, dv) (reg)->i64 = (dv)
 #define set_dbl(reg, dv)  (reg)->f64 = (dv)
-/* set_dbl_canon: rewrite dv to the RISC-V canonical f64 qNaN
-   (0x7ff8000000000000) if dv is any NaN. Matches rvf_instr.cpp
-   fsflags() behavior on the interpreter path. */
-#define set_dbl_canon(reg, dv) \
-	{ double __v = (dv); \
-	  if (((*(uint64_t*)&__v) & 0x7fffffffffffffffull) > 0x7ff0000000000000ull) { \
-	    uint64_t __u = 0x7ff8000000000000ull; __builtin_memcpy(&__v, &__u, 8); } \
-	  (reg)->f64 = __v; }
+/* set_dbl_canon: stores dv then rewrites to RISC-V canonical f64 qNaN
+   (0x7FF8000000000000) per ISA §11.3 if it came out NaN. */
+#define set_dbl_canon(reg, dv) do { \
+	(reg)->f64 = (dv); \
+	if (((reg)->i64 & 0x7fffffffffffffffull) > 0x7ff0000000000000ull) (reg)->i64 = 0x7ff8000000000000ull; \
+} while(0)
 
 // Thin variant of CPU for higher compilation speed
 __attribute__((aligned(RISCV_MACHINE_ALIGNMENT)))

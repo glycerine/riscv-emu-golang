@@ -11,6 +11,7 @@ set(SOURCES
 	test_crashes.cpp
 	test_rv32i.cpp
 	test_rv32c.cpp
+	test_fp_nan_canon.cpp
 )
 
 add_executable(tests ${SOURCES})
