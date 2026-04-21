@@ -280,12 +280,13 @@ func TestAOTInstall_RunDhrystone(t *testing.T) {
 	if err := j.InstallAOT(mem, data); err != nil {
 		t.Fatalf("InstallAOT: %v", err)
 	}
-	if j.aotSegment == nil {
-		t.Fatal("InstallAOT: aotSegment is nil")
+	if len(j.aotSegments) == 0 {
+		t.Fatal("InstallAOT: no aotSegments installed")
 	}
+	seg := j.aotSegments[0]
 	t.Logf("AOT installed: %d blocks, %d bytes native, decoder_cache=%d bytes",
-		len(j.aotSegment.blocks), j.aotSegment.nativeCodeSize,
-		len(j.aotSegment.decoderCacheMmap))
+		len(seg.blocks), seg.nativeCodeSize,
+		len(seg.decoderCacheMmap))
 
 	// Run. Expect ExitError with code 0.
 	var gotErr error
@@ -451,5 +452,587 @@ func TestAOTScan_Coremark(t *testing.T) {
 	if ranges[len(ranges)-1].endPC != textEnd {
 		t.Errorf("last range end = 0x%x, want textEnd 0x%x",
 			ranges[len(ranges)-1].endPC, textEnd)
+	}
+}
+
+// ── Phase 2b: multi-segment AOT install + cross-segment dispatch ────────
+
+// testCodeSeg is one PT_LOAD R[W]X entry for buildMultiCodeELF.
+type testCodeSeg struct {
+	vaddr    uint64
+	code     []uint32
+	writable bool // true → PF_R|PF_W|PF_X
+}
+
+// buildMultiCodeELF produces a minimal ELF64 with len(segs) PT_LOAD
+// entries. Each segment is PF_R|PF_X (plus PF_W iff writable) and holds
+// its own instruction bytes in the file. Loadable via LoadELFBytes.
+//
+// Layout:
+//   ELF header (64 bytes)
+//   Program headers (56 bytes × N)
+//   Code for seg 0 (4 bytes × len(seg0.code))
+//   Code for seg 1
+//   ...
+//
+// No section-header table; that's fine — LoadELFBytes only reads the
+// program-header table, and FindExecLoads likewise.
+func buildMultiCodeELF(t *testing.T, segs []testCodeSeg) []byte {
+	t.Helper()
+	le := binary.LittleEndian
+
+	const (
+		ehSize    = 64
+		phEntSize = 56
+	)
+	phOff := uint64(ehSize)
+
+	// Compute per-segment file offsets + total size.
+	offsets := make([]uint64, len(segs))
+	codeStart := phOff + uint64(phEntSize*len(segs))
+	for i, s := range segs {
+		offsets[i] = codeStart
+		codeStart += uint64(len(s.code) * 4)
+	}
+	total := int(codeStart)
+
+	buf := make([]byte, total)
+
+	// ELF header.
+	copy(buf[0:], "\x7fELF")
+	buf[4], buf[5], buf[6] = 2, 1, 1               // ELFCLASS64, ELFDATA2LSB, EV_CURRENT
+	le.PutUint16(buf[16:], 2)                       // ET_EXEC
+	le.PutUint16(buf[18:], 0xF3)                    // EM_RISCV
+	le.PutUint32(buf[20:], 1)                       // e_version
+	le.PutUint64(buf[24:], segs[0].vaddr)           // e_entry (segment 0 start)
+	le.PutUint64(buf[32:], phOff)                   // e_phoff
+	le.PutUint16(buf[52:], ehSize)                  // e_ehsize
+	le.PutUint16(buf[54:], phEntSize)               // e_phentsize
+	le.PutUint16(buf[56:], uint16(len(segs)))       // e_phnum
+
+	// Program headers.
+	for i, s := range segs {
+		off := int(phOff) + i*phEntSize
+		ph := buf[off:]
+		flags := uint32(pfR | pfX)
+		if s.writable {
+			flags |= pfW
+		}
+		le.PutUint32(ph[0:], ptLoad)
+		le.PutUint32(ph[4:], flags)
+		le.PutUint64(ph[8:], offsets[i])       // p_offset
+		le.PutUint64(ph[16:], s.vaddr)         // p_vaddr
+		le.PutUint64(ph[24:], s.vaddr)         // p_paddr
+		le.PutUint64(ph[32:], uint64(len(s.code)*4)) // p_filesz
+		le.PutUint64(ph[40:], uint64(len(s.code)*4)) // p_memsz
+		le.PutUint64(ph[48:], 4)               // p_align
+	}
+
+	// Code bytes.
+	for i, s := range segs {
+		w := buf[offsets[i]:]
+		for j, insn := range s.code {
+			le.PutUint32(w[j*4:], insn)
+		}
+	}
+
+	return buf
+}
+
+// TestAOT_MultiSegment_Install verifies that a synthetic ELF with two
+// R-X PT_LOADs produces two DecodedExecuteSegments, each with its own
+// decoder_cache, and that ExecRegions on guest memory tracks both.
+func TestAOT_MultiSegment_Install(t *testing.T) {
+	const (
+		segAVA = uint64(0x10000)
+		segBVA = uint64(0x20000)
+	)
+	// Segment A: LUI ra, 0x20 ; JALR x0, 0(ra)  — jumps into segment B.
+	segA := []uint32{
+		0x000200B7, // LUI ra, 0x20
+		0x00008067, // JALR x0, 0(ra)
+	}
+	// Segment B: ADDI a7, x0, 93 ; ECALL  — syscall exit.
+	segB := []uint32{
+		0x05D00893, // ADDI a7, x0, 93
+		0x00000073, // ECALL
+	}
+
+	data := buildMultiCodeELF(t, []testCodeSeg{
+		{vaddr: segAVA, code: segA},
+		{vaddr: segBVA, code: segB},
+	})
+
+	mem, err := NewGuestMemory(Size1GB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mem.Free()
+
+	entry, err := LoadELFBytes(mem, data)
+	if err != nil {
+		t.Fatalf("LoadELFBytes: %v", err)
+	}
+	if entry != segAVA {
+		t.Fatalf("entry = 0x%x, want 0x%x", entry, segAVA)
+	}
+
+	j := NewJIT()
+	if err := j.InstallAOT(mem, data); err != nil {
+		t.Fatalf("InstallAOT: %v", err)
+	}
+
+	if got := len(j.aotSegments); got != 2 {
+		t.Fatalf("len(aotSegments) = %d, want 2", got)
+	}
+
+	// Segment 0 covers 0x10000..0x10008.
+	s0 := j.aotSegments[0]
+	if s0.vaddrBegin != segAVA || s0.vaddrEnd != segAVA+uint64(len(segA)*4) {
+		t.Errorf("seg0 range = [0x%x, 0x%x), want [0x%x, 0x%x)",
+			s0.vaddrBegin, s0.vaddrEnd, segAVA, segAVA+uint64(len(segA)*4))
+	}
+	if _, ok := s0.blocks[segAVA]; !ok {
+		t.Errorf("seg0.blocks missing entry for 0x%x", segAVA)
+	}
+	if s0.decoderCacheBase == 0 || s0.decoderCacheMask == 0 {
+		t.Error("seg0 decoder_cache not populated")
+	}
+
+	// Segment 1 covers 0x20000..0x20008.
+	s1 := j.aotSegments[1]
+	if s1.vaddrBegin != segBVA || s1.vaddrEnd != segBVA+uint64(len(segB)*4) {
+		t.Errorf("seg1 range = [0x%x, 0x%x), want [0x%x, 0x%x)",
+			s1.vaddrBegin, s1.vaddrEnd, segBVA, segBVA+uint64(len(segB)*4))
+	}
+	if _, ok := s1.blocks[segBVA]; !ok {
+		t.Errorf("seg1.blocks missing entry for 0x%x", segBVA)
+	}
+
+	// ExecRegions should contain both ranges.
+	regs := mem.ExecRegions()
+	if len(regs) != 2 {
+		t.Errorf("len(ExecRegions) = %d, want 2; %+v", len(regs), regs)
+	}
+
+	// findSegment resolves to the correct segment.
+	if got := j.findSegment(segAVA); got != s0 {
+		t.Errorf("findSegment(0x%x) = %p, want seg0 %p", segAVA, got, s0)
+	}
+	if got := j.findSegment(segBVA); got != s1 {
+		t.Errorf("findSegment(0x%x) = %p, want seg1 %p", segBVA, got, s1)
+	}
+	if got := j.findSegment(0xDEADBEEF); got != nil {
+		t.Errorf("findSegment(0xDEADBEEF) = %+v, want nil", got)
+	}
+}
+
+// TestAOT_CrossSegmentJALR_Runs verifies end-to-end execution with a
+// cross-segment JALR. Segment A jumps to segment B which exits via
+// syscall 93. Expect ExitError with code 0; JalrICMisses > 0 (the
+// first cross-segment call pays the Go round-trip to re-publish the
+// sret params).
+func TestAOT_CrossSegmentJALR_Runs(t *testing.T) {
+	const (
+		segAVA = uint64(0x10000)
+		segBVA = uint64(0x20000)
+	)
+	segA := []uint32{
+		0x000200B7, // LUI ra, 0x20
+		0x00008067, // JALR x0, 0(ra)
+	}
+	segB := []uint32{
+		0x05D00893, // ADDI a7, x0, 93
+		0x00000073, // ECALL
+	}
+
+	data := buildMultiCodeELF(t, []testCodeSeg{
+		{vaddr: segAVA, code: segA},
+		{vaddr: segBVA, code: segB},
+	})
+
+	mem, err := NewGuestMemory(Size1GB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mem.Free()
+
+	entry, err := LoadELFBytes(mem, data)
+	if err != nil {
+		t.Fatalf("LoadELFBytes: %v", err)
+	}
+
+	cpu := NewCPU(*mem)
+	cpu.pc = entry
+	cpu.SetReg(2, 0x03F00000) // sp
+
+	o := NewOS()
+	o.HandleSyscall(93, LinuxExit)
+	cpu.Notes.Push(o.Handle)
+
+	j := NewJIT()
+	if err := j.InstallAOT(mem, data); err != nil {
+		t.Fatalf("InstallAOT: %v", err)
+	}
+
+	var gotErr error
+	var gotPanic any
+	func() {
+		defer func() { gotPanic = recover() }()
+		gotErr = j.RunJIT(cpu)
+	}()
+
+	// Expect ExitError panic with code 0 (syscall 93 a0=0).
+	if gotPanic == nil {
+		t.Fatalf("expected ExitError panic, got gotErr=%v", gotErr)
+	}
+	exit, ok := gotPanic.(*ExitError)
+	if !ok {
+		t.Fatalf("expected *ExitError panic, got %T: %v", gotPanic, gotPanic)
+	}
+	if exit.Code != 0 {
+		t.Errorf("exit code = %d, want 0", exit.Code)
+	}
+	t.Logf("cross-segment run: DispatchOK=%d JalrICMisses=%d",
+		j.DispatchOK, j.JalrICMisses)
+}
+
+// TestAOT_SegmentRefcount_BalancesOnClose verifies that Close() releases
+// every segment. Each segment starts with refcount=1 at install; after
+// JIT.Close() runs, refcount reaches 0 and backing mmaps are cleared.
+func TestAOT_SegmentRefcount_BalancesOnClose(t *testing.T) {
+	const (
+		segAVA = uint64(0x10000)
+		segBVA = uint64(0x20000)
+	)
+	segA := []uint32{0x000200B7, 0x00008067}
+	segB := []uint32{0x05D00893, 0x00000073}
+
+	data := buildMultiCodeELF(t, []testCodeSeg{
+		{vaddr: segAVA, code: segA},
+		{vaddr: segBVA, code: segB},
+	})
+
+	mem, err := NewGuestMemory(Size1GB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mem.Free()
+	if _, err := LoadELFBytes(mem, data); err != nil {
+		t.Fatalf("LoadELFBytes: %v", err)
+	}
+
+	j := NewJIT()
+	if err := j.InstallAOT(mem, data); err != nil {
+		t.Fatalf("InstallAOT: %v", err)
+	}
+
+	if len(j.aotSegments) != 2 {
+		t.Fatalf("len(aotSegments) = %d, want 2", len(j.aotSegments))
+	}
+	// Each segment starts at refcount=1.
+	segs := make([]*DecodedExecuteSegment, len(j.aotSegments))
+	copy(segs, j.aotSegments)
+	for i, s := range segs {
+		if got := s.refcount.Load(); got != 1 {
+			t.Errorf("seg[%d].refcount before Close = %d, want 1", i, got)
+		}
+	}
+
+	j.Close()
+
+	// After Close, aotSegments is cleared and each segment's refcount
+	// reached 0 (mmaps released).
+	if j.aotSegments != nil {
+		t.Errorf("j.aotSegments not nil after Close; %+v", j.aotSegments)
+	}
+	for i, s := range segs {
+		if got := s.refcount.Load(); got != 0 {
+			t.Errorf("seg[%d].refcount after Close = %d, want 0", i, got)
+		}
+		if s.nativeCodeMmap != nil {
+			t.Errorf("seg[%d].nativeCodeMmap not nil after Close", i)
+		}
+		if s.decoderCacheMmap != nil {
+			t.Errorf("seg[%d].decoderCacheMmap not nil after Close", i)
+		}
+	}
+
+	// Idempotent: second Close is a no-op.
+	j.Close()
+}
+
+// TestAOT_DynamicSegmentCreate simulates a LuaJIT-style guest:
+//   - ELF ships with only the `.text` segment containing a stub that
+//     jumps into a dynamically-created exec region.
+//   - The test writes guest code into a "jit" region and marks it
+//     executable via mem.AddExecRegion (as an OS personality's
+//     mprotect+X hook would do).
+//   - When the stub JALRs into the jit region, nextExecuteSegment
+//     compiles a fresh segment for that region on the fly.
+func TestAOT_DynamicSegmentCreate(t *testing.T) {
+	const (
+		stubVA = uint64(0x10000)
+		jitVA  = uint64(0x40000)
+	)
+	// Stub: LUI ra, 0x40 ; JALR x0, 0(ra)  — jumps into jit region.
+	stubCode := []uint32{
+		0x000400B7, // LUI ra, 0x40
+		0x00008067, // JALR x0, 0(ra)
+	}
+	// JIT region code (written later into guest memory directly):
+	// ADDI a7, x0, 93 ; ECALL
+	jitCode := []uint32{
+		0x05D00893,
+		0x00000073,
+	}
+
+	// Build the ELF with only the stub as an R-X load.
+	data := buildMultiCodeELF(t, []testCodeSeg{
+		{vaddr: stubVA, code: stubCode},
+	})
+
+	mem, err := NewGuestMemory(Size1GB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mem.Free()
+
+	entry, err := LoadELFBytes(mem, data)
+	if err != nil {
+		t.Fatalf("LoadELFBytes: %v", err)
+	}
+	if entry != stubVA {
+		t.Fatalf("entry = 0x%x, want 0x%x", entry, stubVA)
+	}
+
+	// Write the JIT code directly into guest memory and register the
+	// region as writable+executable (mimics guest mmap(PROT_EXEC|PROT_WRITE)).
+	for i, insn := range jitCode {
+		if f := mem.Store32(jitVA+uint64(i*4), insn); f != nil {
+			t.Fatalf("Store32 at jit region: %v", f)
+		}
+	}
+	mem.AddExecRegion(jitVA, jitVA+uint64(len(jitCode)*4), true /*isJIT*/)
+
+	cpu := NewCPU(*mem)
+	cpu.pc = entry
+	cpu.SetReg(2, 0x03F00000)
+
+	o := NewOS()
+	o.HandleSyscall(93, LinuxExit)
+	cpu.Notes.Push(o.Handle)
+
+	j := NewJIT()
+	defer j.Close()
+	if err := j.InstallAOT(mem, data); err != nil {
+		t.Fatalf("InstallAOT: %v", err)
+	}
+	// Only one segment at install time — the stub.
+	if got := len(j.aotSegments); got != 1 {
+		t.Fatalf("len(aotSegments) before run = %d, want 1", got)
+	}
+
+	var gotPanic any
+	func() {
+		defer func() { gotPanic = recover() }()
+		_ = j.RunJIT(cpu)
+	}()
+
+	exit, ok := gotPanic.(*ExitError)
+	if !ok {
+		t.Fatalf("expected *ExitError panic, got %T: %v", gotPanic, gotPanic)
+	}
+	if exit.Code != 0 {
+		t.Errorf("exit code = %d, want 0", exit.Code)
+	}
+
+	// After the run, the JIT region should have been compiled into its
+	// own segment (created by nextExecuteSegment on the stub's JALR).
+	if got := len(j.aotSegments); got != 2 {
+		t.Fatalf("len(aotSegments) after run = %d, want 2 (stub + jit region)", got)
+	}
+	jitSeg := j.aotSegments[1]
+	if jitSeg.vaddrBegin != jitVA {
+		t.Errorf("jitSeg.vaddrBegin = 0x%x, want 0x%x", jitSeg.vaddrBegin, jitVA)
+	}
+	if !jitSeg.isLikelyJIT {
+		t.Error("jitSeg.isLikelyJIT = false, want true (region registered as writable)")
+	}
+	if _, ok := jitSeg.blocks[jitVA]; !ok {
+		t.Errorf("jitSeg.blocks missing entry for 0x%x", jitVA)
+	}
+	t.Logf("dynamic-create run: segments=%d DispatchOK=%d JalrICMisses=%d",
+		len(j.aotSegments), j.DispatchOK, j.JalrICMisses)
+}
+
+// TestAOT_InvalidateSegment_Roundtrip verifies the full install →
+// invalidate → re-create flow. After InvalidateSegment, the region is
+// no longer in j.aotSegments, but the ExecRegion is still registered,
+// so nextExecuteSegment recompiles it on the next dispatch.
+func TestAOT_InvalidateSegment_Roundtrip(t *testing.T) {
+	const stubVA = uint64(0x10000)
+	stubCode := []uint32{
+		0x05D00893, // ADDI a7, x0, 93
+		0x00000073, // ECALL
+	}
+	data := BuildELF(stubVA, stubCode)
+
+	mem, err := NewGuestMemory(Size1GB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mem.Free()
+	if _, err := LoadELFBytes(mem, data); err != nil {
+		t.Fatalf("LoadELFBytes: %v", err)
+	}
+
+	j := NewJIT()
+	defer j.Close()
+	if err := j.InstallAOT(mem, data); err != nil {
+		t.Fatalf("InstallAOT: %v", err)
+	}
+	if len(j.aotSegments) != 1 {
+		t.Fatalf("len(aotSegments) = %d, want 1", len(j.aotSegments))
+	}
+
+	// Invalidate the segment.
+	if !j.InvalidateSegment(stubVA) {
+		t.Fatal("InvalidateSegment: returned false")
+	}
+	if len(j.aotSegments) != 0 {
+		t.Fatalf("after invalidate: len(aotSegments) = %d, want 0", len(j.aotSegments))
+	}
+	if j.hotSegment != nil {
+		t.Error("hotSegment not cleared after invalidate")
+	}
+
+	// Invalidating again (no segment covers that pc anymore) → false.
+	if j.InvalidateSegment(stubVA) {
+		t.Error("InvalidateSegment returned true for already-invalidated pc")
+	}
+
+	// The ExecRegion is still registered (InstallAOT added it); running
+	// the CPU will exercise nextExecuteSegment to re-create.
+	if regs := mem.ExecRegions(); len(regs) != 1 {
+		t.Fatalf("ExecRegions after invalidate: %d entries, want 1 (region preserved)", len(regs))
+	}
+
+	cpu := NewCPU(*mem)
+	cpu.pc = stubVA
+	cpu.SetReg(2, 0x03F00000)
+	o := NewOS()
+	o.HandleSyscall(93, LinuxExit)
+	cpu.Notes.Push(o.Handle)
+
+	var gotPanic any
+	func() {
+		defer func() { gotPanic = recover() }()
+		_ = j.RunJIT(cpu)
+	}()
+	exit, ok := gotPanic.(*ExitError)
+	if !ok {
+		t.Fatalf("expected *ExitError after re-create, got %T: %v", gotPanic, gotPanic)
+	}
+	if exit.Code != 0 {
+		t.Errorf("exit code = %d, want 0", exit.Code)
+	}
+
+	// Segment should be re-created.
+	if len(j.aotSegments) != 1 {
+		t.Errorf("after re-run: len(aotSegments) = %d, want 1", len(j.aotSegments))
+	}
+}
+
+// TestAOT_InvalidateExecRegion_Bulk verifies bulk invalidation over a
+// VA range that covers multiple segments.
+func TestAOT_InvalidateExecRegion_Bulk(t *testing.T) {
+	data := buildMultiCodeELF(t, []testCodeSeg{
+		{vaddr: 0x10000, code: []uint32{0x00000073}},
+		{vaddr: 0x20000, code: []uint32{0x00000073}},
+		{vaddr: 0x30000, code: []uint32{0x00000073}},
+	})
+
+	mem, err := NewGuestMemory(Size1GB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mem.Free()
+	if _, err := LoadELFBytes(mem, data); err != nil {
+		t.Fatalf("LoadELFBytes: %v", err)
+	}
+
+	j := NewJIT()
+	defer j.Close()
+	if err := j.InstallAOT(mem, data); err != nil {
+		t.Fatalf("InstallAOT: %v", err)
+	}
+	if len(j.aotSegments) != 3 {
+		t.Fatalf("len(aotSegments) = %d, want 3", len(j.aotSegments))
+	}
+
+	// Invalidate a range covering segments 0 and 1 but not 2.
+	freed := j.InvalidateExecRegion(0x10000, 0x21000)
+	if freed != 2 {
+		t.Errorf("InvalidateExecRegion freed = %d, want 2", freed)
+	}
+	if len(j.aotSegments) != 1 {
+		t.Fatalf("len(aotSegments) after bulk invalidate = %d, want 1",
+			len(j.aotSegments))
+	}
+	if j.aotSegments[0].vaddrBegin != 0x30000 {
+		t.Errorf("remaining segment VAddr=0x%x, want 0x30000",
+			j.aotSegments[0].vaddrBegin)
+	}
+}
+
+// TestAOT_SegmentRefcount_RetainPreventsFree verifies that an extra
+// Retain() delays the mmap free until the extra Release() matches. This
+// simulates the Phase 2c fork path where parent and child share a
+// segment via refcount.
+func TestAOT_SegmentRefcount_RetainPreventsFree(t *testing.T) {
+	data := BuildELF(0x10000, []uint32{0x00000073}) // single ECALL
+	mem, err := NewGuestMemory(Size1GB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mem.Free()
+	if _, err := LoadELFBytes(mem, data); err != nil {
+		t.Fatalf("LoadELFBytes: %v", err)
+	}
+
+	j := NewJIT()
+	if err := j.InstallAOT(mem, data); err != nil {
+		t.Fatalf("InstallAOT: %v", err)
+	}
+	if len(j.aotSegments) != 1 {
+		t.Fatalf("len(aotSegments) = %d, want 1", len(j.aotSegments))
+	}
+	seg := j.aotSegments[0]
+
+	// Extra Retain — simulates a "child JIT" referencing the same segment.
+	seg.Retain()
+	if got := seg.refcount.Load(); got != 2 {
+		t.Fatalf("refcount after Retain = %d, want 2", got)
+	}
+
+	j.Close() // Releases once — refcount back to 1; mmap still alive.
+	if got := seg.refcount.Load(); got != 1 {
+		t.Fatalf("refcount after Close = %d, want 1", got)
+	}
+	if seg.nativeCodeMmap == nil {
+		t.Fatal("nativeCodeMmap released prematurely (while refcount > 0)")
+	}
+
+	// Final Release.
+	seg.Release()
+	if got := seg.refcount.Load(); got != 0 {
+		t.Fatalf("refcount after final Release = %d, want 0", got)
+	}
+	if seg.nativeCodeMmap != nil {
+		t.Error("nativeCodeMmap not freed at refcount=0")
+	}
+	if seg.decoderCacheMmap != nil {
+		t.Error("decoderCacheMmap not freed at refcount=0")
 	}
 }

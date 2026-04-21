@@ -147,6 +147,13 @@ type GuestMemory struct {
 	// scratch is a reusable MemFault to avoid heap allocation on every fault.
 	// Only one fault is ever live at a time (caller checks, then discards).
 	scratch MemFault
+
+	// execRegions tracks guest-VA ranges that contain executable code.
+	// Used by the JIT's multi-segment dispatch to decide where to place
+	// a new DecodedExecuteSegment on demand. Maintained by
+	// AddExecRegion / RemoveExecRegion / FindExecRegion in guestmem_exec.go.
+	// The list stays small (≤ handful of entries); linear scan is fine.
+	execRegions []ExecRegion
 }
 
 // NewGuestMemory allocates a guest address space of the given size.

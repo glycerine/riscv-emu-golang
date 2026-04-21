@@ -8,6 +8,8 @@ import (
 	"os"
 	"riscv/internal/jitcall"
 	"riscv/ir"
+	"sync/atomic"
+	"syscall"
 	"unsafe"
 )
 
@@ -71,10 +73,59 @@ type DecodedExecuteSegment struct {
 	vaddrEnd         uint64                    // guest VA end (exclusive)
 	nativeCodeBase   uintptr                   // first byte of unified code mmap
 	nativeCodeSize   int                       // total bytes in code mmap
+	nativeCodeMmap   []byte                    // same slab as nativeCodeBase; held for Munmap
 	decoderCacheMmap []byte                    // DecoderData[] mmap (RO post-init)
 	decoderCacheBase uintptr                   // = &decoderCacheMmap[0]
 	decoderCacheMask uint64                    // power-of-two - 1
 	blocks           map[uint64]*compiledBlock // PC → block (AOT + any lazy additions)
+
+	// isLikelyJIT is true when this segment backs guest pages that are
+	// writable+executable — i.e., the guest might overwrite code within
+	// it (LuaJIT-style). Mirrors libriscv's m_is_likely_jit. Consumed by
+	// future Phase 2c features (FENCE.I opt-in invalidation, stale
+	// detection on mprotect -X). Ignored in Phase 2b dispatch.
+	isLikelyJIT bool
+
+	// refcount gates native-code + decoder_cache mmap release. Starts at
+	// 1 on install; every (future) sharer Retain()s; destroying a holder
+	// Release()s. When it reaches 0, both mmaps are Munmap'd. Segments
+	// are immutable after install (blocks map read-only, decoder_cache
+	// mprotect RO, native code already patched), so sharing is safe.
+	refcount atomic.Int32
+}
+
+// Retain increments the segment's refcount. Matches libriscv's
+// shared_ptr semantics for segments shared across forked Machines.
+// No-op if seg is nil.
+func (seg *DecodedExecuteSegment) Retain() {
+	if seg == nil {
+		return
+	}
+	seg.refcount.Add(1)
+}
+
+// Release decrements the segment's refcount and, on reaching zero,
+// munmaps the native code and decoder_cache backing stores. The
+// segment must not be used after the final Release.
+// No-op if seg is nil.
+func (seg *DecodedExecuteSegment) Release() {
+	if seg == nil {
+		return
+	}
+	if seg.refcount.Add(-1) != 0 {
+		return
+	}
+	if len(seg.nativeCodeMmap) > 0 {
+		_ = syscall.Munmap(seg.nativeCodeMmap)
+		seg.nativeCodeMmap = nil
+		seg.nativeCodeBase = 0
+		seg.nativeCodeSize = 0
+	}
+	if len(seg.decoderCacheMmap) > 0 {
+		_ = syscall.Munmap(seg.decoderCacheMmap)
+		seg.decoderCacheMmap = nil
+		seg.decoderCacheBase = 0
+	}
 }
 
 // compiledBlock holds a compiled function pointer (native IR or TCC).
@@ -85,6 +136,12 @@ type compiledBlock struct {
 	jalrICs    []jalrICPatchInfo // JALR IC sites for patching (native IR only)
 	tccState   unsafe.Pointer    // *C.TCCState for TCC-compiled blocks (nil for native)
 	shadow     *compiledBlock    // V2 shadow block for DebugV1V2 comparison
+
+	// segment is the DecodedExecuteSegment that owns this block's native
+	// code, or nil for lazy-compiled blocks. Set at AOT install time;
+	// RunJIT reads it to publish the right decoder_cache parameters to
+	// CallAOT's sret extension.
+	segment *DecodedExecuteSegment
 }
 
 // JIT status codes returned by compiled blocks.
@@ -117,11 +174,18 @@ type blockCacheEntry struct {
 
 // JIT holds the cache of compiled basic blocks.
 type JIT struct {
-	// aotSegment holds the AOT-compiled .text segment, if InstallAOT
-	// was called. nil otherwise (pure lazy mode). Dispatch consults
-	// aotSegment.blocks first; on miss, falls through to the
-	// direct-mapped lazy cache below.
-	aotSegment *DecodedExecuteSegment
+	// aotSegments holds all AOT-compiled segments installed so far
+	// (one per PT_LOAD R-X in the ELF, plus any dynamically-created
+	// segments from guest JIT-style code). Empty in pure lazy mode.
+	// Dispatch consults findSegment(pc) first; on miss, falls through
+	// to the direct-mapped lazy cache below.
+	aotSegments []*DecodedExecuteSegment
+
+	// hotSegment caches the segment most recently matched by
+	// findSegment. Most dispatches stay within one segment (tight loops,
+	// calls within the same function), so a single-pointer hot-cache
+	// short-circuits the linear scan of aotSegments.
+	hotSegment *DecodedExecuteSegment
 
 	cache      [blockCacheSize]blockCacheEntry
 	noJIT      map[uint64]bool // PCs where translation failed — don't retry
@@ -169,30 +233,136 @@ func (j *JIT) SetAllocStrategy(name string) {
 func (j *JIT) NoJITSize() int { return len(j.noJIT) }
 
 // InstallAOT runs the whole-program AOT translator on the ELF bytes.
-// It identifies the `.text` section, linearly scans it to enumerate
-// basic-block ranges, batch-compiles every translatable block into one
-// unified native-code mmap, pre-resolves every static chain exit whose
-// target is in the AOT set, and builds a mask-bounded read-only
-// decoder_cache. Subsequent RunJIT dispatches consult
-// j.aotSegment.blocks before falling through to the lazy cache.
+// For every PT_LOAD segment with PF_X set, it registers an ExecRegion
+// on the guest memory, linearly scans the range to enumerate basic-
+// block ranges, batch-compiles every translatable block into one
+// unified native-code mmap per PT_LOAD, pre-resolves every static
+// chain exit whose target is in the AOT set, and builds a mask-
+// bounded read-only decoder_cache. The resulting segments are
+// appended to j.aotSegments.
 //
-// Safe to call on a fresh JIT; installing twice replaces the previous
-// segment (the old native mmap leaks — acceptable for one-shot
-// installation).
+// Safe to call on a fresh JIT; installing twice appends additional
+// segments (the old mmaps are retained).
 //
-// Returns nil if the ELF lacks a `.text` section (callers can still
-// use the lazy path in that case).
+// Returns nil if the ELF has no PT_LOAD R-X entries (callers can still
+// use the lazy path in that case). Individual segments that fail to
+// compile are skipped; other segments still install.
 func (j *JIT) InstallAOT(mem *GuestMemory, elfBytes []byte) error {
-	textBase, textSize, ok := FindTextSection(elfBytes)
-	if !ok {
+	loads, ok := FindExecLoads(elfBytes)
+	if !ok || len(loads) == 0 {
 		return nil
 	}
-	ranges := enumerateBlockRanges(mem, textBase, textSize)
-	seg, err := j.jitCompileAOTSegment(mem, ranges, textBase, textBase+textSize)
-	if err != nil {
-		return err
+	for _, load := range loads {
+		begin := load.VAddr
+		end := load.VAddr + load.MemSz
+		mem.AddExecRegion(begin, end, load.Writable)
+
+		ranges := enumerateBlockRanges(mem, begin, load.MemSz)
+		seg, err := j.jitCompileAOTSegment(mem, ranges, begin, end)
+		if err != nil {
+			continue
+		}
+		seg.isLikelyJIT = load.Writable
+		j.aotSegments = append(j.aotSegments, seg)
 	}
-	j.aotSegment = seg
+	return nil
+}
+
+// Close releases every AOT segment owned by this JIT. Safe to call
+// multiple times; subsequent calls are no-ops. After Close, the JIT
+// must not dispatch — the native code mmaps are gone.
+//
+// Lazy-compiled blocks in j.cache[] are not freed here; they're held
+// by separate per-block mmaps (see jit_native.go). Those leak today
+// and are outside Phase 2b's scope.
+func (j *JIT) Close() {
+	for _, s := range j.aotSegments {
+		s.Release()
+	}
+	j.aotSegments = nil
+	j.hotSegment = nil
+}
+
+// InvalidateSegment removes the segment containing pc from the
+// dispatch set and Release()s it. On the next JALR/dispatch into the
+// same region, nextExecuteSegment will re-create a fresh segment from
+// the current guest memory contents (mirrors libriscv's
+// evict_execute_segment + next_execute_segment flow).
+//
+// Returns true if a segment was invalidated, false if pc was not in
+// any segment.
+//
+// Caveat: existing lazy blocks or other AOT segments may hold chain-
+// exit pointers or JALR IC entries referencing the invalidated
+// segment's native code. Release() munmaps it, so those pointers are
+// dangling. Phase 2b uses this API only in controlled test scenarios
+// where no such references exist. Phase 2c will add cross-segment
+// reference tracking for safe runtime invalidation.
+func (j *JIT) InvalidateSegment(pc uint64) bool {
+	for i, s := range j.aotSegments {
+		if pc >= s.vaddrBegin && pc < s.vaddrEnd {
+			j.aotSegments = append(j.aotSegments[:i], j.aotSegments[i+1:]...)
+			if j.hotSegment == s {
+				j.hotSegment = nil
+			}
+			j.clearBlockCache()
+			s.Release()
+			return true
+		}
+	}
+	return false
+}
+
+// InvalidateExecRegion invalidates every AOT segment whose range
+// intersects [begin, end). Useful when the guest (or an OS personality
+// hook) un-maps or downgrades permissions on a range. See
+// InvalidateSegment for the same lazy-reference caveat.
+//
+// Returns the number of segments invalidated.
+func (j *JIT) InvalidateExecRegion(begin, end uint64) int {
+	if begin >= end {
+		return 0
+	}
+	kept := j.aotSegments[:0]
+	freed := 0
+	for _, s := range j.aotSegments {
+		if s.vaddrEnd <= begin || s.vaddrBegin >= end {
+			kept = append(kept, s)
+			continue
+		}
+		if j.hotSegment == s {
+			j.hotSegment = nil
+		}
+		s.Release()
+		freed++
+	}
+	j.aotSegments = kept
+	if freed > 0 {
+		j.clearBlockCache()
+	}
+	return freed
+}
+
+// clearBlockCache zeros the direct-mapped lazy cache. Called on
+// segment invalidation so stale lookups don't return a block whose
+// chain-exits point into freed mmaps.
+func (j *JIT) clearBlockCache() {
+	j.cache = [blockCacheSize]blockCacheEntry{}
+}
+
+// findSegment returns the AOT segment containing pc, or nil if pc
+// falls outside every installed segment. Uses a one-slot hot cache
+// since consecutive dispatches almost always stay within one segment.
+func (j *JIT) findSegment(pc uint64) *DecodedExecuteSegment {
+	if s := j.hotSegment; s != nil && pc >= s.vaddrBegin && pc < s.vaddrEnd {
+		return s
+	}
+	for _, s := range j.aotSegments {
+		if pc >= s.vaddrBegin && pc < s.vaddrEnd {
+			j.hotSegment = s
+			return s
+		}
+	}
 	return nil
 }
 
@@ -207,17 +377,17 @@ func cacheIdx(pc uint64) uint64 {
 
 // lookupBlock returns the compiled block for pc, or nil.
 //
-// Dispatch order (Phase 2a):
-//  1. If an AOT segment is installed and pc is inside it, look up in
-//     aotSegment.blocks first.
+// Dispatch order:
+//  1. If pc falls inside an installed AOT segment, look up the block
+//     in that segment's blocks map.
 //  2. Otherwise (or AOT miss), consult the direct-mapped lazy cache.
 //
-// This preserves correctness for JALRs landing outside .text (e.g.,
-// LuaJIT-style dynamic code, which reaches the lazy path) while
-// letting AOT-compiled PCs hit their entry immediately.
+// This preserves correctness for JALRs landing outside every segment
+// (e.g., LuaJIT-style dynamic code before its segment is created —
+// reached via the lazy path or, in Step 6, via nextExecuteSegment).
 func (j *JIT) lookupBlock(pc uint64) *compiledBlock {
-	if j.aotSegment != nil && pc >= j.aotSegment.vaddrBegin && pc < j.aotSegment.vaddrEnd {
-		if blk, ok := j.aotSegment.blocks[pc]; ok {
+	if s := j.findSegment(pc); s != nil {
+		if blk, ok := s.blocks[pc]; ok {
 			return blk
 		}
 	}
@@ -421,8 +591,19 @@ func (j *JIT) RunJIT(cpu *CPU) error {
 		blk := j.lookupBlock(pc)
 		if blk != nil {
 			var res jitcall.Result
-			if j.aotSegment != nil {
-				seg := j.aotSegment
+			if len(j.aotSegments) > 0 {
+				// Publish the containing segment's decoder_cache params to
+				// the sret extension. Lazy blocks don't have an owning
+				// segment; fall back to the hot segment (or any segment) —
+				// lazy blocks don't read these slots, so any valid pointer
+				// works, but we must publish *something* non-garbage.
+				seg := blk.segment
+				if seg == nil {
+					seg = j.hotSegment
+					if seg == nil {
+						seg = j.aotSegments[0]
+					}
+				}
 				res = jitcall.CallAOT(blk.fn, &cpu.x, &cpu.f, &cpu.fcsr,
 					cpu.mem.Base(), cpu.mem.Mask(),
 					seg.decoderCacheBase, seg.decoderCacheMask,
@@ -511,6 +692,18 @@ func (j *JIT) RunJIT(cpu *CPU) error {
 					continue
 				default:
 					return err
+				}
+			}
+		}
+
+		// No compiled block. If pc falls inside a registered ExecRegion
+		// that isn't yet covered by any AOT segment (e.g., the guest
+		// mmapped a new R-X region and jumped to it — LuaJIT pattern),
+		// build a segment for it now. Re-try dispatch on success.
+		if !j.InterpOnly && len(cpu.mem.execRegions) > 0 {
+			if seg := j.nextExecuteSegment(&cpu.mem, pc); seg != nil {
+				if _, ok := seg.blocks[pc]; ok {
+					continue // retry — next lookupBlock hits the new AOT block
 				}
 			}
 		}

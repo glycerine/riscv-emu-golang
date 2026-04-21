@@ -190,10 +190,20 @@ func (j *JIT) jitCompileAOTSegment(
 		vaddrEnd:         vaddrEnd,
 		nativeCodeBase:   codeBase,
 		nativeCodeSize:   totalSize,
+		nativeCodeMmap:   execMem,
 		decoderCacheMmap: cacheMmap,
 		decoderCacheBase: uintptr(unsafe.Pointer(&cacheMmap[0])),
 		decoderCacheMask: cacheSize - 1,
 		blocks:           blocks,
+	}
+	seg.refcount.Store(1)
+
+	// Back-link each block to its owning segment so RunJIT can publish
+	// per-block decoder_cache params without another findSegment lookup.
+	for _, bc := range compiles {
+		if bc.blk != nil {
+			bc.blk.segment = seg
+		}
 	}
 
 	if debugJIT {

@@ -19,6 +19,11 @@ const (
 	shtSymtab    = 2    // SHT_SYMTAB
 	shtStrtab    = 3    // SHT_STRTAB
 	shtProgbits  = 1    // SHT_PROGBITS
+
+	// PT_LOAD permission flags (p_flags).
+	pfX = 0x1 // PF_X (executable)
+	pfW = 0x2 // PF_W (writable)
+	pfR = 0x4 // PF_R (readable)
 )
 
 // ELF64Header is the 64-byte ELF file header.
@@ -361,6 +366,70 @@ func FindTextSection(data []byte) (vaddr, size uint64, ok bool) {
 		}
 	}
 	return 0, 0, false
+}
+
+// ExecLoad describes one PT_LOAD segment whose PF_X flag is set — i.e.,
+// a guest-VA range that the loader expects to be executable.
+//
+// Phase 2b of the JIT uses this to decide how many DecodedExecuteSegments
+// to build at InstallAOT time: one per ExecLoad. Writable==true denotes
+// a rare RW-X PT_LOAD (treated as isLikelyJIT from the start).
+type ExecLoad struct {
+	VAddr    uint64
+	MemSz    uint64
+	Writable bool
+}
+
+// FindExecLoads parses the ELF program-header table in data and returns
+// every PT_LOAD entry with PF_X set. Returns (nil, false) if data is not
+// a recognizable ELF64 or has no program headers. Returns ([], true) if
+// the ELF is valid but has no executable loads (unusual but well-formed).
+//
+// Does not depend on state established by LoadELFBytes.
+func FindExecLoads(data []byte) ([]ExecLoad, bool) {
+	le := binary.LittleEndian
+
+	if len(data) < 64 {
+		return nil, false
+	}
+	if string(data[:4]) != elfMagic || data[4] != elfClass64 {
+		return nil, false
+	}
+
+	phOff := le.Uint64(data[32:])     // e_phoff
+	phEntSize := le.Uint16(data[54:]) // e_phentsize
+	phNum := le.Uint16(data[56:])     // e_phnum
+
+	if phOff == 0 || phNum == 0 || phEntSize < 56 {
+		return nil, false
+	}
+
+	var out []ExecLoad
+	for i := 0; i < int(phNum); i++ {
+		off := int(phOff) + i*int(phEntSize)
+		if off+56 > len(data) {
+			return nil, false
+		}
+		var ph elf64Phdr
+		if err := binary.Read(&byteReader{data: data[off:]}, le, &ph); err != nil {
+			return nil, false
+		}
+		if ph.Type != ptLoad {
+			continue
+		}
+		if ph.Flags&pfX == 0 {
+			continue
+		}
+		if ph.MemSz == 0 {
+			continue
+		}
+		out = append(out, ExecLoad{
+			VAddr:    ph.VAddr,
+			MemSz:    ph.MemSz,
+			Writable: ph.Flags&pfW != 0,
+		})
+	}
+	return out, true
 }
 
 // BuildELF constructs a minimal RV64 executable ELF with one PT_LOAD
