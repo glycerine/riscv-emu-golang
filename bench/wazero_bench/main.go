@@ -55,5 +55,5 @@ func main() {
 	fmt.Printf("wasm compile:   %v    <- AOT compile happens here\n", elap21)
 	fmt.Printf("run:            %v\n", runElap)
 	fmt.Printf("total (cold):   %v\n", t3.Sub(t0))
-	fmt.Printf("wazero wasm aot-and-run MIPS               %0.1f\n", 1e9*float64(NATIVE_RETIRED_MILLIONS)/float64(aotAndRunElapNanos))
+	fmt.Printf("wazero wasm aot-and-run                    %0.1f MIPS\n", 1e9*float64(NATIVE_RETIRED_MILLIONS)/float64(aotAndRunElapNanos))
 }
