@@ -1718,58 +1718,30 @@ func (e *emitter) emitMisalignedFPStore(rs2 uint32, addr ir.VReg, width int, fau
 
 // ── FMA family ─────────────────────────────────────────────────────────
 
+// emitFMA is DISABLED and terminates the block so the dispatcher falls
+// back to the interpreter for F{N}M{ADD,SUB}. Rationale:
+//
+//   1. Spec correctness (§11.6): FMA must round only once. The old
+//      body emitted FMul(a,b)+FAdd(c) — two roundings.
+//   2. Canonicalization (§11.3): the old body did not canonicalize
+//      NaN outputs.
+//
+// The interpreter (cpu.go:660-679) routes through
+// fenv.{M,MS,NMS,NMA}AddF32/64 which use x86 VFM{ADD,SUB,NMADD,NMSUB}
+// instructions — single-rounding hardware FMA — and canonicalizes via
+// canonNaN{32,64} before NaN-boxing. Correct on every path.
+//
+// Perf impact: FMA-heavy guests run slower (one interp step per FMA).
+// None of our current benchmark workloads exercise FMA. A future
+// optimization can add IRFma + VFMADD213SS/SD lowering.
 func (e *emitter) emitFMA(opcode, rd, rs1, rs2, rs3, fpfmt uint32) {
-	if fpfmt > 1 {
-		e.terminated = true
-		return
-	}
-
-	if fpfmt == 0 { // single
-		a := e.unboxF32(rs1)
-		b := e.unboxF32(rs2)
-		c := e.unboxF32(rs3)
-		mul := e.irEm.Tmp()
-		e.irEm.FMul(mul, a, b, ir.F32)
-
-		var result ir.VReg
-		switch opcode {
-		case 0x43: // FMADD: a*b + c
-			result = e.irEm.Tmp()
-			e.irEm.FAdd(result, mul, c, ir.F32)
-		case 0x47: // FMSUB: a*b - c
-			result = e.irEm.Tmp()
-			e.irEm.FSub(result, mul, c, ir.F32)
-		case 0x4B: // FNMSUB: -(a*b) + c = c - a*b
-			result = e.irEm.Tmp()
-			e.irEm.FSub(result, c, mul, ir.F32)
-		case 0x4F: // FNMADD: -(a*b) - c
-			neg := e.irEm.Tmp()
-			e.irEm.FNeg(neg, mul, ir.F32)
-			result = e.irEm.Tmp()
-			e.irEm.FSub(result, neg, c, ir.F32)
-		}
-		e.boxF32(rd, result)
-	} else { // double
-		a := e.freg(rs1)
-		b := e.freg(rs2)
-		c := e.freg(rs3)
-		mul := e.irEm.Tmp()
-		e.irEm.FMul(mul, a, b, ir.F64)
-		dst := e.fregDst(rd)
-
-		switch opcode {
-		case 0x43:
-			e.irEm.FAdd(dst, mul, c, ir.F64)
-		case 0x47:
-			e.irEm.FSub(dst, mul, c, ir.F64)
-		case 0x4B:
-			e.irEm.FSub(dst, c, mul, ir.F64)
-		case 0x4F:
-			neg := e.irEm.Tmp()
-			e.irEm.FNeg(neg, mul, ir.F64)
-			e.irEm.FSub(dst, neg, c, ir.F64)
-		}
-	}
+	_ = opcode
+	_ = rd
+	_ = rs1
+	_ = rs2
+	_ = rs3
+	_ = fpfmt
+	e.terminated = true
 }
 
 // ── FP-OP ──────────────────────────────────────────────────────────────
