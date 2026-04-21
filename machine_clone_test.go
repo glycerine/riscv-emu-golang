@@ -305,6 +305,55 @@ func TestMachineClone_WithoutJIT(t *testing.T) {
 	}
 }
 
+// ── InstallOS auto-propagation ──────────────────────────────────────────────
+
+// TestMachineClone_InstallOSOnChild verifies that after the parent
+// installs an OS personality, Clone auto-installs the same OS on the
+// child. Both parent and child run an ADDI a7,93 + ECALL stub; both
+// handlers fire (spy counter bumps twice), proving the child has the
+// handler installed without manual reinstallation.
+func TestMachineClone_InstallOSOnChild(t *testing.T) {
+	parent := buildExitMachine(t)
+
+	// Install a spy OS on the parent. The spy increments a counter
+	// on every syscall invocation so we can assert the child hit
+	// the handler too.
+	var spyCount int
+	spy := func(_ *CPU, args SyscallArgs) (SyscallResult, bool) {
+		spyCount++
+		panic(&ExitError{Code: int(int32(args.A0))})
+	}
+	os := NewOS()
+	os.HandleSyscall(93, spy)
+	parent.InstallOS(os)
+
+	child, err := parent.Clone()
+	if err != nil {
+		t.Fatalf("Clone: %v", err)
+	}
+	t.Cleanup(child.Close)
+
+	if child.OS != os {
+		t.Errorf("child.OS = %p, want %p (parent's OS)", child.OS, os)
+	}
+
+	runOnce := func(m *Machine, label string) {
+		defer func() {
+			r := recover()
+			if _, ok := r.(*ExitError); !ok {
+				t.Errorf("%s: expected *ExitError panic, got %v", label, r)
+			}
+		}()
+		_ = m.JIT.RunJIT(m.CPU)
+	}
+	runOnce(parent, "parent")
+	runOnce(child, "child")
+
+	if spyCount != 2 {
+		t.Errorf("spy fired %d times, want 2 (parent + child)", spyCount)
+	}
+}
+
 // ── Lazy blocks not shared ──────────────────────────────────────────────────
 
 func TestMachineClone_LazyBlocksNotShared(t *testing.T) {

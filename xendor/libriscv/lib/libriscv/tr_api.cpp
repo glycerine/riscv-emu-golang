@@ -180,13 +180,31 @@ typedef union {
 #define set_fl(reg, fv) \
 	(reg)->f32[0] = (fv);
 	(reg)->i32[1] = 0;
+#define set_fl_canon(reg, fv) \
+	{ float __v = (fv); \
+	  if (((*(uint32_t*)&__v) & 0x7fffffffu) > 0x7f800000u) { \
+	    uint32_t __u = 0x7fc00000u; __builtin_memcpy(&__v, &__u, 4); } \
+	  (reg)->f32[0] = __v; (reg)->i32[1] = 0; }
 #else
 #define load_fl(reg, fv) (reg)->i32[0] = (fv)
 #define set_fl(reg, fv)  (reg)->f32[0] = (fv)
+#define set_fl_canon(reg, fv) \
+	{ float __v = (fv); \
+	  if (((*(uint32_t*)&__v) & 0x7fffffffu) > 0x7f800000u) { \
+	    uint32_t __u = 0x7fc00000u; __builtin_memcpy(&__v, &__u, 4); } \
+	  (reg)->f32[0] = __v; }
 #endif
 
 #define load_dbl(reg, dv) (reg)->i64 = (dv)
 #define set_dbl(reg, dv)  (reg)->f64 = (dv)
+/* set_dbl_canon: rewrite dv to the RISC-V canonical f64 qNaN
+   (0x7ff8000000000000) if dv is any NaN. Matches rvf_instr.cpp
+   fsflags() behavior on the interpreter path. */
+#define set_dbl_canon(reg, dv) \
+	{ double __v = (dv); \
+	  if (((*(uint64_t*)&__v) & 0x7fffffffffffffffull) > 0x7ff0000000000000ull) { \
+	    uint64_t __u = 0x7ff8000000000000ull; __builtin_memcpy(&__v, &__u, 8); } \
+	  (reg)->f64 = __v; }
 
 // Thin variant of CPU for higher compilation speed
 __attribute__((aligned(RISCV_MACHINE_ALIGNMENT)))

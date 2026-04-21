@@ -1890,27 +1890,33 @@ void Emitter<W>::emit()
 				std::string fop = " + ";
 				if (instr.fpfunc() == RV32F__FSUB) fop = " - ";
 				else if (instr.fpfunc() == RV32F__FMUL) fop = " * ";
+				// NaN results must be canonicalized (RISC-V ISA §11.3).
+				// Host FP may produce a non-canonical NaN; set_fl_canon /
+				// set_dbl_canon rewrite any NaN to the canonical payload.
+				// Overhead on non-NaN fast path: one compare + branch.
 				if (fi.R4type.funct2 == 0x0) { // fp32
-					code += "set_fl(&" + dst + ", " + rs1 + ".f32[0]" + fop + rs2 + ".f32[0]);\n";
+					code += "set_fl_canon(&" + dst + ", " + rs1 + ".f32[0]" + fop + rs2 + ".f32[0]);\n";
 				} else { // fp64
-					code += "set_dbl(&" + dst + ", " + rs1 + ".f64" + fop + rs2 + ".f64);\n";
+					code += "set_dbl_canon(&" + dst + ", " + rs1 + ".f64" + fop + rs2 + ".f64);\n";
 				}
 				} break;
 			case RV32F__FDIV:
+				// NaN results (e.g. 0/0, -0/-0, inf/inf) must be canonical.
 				if (fi.R4type.funct2 == 0x0) { // fp32
-					code += "set_fl(&" + dst + ", " + rs1 + ".f32[0] / " + rs2 + ".f32[0]);\n";
+					code += "set_fl_canon(&" + dst + ", " + rs1 + ".f32[0] / " + rs2 + ".f32[0]);\n";
 					this->penalty(10); // divf is a slow operation
 				} else { // fp64
-					code += "set_dbl(&" + dst + ", " + rs1 + ".f64 / " + rs2 + ".f64);\n";
+					code += "set_dbl_canon(&" + dst + ", " + rs1 + ".f64 / " + rs2 + ".f64);\n";
 					this->penalty(15); // divd is a slow operation
 				}
 				break;
 			case RV32F__FSQRT:
+				// sqrt of a negative finite number produces NaN — canonicalize.
 				if (fi.R4type.funct2 == 0x0) { // fp32
-					code += "set_fl(&" + dst + ", api.sqrtf32(" + rs1 + ".f32[0]));\n";
+					code += "set_fl_canon(&" + dst + ", api.sqrtf32(" + rs1 + ".f32[0]));\n";
 					this->penalty(10); // sqrtf is a slow operation
 				} else { // fp64
-					code += "set_dbl(&" + dst + ", api.sqrtf64(" + rs1 + ".f64));\n";
+					code += "set_dbl_canon(&" + dst + ", api.sqrtf64(" + rs1 + ".f64));\n";
 					this->penalty(15); // sqrtd is a slow operation
 				}
 				break;

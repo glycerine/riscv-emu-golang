@@ -83,7 +83,8 @@ func (j *JIT) jitCompileWith(res *emitResult, useV2 bool) (*compiledBlock, error
 
 	codeBase := uintptr(unsafe.Pointer(&execMem[0]))
 	blk := &compiledBlock{
-		fn: codeBase,
+		fn:         codeBase,
+		nativeMmap: execMem,
 	}
 
 	// Step 6: Block chaining setup — backpatch MOVABS sentinels and record metadata.
@@ -199,7 +200,7 @@ func (j *JIT) jitCompileDebug(res *emitResult, useV2 bool) (*compiledBlock, *com
 	copy(execMem, code)
 
 	codeBase := uintptr(unsafe.Pointer(&execMem[0]))
-	blk := &compiledBlock{fn: codeBase}
+	blk := &compiledBlock{fn: codeBase, nativeMmap: execMem}
 
 	// Backpatch chain-exit sentinels to the slow-exit stubs and record
 	// metadata, same as jitCompileWith. Without this, any chain exit in

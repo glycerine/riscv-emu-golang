@@ -188,6 +188,39 @@ func TestFDIV_D(t *testing.T) {
 		nil)
 }
 
+// TestFDIV_S_NegZeroDivNegZero_CanonicalNaN exercises the RISC-V spec
+// (§11.3) requirement that any NaN result from FDIV.S is the canonical
+// qNaN 0x7FC00000. Host FP hardware produces 0xFFC00000 for -0.0/-0.0;
+// both our emulator and libriscv's binary translator must canonicalize
+// the sign bit. This is the direct red-then-green witness for the
+// tr_emit.cpp set_fl_canon / set_dbl_canon patch.
+func TestFDIV_S_NegZeroDivNegZero_CanonicalNaN(t *testing.T) {
+	runOneF(t, fpf(0x03,rmRNE,1,2,3),
+		fxregs(),
+		ffregs(2,nb32(0x80000000), 3,nb32(0x80000000)), // -0.0f, -0.0f
+		nil)
+}
+
+// TestFDIV_D_NegZeroDivNegZero_CanonicalNaN is the double-precision
+// counterpart. Host produces 0xFFF8000000000000; canonical qNaN is
+// 0x7FF8000000000000.
+func TestFDIV_D_NegZeroDivNegZero_CanonicalNaN(t *testing.T) {
+	runOneF(t, fpfD(0x03,rmRNE,1,2,3),
+		fxregs(),
+		ffregs(2,0x8000000000000000, 3,0x8000000000000000), // -0.0, -0.0
+		nil)
+}
+
+// TestFSQRT_S_Negative_CanonicalNaN: sqrt(-1.0) produces a NaN whose
+// sign must be canonicalized. Host returns 0xFFC00000; spec demands
+// 0x7FC00000.
+func TestFSQRT_S_Negative_CanonicalNaN(t *testing.T) {
+	runOneF(t, fpf(0x0B,rmRNE,1,2,0),
+		fxregs(),
+		ffregs(2,nb32(bits32(-1.0))),
+		nil)
+}
+
 // ── FSQRT ─────────────────────────────────────────────────────────────────
 
 func TestFSQRT_S(t *testing.T) {

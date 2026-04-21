@@ -143,6 +143,12 @@ type compiledBlock struct {
 	// RunJIT reads it to publish the right decoder_cache parameters to
 	// CallAOT's sret extension.
 	segment *DecodedExecuteSegment
+
+	// nativeMmap is the per-block code slab for lazy-compiled blocks.
+	// nil for AOT blocks (their code lives in segment.nativeCodeMmap,
+	// reclaimed by segment.Release) and for TCC blocks (TCC manages its
+	// own allocations via tccState). Held here so JIT.Close can munmap.
+	nativeMmap []byte
 }
 
 // JIT status codes returned by compiled blocks.
@@ -194,6 +200,14 @@ type JIT struct {
 	// findSegment and the blk.segment null-chain — the common case for
 	// single-PT_LOAD ELFs (coremark, dhrystone, bench_guest).
 	soleSegment *DecodedExecuteSegment
+
+	// lazyBlocks holds every lazy-compiled block whose nativeMmap is
+	// non-nil. Grown via insertBlock; drained by Close(), which munmaps
+	// each block's nativeMmap. Bounded in practice by the number of
+	// distinct PCs ever lazily compiled in this JIT's lifetime; blocks
+	// remain live for chain-exit pin safety (patches in other blocks
+	// may still target their native code).
+	lazyBlocks []*compiledBlock
 
 	cache      [blockCacheSize]blockCacheEntry
 	noJIT      map[uint64]bool // PCs where translation failed — don't retry
@@ -289,7 +303,9 @@ func (j *JIT) InstallAOT(mem *GuestMemory, elfBytes []byte) error {
 // also start at zero so the clone gets its own measurement baseline.
 //
 // The noJIT failure set starts empty in the clone; it may re-discover
-// untranslatable PCs the parent already found, at tiny cost.
+// untranslatable PCs the parent already found, at tiny cost. The
+// child's lazyBlocks registry is also empty — lazy mmaps are per-JIT
+// and stay with the JIT that owns them until its Close.
 func (j *JIT) CloneShared() *JIT {
 	child := &JIT{
 		aotSegments: append([]*DecodedExecuteSegment(nil), j.aotSegments...),
@@ -303,13 +319,10 @@ func (j *JIT) CloneShared() *JIT {
 	return child
 }
 
-// Close releases every AOT segment owned by this JIT. Safe to call
-// multiple times; subsequent calls are no-ops. After Close, the JIT
-// must not dispatch — the native code mmaps are gone.
-//
-// Lazy-compiled blocks in j.cache[] are not freed here; they're held
-// by separate per-block mmaps (see jit_native.go). Those leak today
-// and are outside Phase 2b's scope.
+// Close releases every AOT segment owned by this JIT and munmaps
+// every lazy-compiled block's native code. Safe to call multiple
+// times; subsequent calls are no-ops. After Close, the JIT must not
+// dispatch — the native code mmaps are gone.
 func (j *JIT) Close() {
 	for _, s := range j.aotSegments {
 		s.Release()
@@ -317,6 +330,15 @@ func (j *JIT) Close() {
 	j.aotSegments = nil
 	j.hotSegment = nil
 	j.soleSegment = nil
+
+	for _, blk := range j.lazyBlocks {
+		if len(blk.nativeMmap) > 0 {
+			_ = syscall.Munmap(blk.nativeMmap)
+			blk.nativeMmap = nil
+			blk.fn = 0
+		}
+	}
+	j.lazyBlocks = nil
 }
 
 // InvalidateSegment removes the segment containing pc from the
@@ -458,10 +480,16 @@ func (j *JIT) lookupBlock(pc uint64) *compiledBlock {
 	return nil
 }
 
-// insertBlock stores a compiled block in the cache.
+// insertBlock stores a compiled block in the cache. If blk owns its
+// own native-code mmap (set by the lazy-compile path), the block is
+// also registered in j.lazyBlocks so JIT.Close can munmap it. TCC and
+// AOT blocks don't set nativeMmap and are not registered here.
 func (j *JIT) insertBlock(pc uint64, blk *compiledBlock) {
 	idx := cacheIdx(pc)
 	j.cache[idx] = blockCacheEntry{pc, blk}
+	if blk != nil && blk.nativeMmap != nil {
+		j.lazyBlocks = append(j.lazyBlocks, blk)
+	}
 }
 
 // StepBlock executes one dispatch cycle and returns.
