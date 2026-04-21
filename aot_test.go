@@ -312,6 +312,78 @@ func TestAOTInstall_RunDhrystone(t *testing.T) {
 	t.Logf("dhrystone AOT run: retired %d insns", cpu.Cycle())
 }
 
+// TestAOTDispatch_DhrystoneReducesRoundTrips runs dhrystone under
+// both lazy and AOT dispatch, captures the dispatch counters, and
+// asserts the AOT run dramatically reduces JALR-driven Go round-
+// trips. This is the Step 8 "dispatch behavior" correctness test.
+//
+// Expected counter shape on dhrystone (from plan's performance
+// section; measured medians):
+//   lazy mode: DispatchOK ~500K, JalrICMisses ~2M (JALR IC firing)
+//   AOT mode:  DispatchOK ~70K,   JalrICMisses <100 (decoder_cache
+//              hot path catches ≥99% of JALRs)
+func TestAOTDispatch_DhrystoneReducesRoundTrips(t *testing.T) {
+	data, err := os.ReadFile("bench/dhrystone.elf")
+	if err != nil {
+		t.Skipf("bench/dhrystone.elf: %v", err)
+	}
+	lazyDisp, lazyJalr := runDhrystoneCollectCounters(t, data, false)
+	aotDisp, aotJalr := runDhrystoneCollectCounters(t, data, true)
+
+	t.Logf("lazy: DispatchOK=%d JalrICMisses=%d", lazyDisp, lazyJalr)
+	t.Logf("AOT:  DispatchOK=%d JalrICMisses=%d", aotDisp, aotJalr)
+
+	// Fast path is the decoder_cache in AOT: it should catch virtually
+	// every ret-form JALR, so JalrICMisses drops toward zero.
+	if aotJalr >= lazyJalr {
+		t.Errorf("AOT JalrICMisses (%d) did not drop below lazy (%d) — decoder_cache fast path not firing",
+			aotJalr, lazyJalr)
+	}
+	if aotJalr > 1000 {
+		t.Errorf("AOT JalrICMisses = %d, expected near-zero", aotJalr)
+	}
+
+	// DispatchOK should drop too — most Go round-trips were JALR-driven.
+	if aotDisp >= lazyDisp {
+		t.Errorf("AOT DispatchOK (%d) did not drop below lazy (%d)",
+			aotDisp, lazyDisp)
+	}
+}
+
+func runDhrystoneCollectCounters(t *testing.T, data []byte, aot bool) (dispatchOK, jalrMisses uint64) {
+	t.Helper()
+	mem, err := NewGuestMemory(Size64MB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mem.Free()
+	entry, lerr := LoadELFBytes(mem, data)
+	if lerr != nil {
+		t.Fatal(lerr)
+	}
+	cpu := NewCPU(*mem)
+	cpu.SetPC(entry)
+	cpu.SetReg(2, 0x03F00000)
+	o := NewOS()
+	o.HandleSyscall(93, LinuxExit)
+	o.HandleSyscall(94, LinuxExit)
+	o.HandleSyscall(214, func(_ *CPU, _ SyscallArgs) (SyscallResult, bool) { return 0, true })
+	o.HandleSyscall(96, func(_ *CPU, _ SyscallArgs) (SyscallResult, bool) { return 1, true })
+	cpu.Notes.Push(o.Handle)
+
+	j := NewJIT()
+	if aot {
+		if err := j.InstallAOT(mem, data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	func() {
+		defer func() { _ = recover() }()
+		_ = j.RunJIT(cpu)
+	}()
+	return j.DispatchOK, j.JalrICMisses
+}
+
 // TestAOTCompile_Coremark mirrors TestAOTCompile_Dhrystone.
 func TestAOTCompile_Coremark(t *testing.T) {
 	data, err := os.ReadFile("bench/coremark.elf")
