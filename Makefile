@@ -554,7 +554,7 @@ bench:
 	@printf "  %-44s " "native x86-64 (-O3 -march=native):"
 	@elapsed=$$({ /usr/bin/time -p $(GUEST_NATIVE) >/dev/null; } 2>&1 | awk '/^real/{print $$NF}'); \
          awk "BEGIN{printf \"%.0f MIPS  (%.1f ms)\n\", $(NATIVE_RETIRED)/$$elapsed/1000000, $$elapsed*1000}"
-	make bench-wasm
+	@/bin/echo -n "  " ; make bench-wasm | grep MIPS
 	@echo ""
 	#make bench-coremark
 	#make bench-dhrystone

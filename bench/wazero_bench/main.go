@@ -48,12 +48,12 @@ func main() {
 	elap10 := t1.Sub(t0)
 	elap21 := t2.Sub(t1)
 	runElap := t3.Sub(t2)
-	jitAndRunElap := t3.Sub(t1)
-	jitAndRunElapNanos := jitAndRunElap
+	aotAndRunElap := t3.Sub(t1)
+	aotAndRunElapNanos := aotAndRunElap
 
 	fmt.Printf("runtime init:   %v\n", elap10)
-	fmt.Printf("wasm compile:   %v    <- JIT happens here\n", elap21)
+	fmt.Printf("wasm compile:   %v    <- AOT compile happens here\n", elap21)
 	fmt.Printf("run:            %v\n", runElap)
 	fmt.Printf("total (cold):   %v\n", t3.Sub(t0))
-	fmt.Printf("wasm jit-and-run MIPS   %0.3f\n", 1e9*float64(NATIVE_RETIRED_MILLIONS)/float64(jitAndRunElapNanos))
+	fmt.Printf("wazero wasm aot-and-run MIPS               %0.1f\n", 1e9*float64(NATIVE_RETIRED_MILLIONS)/float64(aotAndRunElapNanos))
 }
