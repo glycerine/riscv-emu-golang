@@ -384,6 +384,7 @@ namespace riscv
 	FLOAT_INSTR(FMIN_FMAX,
 	[] (auto& cpu, rv32i_instruction instr) RVINSTR_COLDATTR
 	{
+		fprintf(stderr, "DEBUG FLOAT_INSTR(FMIN_FMAX) called!\n");
 		const rv32f_instruction fi { instr };
 		auto& rs1 = cpu.registers().getfl(fi.R4type.rs1);
 		auto& rs2 = cpu.registers().getfl(fi.R4type.rs2);

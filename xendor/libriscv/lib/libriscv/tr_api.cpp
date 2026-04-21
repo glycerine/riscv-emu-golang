@@ -233,6 +233,11 @@ static struct CallbackTable {
 	// these api entries to std::fma for correct behavior.
 	float  (*fmaf32)(float, float, float);
 	double (*fmaf64)(double, double, double);
+	// FMIN/FMAX with RISC-V's -0.0 < +0.0 convention.
+	float  (*fmin32_rv)(float, float);
+	float  (*fmax32_rv)(float, float);
+	double (*fmin64_rv)(double, double);
+	double (*fmax64_rv)(double, double);
 	int (*clz) (uint32_t);
 	int (*clzl) (uint64_t);
 	int (*ctz) (uint32_t);
