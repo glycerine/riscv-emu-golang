@@ -71,6 +71,7 @@ const jalrICDeoptThreshold uint32 = 16
 type DecodedExecuteSegment struct {
 	vaddrBegin       uint64                    // guest VA start
 	vaddrEnd         uint64                    // guest VA end (exclusive)
+	vaddrSize        uint64                    // = vaddrEnd - vaddrBegin; pre-computed for hot-path reads
 	nativeCodeBase   uintptr                   // first byte of unified code mmap
 	nativeCodeSize   int                       // total bytes in code mmap
 	nativeCodeMmap   []byte                    // same slab as nativeCodeBase; held for Munmap
@@ -631,7 +632,7 @@ func (j *JIT) RunJIT(cpu *CPU) error {
 				res = jitcall.CallAOT(blk.fn, &cpu.x, &cpu.f, &cpu.fcsr,
 					cpu.mem.Base(), cpu.mem.Mask(),
 					seg.decoderCacheBase, seg.decoderCacheMask,
-					seg.vaddrBegin, seg.vaddrEnd-seg.vaddrBegin)
+					seg.vaddrBegin, seg.vaddrSize)
 			} else if len(j.aotSegments) > 0 {
 				// Multi-segment path. Publish the containing segment's
 				// decoder_cache params to the sret extension. Lazy blocks
@@ -649,7 +650,7 @@ func (j *JIT) RunJIT(cpu *CPU) error {
 				res = jitcall.CallAOT(blk.fn, &cpu.x, &cpu.f, &cpu.fcsr,
 					cpu.mem.Base(), cpu.mem.Mask(),
 					seg.decoderCacheBase, seg.decoderCacheMask,
-					seg.vaddrBegin, seg.vaddrEnd-seg.vaddrBegin)
+					seg.vaddrBegin, seg.vaddrSize)
 			} else {
 				res = jitcall.Call(blk.fn, &cpu.x, &cpu.f, &cpu.fcsr,
 					cpu.mem.Base(), cpu.mem.Mask())

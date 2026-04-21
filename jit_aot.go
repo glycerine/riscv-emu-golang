@@ -188,6 +188,7 @@ func (j *JIT) jitCompileAOTSegment(
 	seg := &DecodedExecuteSegment{
 		vaddrBegin:       vaddrBegin,
 		vaddrEnd:         vaddrEnd,
+		vaddrSize:        vaddrEnd - vaddrBegin,
 		nativeCodeBase:   codeBase,
 		nativeCodeSize:   totalSize,
 		nativeCodeMmap:   execMem,

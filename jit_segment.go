@@ -24,11 +24,11 @@ func (j *JIT) nextExecuteSegment(mem *GuestMemory, pc uint64) *DecodedExecuteSeg
 	if region == nil {
 		return nil
 	}
-	// Defensive: if a segment already covers this region (stale
-	// findSegment call? concurrent install?), return it.
-	if seg := j.findSegment(pc); seg != nil {
-		return seg
-	}
+	// Caller (RunJIT) reaches this only after lookupBlock(pc) returned
+	// nil, which itself consulted findSegment. In the single-goroutine
+	// dispatch loop, no segment can have appeared in between, so the
+	// previous defensive re-check is redundant.
+	//
 	// Snapshot the region (the returned pointer may be invalidated by
 	// AddExecRegion churn later in this call; copy the fields we need).
 	begin := region.VAddrBegin
