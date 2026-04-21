@@ -1,341 +1,405 @@
-# Plan: Fast Guest Syscalls — "Hello, World!" Without Losing JIT Speed
+# Plan: Fast Guest Syscalls — "Hello, World!" via Direct SYSCALL
 
 ## Context
 
-This is the first real OS-interaction milestone for the emulator: getting guest
-code to do `write(1, "Hello, World!\n", 14)` and see it appear on our terminal,
-while preserving the JIT hot-path throughput we have today.
+This is the emulator's first real OS-interaction milestone: get guest code
+to do `write(1, "Hello, World!\n", 14)` and see it on the host terminal,
+while preserving — and extending — the JIT hot-path throughput.
 
-The motivating constraint: **libriscv reports ~3 ns per host↔guest boundary
-crossing**. That number is the linchpin of the whole project. If a syscall
-costs microseconds, an I/O-heavy guest pays thousands of times more per call
-than on libriscv. The emulator's value proposition evaporates. So syscalls
-must be cheap.
+The motivating constraint: **libriscv reports ~3 ns per host↔guest
+boundary crossing**. If a syscall costs microseconds, I/O-heavy guests
+pay thousands of times more per call than libriscv. The project's value
+proposition erodes. So syscalls must be cheap.
 
 Today our ECALL path exits the JIT block, returns through `jitcall.Call`,
 walks the NoteChain, and invokes a Go `SyscallHandler` under the OS
-personality. Estimated cost: **~2–12 µs per ECALL** — dominated by the
-JIT→Go transition and map-based handler lookup. That's ~1000× libriscv's
-number. The user wants to know if we can close that gap, and if so, how.
+personality. Estimated cost: **~2–12 µs per ECALL**. That's ~1000×
+libriscv's number.
 
-The user explicitly asked to:
+### Decisions already made (from discussion)
 
-1. Verify the claim that libriscv dispatches syscalls **directly from JIT code**
-   (not via a trampoline back to the C++ interpreter).
-2. Brainstorm options — not commit to one — so this plan is for discussion.
+- **No TCC on the syscall path.** TCC stays as a legacy per-block
+  compiler; the syscall fast path uses the **Go-only native IR JIT
+  backend** (goasm-based, no cgo at runtime, no LGPL).
+- **Direct `SYSCALL` instruction on both linux/amd64 and darwin/amd64.**
+  Speed is the priority. Apple's "unstable ABI" concern is a manageable
+  risk (common syscall numbers have been stable for a decade; a recompile
+  restores the emulator if Apple ever breaks us; Apple breaking would
+  affect a huge amount of software, so it's unlikely).
+- **Exit semantics**: native stub sets a flag + returns `jitEcall`
+  status; the existing Go exit path takes over. No panic from stubs.
 
 ---
 
 ## How libriscv Achieves ~3 ns (verified)
 
-The claim is correct. When the binary-translator (TCC mode) emits an ECALL,
-it does **not** return to the C++ emulator. It emits an inline call:
+When the binary-translator (TCC mode) emits an ECALL, it does **not**
+return to the C++ emulator. It emits an inline call:
 
 ```c
-// libriscv/tr_emit.cpp:744  (binary-translated block, TCC-compiled)
+// libriscv/tr_emit.cpp:744
 max_ic = api.system_call(cpu, 0x<pc>, ic, max_ic, sysno);
 ```
 
-`api.system_call` is a plain C function pointer (registered via
-`tcc_add_symbol` equivalent) pointing at a lambda in
-`libriscv/tr_translate.cpp:1348`:
-
-```cpp
-.system_call = [](CPU<W>& cpu, addr_t pc, uint64_t ic, uint64_t max_ic, int sysno) -> uint64_t {
-    cpu.machine().set_instruction_counter(ic);
-    cpu.registers().pc = pc;
-    cpu.machine().system_call(sysno);   // → syscall_handlers[sysno](*this)
-    ...
-}
-```
-
-Which reduces to a **single indirect call through an array**:
+`api.system_call` is a registered C function pointer; in
+`libriscv/tr_translate.cpp:1348` it's a lambda that reduces to:
 
 ```cpp
 // libriscv/machine_inline.hpp:79
-syscall_handlers[sysnum](*this);
+syscall_handlers[sysnum](*this);    // one indirect array-call
 ```
 
-The handler itself (e.g., `syscall_write` in `linux/system_calls.cpp`) is a
-plain C++ function that:
+The handler is a plain C++ function that reads `cpu.reg(10..15)`, calls
+libc `write`, writes `cpu.reg(10)`, returns. **Control never leaves
+native code.** The 3 ns is just "what an indirect function call costs
+when nothing else is in the way." The kernel-entry cost of the actual
+`write(2)` is on top (~100–300 ns) and identical across any emulator.
 
-1. Reads guest args directly from `cpu.reg(10..15)` (plain array access).
-2. Calls the host's libc `write()`.
-3. Writes the return value to `cpu.reg(10)`.
-4. Returns.
-
-Control never leaves native code. Everything is one process, one address
-space, pure C/C++ — no language boundary. **The ~3 ns is the cost of an
-indirect function call plus a couple of array loads.** The actual
-`write(2)` syscall itself adds the normal kernel-entry cost (~100–300 ns
-on Linux) on top of that 3 ns dispatch.
-
-Key point: **libriscv is not doing magic.** It's just avoiding language
-boundaries. The 3 ns is simply "what a C function pointer call costs when
-nothing else is in the way."
+Key point: libriscv is not doing magic. It avoids language boundaries.
+We will match it by also avoiding language boundaries — **native
+code calling native code, no cgo crossing, no Go scheduler involvement**.
 
 ---
 
-## Our Current State (verified)
+## Current State (verified)
 
-- JIT emits ECALL as `return (JITResult){pc, ic, 1, 0};` — exits the block.
+- JIT emits ECALL as `return (JITResult){pc, ic, jitEcall, 0};` — exits.
 - `jitcall.Call` returns to Go with `Status=jitEcall`.
-- `RunJIT` constructs a `Note` and calls `cpu.Notes.Deliver(cpu, n)`.
-- `OS.Handle` does `o.syscalls[args.Num]` — **map lookup** — then calls the
-  Go `SyscallHandler`, which copies guest memory and calls a `WriteFunc`.
-- All of this is Go. Cost ≈ 2–12 µs.
+- `RunJIT` builds a `Note`, runs `cpu.Notes.Deliver(cpu, n)`.
+- `OS.Handle` does a map lookup, calls Go handler, copies guest bytes,
+  calls a Go `WriteFunc`.
+- All of this is Go. Cost ≈ 2–12 µs per ECALL.
 
-We already have **one-way** zero-CGO efficiency in the right direction:
-`internal/jitcall/call_amd64.s` calls JIT code from Go in ~5–10 ns with no
-CGO. We also already use `tcc_add_symbol` to inject C helpers (`jit_sqrt`,
-`jit_sqrtf`, `jit_trace`) into the JIT's address space. **`jit_trace`
-itself already calls raw `write(2)` from inside JIT code** (jit_tcc.go:20–34).
-We are one architectural step away from production-quality syscalls.
+What we already have in our favor:
 
----
-
-## The Core Insight
-
-The user asked "can we call Go directly from JIT like libriscv does?"
-Answer: **we shouldn't try.** The honest observation is:
-
-> libriscv is fast because it doesn't cross language boundaries. We can
-> match its speed by also not crossing language boundaries — but the
-> other way. **Don't ask C to call Go. Ask C to call C.**
-
-Syscall handlers are just libc/kernel wrappers. They don't need to be Go
-functions. If we write them in C and register them with `tcc_add_symbol`
-(the pattern we already use for `jit_sqrt`), then the JIT's ECALL site
-becomes an ordinary indirect call — identical in shape to libriscv's
-`api.system_call`. The Go runtime is never involved on the hot path.
-
-The Go-side `OS`/`SyscallHandler` machinery remains — but as a **fallback**
-for syscalls that are too complex to implement in C (anything needing
-goroutines, channels, maps, or Go-managed state).
-
-This gets us to **~10–30 ns per ECALL** on the C fast path (function
-pointer + dispatch + libc syscall entry), and keeps ~2 µs as the graceful
-fallback for cold/complex syscalls. That is the libriscv shape, matched.
+- `internal/jitcall/call_amd64.s` — pure Go asm, zero cgo; calls JIT
+  blocks in ~5–10 ns. This is our **precedent** for the asm-based
+  fast path we will build for syscalls.
+- `jit_tcc.go:20–34` — `jit_trace` already calls raw `write(2)` from
+  inside JIT code, proving the pattern works from TCC-compiled code.
+- `ir/emit.go:213` — `ir.Emitter.Call(sym, addr)` registers a C-ABI
+  function and emits `IRCall`.
+- `ir/lower_amd64.go:1945` — `lowerCall` emits a native `CALL` with
+  live-register save. This is our **hook point**: the syscall stub
+  is just a specially-registered `CTab` entry.
 
 ---
 
-## Options (brainstorm — for discussion)
+## The Approach: Direct `SYSCALL` via Go-asm Stubs, Dispatched by the IR JIT
 
-Each option is an independent choice for the "fast syscall path." They
-can be combined.
+The syscall fast path is one new file plus two small changes:
 
-### Option A — C syscall table, TCC-compiled handlers (recommended base)
+1. **`internal/syscalls/stubs_<goos>_amd64.s`** — per-syscall leaf
+   stubs in Go assembly. Each stub takes the System V AMD64 ABI
+   (matching what `ir.lowerCall` emits), reads args from the guest
+   `CPU` by offset, translates guest pointers via `mem_base`, sets
+   `RAX` to the host syscall number, issues `SYSCALL`, writes the
+   result back to `x[10]`, and returns.
+2. **Dispatch table** — a `[NR_SYSCALLS]uintptr` on `JIT` populated
+   at init with the stub addresses. Unimplemented slots point at a
+   fallback thunk that returns `jitEcall` so the existing Go path
+   handles them.
+3. **IR emission change** — at ECALL, instead of emitting a return
+   with `jitEcall`, emit:
+   - Load `x[17]` (guest syscall number, a7)
+   - Bounds-check against `NR_SYSCALLS`
+   - `MOVQ dispatch_table(,a7,8), scratch`
+   - `IRCall scratch` (through existing `lowerCall`)
+   - After the call, either continue in the block (for syscalls like
+     write that return normally) or observe the `exit_flag` in `CPU`
+     and return `jitEcall` to Go (for exit).
 
-- Add `jit_syscall.c` next to `jit_trace`/`jit_sqrt` in `jit_tcc.go`.
-- Define a static C array `syscall_handler_t handlers[NR_SYSCALLS]`.
-- Each supported syscall is a C function: `void sys_write(CPU*)`,
-  `void sys_exit(CPU*)`, etc. They read guest regs from `cpu->x[]`,
-  call libc, write back to `cpu->x[10]`.
-- Register the table base with `tcc_add_symbol(s, "jit_syscall_table", ...)`.
-- JIT emits for ECALL:
-  ```c
-  jit_syscall_table[cpu->x[17]](cpu);  // 1 load + 1 indirect call
-  ```
-- **Speed:** ~10–30 ns per ECALL, cross-platform, no CGO.
-- **Complexity:** moderate — need to factor a stable `CPU*` layout for C.
-- **Limitation:** handlers run on the JIT goroutine's stack; they must not
-  call back into Go, must not block indefinitely, must not allocate via Go.
-  libc calls are fine.
+This structure mirrors libriscv's `api.system_call` one-to-one, but
+implemented in Go asm + goasm-emitted native code instead of
+C++/TCC. No cgo, no TCC, no LGPL.
 
-### Option B — Direct `SYSCALL` instruction (Linux-only, fastest)
+### Stub shape (pseudocode)
 
-- For syscalls with identical Linux-host and RISC-V-guest calling conventions
-  (write, read, close, exit, clock_gettime, …), emit raw `SYSCALL` inline:
-  ```c
-  register long rax asm("rax") = 1;   // SYS_write
-  register long rdi asm("rdi") = cpu->x[10];
-  register long rsi asm("rsi") = cpu->x[11] + (uint64_t)mem_base;
-  register long rdx asm("rdx") = cpu->x[12];
-  asm volatile("syscall" : "+r"(rax) : "r"(rdi),"r"(rsi),"r"(rdx) : "rcx","r11","memory");
-  cpu->x[10] = rax;
-  ```
-- **Speed:** ~15 ns dispatch + syscall entry. No function call at all.
-- **Limitation:** Linux-only. Darwin has no stable syscall ABI; you must go
-  through libSystem.
-- **Use case:** Linux production deployments. On darwin, Option A naturally
-  falls back to libc wrappers for the same speed class.
+For linux/amd64, `sys_write_linux_amd64.s`:
 
-### Option C — Hybrid: C fast path + Go fallback
+```
+// Entry: SysV AMD64 ABI
+//   RDI = *CPU     (guest register file base)
+//   RSI = mem_base (host address of guest memory)
+//   RDX = mem_mask (size-1 of guest memory)
+// Reads:  CPU.x[10]=fd, CPU.x[11]=guest_buf, CPU.x[12]=count
+// Writes: CPU.x[10] = ssize_t result
+TEXT ·sys_write(SB), NOSPLIT|NOFRAME, $0-0
+    MOVQ  8*10(DI), AX          // fd (to be in RDI for syscall)
+    MOVQ  8*11(DI), R10         // guest buf
+    ANDQ  DX, R10               // mask bounds-check (host-offset)
+    ADDQ  SI, R10               // translate to host ptr
+    MOVQ  8*12(DI), R11         // count
+    // Set up SysV syscall ABI: RAX=nr, RDI=a0, RSI=a1, RDX=a2
+    MOVQ  AX, DI                // fd
+    MOVQ  R10, SI               // buf (host)
+    MOVQ  R11, DX               // count
+    MOVQ  $1, AX                // SYS_write on linux/amd64
+    SYSCALL
+    MOVQ  AX, 8*10(DI_original) // store result to x[10]  (need to restash DI; see real impl)
+    RET
+```
 
-- Option A's table has NULL slots for unimplemented syscalls.
-- On NULL, the dispatcher returns a `jitEcall` status the JIT trampoline
-  already understands — existing NoteChain path handles it.
-- Best of both: implement 10–20 hot syscalls in C; everything else works
-  via the existing Go layer.
-- This is the **minimum viable path** and the recommended first cut.
+Real implementation needs to save the incoming `RDI` (CPU ptr) before
+clobbering it to set up the syscall. Trivial — stash to `R11` or a
+local slot.
 
-### Option D — "Batched" / deferred writes
+`sys_write_darwin_amd64.s` is identical except `MOVQ $0x2000004, AX`
+(darwin syscall-4-with-class-2 encoding) and runs on the same kernel
+interface. Both files compile under the same Go build tags.
 
-- For fd 1/2, ring-buffer the bytes inside C memory and flush lazily
-  (on newline, on buffer fill, on block boundary).
-- Reduces ECALL-per-byte scenarios (e.g., character-at-a-time stdio).
-- **Risk:** changes observable semantics — errors appear late, `fsync`
-  becomes lossy. Don't default to this; offer it as an opt-in for benchmarks.
+### Exit stub
 
-### Option E — vDSO fast paths
+`sys_exit` and `sys_exit_group` don't issue SYSCALL — we want the emulator
+to cleanly return to Go, not terminate the host process.
 
-- `clock_gettime`, `gettimeofday`, `getcpu` can resolve via the Linux vDSO
-  with no kernel entry — ~5 ns total.
-- Low priority for hello-world but a natural extension for real workloads.
+```
+TEXT ·sys_exit(SB), NOSPLIT|NOFRAME, $0-0
+    MOVQ  8*10(DI), AX          // a0 = exit code
+    MOVQ  AX, CPU_exit_code(DI) // store in a new CPU field
+    MOVB  $1, CPU_exit_flag(DI) // set flag
+    RET
+```
 
-### Option F — Memory-mapped I/O via fault handler (exotic, not recommended)
-
-- Reserve a guest physical range; writes there trap to a host handler that
-  emits bytes. Avoids ECALL entirely.
-- Fast but invasive, non-POSIX, not how real guests are built. Listed for
-  completeness only — not a serious candidate.
-
-### Option G — Keep Go handlers, optimize the NoteChain (baseline)
-
-- Replace the map lookup with a dense array, cache the handler pointer,
-  skip note construction for known-handled syscalls.
-- Gets us maybe 3–5× faster (~400 ns–1 µs), still 100× libriscv.
-- Useful as a **sanity check** before committing to the C-handler path
-  — if this gets us "good enough," the C-handler work isn't worth it.
-- Recommended as a quick prerequisite benchmark step.
-
----
-
-## Recommended Approach
-
-A two-phase plan. Each phase produces a measurable outcome the user can
-evaluate before committing to the next.
-
-### Phase 1 — "Hello, World!" via the existing Go path (fast to ship, establishes baseline)
-
-**Goal:** prove the plumbing end to end. Produce the baseline ECALL cost
-for comparison.
-
-1. Add a `RunWithLinuxOS(cpu, stdout io.Writer)` convenience in `os.go`
-   that installs `LinuxExit` (93/94) and `LinuxWriteHandler` (64).
-2. Build a minimal hello-world guest ELF (RV64, static, no libc — just
-   inline asm for `li a7, 64; ecall; li a7, 93; ecall`). Put it under
-   `testdata/hello/`.
-3. Add a unit test that runs the ELF through `RunJIT` with
-   `RunWithLinuxOS` and asserts the captured buffer equals
-   `"Hello, World!\n"`.
-4. Add a benchmark `BenchmarkECall_Go` that runs a tight ECALL loop
-   (write of 0 bytes to fd 3) and reports ns/op.
-
-**Files touched:** `os.go`, new `testdata/hello/hello.S`+`hello.elf`,
-new `hello_test.go`, new `bench/ecall_bench_test.go`.
-
-### Phase 2 — C syscall fast path (matches libriscv shape)
-
-**Goal:** get ECALL cost into the 10–50 ns range on both Linux and
-darwin.
-
-1. **Define a stable CPU ABI** the C side can rely on. Add a
-   `// go:generate` or a hand-maintained comment in `cpu.go` that freezes
-   the offsets of `x[0]`, `f[0]`, `fcsr`, `pc` in `CPU`. The JIT already
-   treats these as raw pointers; we now need C to dereference them by
-   offset.
-2. **Write `jit_syscall.c`**, included in the `jit_tcc.go` C preamble
-   alongside `jit_trace`. It defines:
-   ```c
-   typedef struct CPU CPU;  // opaque — access via cpu_reg(cpu, n)
-   typedef void (*sys_fn)(CPU*, char *mem_base, uint64_t mem_mask);
-   extern sys_fn jit_syscalls[512];   // installed via tcc_add_symbol
-   ```
-   Plus concrete handlers:
-   - `sys_write` — reads a0/a1/a2 from cpu, bounds-checks via `mem_mask`,
-     calls libc `write`, stores result in a0.
-   - `sys_exit` / `sys_exit_group` — stores exit code somewhere the Go
-     side can pick up, sets a flag that causes the JIT to exit cleanly.
-     (This is the trickiest piece: exit needs to unwind to Go.)
-   - `sys_brk`, `sys_close` (probably stubbed for now).
-3. **Install the table** from Go at `JIT` init. Add a field
-   `syscallTable [512]uintptr` on `JIT`, populate from a C-ABI list, pass
-   its base into TCC via `tcc_add_symbol(s, "jit_syscalls", ...)`.
-4. **Change JIT emission for ECALL** in `jit_emit.go:291`. Instead of
-   `emitReturn(pc, jitEcall)`, emit (TCC path only for now):
-   ```c
-   jit_syscalls[x[17] & 0x1FF](cpu_ptr, mem_base, mem_mask);
-   ```
-   Table entries for unhandled numbers are a thunk that returns
-   `jitEcall` → NoteChain fallback (Option C hybrid).
-5. **Handle "exit" specially.** `sys_exit` can't just `return` — the JIT
-   block needs to stop executing and propagate to Go. Cleanest path:
-   set a flag in the CPU struct that the JIT checks after the syscall
-   call, and if set, returns `jitEcall` (so the existing Go exit handler
-   still owns the exit semantics).
-6. **Extend the native IR path** to emit the same call via
-   `ir.Emitter.Call` + `CTab` (already supported per `ir/emit.go:213`
-   and `ir/lower_amd64.go:1945`). This gives us no-CGO native-code
-   dispatch at matching speed.
-7. **Benchmark:** add `BenchmarkECall_FastC` mirroring Phase 1's test.
-   Expected: 10–50 ns/op. Compare against libriscv via the existing
-   `bench-setup` infrastructure.
-
-**Files touched:** `jit_tcc.go` (add C preamble), `jit_emit.go` (ECALL
-emission), `jit_emit_ir.go` (same for IR path), `jit_native.go` /
-`ir/emit.go` (table registration), `cpu.go` (ABI freeze comment, exit
-flag), `bench/ecall_bench_test.go`.
-
-### Decision point between phases
-
-After Phase 1 benchmark ships: if baseline ECALL cost is (say) 500 ns
-and the guest workload does one ECALL per 10k instructions, the total
-overhead is negligible and Phase 2 is not worth the architectural weight.
-If it's >1 µs or the guest is I/O heavy, Phase 2 pays for itself.
-
-**The user explicitly wants to know before committing.** That's what
-this plan is for.
+The IR's ECALL emission tests `CPU.exit_flag` after the call; if set,
+returns `{pc, ic, jitEcall, 0}` immediately. The existing Go side sees
+`jitEcall`, reads `CPU.exit_code`, returns `*ExitError`. This preserves
+the current Go exit semantics without any `panic`.
 
 ---
 
-## Open Questions for the User
+## Benchmark Harness (up front)
 
-1. **Scope of the fast path.** Do we care about matching libriscv on
-   Linux specifically, cross-platform (including darwin, where the
-   fastest path is slightly slower), or both?
-2. **Exit semantics.** Today `LinuxExit` `panic`s and `RunWithOS`
-   recovers. The C fast path can't panic. Is a flag-in-CPU + clean JIT
-   exit acceptable, or do we want to preserve the panic idiom?
-3. **Guest ABI.** Should the hello-world ELF use the Linux RISC-V
-   convention (a7=syscall number, 64=write, 93=exit) or the riscv-tests
-   convention we already support? Recommended: Linux, because that's
-   what real guests will use.
-4. **Which JIT path gets this first — TCC, native IR, or both?** Both
-   matter, but the TCC path is a quicker prototype. Proposal: ship TCC
-   first (Phase 2 steps 1–5), then port to native IR (step 6).
+Before implementing either phase, stand up `cd ~/ris && make hello`
+so we can see progress quantitatively at each step. The target runs
+a tight inner loop inside a RISC-V guest ELF, times it externally,
+and prints per-call ECALL+write cost. Stdout is redirected to
+`/dev/null` so the ~10K prints don't scroll the terminal.
+
+**Guest ELFs (hand-written RV64 assembly, no libc):**
+
+- `hello_libriscv.elf` — writes `"Hello, libriscv!\n"` in a 10,000-
+  iteration loop, then exits 0.
+- `hello_gocpu.elf` — writes `"Hello, Go CPU!\n"` in a 10,000-
+  iteration loop, then exits 0.
+
+Both are structurally identical (same loop count, same ECALL
+pattern, a single fixed-length write per iteration). Only the
+data-section string differs. Different strings let us visually
+confirm which emulator produced the output if we ever unredirect.
+
+**Shape (pseudocode):**
+
+```
+.rodata: msg: "Hello, ...!\n"
+        msg_len = <constant>
+
+_start:
+    li   s0, 10000           # iteration count
+loop:
+    li   a7, 64              # SYS_write
+    li   a0, 1               # fd = stdout
+    la   a1, msg             # buf
+    li   a2, msg_len         # count
+    ecall
+    addi s0, s0, -1
+    bnez s0, loop
+    li   a7, 93              # SYS_exit
+    li   a0, 0
+    ecall
+```
+
+**Harness (`~/ris/Makefile`, `hello` target):**
+
+For each of three runners, record wall-clock time, divide by 10K,
+print one line.
+
+```
+make hello
+── prints three lines once both phases are done ─────────────
+  libriscv             <X> ns/call   Hello, libriscv!
+  GoCPU interpreter    <Y> ns/call   Hello, Go CPU!
+  GoCPU direct syscall <Z> ns/call   Hello, Go CPU!
+```
+
+After Phase 1 only, the "GoCPU direct syscall" line is absent (2
+lines total). After Phase 2, all three lines are present.
+
+**Runners:**
+
+- `libriscv`: the CLI binary built by `make bench-setup` (already
+  in the build).
+- `GoCPU interpreter`: our emulator with `JIT.InterpOnly = true`
+  (already a supported flag — every instruction, including ECALL,
+  goes through the Go step path).
+- `GoCPU direct syscall`: our emulator with JIT enabled and the
+  Phase 2 native-SYSCALL fast path active.
+
+All three redirect stdout to `/dev/null`. Timing is measured in the
+host driver (a small Go program `~/ris/cmd/hellobench/` that
+`exec`s libriscv and dispatches the two Go variants in-process).
+Using a Go driver for all three keeps the timing methodology
+identical and lets us report to the same precision.
+
+**Why wall-clock over `go test -bench`:** the libriscv side is a
+separate process. A unified Go driver that times `cmd.Run()` for
+libriscv and direct `cpu.Run()` for our two variants gives one
+consistent number per runner. 10K is plenty of iterations — at
+~50–500 ns/call, total runtime is 0.5–5 ms, much larger than
+process startup (~1 ms for libriscv; near zero in-process).
+
+---
+
+## Phase Plan
+
+Each phase produces measurable harness output we can compare.
+
+### Phase 1 — Benchmark harness + "Hello, World!" via Go path (2 lines)
+
+**Goal:** bring `make hello` online. Prove end-to-end plumbing.
+Emit the first two lines: libriscv and GoCPU-interpreter.
+
+1. Add a `RunWithLinuxOS(cpu, stdout io.Writer)` convenience in
+   `os.go` that installs `LinuxExit` (93/94) and
+   `LinuxWriteHandler` (64).
+2. Build the two guest ELFs under `testdata/hello/` from hand-
+   written `.S` files. Use a minimal linker script or
+   `riscv64-unknown-elf-gcc -nostdlib -static -T link.ld` to
+   produce tiny static ELFs.
+3. Write `~/ris/cmd/hellobench/main.go` — the unified timing
+   driver. It:
+   - exec's libriscv on `hello_libriscv.elf` (stdout to /dev/null),
+     times with `time.Now` bracket.
+   - in-process: runs `hello_gocpu.elf` through our emulator with
+     `InterpOnly = true`, stdout piped to `io.Discard`.
+   - prints two aligned lines: `<runner>  <ns/call>  <last-line-of-
+     actual-output>` (captured-but-discarded).
+4. Add `~/ris/Makefile` target `hello:` that builds the ELFs
+   (lazily if needed) and runs the driver.
+5. Add a unit test `hello_test.go` in the main repo that runs the
+   GoCPU ELF through `RunJIT` with `RunWithLinuxOS`, captures the
+   buffer, and asserts it equals `"Hello, Go CPU!\n"` × 10000.
+   (Correctness gate for the ELF; separate from the harness.)
+
+**Files touched/new:** `os.go` (new `RunWithLinuxOS`),
+`testdata/hello/hello_libriscv.S`,
+`testdata/hello/hello_gocpu.S`, `testdata/hello/link.ld`,
+built `testdata/hello/hello_libriscv.elf` +
+`testdata/hello/hello_gocpu.elf`, `~/ris/cmd/hellobench/main.go`,
+`~/ris/Makefile` (new `hello` target), `hello_test.go`.
+
+### Phase 2 — Native SYSCALL fast path (adds the 3rd line)
+
+**Goal:** drop ECALL cost into the 10–50 ns range. Populate the
+"GoCPU direct syscall" line in `make hello`.
+
+1. **Freeze the `CPU` layout** the stubs depend on. Add a comment
+   block in `cpu.go` locking the offsets of `x[0]`, `exit_code`,
+   `exit_flag`. Add the two new fields (`exit_code uint64`,
+   `exit_flag uint8`) where padding allows. Add a test using
+   `unsafe.Offsetof` to lock offsets and catch accidental shifts.
+2. **Write `internal/syscalls/stubs_linux_amd64.s` and
+   `stubs_darwin_amd64.s`.** Start with four stubs: `sys_write`,
+   `sys_read`, `sys_exit`, `sys_exit_group`. NULL/fallback thunk
+   for everything else.
+3. **Add `internal/syscalls/table.go`** — a Go package that exposes
+   `Table() [NR_SYSCALLS]uintptr` using `//go:linkname` /
+   `FuncPC` to obtain each stub's address (same pattern as
+   `jitcall`).
+4. **Wire into the JIT.** In `jit.go`, during `NewJIT`, call
+   `syscalls.Table()` and stash the base pointer on the JIT object.
+5. **Emit native ECALL dispatch** in `jit_emit_ir.go`:
+   - Emit IR to load `a7` from `x[17]`.
+   - Emit IR to bounds-check (guard: if `a7 >= NR_SYSCALLS` or
+     slot is NULL, return `jitEcall` to fall back).
+   - Emit IR to load the stub address from `dispatch_base[a7*8]`.
+   - Set up System V args (CPU ptr, mem_base, mem_mask) via `IRMov`.
+   - `IRCall scratch` — `lowerCall` already handles live-register save.
+   - After the call, test `CPU.exit_flag`; if set, return `jitEcall`.
+   - Otherwise, continue the block.
+6. **Extend the harness.** Add a third runner to
+   `~/ris/cmd/hellobench/main.go`: same GoCPU ELF, but with
+   `InterpOnly = false` (JIT on) and the new fast-path table
+   installed. `make hello` now prints 3 lines.
+7. **Leave the TCC path alone** for now. TCC blocks still exit on
+   ECALL via the old `jitEcall` path. Only the native IR path gets
+   the fast syscall. A later phase can port this to TCC if that path
+   remains important.
+
+**Success criteria:** the third line in `make hello` is <100 ns/call
+on linux/amd64 and darwin/amd64, within 2–3× of libriscv's line.
+Correctness: all existing riscv-tests and oracle fuzzing stay green.
+
+**Files touched:** `cpu.go` (new fields + offset-lock test), new
+`internal/syscalls/stubs_linux_amd64.s`, new
+`internal/syscalls/stubs_darwin_amd64.s`, new
+`internal/syscalls/table.go`, `jit.go` (register table on init),
+`jit_emit_ir.go` (ECALL emission), `~/ris/cmd/hellobench/main.go`
+(third runner).
+
+### Phase 3 (optional, deferred) — Broaden the stub set
+
+Extend `internal/syscalls/stubs_*.s` with more syscalls as guest
+workloads demand them: `brk`, `close`, `clock_gettime` (candidate for
+vDSO fast path), `open`, `fstat`, `mmap`, `rt_sigprocmask`, etc. Each
+stub is ~10 lines of asm. Darwin number translation is mechanical.
+For complex syscalls (anything touching file descriptors the emulator
+manages, multi-threading primitives, signal state) leave the slot NULL
+and let the existing Go `SyscallHandler` pick it up — that's the whole
+point of the hybrid design.
 
 ---
 
 ## Verification
 
-- `go test -run TestHello ./...` prints `"Hello, World!\n"` and exits 0.
-- `go test -bench BenchmarkECall -benchtime=1s ./bench/` reports ns/op
-  for both the Go path and (after Phase 2) the C fast path.
-- Sanity: run an existing riscv-tests ELF through both paths; no
-  regressions.
-- Optional: compare against `xendor/libriscv` using the same hello-world
-  ELF. `make bench-setup` already clones and builds libriscv.
+- **Primary:** `cd ~/ris && make hello`
+  - After Phase 1 — 2 lines, libriscv and GoCPU-interpreter, both
+    printing the correct strings (verified via tee of stdout before
+    /dev/null redirection in a one-off manual check).
+  - After Phase 2 — 3 lines, GoCPU-direct-syscall line <100 ns/call
+    on both linux/amd64 and darwin/amd64, within 2–3× of libriscv.
+- `go test -run TestHello ./...` asserts the captured guest output is
+  `"Hello, Go CPU!\n"` repeated 10,000 times and exit code is 0.
+- Sanity: `make test` — existing riscv-tests ELFs must still pass
+  through both JIT paths.
+- `make fuzz-oracle` — oracle fuzzing still green.
 
 ---
 
 ## Critical files
 
-- `/Users/jaten/go/src/github.com/glycerine/riscv-emu-golang/jit_tcc.go`
-  — C preamble, `tcc_add_symbol` registration point.
-- `/Users/jaten/go/src/github.com/glycerine/riscv-emu-golang/jit_emit.go:291`
-  — ECALL emission in TCC path.
-- `/Users/jaten/go/src/github.com/glycerine/riscv-emu-golang/jit_emit_ir.go`
-  — ECALL emission in native IR path (needs the same change).
-- `/Users/jaten/go/src/github.com/glycerine/riscv-emu-golang/os.go`
-  — Go syscall layer (keep as fallback; add `RunWithLinuxOS`).
 - `/Users/jaten/go/src/github.com/glycerine/riscv-emu-golang/cpu.go`
-  — freeze `CPU` field offsets for the C ABI; add exit flag.
+  — add `exit_code`, `exit_flag`; freeze layout for stub offsets.
+- `/Users/jaten/go/src/github.com/glycerine/riscv-emu-golang/os.go`
+  — add `RunWithLinuxOS`; keep Go fallback handlers.
+- `/Users/jaten/go/src/github.com/glycerine/riscv-emu-golang/jit.go`
+  — call `syscalls.Table()` in `NewJIT`, stash base pointer.
+- `/Users/jaten/go/src/github.com/glycerine/riscv-emu-golang/jit_emit_ir.go`
+  — ECALL emission: dispatch through table, handle exit flag.
 - `/Users/jaten/go/src/github.com/glycerine/riscv-emu-golang/ir/emit.go:213`
-  — `Call(sym, addr)` already supports external-symbol calls in IR.
+  — `Call(sym, addr)` already supports external-symbol calls.
 - `/Users/jaten/go/src/github.com/glycerine/riscv-emu-golang/ir/lower_amd64.go:1945`
-  — `lowerCall` already emits the indirect CALL with live-register save.
-- `~/ris/xendor/libriscv/lib/libriscv/tr_emit.cpp:744` — reference pattern
-  for syscall emission in translated blocks.
-- `~/ris/xendor/libriscv/lib/libriscv/tr_translate.cpp:1348` — reference
-  pattern for the `api.system_call` callback.
+  — `lowerCall` already emits the live-register-saved CALL.
+- `/Users/jaten/go/src/github.com/glycerine/riscv-emu-golang/internal/jitcall/call_amd64.s`
+  — reference for Go-asm + System V ABI patterns we will mirror.
+
+New files:
+
+- `/Users/jaten/go/src/github.com/glycerine/riscv-emu-golang/internal/syscalls/stubs_linux_amd64.s`
+- `/Users/jaten/go/src/github.com/glycerine/riscv-emu-golang/internal/syscalls/stubs_darwin_amd64.s`
+- `/Users/jaten/go/src/github.com/glycerine/riscv-emu-golang/internal/syscalls/table.go`
+- `/Users/jaten/go/src/github.com/glycerine/riscv-emu-golang/testdata/hello/hello_libriscv.S`
+- `/Users/jaten/go/src/github.com/glycerine/riscv-emu-golang/testdata/hello/hello_gocpu.S`
+- `/Users/jaten/go/src/github.com/glycerine/riscv-emu-golang/testdata/hello/link.ld`
+- `/Users/jaten/go/src/github.com/glycerine/riscv-emu-golang/testdata/hello/hello_libriscv.elf` (built)
+- `/Users/jaten/go/src/github.com/glycerine/riscv-emu-golang/testdata/hello/hello_gocpu.elf` (built)
+- `/Users/jaten/go/src/github.com/glycerine/riscv-emu-golang/hello_test.go`
+- `/Users/jaten/ris/cmd/hellobench/main.go`
+- `/Users/jaten/ris/Makefile` — new `hello` target (edit if file exists, create if not)
+
+Reference (read-only):
+
+- `~/ris/xendor/libriscv/lib/libriscv/tr_emit.cpp:744` — syscall
+  emission pattern in translated blocks.
+- `~/ris/xendor/libriscv/lib/libriscv/tr_translate.cpp:1348` —
+  `api.system_call` callback shape.
