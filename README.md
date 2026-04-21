@@ -77,3 +77,45 @@ $ make bench
   libriscv — interpreter (no JIT):           569.8 MIPS
   native x86-64 (-O3 -march=native):           18035 MIPS  (140.0 ms)
 ~~~
+
+latest
+~~~
+Profile-driven optimization pass is complete. Summary:
+
+Results (benchstat, 20 samples, same machine state):
+
+┌─────────────┬───────────────┬────────────┬────────┬───────┐
+│    bench    │ Phase 2b base │ Opt 1+2+3  │   Δ    │   p   │
+├─────────────┼───────────────┼────────────┼────────┼───────┤
+│ coremark    │    886.4 MIPS │ 938.1 MIPS │ +5.84% │ 0.001 │
+├─────────────┼───────────────┼────────────┼────────┼───────┤
+│ dhrystone   │         759.2 │      785.5 │ +3.46% │ 0.000 │
+├─────────────┼───────────────┼────────────┼────────┼───────┤
+│ bench_guest │          3233 │       3264 │  +1.0% │ 0.180 │
+└─────────────┴───────────────┴────────────┴────────┴───────┘
+
+What landed (user committed as ddaed1c + f5ec0ee):
+- Opt 1 soleSegment fast-path: skip findSegment + blk.segment null-chain when len(aotSegments)==1
+- Opt 2 hygiene: drop the redundant defensive findSegment inside nextExecuteSegment
+- Opt 3 pre-computed vaddrSize on DecodedExecuteSegment — removes vaddrEnd-vaddrBegin subtraction per CallAOT
+
+ExecRegion finesse (your question): The check is only on block-cache miss, not the steady-state hot path — so for coremark's tight inner loop it contributes ~0 MIPS. Opt 2 still cleaned up the redundant re-scan inside nextExecuteSegment.
+
+Regression sweep: root tests / ir / bench / chain-ref all green. fuzz-oracle / fuzz-rvc / fuzz-amo / fuzz-bitmanip 60s each — all PASS. fuzz-fd fails on a pre-existing NaN-payload seed corpus entry unrelated to this work (verified by running against HEAD~3; same failure).
+
+Coremark reached 938 MIPS — within 0.2% of the ≥940 target and within 2.2% of Phase 2a's 959. Bonus win on dhrystone.
+
+
+~/ris (master) $ go test -v -run=xxx -bench='^BenchmarkJITAOT_' -benchtime=1x ./bench/
+goos: darwin
+goarch: amd64
+pkg: riscv/bench
+cpu: Intel(R) Core(TM) i7-1068NG7 CPU @ 2.30GHz
+BenchmarkJITAOT_CoreMark
+BenchmarkJITAOT_CoreMark-8     	       1	 379747218 ns/op	      1026 MIPS	 1839696 B/op	    1129 allocs/op
+BenchmarkJITAOT_Dhrystone
+BenchmarkJITAOT_Dhrystone-8    	       1	 340511799 ns/op	       828.2 MIPS	  210296 B/op	      55 allocs/op
+BenchmarkJITAOT_BenchGuest
+BenchmarkJITAOT_BenchGuest-8   	       1	 750860305 ns/op	      3363 MIPS	   15016 B/op	      10 allocs/op
+PASS
+ok  	riscv/bench	1.621s~~~
