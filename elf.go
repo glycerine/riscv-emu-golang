@@ -12,11 +12,13 @@ import (
 const (
 	elfMagic     = "\x7fELF"
 	elfClass64   = 2
-	elfDataLE    = 1  // little-endian
-	elfTypeExec  = 2  // ET_EXEC
+	elfDataLE    = 1    // little-endian
+	elfTypeExec  = 2    // ET_EXEC
 	elfMachRISCV = 0xF3
-	ptLoad       = 1  // PT_LOAD
-	shtSymtab    = 2  // SHT_SYMTAB
+	ptLoad       = 1    // PT_LOAD
+	shtSymtab    = 2    // SHT_SYMTAB
+	shtStrtab    = 3    // SHT_STRTAB
+	shtProgbits  = 1    // SHT_PROGBITS
 )
 
 // ELF64Header is the 64-byte ELF file header.
@@ -290,6 +292,75 @@ func FindSymbolAddr(data []byte, name string) (uint64, bool) {
 		}
 	}
 	return 0, false
+}
+
+// FindTextSection parses the ELF section headers in data and returns
+// the (virtual address, size) of the `.text` section. Returns false if
+// the ELF lacks a section header table or no `.text` section is found.
+//
+// Used by the AOT translator to establish the initial
+// DecodedExecuteSegment's guest-VA range. Does not depend on any state
+// established by LoadELFBytes — caller can invoke this independently.
+func FindTextSection(data []byte) (vaddr, size uint64, ok bool) {
+	le := binary.LittleEndian
+
+	if len(data) < 64 {
+		return 0, 0, false
+	}
+	if string(data[:4]) != elfMagic || data[4] != elfClass64 {
+		return 0, 0, false
+	}
+
+	shOff := le.Uint64(data[40:])     // e_shoff
+	shEntSize := le.Uint16(data[58:]) // e_shentsize
+	shNum := le.Uint16(data[60:])     // e_shnum
+	shStrNdx := le.Uint16(data[62:])  // e_shstrndx (section name string table)
+
+	if shOff == 0 || shNum == 0 || shEntSize < 64 || shStrNdx >= shNum {
+		return 0, 0, false
+	}
+
+	// Load the section name string table header.
+	shstrOff := int(shOff) + int(shStrNdx)*int(shEntSize)
+	if shstrOff+64 > len(data) {
+		return 0, 0, false
+	}
+	var shstr elf64Shdr
+	if err := binary.Read(&byteReader{data: data[shstrOff:]}, le, &shstr); err != nil {
+		return 0, 0, false
+	}
+	if uint64(len(data)) < shstr.Offset+shstr.Size {
+		return 0, 0, false
+	}
+	names := data[shstr.Offset : shstr.Offset+shstr.Size]
+
+	// Walk section headers looking for a SHT_PROGBITS named ".text".
+	for i := 0; i < int(shNum); i++ {
+		off := int(shOff) + i*int(shEntSize)
+		if off+64 > len(data) {
+			return 0, 0, false
+		}
+		var sh elf64Shdr
+		if err := binary.Read(&byteReader{data: data[off:]}, le, &sh); err != nil {
+			return 0, 0, false
+		}
+		if sh.Type != shtProgbits {
+			continue
+		}
+		// Resolve section name from the name table.
+		nameOff := int(sh.Name)
+		if nameOff >= len(names) {
+			continue
+		}
+		end := nameOff
+		for end < len(names) && names[end] != 0 {
+			end++
+		}
+		if string(names[nameOff:end]) == ".text" {
+			return sh.Addr, sh.Size, true
+		}
+	}
+	return 0, 0, false
 }
 
 // BuildELF constructs a minimal RV64 executable ELF with one PT_LOAD

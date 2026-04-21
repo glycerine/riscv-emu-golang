@@ -49,6 +49,34 @@ type jalrICPatchInfo struct {
 // buying hit rate.
 const jalrICDeoptThreshold uint32 = 16
 
+// DecodedExecuteSegment is a contiguous guest-VA executable region
+// with its own AOT-compiled native code and decoder_cache. Mirrors
+// libriscv's DecodedExecuteSegment<W> (xendor/libriscv/lib/libriscv/
+// decoded_exec_segment.hpp:14-150). In Phase 2a, exactly one segment
+// exists (covering the ELF .text); Phase 2b will add dynamic
+// segments for guest-generated code (LuaJIT, V8).
+//
+// The decoder_cache is a flat array indexed by
+// (pc - vaddrBegin) >> 1 holding uintptr chainEntry values (our
+// equivalent of libriscv's DecoderData.m_bytecode handler). Slot = 0
+// means no translation exists for that PC (either an untranslatable
+// block inside the segment, or a mid-block PC that is not a BB entry).
+//
+// The decoder_cache lives in its own mmap, separate from main guest
+// memory. It is mprotect'd PROT_READ after population — neither a
+// JIT bug nor a hostile guest can corrupt it. Guest ld/st use the
+// main guest-memory base (R14) and cannot reach the decoder_cache.
+type DecodedExecuteSegment struct {
+	vaddrBegin       uint64                    // guest VA start
+	vaddrEnd         uint64                    // guest VA end (exclusive)
+	nativeCodeBase   uintptr                   // first byte of unified code mmap
+	nativeCodeSize   int                       // total bytes in code mmap
+	decoderCacheMmap []byte                    // DecoderData[] mmap (RO post-init)
+	decoderCacheBase uintptr                   // = &decoderCacheMmap[0]
+	decoderCacheMask uint64                    // power-of-two - 1
+	blocks           map[uint64]*compiledBlock // PC → block (AOT + any lazy additions)
+}
+
 // compiledBlock holds a compiled function pointer (native IR or TCC).
 type compiledBlock struct {
 	fn         uintptr           // native function pointer
@@ -89,6 +117,12 @@ type blockCacheEntry struct {
 
 // JIT holds the cache of compiled basic blocks.
 type JIT struct {
+	// aotSegment holds the AOT-compiled .text segment, if InstallAOT
+	// was called. nil otherwise (pure lazy mode). Dispatch consults
+	// aotSegment.blocks first; on miss, falls through to the
+	// direct-mapped lazy cache below.
+	aotSegment *DecodedExecuteSegment
+
 	cache      [blockCacheSize]blockCacheEntry
 	noJIT      map[uint64]bool // PCs where translation failed — don't retry
 	InterpOnly bool            // debug: force all-interpreter mode
@@ -134,6 +168,34 @@ func (j *JIT) SetAllocStrategy(name string) {
 // NoJITSize returns the number of PCs in the noJIT set (translation failures).
 func (j *JIT) NoJITSize() int { return len(j.noJIT) }
 
+// InstallAOT runs the whole-program AOT translator on the ELF bytes.
+// It identifies the `.text` section, linearly scans it to enumerate
+// basic-block ranges, batch-compiles every translatable block into one
+// unified native-code mmap, pre-resolves every static chain exit whose
+// target is in the AOT set, and builds a mask-bounded read-only
+// decoder_cache. Subsequent RunJIT dispatches consult
+// j.aotSegment.blocks before falling through to the lazy cache.
+//
+// Safe to call on a fresh JIT; installing twice replaces the previous
+// segment (the old native mmap leaks — acceptable for one-shot
+// installation).
+//
+// Returns nil if the ELF lacks a `.text` section (callers can still
+// use the lazy path in that case).
+func (j *JIT) InstallAOT(mem *GuestMemory, elfBytes []byte) error {
+	textBase, textSize, ok := FindTextSection(elfBytes)
+	if !ok {
+		return nil
+	}
+	ranges := enumerateBlockRanges(mem, textBase, textSize)
+	seg, err := j.jitCompileAOTSegment(mem, ranges, textBase, textBase+textSize)
+	if err != nil {
+		return err
+	}
+	j.aotSegment = seg
+	return nil
+}
+
 // SetTrace enables/disables trace logging to stderr.
 func (j *JIT) SetTrace(on bool) { j.trace = on }
 
@@ -144,7 +206,21 @@ func cacheIdx(pc uint64) uint64 {
 }
 
 // lookupBlock returns the compiled block for pc, or nil.
+//
+// Dispatch order (Phase 2a):
+//  1. If an AOT segment is installed and pc is inside it, look up in
+//     aotSegment.blocks first.
+//  2. Otherwise (or AOT miss), consult the direct-mapped lazy cache.
+//
+// This preserves correctness for JALRs landing outside .text (e.g.,
+// LuaJIT-style dynamic code, which reaches the lazy path) while
+// letting AOT-compiled PCs hit their entry immediately.
 func (j *JIT) lookupBlock(pc uint64) *compiledBlock {
+	if j.aotSegment != nil && pc >= j.aotSegment.vaddrBegin && pc < j.aotSegment.vaddrEnd {
+		if blk, ok := j.aotSegment.blocks[pc]; ok {
+			return blk
+		}
+	}
 	idx := cacheIdx(pc)
 	if j.cache[idx].pc == pc {
 		return j.cache[idx].blk

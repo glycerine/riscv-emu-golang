@@ -661,7 +661,27 @@ func emitBlock(mem *GuestMemory, pc uint64) *emitResult {
 		}
 		return nil
 	}
+	return emitBlockRange(mem, pc, region.endPC)
+}
 
+// emitBlockLinear emits IR for the range [startPC, endPC) without
+// running scanRegion's BFS. Used by the AOT linear-scan path where
+// block boundaries are already known from enumerateBlockRanges. If
+// the range is empty or emission produces zero instructions, returns
+// nil (caller's decoder_cache slot stays zero → lazy fallback at run
+// time).
+func emitBlockLinear(mem *GuestMemory, startPC, endPC uint64) *emitResult {
+	if startPC >= endPC {
+		return nil
+	}
+	return emitBlockRange(mem, startPC, endPC)
+}
+
+// emitBlockRange walks instructions sequentially from startPC until
+// endPC or the first terminator, emitting IR. Shared between
+// emitBlock (BFS-driven endPC via scanRegion) and emitBlockLinear
+// (explicit endPC from the AOT enumeration).
+func emitBlockRange(mem *GuestMemory, pc, endPC uint64) *emitResult {
 	irEm := ir.NewEmitter()
 
 	gt := newU64setSized(256)
@@ -672,8 +692,8 @@ func emitBlock(mem *GuestMemory, pc uint64) *emitResult {
 		startPC:     pc,
 		pc:          pc,
 		irEm:        irEm,
-		visited:     make(map[uint64]bool), //newU64setSized(region.pcCount),
-		regionEnd:   region.endPC,
+		visited:     make(map[uint64]bool),
+		regionEnd:   endPC,
 		gotoTargets: gt,
 		pcLabels:    newU64labelmap(),
 	}
@@ -719,8 +739,8 @@ func emitBlock(mem *GuestMemory, pc uint64) *emitResult {
 	if e.numInsns == 0 {
 		if debugJIT {
 			half, _ := mem.Fetch16(pc)
-			fmt.Fprintf(os.Stderr, "BAIL pc=0x%x reason=numInsns_zero regionPCs=%d regionEnd=0x%x half=0x%04x terminated=%v\n",
-				pc, region.pcCount, region.endPC, half, e.terminated)
+			fmt.Fprintf(os.Stderr, "BAIL pc=0x%x reason=numInsns_zero regionEnd=0x%x half=0x%04x terminated=%v\n",
+				pc, endPC, half, e.terminated)
 		}
 		return nil
 	}

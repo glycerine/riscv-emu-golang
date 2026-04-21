@@ -237,3 +237,20 @@ func allocExec(size int) ([]byte, error) {
 	}
 	return mem, nil
 }
+
+// allocRWAnon allocates anonymous mmap with PROT_READ|PROT_WRITE
+// (no PROT_EXEC). Used by the AOT decoder_cache which holds plain
+// uintptr payloads and is later mprotected to PROT_READ.
+func allocRWAnon(size int) ([]byte, error) {
+	pageSize := syscall.Getpagesize()
+	mapSize := ((size + pageSize - 1) / pageSize) * pageSize
+	mem, err := syscall.Mmap(
+		-1, 0, mapSize,
+		syscall.PROT_READ|syscall.PROT_WRITE,
+		syscall.MAP_ANON|syscall.MAP_PRIVATE,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return mem, nil
+}
