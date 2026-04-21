@@ -79,6 +79,7 @@ $ make bench
 ~~~
 
 latest
+
 ~~~
 Profile-driven optimization pass is complete. Summary:
 
@@ -118,4 +119,6 @@ BenchmarkJITAOT_Dhrystone-8    	       1	 340511799 ns/op	       828.2 MIPS	  21
 BenchmarkJITAOT_BenchGuest
 BenchmarkJITAOT_BenchGuest-8   	       1	 750860305 ns/op	      3363 MIPS	   15016 B/op	      10 allocs/op
 PASS
-ok  	riscv/bench	1.621s~~~
+ok  	riscv/bench	1.621s
+
+~~~
