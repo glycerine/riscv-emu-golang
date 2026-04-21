@@ -40,6 +40,14 @@ const (
 	amd64Scratch2   int16 = goasm.REG_AMD64_R11
 )
 
+// amd64SretFcsrOffset is the byte offset, relative to RBX (the sret
+// pointer passed by jitcall.Call), where the host-side fcsr pointer is
+// stored. The jitcall trampoline writes it once per Call, so callee
+// code can read *[RBX+80] safely on first entry AND on chained entries
+// (where RCX has been released to the regalloc pool and may hold
+// anything). Must agree with internal/jitcall/call_amd64.s.
+const amd64SretFcsrOffset = 80
+
 // Parameter VRegs by convention (NewEmitter allocates these first).
 const (
 	VRXBase   = VReg(VRegTempStart + 0) // t64
@@ -223,7 +231,7 @@ type lowerCtx struct {
 
 	// Frame layout.
 	stackSlots int   // from Allocation.StackSlots
-	frameSize  int64 // total bytes: stackSlots*8 + 8 (fcsr save)
+	frameSize  int64 // total bytes: stackSlots*8 (fcsr pointer lives at [RBX+80], not on the frame)
 
 	// Scratch cache: elides redundant spill loads when consecutive instructions
 	// use the same spilled VReg. Index 0 tracks R10, index 1 tracks R11.
@@ -283,11 +291,10 @@ func LowerAMD64(ctx *goasm.Ctx, b *Block, alloc *Allocation) (*LowerResult, erro
 		stackSlots: alloc.StackSlots,
 	}
 
-	// Compute frame size: spill slots + fcsr save slot.
-	lc.frameSize = int64(lc.stackSlots)*8 + 8
-	if lc.stackSlots == 0 {
-		lc.frameSize = 0 // no frame needed if no spills (fcsr stored separately)
-	}
+	// Compute frame size: spill slots only. The fcsr pointer lives in
+	// the caller's sret buffer at [RBX+80] (see amd64SretFcsrOffset),
+	// so it survives across chained block entries.
+	lc.frameSize = int64(lc.stackSlots) * 8
 
 	lc.emitPrologue()
 
@@ -322,22 +329,32 @@ func LowerAMD64(ctx *goasm.Ctx, b *Block, alloc *Allocation) (*LowerResult, erro
 
 func (lc *lowerCtx) emitPrologue() {
 	// Move SysV ABI args to pinned callee-saved registers.
-	// Entry ABI: RDI=sret, RSI=x[], RDX=f[], RCX=fcsr, R8=memBase, R9=memMask
+	// Entry ABI: RDI=sret, RSI=x[], RDX=f[], RCX=fcsr, R8=memBase, R9=memMask.
+	// RCX is NOT stashed here — the jitcall trampoline already published
+	// the fcsr pointer at [RBX+amd64SretFcsrOffset], which remains valid
+	// on chained entries. Code that needs fcsr reads it from there.
 	lc.emitRR(x86.AMOVQ, goasm.REG_AMD64_SI, amd64RegXBase)   // RSI → R12
 	lc.emitRR(x86.AMOVQ, goasm.REG_AMD64_DX, amd64RegFBase)   // RDX → R13
 	lc.emitRR(x86.AMOVQ, goasm.REG_AMD64_R8, amd64RegMemBase) // R8  → R14
 	lc.emitRR(x86.AMOVQ, goasm.REG_AMD64_R9, amd64RegMemMask) // R9  → R15
 	lc.emitRR(x86.AMOVQ, goasm.REG_AMD64_DI, amd64RegSret)    // RDI → RBX
 
-	// Allocate spill frame if needed.
+	// Initialize IC to 0 — first-entry only (pinned to RBP).
+	lc.emitRR(x86.AXORQ, amd64RegIC, amd64RegIC)
+
+	// Chain entry marker: NOP placed after arg setup and IC zero but
+	// BEFORE frame allocation. Inbound chain JMPs land here so they
+	// skip XORQ RBP, RBP (IC accumulates across chained blocks) yet
+	// still execute the frame SubQ below — every block allocates its
+	// own spill frame, matched by each chain exit's ADDQ. jit_native
+	// records this Prog's Pc as blk.chainEntry.
+	lc.chainEntryProg = lc.emitNOP()
+
+	// Allocate spill frame if needed. Runs on every entry (first and
+	// chained), matched by each chain exit's ADDQ.
 	if lc.frameSize > 0 {
 		lc.emitRI(x86.ASUBQ, lc.frameSize, goasm.REG_AMD64_SP)
-		// Save fcsr pointer at top of frame.
-		lc.emitMR(x86.AMOVQ, goasm.REG_AMD64_CX, goasm.REG_AMD64_SP, int64(lc.stackSlots)*8)
 	}
-
-	// Initialize IC to 0 (pinned to RBP).
-	lc.emitRR(x86.AXORQ, amd64RegIC, amd64RegIC)
 }
 
 func (lc *lowerCtx) emitEpilogue() {

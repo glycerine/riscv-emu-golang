@@ -132,13 +132,16 @@ func (j *JIT) jitCompileDebug(res *emitResult, useV2 bool) (*compiledBlock, *com
 	ctx := goasm.New(goasm.AMD64)
 	ctx.Append(ctx.NewATEXT())
 
+	var lowerResult *ir.LowerResult
 	if useV2 {
-		_, lowerErr := ir.LowerAMD64_V2(ctx, res.block, alloc)
+		var lowerErr error
+		lowerResult, lowerErr = ir.LowerAMD64_V2(ctx, res.block, alloc)
 		if lowerErr != nil {
 			return nil, nil, fmt.Errorf("jit lower: %w", lowerErr)
 		}
 	} else {
-		_, lowerErr := ir.LowerAMD64(ctx, res.block, alloc)
+		var lowerErr error
+		lowerResult, lowerErr = ir.LowerAMD64(ctx, res.block, alloc)
 		if lowerErr != nil {
 			return nil, nil, fmt.Errorf("jit lower: %w", lowerErr)
 		}
@@ -161,7 +164,26 @@ func (j *JIT) jitCompileDebug(res *emitResult, useV2 bool) (*compiledBlock, *com
 	}
 	copy(execMem, code)
 
-	blk := &compiledBlock{fn: uintptr(unsafe.Pointer(&execMem[0]))}
+	codeBase := uintptr(unsafe.Pointer(&execMem[0]))
+	blk := &compiledBlock{fn: codeBase}
+
+	// Backpatch chain-exit sentinels to the slow-exit stubs and record
+	// metadata, same as jitCompileWith. Without this, any chain exit in
+	// the block would JMP to the literal sentinel 0x7BADC0DE7BADC0DE and
+	// segfault when executed.
+	if lowerResult != nil && lowerResult.ChainEntryProg != nil {
+		blk.chainEntry = codeBase + uintptr(lowerResult.ChainEntryProg.Pc)
+		for _, ce := range lowerResult.ChainExits {
+			patchOff := int(ce.MovProg.Pc) + 2
+			stubAddr := codeBase + uintptr(ce.StubProg.Pc)
+			binary.LittleEndian.PutUint64(execMem[patchOff:], uint64(stubAddr))
+			blk.chainExits = append(blk.chainExits, chainPatchInfo{
+				targetPC:    ce.TargetPC,
+				patchOffset: patchOff,
+			})
+		}
+	}
+
 	dbg := &compileDebugInfo{code: code, progs: progDump}
 	return blk, dbg, nil
 }

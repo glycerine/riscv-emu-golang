@@ -23,14 +23,19 @@
 //   R8  = memBase
 //   R9  = memMask
 //
-// Local frame: 768 bytes. Must be large enough for TCC-compiled code's
-// stack frame (up to 32 uint64_t locals = 256 bytes plus temporaries).
-// NOSPLIT limit is 792, so 768 is the practical maximum.
-// The sret buffer occupies bytes [0,32), callee-saved regs at [32,80).
-// TCC code uses the remainder via RSP after its own prologue.
+// Local frame layout (the callee-visible sret buffer is RDI = &frame[0]):
+//   [0, 32)   Result struct (PC, IC, Status, FaultAddr)
+//   [32, 80)  trampoline's own callee-save stashes (BX, BP, R12-R15)
+//   [80, 88)  fcsr pointer — written here once per Call so JIT code can
+//             access it via [RBX+80] even from chained blocks (where RCX
+//             is unavailable, having been released to the regalloc pool).
+//             Must agree with ir.amd64SretFcsrOffset.
+//   [88, …)   unused / TCC/JIT code may spill below its own RSP after
+//             the callee's prologue runs SubQ.
+// NOSPLIT frame size 65536 is well above any reasonable callee usage.
 TEXT ·Call(SB), $65536-80
 
-	// Save callee-saved registers that TCC-compiled code may clobber.
+	// Save callee-saved registers that JIT/TCC code may clobber.
 	MOVQ	BX,  32(SP)
 	MOVQ	BP,  40(SP)
 	MOVQ	R12, 48(SP)
@@ -38,11 +43,17 @@ TEXT ·Call(SB), $65536-80
 	MOVQ	R14, 64(SP)
 	MOVQ	R15, 72(SP)
 
+	// Publish fcsr pointer into the sret buffer at [SP+80] so callee code
+	// can reach it via [RBX+80] without depending on RCX surviving (chain
+	// entries skip the prologue that would otherwise stash RCX).
+	MOVQ	fcsr+24(FP), AX
+	MOVQ	AX,  80(SP)
+
 	// Set up System V calling convention arguments.
 	LEAQ	0(SP), DI           // RDI = hidden sret pointer (local Result buffer)
 	MOVQ	x+8(FP), SI        // RSI = x
 	MOVQ	f+16(FP), DX       // RDX = f
-	MOVQ	fcsr+24(FP), CX    // RCX = fcsr
+	MOVQ	fcsr+24(FP), CX    // RCX = fcsr (legacy: also available as arg; newer lowerers read from [RBX+80])
 	MOVQ	memBase+32(FP), R8  // R8  = memBase
 	MOVQ	memMask+40(FP), R9  // R9  = memMask
 

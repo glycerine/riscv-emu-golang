@@ -201,11 +201,18 @@ func (e *emitter) allocFaultLabel(addr ir.VReg, status int) ir.Label {
 	return l
 }
 
-// emitChainableReturn emits a chain exit for jitOK exits.
-// These can be patched by Go to jump directly to the target block.
-// TODO: re-enable chaining after fixing MOVABS offset calculation.
+// emitChainableReturn emits a chain exit for jitOK returns with a
+// statically-known successor PC. The lowerer emits MOVABS R10, <sentinel>;
+// JMP R10. jit_native backpatches the sentinel to the slow-exit stub; the
+// Go dispatcher later patches it again to the target block's chainEntry,
+// bypassing the Go round-trip on subsequent entries.
+//
+// For dynamic-target returns (JALR) use emitReturn / IRRetDyn instead —
+// those stay as Go round-trips.
 func (e *emitter) emitChainableReturn(pc uint64) {
-	e.emitReturn(pc, jitOK)
+	e.irEm.WriteBackAll()
+	e.irEm.ChainExit(pc, e.exitIdx)
+	e.exitIdx++
 }
 
 func (e *emitter) emitWriteBackAll() {

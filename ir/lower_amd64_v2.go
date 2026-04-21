@@ -108,10 +108,10 @@ func LowerAMD64_V2(ctx *goasm.Ctx, b *Block, alloc *Allocation) (*LowerResult, e
 		pending:    make(map[Label][]*obj.Prog),
 		stackSlots: alloc.StackSlots,
 	}
-	lc.frameSize = int64(lc.stackSlots)*8 + 8
-	if lc.stackSlots == 0 {
-		lc.frameSize = 0
-	}
+	// Frame size = spill slots only. fcsr pointer lives at
+	// [RBX+amd64SretFcsrOffset] (published by jitcall.Call), not on the
+	// per-block frame, so it survives chained entries.
+	lc.frameSize = int64(lc.stackSlots) * 8
 	lc.emitPrologue()
 	for idx := range b.Instrs {
 		lc.idx = idx
@@ -128,6 +128,10 @@ func LowerAMD64_V2(ctx *goasm.Ctx, b *Block, alloc *Allocation) (*LowerResult, e
 // ── Prologue / Epilogue (identical to V1) ──
 
 func (lc *lowerCtxV2) emitPrologue() {
+	// RCX (fcsr arg) is not stashed — the jitcall trampoline publishes
+	// the fcsr pointer at [RBX+amd64SretFcsrOffset] so callee code can
+	// reach it without depending on RCX (which is in the regalloc pool
+	// and would be clobbered before the first FP CSR access anyway).
 	lc.emit2(x86.AMOVQ, goasm.REG_AMD64_SI, amd64RegXBase)
 	lc.emit2(x86.AMOVQ, goasm.REG_AMD64_DX, amd64RegFBase)
 	lc.emit2(x86.AMOVQ, goasm.REG_AMD64_R8, amd64RegMemBase)
@@ -135,7 +139,6 @@ func (lc *lowerCtxV2) emitPrologue() {
 	lc.emit2(x86.AMOVQ, goasm.REG_AMD64_DI, amd64RegSret)
 	if lc.frameSize > 0 {
 		lc.emitRI2(x86.ASUBQ, lc.frameSize, goasm.REG_AMD64_SP)
-		lc.emitMR2(x86.AMOVQ, goasm.REG_AMD64_CX, goasm.REG_AMD64_SP, int64(lc.stackSlots)*8)
 	}
 	lc.emit2(x86.AXORQ, amd64RegIC, amd64RegIC)
 }
