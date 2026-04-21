@@ -207,23 +207,29 @@ type ChainExitDesc struct {
 	StubProg *obj.Prog // first Prog of the slow exit stub
 }
 
-// jalrICInfo records a JALR inline-cache site for post-assembly backpatching.
+// jalrICInfo records a 2-way JALR inline-cache site for post-assembly
+// backpatching. Slot indexing: [0] = recent target (checked first, JEQ
+// taken on hit0); [1] = older target (checked second, fall-through on
+// hit1). See plan "Priority 1.5 — 2-way JALR inline cache".
 type jalrICInfo struct {
 	siteIdx  int
-	pcMov    *obj.Prog // first MOVABS (imm64 = cache_pc patch slot)
-	fnMov    *obj.Prog // second MOVABS (imm64 = cache_fn patch slot)
-	jneProg  *obj.Prog // JNE to miss stub; target set during finalize
-	stubProg *obj.Prog // first Prog of the miss stub (set during finalize)
+	pcMov    [2]*obj.Prog // MOVABS for cache_pc[0], cache_pc[1]
+	fnMov    [2]*obj.Prog // MOVABS for cache_fn[0], cache_fn[1]
+	jeq0Prog *obj.Prog    // JEQ → .hit0; target set inline during lowering
+	jne1Prog *obj.Prog    // JNE → .miss;  target set during finalize
+	hit0Prog *obj.Prog    // NOP marking .hit0 label
+	stubProg *obj.Prog    // first Prog of the miss stub (set during finalize)
 }
 
 // JalrICDesc describes a JALR inline-cache site for the caller.
-// After assembly, use PcMov.Pc + 2 and FnMov.Pc + 2 to compute patch offsets
-// into the imm64 fields; StubProg.Pc gives the miss stub address.
+// After assembly, use PcMov[k].Pc + 2 and FnMov[k].Pc + 2 to compute
+// patch offsets into the imm64 fields; StubProg.Pc gives the miss
+// stub address.
 type JalrICDesc struct {
 	SiteIdx  int
-	PcMov    *obj.Prog // MOVABS for cache_pc slot
-	FnMov    *obj.Prog // MOVABS for cache_fn slot
-	StubProg *obj.Prog // first Prog of the miss stub
+	PcMov    [2]*obj.Prog // MOVABS for cache_pc[0], cache_pc[1]
+	FnMov    [2]*obj.Prog // MOVABS for cache_fn[0], cache_fn[1]
+	StubProg *obj.Prog    // first Prog of the miss stub
 }
 
 // LowerResult holds chain-related metadata produced during lowering.
@@ -346,7 +352,7 @@ func LowerAMD64(ctx *goasm.Ctx, b *Block, alloc *Allocation) (*LowerResult, erro
 	// Emit miss stubs for JALR IC sites and wire JNE targets.
 	for i := range lc.jalrICs {
 		lc.jalrICs[i].stubProg = lc.emitJalrMissStub(lc.jalrICs[i].siteIdx)
-		lc.jalrICs[i].jneProg.To.SetTarget(lc.jalrICs[i].stubProg)
+		lc.jalrICs[i].jne1Prog.To.SetTarget(lc.jalrICs[i].stubProg)
 		result.JalrICs = append(result.JalrICs, JalrICDesc{
 			SiteIdx:  lc.jalrICs[i].siteIdx,
 			PcMov:    lc.jalrICs[i].pcMov,
@@ -442,75 +448,100 @@ func (lc *lowerCtx) lowerChainExit(ins *IRInstr) {
 	lc.emitJmpReg(amd64Scratch1)
 }
 
-// lowerJalrIC emits a JALR-site inline cache: compare the runtime target
-// PC against a patchable cached PC; on match, direct-jump to the cached
-// target block's chainEntry; on mismatch, fall through to a miss stub
-// that returns to Go with the site index.
+// lowerJalrIC emits a 2-way JALR-site inline cache. Layout:
 //
-//	MOVQ   tgt, 0(RBX)              ; write sret.PC (harmless on hit)
-//	MOVABS R10, <cache_pc_sentinel> ; imm64 = patch slot 1
+//	MOVQ   tgt, 0(RBX)                 ; sret.PC (harmless on hit)
+//	MOVABS R10, <pc0_sentinel>         ; imm64 = cache_pc[0]
 //	CMPQ   tgt, R10
-//	JNE    .miss                    ; set to missStub during finalize
-//	ADDQ   $frameSize, RSP          ; dealloc our frame (if frameSize > 0)
-//	MOVABS R10, <cache_fn_sentinel> ; imm64 = patch slot 2
-//	JMP    R10                      ; → target block's chainEntry
+//	JEQ    .hit0
+//	MOVABS R10, <pc1_sentinel>         ; imm64 = cache_pc[1]
+//	CMPQ   tgt, R10
+//	JNE    .miss                       ; set to missStub in finalize
+//	ADDQ   $frameSize, RSP             ; hit1 path (fall-through)
+//	MOVABS R10, <fn1_sentinel>         ; imm64 = cache_fn[1]
+//	JMP    R10                          ; → target chainEntry
+//	.hit0:
+//	ADDQ   $frameSize, RSP             ; hit0 path (reached via JEQ)
+//	MOVABS R10, <fn0_sentinel>         ; imm64 = cache_fn[0]
+//	JMP    R10                          ; → target chainEntry
 //
-// jit_native.go backpatches both sentinels: cache_pc to an unmatchable
-// value and cache_fn to the miss stub. The Go dispatcher later patches
-// them to a real target on first miss.
+// backpatchJalrICs initializes all four imm64 slots: pc slots to an
+// unmatchable sentinel (0xFFFFFFFFFFFFFFFF) so the first CMPQ misses;
+// fn slots to the miss stub so any stray JMP would land somewhere
+// valid (never actually reached while pc is unmatchable).
+//
+// On each miss, tryPatchJalrIC uses shift semantics: slot 1 ← slot 0
+// (demote), slot 0 ← new target (promote). For a bi-modal site with
+// targets {A,B,A,B,…}, converges to {A,B} → 100% hit rate after 2
+// misses. For rotating {A,B,C,…}, still thrashes but no worse than
+// 1-way.
 func (lc *lowerCtx) lowerJalrIC(ins *IRInstr) {
 	// Load target PC. Use slot 1 (R11) so spilled VRegs don't clobber R10,
 	// which we need for MOVABS.
 	tgt := lc.use(ins.A, 1)
 
-	// Write target PC to sret.PC. Needed on miss; harmless on hit since the
-	// target block re-populates sret on its own exits.
+	// MOVQ tgt, 0(RBX) — sret.PC. Needed on miss; harmless on hit.
 	lc.emitMR(x86.AMOVQ, tgt, amd64RegSret, 0)
 
-	// MOVABS R10, <cache_pc_sentinel>. Sentinel > int32 forces 10-byte
-	// encoding so the imm64 starts at offset +2 (patchable).
 	const sentinel = int64(0x7BADC0DE7BADC0DE)
-	pcMov := lc.c.NewProg()
-	pcMov.As = x86.AMOVQ
-	pcMov.From.Type = obj.TYPE_CONST
-	pcMov.From.Offset = sentinel
-	pcMov.To.Type = obj.TYPE_REG
-	pcMov.To.Reg = amd64Scratch1
-	lc.c.Append(pcMov)
 
-	// CMPQ tgt, R10.
+	// Stage 0: MOVABS R10, <pc0>; CMPQ tgt, R10; JEQ .hit0.
+	pcMov0 := lc.emitMovabsSentinel(sentinel)
 	lc.emitRR(x86.ACMPQ, tgt, amd64Scratch1)
+	jeq0 := lc.c.NewProg()
+	jeq0.As = x86.AJEQ
+	jeq0.To.Type = obj.TYPE_BRANCH
+	lc.c.Append(jeq0)
 
-	// JNE .miss (target set during finalize).
-	jne := lc.c.NewProg()
-	jne.As = x86.AJNE
-	jne.To.Type = obj.TYPE_BRANCH
-	lc.c.Append(jne)
+	// Stage 1: MOVABS R10, <pc1>; CMPQ tgt, R10; JNE .miss.
+	pcMov1 := lc.emitMovabsSentinel(sentinel)
+	lc.emitRR(x86.ACMPQ, tgt, amd64Scratch1)
+	jne1 := lc.c.NewProg()
+	jne1.As = x86.AJNE
+	jne1.To.Type = obj.TYPE_BRANCH
+	lc.c.Append(jne1)
 
-	// Hit path: dealloc our spill frame so target block's prologue sees a
-	// clean RSP (matches chain-exit convention).
+	// Hit-1 path (fall-through from stage 1): dealloc frame, load fn1, JMP R10.
 	if lc.frameSize > 0 {
 		lc.emitRI(x86.AADDQ, lc.frameSize, goasm.REG_AMD64_SP)
 	}
+	fnMov1 := lc.emitMovabsSentinel(sentinel)
+	lc.emitJmpReg(amd64Scratch1)
 
-	// MOVABS R10, <cache_fn_sentinel>.
-	fnMov := lc.c.NewProg()
-	fnMov.As = x86.AMOVQ
-	fnMov.From.Type = obj.TYPE_CONST
-	fnMov.From.Offset = sentinel
-	fnMov.To.Type = obj.TYPE_REG
-	fnMov.To.Reg = amd64Scratch1
-	lc.c.Append(fnMov)
+	// .hit0: NOP label. Control reaches here only via the JEQ taken branch.
+	hit0 := lc.emitNOP()
+	jeq0.To.SetTarget(hit0)
 
-	// JMP R10.
+	// Hit-0 path: dealloc frame, load fn0, JMP R10.
+	if lc.frameSize > 0 {
+		lc.emitRI(x86.AADDQ, lc.frameSize, goasm.REG_AMD64_SP)
+	}
+	fnMov0 := lc.emitMovabsSentinel(sentinel)
 	lc.emitJmpReg(amd64Scratch1)
 
 	lc.jalrICs = append(lc.jalrICs, jalrICInfo{
-		siteIdx: int(ins.Imm),
-		pcMov:   pcMov,
-		fnMov:   fnMov,
-		jneProg: jne,
+		siteIdx:  int(ins.Imm),
+		pcMov:    [2]*obj.Prog{pcMov0, pcMov1},
+		fnMov:    [2]*obj.Prog{fnMov0, fnMov1},
+		jeq0Prog: jeq0,
+		jne1Prog: jne1,
+		hit0Prog: hit0,
 	})
+}
+
+// emitMovabsSentinel emits a `MOVABS R10, 0x7BADC0DE7BADC0DE` — the
+// 10-byte encoding the assembler picks when the immediate doesn't fit
+// in sign-extended int32. Returns the Prog so callers can record
+// Prog.Pc for post-assembly patch-offset math (imm64 lives at Pc+2).
+func (lc *lowerCtx) emitMovabsSentinel(sentinel int64) *obj.Prog {
+	p := lc.c.NewProg()
+	p.As = x86.AMOVQ
+	p.From.Type = obj.TYPE_CONST
+	p.From.Offset = sentinel
+	p.To.Type = obj.TYPE_REG
+	p.To.Reg = amd64Scratch1
+	lc.c.Append(p)
+	return p
 }
 
 // emitJalrMissStub emits the per-site miss stub, appended after the

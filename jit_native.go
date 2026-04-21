@@ -118,19 +118,27 @@ func (j *JIT) jitCompileWith(res *emitResult, useV2 bool) (*compiledBlock, error
 // target.
 func backpatchJalrICs(execMem []byte, codeBase uintptr, lowerResult *ir.LowerResult, blk *compiledBlock) {
 	for _, ic := range lowerResult.JalrICs {
-		// Both MOVABS imm64 slots live at Pc + 2 of their respective MOVABS.
-		pcPatchOff := int(ic.PcMov.Pc) + 2
-		fnPatchOff := int(ic.FnMov.Pc) + 2
+		var info jalrICPatchInfo
+		info.siteIdx = ic.SiteIdx
 		stubAddr := codeBase + uintptr(ic.StubProg.Pc)
 
-		binary.LittleEndian.PutUint64(execMem[pcPatchOff:], ^uint64(0))
-		binary.LittleEndian.PutUint64(execMem[fnPatchOff:], uint64(stubAddr))
+		// Initialize both IC slots. pc[k] = unmatchable sentinel so first
+		// CMPQ misses; fn[k] = miss stub so the initial JMP goes somewhere
+		// valid. Shift-policy tryPatchJalrIC will fill slot 0 on first
+		// miss, slot 1 on second, etc.
+		for k := 0; k < 2; k++ {
+			if ic.PcMov[k] == nil || ic.FnMov[k] == nil {
+				continue
+			}
+			pcOff := int(ic.PcMov[k].Pc) + 2
+			fnOff := int(ic.FnMov[k].Pc) + 2
+			info.pcPatchOff[k] = pcOff
+			info.fnPatchOff[k] = fnOff
+			binary.LittleEndian.PutUint64(execMem[pcOff:], ^uint64(0))
+			binary.LittleEndian.PutUint64(execMem[fnOff:], uint64(stubAddr))
+		}
 
-		blk.jalrICs = append(blk.jalrICs, jalrICPatchInfo{
-			siteIdx:       ic.SiteIdx,
-			pcPatchOffset: pcPatchOff,
-			fnPatchOffset: fnPatchOff,
-		})
+		blk.jalrICs = append(blk.jalrICs, info)
 	}
 }
 

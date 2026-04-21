@@ -23,15 +23,15 @@ type chainPatchInfo struct {
 	patchOffset int    // byte offset of imm64 in MOVABS within the code page
 }
 
-// jalrICPatchInfo describes a JALR inline-cache site with two patchable
-// imm64 slots inside adjacent MOVABS R10 instructions:
-//   - cache_pc slot (at pcPatchOffset): the cached target PC.
-//   - cache_fn slot (at fnPatchOffset): the cached block's chainEntry.
-// On a miss, the Go dispatcher calls patchJalrIC to update both slots.
+// jalrICPatchInfo describes a 2-way JALR inline-cache site. Slot [k]
+// holds a (cache_pc, cache_fn) pair; cache_pc is the cached target PC
+// and cache_fn is the corresponding block's chainEntry. Shift-policy
+// tryPatchJalrIC fills slot 0 with the most recent miss target,
+// demoting the old slot-0 contents to slot 1.
 type jalrICPatchInfo struct {
-	siteIdx        int
-	pcPatchOffset  int // byte offset of cache_pc imm64 in code page
-	fnPatchOffset  int // byte offset of cache_fn imm64 in code page
+	siteIdx     int
+	pcPatchOff  [2]int // byte offsets of cache_pc[0], cache_pc[1]
+	fnPatchOff  [2]int // byte offsets of cache_fn[0], cache_fn[1]
 }
 
 // compiledBlock holds a compiled function pointer (native IR or TCC).
@@ -480,14 +480,14 @@ func (j *JIT) tryPatchChain(blk *compiledBlock, targetPC uint64) {
 	}
 }
 
-// tryPatchJalrIC updates the given block's JALR IC site to jump directly
-// to target on future executions with the same target PC. Called from
-// the dispatch loop on jitOKJalrMiss returns.
+// tryPatchJalrIC updates a JALR IC site with shift semantics: the
+// previous slot-0 content is demoted to slot 1, and the new target is
+// installed in slot 0. For a bi-modal call site `{A, B, A, B, ...}`,
+// this converges to `{A, B}` after two misses and then hits 100%.
+// For 3+ rotating targets the site still thrashes (expected; see
+// plan "Priority 1.5").
 //
-// On success, cache_pc = targetPC and cache_fn = target.chainEntry,
-// turning the next JALR-to-same-target into a single-JMP dispatch.
-// Polymorphic sites (site sees multiple targets) will repeatedly
-// re-patch — correct, but no speedup for that site.
+// Called from the dispatch loop on jitOKJalrMiss returns.
 func (j *JIT) tryPatchJalrIC(blk *compiledBlock, siteIdx int, targetPC uint64) {
 	target := j.lookupBlock(targetPC)
 	if target == nil || target.chainEntry == 0 {
@@ -497,7 +497,25 @@ func (j *JIT) tryPatchJalrIC(blk *compiledBlock, siteIdx int, targetPC uint64) {
 		return
 	}
 	ic := blk.jalrICs[siteIdx]
-	patchChainTarget(blk.fn, ic.pcPatchOffset, uintptr(targetPC))
-	patchChainTarget(blk.fn, ic.fnPatchOffset, target.chainEntry)
+
+	// Read current slot 0 so we can demote it to slot 1.
+	pc0Old := readJalrICSlot(blk.fn, ic.pcPatchOff[0])
+	fn0Old := readJalrICSlot(blk.fn, ic.fnPatchOff[0])
+
+	// Shift: slot 1 ← slot 0 (demote), slot 0 ← new target (promote).
+	patchChainTarget(blk.fn, ic.pcPatchOff[1], uintptr(pc0Old))
+	patchChainTarget(blk.fn, ic.fnPatchOff[1], uintptr(fn0Old))
+	patchChainTarget(blk.fn, ic.pcPatchOff[0], uintptr(targetPC))
+	patchChainTarget(blk.fn, ic.fnPatchOff[0], target.chainEntry)
 	j.ChainPatchedJalr++
+}
+
+// readJalrICSlot reads 8 bytes from JIT code memory at the given
+// offset. Mirrors patchChainTarget's access pattern.
+//
+//go:nosplit
+func readJalrICSlot(codeBase uintptr, patchOffset int) uint64 {
+	//nolint:gosec // JIT code inspection requires direct memory reads.
+	p := (*[8]byte)(unsafe.Pointer(codeBase + uintptr(patchOffset))) //nolint:govet
+	return binary.LittleEndian.Uint64(p[:])
 }
