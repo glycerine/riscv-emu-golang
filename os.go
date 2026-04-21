@@ -2,6 +2,7 @@ package riscv
 
 import (
 	"fmt"
+	"io"
 	"strings"
 )
 
@@ -217,6 +218,58 @@ func RunWithOS(cpu *CPU) (exitCode int, err error) {
 				return
 			}
 			panic(r) // re-panic anything that isn't an ExitError
+		}
+	}()
+
+	err = RunWithChain(cpu, &cpu.Notes)
+	return
+}
+
+// InstallLinuxOS installs a Linux-ABI OS personality on cpu.Notes.
+// It handles syscall 93/94 (exit, exit_group) and 64 (write); writes
+// to fd 1 or 2 go to out (use io.Discard to silently drop).
+//
+// Returns a cleanup func that pops the personality from the NoteChain.
+// Typical use: defer InstallLinuxOS(cpu, out)() before running the CPU.
+//
+// Unlike RunWithLinuxOS below, this does not run the CPU — it just
+// wires the personality, so the caller can choose any runner
+// (CPU.Run, RunWithChain, JIT.RunJIT, etc.).
+func InstallLinuxOS(cpu *CPU, out io.Writer) (cleanup func()) {
+	o := NewOS()
+	o.HandleSyscall(93, LinuxExit)
+	o.HandleSyscall(94, LinuxExit)
+	o.HandleSyscall(64, LinuxWriteHandler(func(fd int, buf []byte) int {
+		n, _ := out.Write(buf)
+		return n
+	}))
+	cpu.Notes.Push(o.Handle)
+	return func() { cpu.Notes.Pop() }
+}
+
+// RunWithLinuxOS is a convenience wrapper that installs a Linux-ABI OS
+// personality (exit 93/94, write 64) and runs the CPU through the
+// uncached interpreter. Returns the guest's exit code, or an error if
+// the emulator faulted before a clean exit.
+//
+// stdout writes (fd=1) and stderr writes (fd=2) both go to out — pass
+// os.Stdout for a real CLI, io.Discard for a silent benchmark, or a
+// bytes.Buffer for tests.
+//
+// For finer control — picking the runner, separating stdout/stderr,
+// stacking another personality — use InstallLinuxOS and run the CPU
+// yourself.
+func RunWithLinuxOS(cpu *CPU, out io.Writer) (exitCode int, err error) {
+	defer InstallLinuxOS(cpu, out)()
+
+	defer func() {
+		if r := recover(); r != nil {
+			if ex, ok := r.(*ExitError); ok {
+				exitCode = ex.Code
+				err = nil
+				return
+			}
+			panic(r)
 		}
 	}()
 

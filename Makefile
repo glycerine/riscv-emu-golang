@@ -28,7 +28,8 @@
         libriscv-build guest-elf guest-native guest-wasm \
         coremark-elf dhrystone-elf bench-coremark bench-dhrystone \
         bench-jit-coremark bench-jit-dhrystone bench-chain-ref \
-        darwin-perf bench-wasm build-luajit-riscv
+        darwin-perf bench-wasm build-luajit-riscv \
+        hello hello-elfs
 
 # ── platform detection ─────────────────────────────────────────────────────
 
@@ -180,6 +181,10 @@ endif
 	@echo "    make coremark-elf        build bench/coremark.elf from xendor/coremark"
 	@echo "    make dhrystone-elf       build bench/dhrystone.elf from xendor/dhrystone"
 	@echo "    make build-luajit-riscv  cross-compile LuaJIT → bench/luajit.elf"
+	@echo "    make hello-elfs          build bench/hello_guest/hello_{libriscv,gocpu}.elf"
+	@echo ""
+	@echo "  ECALL benchmark:"
+	@echo "    make hello               per-ECALL timing: libriscv vs GoCPU"
 	@echo ""
 	@echo "  Other:"
 	@echo "    make test             unit tests"
@@ -320,6 +325,40 @@ $(GUEST_NATIVE): $(GUEST_SRC)
 	@test -f $(GUEST_NATIVE) || { echo "  ✗ guest native not produced"; exit 1; }
 	@echo "  ✓ $$(file $(GUEST_NATIVE) | cut -d: -f2 | xargs)"
 	@echo "  ✓ size: $$(du -h $(GUEST_NATIVE) | cut -f1)"
+
+# ── hello ECALL benchmark ─────────────────────────────────────────────────
+# Builds two near-identical RV64 ELFs that differ only in the message
+# string they print, then runs a Go driver that times per-ECALL cost
+# across libriscv and our emulator. See bench/hello_guest/hello.c and
+# bench/hellobench/main.go.
+
+HELLO_DIR := $(ROOT)bench/hello_guest
+HELLO_SRC := $(HELLO_DIR)/hello.c
+HELLO_LD  := $(HELLO_DIR)/link.ld
+HELLO_LR  := $(HELLO_DIR)/hello_libriscv.elf
+HELLO_GC  := $(HELLO_DIR)/hello_gocpu.elf
+
+HELLO_CFLAGS := -O2 -target riscv64-freestanding \
+    -mcpu=generic_rv64+m+a+f+d+c -mabi=lp64d \
+    -fPIC -mcmodel=medany \
+    -nostdlib -ffreestanding \
+    -T $(HELLO_LD)
+
+hello-elfs: $(HELLO_LR) $(HELLO_GC)
+
+$(HELLO_LR): $(HELLO_SRC) $(HELLO_LD)
+	@echo "── compiling hello_libriscv.elf ────────────────────────────────"
+	$(ZIG_CC) cc $(HELLO_CFLAGS) -DMSG='"Hello, libriscv!\n"' -o $@ $<
+	@echo "  ✓ $$(file $@ | cut -d: -f2 | xargs)"
+
+$(HELLO_GC): $(HELLO_SRC) $(HELLO_LD)
+	@echo "── compiling hello_gocpu.elf ───────────────────────────────────"
+	$(ZIG_CC) cc $(HELLO_CFLAGS) -DMSG='"Hello, Go CPU!\n"' -o $@ $<
+	@echo "  ✓ $$(file $@ | cut -d: -f2 | xargs)"
+
+hello: hello-elfs
+	@echo "── per-ECALL timing (libriscv vs GoCPU) ────────────────────────"
+	@$(GO) run -tags libriscv ./bench/hellobench/
 
 bench-wasm:
 	go run ./bench/wazero_bench $(ROOT)/bench/libriscv_guest/bench_guest.wasm
