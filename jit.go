@@ -187,6 +187,13 @@ type JIT struct {
 	// short-circuits the linear scan of aotSegments.
 	hotSegment *DecodedExecuteSegment
 
+	// soleSegment is aotSegments[0] when exactly one segment is installed,
+	// else nil. Maintained as an invariant by refreshSoleSegment at every
+	// mutation site. Enables RunJIT/lookupBlock fast paths that skip
+	// findSegment and the blk.segment null-chain — the common case for
+	// single-PT_LOAD ELFs (coremark, dhrystone, bench_guest).
+	soleSegment *DecodedExecuteSegment
+
 	cache      [blockCacheSize]blockCacheEntry
 	noJIT      map[uint64]bool // PCs where translation failed — don't retry
 	InterpOnly bool            // debug: force all-interpreter mode
@@ -265,6 +272,7 @@ func (j *JIT) InstallAOT(mem *GuestMemory, elfBytes []byte) error {
 		seg.isLikelyJIT = load.Writable
 		j.aotSegments = append(j.aotSegments, seg)
 	}
+	j.refreshSoleSegment()
 	return nil
 }
 
@@ -281,6 +289,7 @@ func (j *JIT) Close() {
 	}
 	j.aotSegments = nil
 	j.hotSegment = nil
+	j.soleSegment = nil
 }
 
 // InvalidateSegment removes the segment containing pc from the
@@ -305,6 +314,7 @@ func (j *JIT) InvalidateSegment(pc uint64) bool {
 			if j.hotSegment == s {
 				j.hotSegment = nil
 			}
+			j.refreshSoleSegment()
 			j.clearBlockCache()
 			s.Release()
 			return true
@@ -338,6 +348,7 @@ func (j *JIT) InvalidateExecRegion(begin, end uint64) int {
 	}
 	j.aotSegments = kept
 	if freed > 0 {
+		j.refreshSoleSegment()
 		j.clearBlockCache()
 	}
 	return freed
@@ -348,6 +359,18 @@ func (j *JIT) InvalidateExecRegion(begin, end uint64) int {
 // chain-exits point into freed mmaps.
 func (j *JIT) clearBlockCache() {
 	j.cache = [blockCacheSize]blockCacheEntry{}
+}
+
+// refreshSoleSegment maintains the soleSegment invariant: points at
+// aotSegments[0] iff exactly one segment is installed, else nil. Call
+// after every mutation of aotSegments (InstallAOT, Close,
+// InvalidateSegment, InvalidateExecRegion, nextExecuteSegment).
+func (j *JIT) refreshSoleSegment() {
+	if len(j.aotSegments) == 1 {
+		j.soleSegment = j.aotSegments[0]
+	} else {
+		j.soleSegment = nil
+	}
 }
 
 // findSegment returns the AOT segment containing pc, or nil if pc
@@ -386,9 +409,19 @@ func cacheIdx(pc uint64) uint64 {
 // (e.g., LuaJIT-style dynamic code before its segment is created —
 // reached via the lazy path or, in Step 6, via nextExecuteSegment).
 func (j *JIT) lookupBlock(pc uint64) *compiledBlock {
-	if s := j.findSegment(pc); s != nil {
-		if blk, ok := s.blocks[pc]; ok {
-			return blk
+	if s := j.soleSegment; s != nil {
+		// Fast path: exactly one segment installed. Inline bounds check
+		// avoids the findSegment call + hotSegment indirection.
+		if pc >= s.vaddrBegin && pc < s.vaddrEnd {
+			if blk, ok := s.blocks[pc]; ok {
+				return blk
+			}
+		}
+	} else if len(j.aotSegments) > 0 {
+		if s := j.findSegment(pc); s != nil {
+			if blk, ok := s.blocks[pc]; ok {
+				return blk
+			}
 		}
 	}
 	idx := cacheIdx(pc)
@@ -591,12 +624,21 @@ func (j *JIT) RunJIT(cpu *CPU) error {
 		blk := j.lookupBlock(pc)
 		if blk != nil {
 			var res jitcall.Result
-			if len(j.aotSegments) > 0 {
-				// Publish the containing segment's decoder_cache params to
-				// the sret extension. Lazy blocks don't have an owning
-				// segment; fall back to the hot segment (or any segment) —
-				// lazy blocks don't read these slots, so any valid pointer
-				// works, but we must publish *something* non-garbage.
+			if seg := j.soleSegment; seg != nil {
+				// Fast path: single segment. Publish its decoder_cache
+				// params directly — no findSegment, no blk.segment deref,
+				// no null-chain.
+				res = jitcall.CallAOT(blk.fn, &cpu.x, &cpu.f, &cpu.fcsr,
+					cpu.mem.Base(), cpu.mem.Mask(),
+					seg.decoderCacheBase, seg.decoderCacheMask,
+					seg.vaddrBegin, seg.vaddrEnd-seg.vaddrBegin)
+			} else if len(j.aotSegments) > 0 {
+				// Multi-segment path. Publish the containing segment's
+				// decoder_cache params to the sret extension. Lazy blocks
+				// don't have an owning segment; fall back to the hot
+				// segment (or any segment) — lazy blocks don't read these
+				// slots, so any valid pointer works, but we must publish
+				// *something* non-garbage.
 				seg := blk.segment
 				if seg == nil {
 					seg = j.hotSegment

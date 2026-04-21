@@ -46,5 +46,6 @@ func (j *JIT) nextExecuteSegment(mem *GuestMemory, pc uint64) *DecodedExecuteSeg
 	}
 	seg.isLikelyJIT = isJIT
 	j.aotSegments = append(j.aotSegments, seg)
+	j.refreshSoleSegment()
 	return seg
 }
