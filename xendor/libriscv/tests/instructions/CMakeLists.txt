@@ -12,6 +12,8 @@ set(SOURCES
 	test_rv32i.cpp
 	test_rv32c.cpp
 	test_fp_nan_canon.cpp
+	test_fp_fma.cpp
+	test_fp_fmin_fmax.cpp
 )
 
 add_executable(tests ${SOURCES})
