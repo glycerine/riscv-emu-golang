@@ -55,10 +55,15 @@ not CoW. **Expected fix: flip to `C.boolean_t(1)`.** The test-first
 approach will prove this empirically by writing to the "child" and
 checking the parent byte.
 
-No release helper. **Add:** `MachVMDeallocate(addr uintptr, size uint64)
-error` wrapping `mach_vm_deallocate(mach_task_self(), addr, size)`.
+No release helper. **Add:** `COWUnmap(addr uintptr, size uint64) error`
+wrapping `mach_vm_deallocate(mach_task_self(), addr, size)`.
 (POSIX `munmap` works on darwin for mach_vm regions, but using the
 matched API is cleaner.)
+
+**Also rename** `MachVMRemap` → `COWRemap` so the darwin and linux
+files expose an identical public API. Platform dispatch then lives
+entirely in build tags — callers write `ir.COWRemap(size, base)` and
+`ir.COWUnmap(addr, size)` regardless of GOOS.
 
 **`ir/cow_linux.go`** (uses `memfd_create` + `MAP_PRIVATE`):
 
@@ -68,9 +73,8 @@ mmap PRIVATE ⇒ CoW). Two hygiene issues:
 1. Returns only `uintptr`. The caller loses the `[]byte` slice header
    needed for `unix.Munmap`. **Fix:** provide a companion
    `COWUnmap(addr uintptr, size uint64) error` that reconstructs the
-   slice via `unsafe.Slice` and calls `unix.Munmap`, OR return
-   `(uintptr, []byte, error)`. Recommendation: the Unmap helper, so
-   the signature stays small and matches `MachVMDeallocate`.
+   slice via `unsafe.Slice` and calls `unix.Munmap`. Identical name
+   and signature to the darwin helper.
 2. `defer unix.Close(fd)` is correct as-is — the mmap retains a
    kernel refcount on the file; closing the fd does not unmap.
 
@@ -144,30 +148,22 @@ for the platform-dispatch shim.
 // private post-first-write. Shared physical pages until each side
 // writes. The clone's vaddr space, size, mask, and execRegions match m.
 func (m *GuestMemory) CowClone() (*GuestMemory, error) {
-    newBase, err := ir.CowRemap(m.size, m.base)  // platform dispatch
+    newBase, err := ir.COWRemap(m.size, m.base)  // same name on both OSes
     if err != nil { return nil, err }
-    child := &GuestMemory{
+    return &GuestMemory{
         base:        newBase,
         mask:        m.mask,
         size:        m.size,
         execRegions: append([]ExecRegion(nil), m.execRegions...),
-    }
-    runtime.SetFinalizer(child, (*GuestMemory).finalize)
-    return child, nil
+    }, nil
 }
 ```
 
-`ir.CowRemap` is a platform-dispatch wrapper: on darwin calls
-`MachVMRemap`, on linux calls `COWRemap`. Keep the existing
-platform-specific names in `ir/` as the concrete implementations; add
-one `ir/cow.go` (no build tag) with a small `CowRemap` doc-comment if
-the two names differ. Or just have callers use
-`MachVMRemap`/`COWRemap` directly inside build-tagged guestmem_cow
-files — simpler, no extra indirection.
-
-**Decision**: two build-tagged files `guestmem_cow_darwin.go` /
-`guestmem_cow_linux.go`, each with `cowClone(m *GuestMemory)`. Keeps
-the dispatch local and matches the existing file-naming convention.
+Because `ir.COWRemap` / `ir.COWUnmap` have identical signatures on
+both platforms (dispatch via build tags in `ir/cow_darwin.go` and
+`ir/cow_linux.go`), `CowClone` is a single implementation with no
+`//go:build` guard. No additional `guestmem_cow_*.go` files needed.
+Simpler than the earlier "two build-tagged files" plan.
 
 ### Free path
 
@@ -177,8 +173,9 @@ the dispatch local and matches the existing file-naming convention.
   `mach_vm_deallocate` internally for Mach VM regions).
 
 So `GuestMemory.Free()` is unchanged — it munmaps whatever `m.base`
-points to, regardless of origin. No branching needed. (`MachVMDeallocate`
-from Phase 1 is kept as a symmetric API for direct ir-package users.)
+points to, regardless of origin. No branching needed. `ir.COWUnmap`
+is retained for direct callers of the `ir` package that want the
+symmetric `COWRemap` ↔ `COWUnmap` API.
 
 ## Phase 3 — `JIT.CloneShared()`
 
@@ -314,13 +311,11 @@ tests skip cleanly elsewhere.
 
 | file | change |
 |------|--------|
-| `ir/cow_darwin.go` | flip `copy` flag FALSE→TRUE for true CoW; add `MachVMDeallocate(addr, size)` |
+| `ir/cow_darwin.go` | rename `MachVMRemap` → `COWRemap`; flip `copy` flag FALSE→TRUE for true CoW; add `COWUnmap(addr, size)` |
 | `ir/cow_linux.go` | add `COWUnmap(addr, size)` helper; keep existing `COWRemap` signature |
 | `ir/cow_darwin_test.go` (new) | `//go:build darwin`; 6 CoW semantic tests |
 | `ir/cow_linux_test.go` (new) | `//go:build linux`; same 6 tests |
-| `guestmem_cow_darwin.go` (new) | `cowClone(m) (*GuestMemory, error)` using `ir.MachVMRemap` |
-| `guestmem_cow_linux.go` (new) | `cowClone(m) (*GuestMemory, error)` using `ir.COWRemap` |
-| `guestmem.go` | add `CowClone()` method delegating to platform `cowClone`; **remove runtime.SetFinalizer** from CowClone-returned memories (document: Free is mandatory) |
+| `guestmem.go` | add `CowClone() (*GuestMemory, error)` method calling `ir.COWRemap`; no build tags needed since `ir.COWRemap` name is uniform; **no `runtime.SetFinalizer` on the child** — Free is mandatory, documented in method comment |
 | `jit.go` | add `(j *JIT) CloneShared() *JIT` |
 | `machine.go` (new) | `Machine` struct, `Clone()`, `Close()` |
 | `machine_clone_test.go` (new) | 9 integration tests; `//go:build darwin || linux` |
