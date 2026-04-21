@@ -140,10 +140,81 @@ static void test_fmm_translator_pos_neg()
 	check_neg_pos_zero(m, "fmm-trans(+0,-0)");
 }
 
+// ── Two-NaN canon (§11.3) ───────────────────────────────────────────────
+//
+// When both operands of FMIN/FMAX are NaN, the result must be the
+// canonical qNaN, not one of the input NaN payloads.
+
+static constexpr uint32_t F32_CANON_QNAN = 0x7FC00000u;
+static constexpr uint64_t F64_CANON_QNAN = 0x7FF8000000000000ull;
+
+static void seed_regs_both_nan(riscv::Machine<RISCV64>& m)
+{
+	// Use non-canonical NaN payloads so we can detect whether the emulator
+	// silently passes them through (spec violation) or canonicalizes.
+	m.cpu.registers().getfl(2).load_u64(nb_f32(0x7FC00001));
+	m.cpu.registers().getfl(3).load_u64(nb_f32(0x7FC00002));
+	m.cpu.registers().getfl(6).load_u64(0x7FF8000000000001ull);
+	m.cpu.registers().getfl(7).load_u64(0x7FF8000000000002ull);
+}
+
+static void check_both_nan_canonical(const riscv::Machine<RISCV64>& m, const char* path)
+{
+	const uint64_t f1 = m.cpu.registers().getfl(1).i64;
+	const uint64_t f4 = m.cpu.registers().getfl(4).i64;
+	const uint64_t f5 = m.cpu.registers().getfl(5).i64;
+	const uint64_t f8 = m.cpu.registers().getfl(8).i64;
+
+	const uint64_t want_f32 = nb_f32(F32_CANON_QNAN);
+	if (f1 != want_f32) {
+		fprintf(stderr, "[%s] FMIN.S(NaN,NaN): f1=0x%016llx, expected 0x%016llx "
+				"(canonical qNaN per §11.3)\n",
+				path, (unsigned long long)f1, (unsigned long long)want_f32);
+		std::abort();
+	}
+	if (f4 != want_f32) {
+		fprintf(stderr, "[%s] FMAX.S(NaN,NaN): f4=0x%016llx, expected 0x%016llx\n",
+				path, (unsigned long long)f4, (unsigned long long)want_f32);
+		std::abort();
+	}
+	if (f5 != F64_CANON_QNAN) {
+		fprintf(stderr, "[%s] FMIN.D(NaN,NaN): f5=0x%016llx, expected 0x%016llx\n",
+				path, (unsigned long long)f5, (unsigned long long)F64_CANON_QNAN);
+		std::abort();
+	}
+	if (f8 != F64_CANON_QNAN) {
+		fprintf(stderr, "[%s] FMAX.D(NaN,NaN): f8=0x%016llx, expected 0x%016llx\n",
+				path, (unsigned long long)f8, (unsigned long long)F64_CANON_QNAN);
+		std::abort();
+	}
+}
+
+static void test_fmm_interpreter_both_nan()
+{
+	riscv::Machine<RISCV64> m { std::string_view{}, { .memory_max = 65536 } };
+	m.cpu.init_execute_area(test_insns.data(), 0x1000, 4 * test_insns.size());
+	m.cpu.jump(0x1000);
+	seed_regs_both_nan(m);
+	m.cpu.step_one(); m.cpu.step_one(); m.cpu.step_one(); m.cpu.step_one();
+	check_both_nan_canonical(m, "fmm-interp(NaN,NaN)");
+}
+
+static void test_fmm_translator_both_nan()
+{
+	riscv::Machine<RISCV64> m { std::string_view{}, { .memory_max = 65536 } };
+	m.cpu.init_execute_area(test_insns.data(), 0x1000, 4 * test_insns.size());
+	m.cpu.jump(0x1000);
+	seed_regs_both_nan(m);
+	try { m.simulate(1000); } catch (...) {}
+	check_both_nan_canonical(m, "fmm-trans(NaN,NaN)");
+}
+
 void test_fp_fmin_fmax()
 {
 	test_fmm_interpreter_neg_pos();
 	test_fmm_interpreter_pos_neg();
 	test_fmm_translator_neg_pos();
 	test_fmm_translator_pos_neg();
+	test_fmm_interpreter_both_nan();
+	test_fmm_translator_both_nan();
 }

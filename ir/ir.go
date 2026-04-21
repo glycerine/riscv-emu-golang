@@ -198,6 +198,10 @@ const (
 	IRFMul      // Dst = A * B       (FP)
 	IRFDiv      // Dst = A / B       (FP)
 	IRFSqrt     // Dst = sqrt(A)     (FP)
+	IRFma       // Dst = A*B + C     (FP, fused single-rounding, §11.6)
+	IRFmsub     // Dst = A*B - C     (FP, fused)
+	IRFnmadd    // Dst = -(A*B + C)  (FP, fused, RISC-V FNMADD)
+	IRFnmsub    // Dst = -(A*B - C) = -A*B + C (FP, fused, RISC-V FNMSUB)
 	IRFCmp      // Dst = (A pred B) ? 1 : 0  (FP compare)
 	IRFNeg      // Dst = -A          (FP)
 	IRFAbs      // Dst = |A|         (FP)
@@ -280,6 +284,10 @@ var irOpNames = [...]string{
 	IRFMul:      "fmul",
 	IRFDiv:      "fdiv",
 	IRFSqrt:     "fsqrt",
+	IRFma:       "fma",
+	IRFmsub:     "fmsub",
+	IRFnmadd:    "fnmadd",
+	IRFnmsub:    "fnmsub",
 	IRFCmp:      "fcmp",
 	IRFNeg:      "fneg",
 	IRFAbs:      "fabs",
@@ -303,6 +311,7 @@ type IRInstr struct {
 	Dst   VReg
 	A     VReg
 	B     VReg // also: value for IRStore, index for IRLoadX/IRStoreX
+	C     VReg // third source for ternary ops (IRFma: Dst = A*B + C)
 	Imm   int64
 	Imm2  int64 // for IRBranchImm (compare value), IRRet (status)
 }

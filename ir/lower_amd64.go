@@ -799,6 +799,7 @@ func (lc *lowerCtx) lowerInstr(ins *IRInstr) error {
 		IRLabel, IRBranch, IRBranchImm, IRJump, // control flow
 		IRRet, IRRetDyn, IRChainExit, IRJalrIC, IRCall, // exits/calls
 		IRFAdd, IRFSub, IRFMul, IRFDiv, IRFSqrt, IRFNeg, IRFAbs, IRFCmp, // FP uses FP scratch
+		IRFma, IRFmsub, IRFnmadd, IRFnmsub,                               // FP ternary (FMA family)
 		IRFCvtToI, IRFCvtToU, IRFCvtFromI, IRFCvtFromU, IRFCvtFF: // FP conversions
 		lc.invalidateScratchCache()
 	}
@@ -945,6 +946,16 @@ func (lc *lowerCtx) lowerInstr(ins *IRInstr) error {
 		lc.lowerFPBinop(ins, x86.ADIVSD, x86.ADIVSS)
 	case IRFSqrt:
 		lc.lowerFPUnary(ins, x86.ASQRTSD, x86.ASQRTSS)
+	case IRFma:
+		lc.lowerFMA(ins, x86.AVFMADD213SD, x86.AVFMADD213SS)
+	case IRFmsub:
+		lc.lowerFMA(ins, x86.AVFMSUB213SD, x86.AVFMSUB213SS)
+	case IRFnmadd:
+		// RISC-V FNMADD = -(a*b + c). x86 VFNMSUB213 = -(a*b) - c. Match.
+		lc.lowerFMA(ins, x86.AVFNMSUB213SD, x86.AVFNMSUB213SS)
+	case IRFnmsub:
+		// RISC-V FNMSUB = -(a*b - c) = -a*b + c. x86 VFNMADD213 = -(a*b) + c. Match.
+		lc.lowerFMA(ins, x86.AVFNMADD213SD, x86.AVFNMADD213SS)
 	case IRFNeg:
 		lc.lowerFNeg(ins)
 	case IRFAbs:
@@ -2013,6 +2024,55 @@ func (lc *lowerCtx) isRegLive(hostReg int16) bool {
 }
 
 // ── FP ops ──
+
+// lowerFMA lowers a ternary FP op (IRFma, IRFmsub, IRFnmadd, IRFnmsub)
+// to x86 VFMADD213/VFMSUB213/VFNMADD213/VFNMSUB213.
+//
+// Semantics: Dst = A op B (+ | -) C with a single rounding.
+//
+// x86 VFMADD213SS uses the encoding `VFMADD213SS dst, src1, src2`
+// meaning `dst = dst*src1 + src2`. So we must stage A into dst first:
+//   if dst != a: MOVSS/MOVSD a → dst
+// Then: VFMADD213 dst, B, C.
+func (lc *lowerCtx) lowerFMA(ins *IRInstr, f64op, f32op obj.As) {
+	dst := lc.def(ins.Dst)
+	a := lc.use(ins.A, 0)
+	b := lc.use(ins.B, 1)
+	c := lc.use(ins.C, 2)
+
+	op := f64op
+	movOp := x86.AMOVSD
+	if ins.T == F32 {
+		op = f32op
+		movOp = x86.AMOVSS
+	}
+
+	// Stage A into dst if needed.
+	if dst != a {
+		lc.emitRR(movOp, a, dst)
+	}
+	// VFMADD213 variants take (src1, src2, dst) in AT&T-order — in Go's
+	// obj package that's (from1, from2, to) = (c, b, dst). The emitter
+	// below mirrors AVX VEX encoding: result goes in dst, sources are
+	// b (2nd operand from the instruction's perspective) and c.
+	lc.emitVFMA3(op, c, b, dst)
+
+	lc.defCommit(ins.Dst, dst)
+}
+
+// emitVFMA3 emits a 3-operand AVX FMA instruction. Go's obj x86
+// representation for VFMADD213SS is: From=op3, From3=op2, To=op1
+// where the Intel syntax is VFMADD213SS op1, op2, op3.
+func (lc *lowerCtx) emitVFMA3(op obj.As, src1, src2, dst int16) {
+	p := lc.c.NewProg()
+	p.As = op
+	p.From.Type = obj.TYPE_REG
+	p.From.Reg = src1
+	p.AddRestSourceReg(src2)
+	p.To.Type = obj.TYPE_REG
+	p.To.Reg = dst
+	lc.c.Append(p)
+}
 
 func (lc *lowerCtx) lowerFPBinop(ins *IRInstr, f64op, f32op obj.As) {
 	dst := lc.def(ins.Dst)

@@ -42,12 +42,20 @@ static constexpr uint32_t FMADD_S_f1 = enc_fma(0x43, 0, 1, 2, 3, 4, 0);
 static constexpr uint32_t FMADD_D_f5 = enc_fma(0x43, 1, 5, 6, 7, 8, 0);
 // FNMADD.S f9, f10, f11, f12 ; RNE
 static constexpr uint32_t FNMADD_S_f9 = enc_fma(0x4F, 0, 9, 10, 11, 12, 0);
+// FMSUB.S f13, f2, f3, f14 ; RNE  — tests the FMSUB sign variant.
+//   with f2=0.1, f3=10, f14=1.0: a*b - c = 1.0000000149... - 1 = 1.49e-8.
+static constexpr uint32_t FMSUB_S_f13 = enc_fma(0x47, 0, 13, 2, 3, 14, 0);
+// FNMSUB.S f15, f2, f3, f14 ; RNE  — tests the FNMSUB sign variant.
+//   -(a*b - c) = -a*b + c. With a=0.1, b=10, c=1.0: -1.0000000149 + 1 = -1.49e-8.
+static constexpr uint32_t FNMSUB_S_f15 = enc_fma(0x4B, 0, 15, 2, 3, 14, 0);
 static constexpr uint32_t ECALL_insn  = 0x00000073u;
 
-static const std::array<uint32_t, 4> test_insns = {
-	FMADD_S_f1,   // f1 = fma(f2, f3, f4)
-	FMADD_D_f5,   // f5 = fma(f6, f7, f8)
-	FNMADD_S_f9,  // f9 = -fma(f10, f11, f12)
+static const std::array<uint32_t, 6> test_insns = {
+	FMADD_S_f1,    // f1  = fma(f2, f3, f4)
+	FMADD_D_f5,    // f5  = fma(f6, f7, f8)
+	FNMADD_S_f9,   // f9  = -fma(f10, f11, f12)
+	FMSUB_S_f13,   // f13 = fmsub(f2, f3, f14)
+	FNMSUB_S_f15,  // f15 = fnmsub(f2, f3, f14)
 	ECALL_insn,
 };
 
@@ -97,6 +105,8 @@ static void seed_registers(riscv::Machine<RISCV64>& m)
 	m.cpu.registers().getfl(10).load_u64(nb_f32(F32_0_1));
 	m.cpu.registers().getfl(11).load_u64(nb_f32(F32_10));
 	m.cpu.registers().getfl(12).load_u64(nb_f32(F32_NEG_1));
+	// FMSUB.S / FNMSUB.S: use f2, f3 (already set) and f14 = +1.0f.
+	m.cpu.registers().getfl(14).load_u64(nb_f32(0x3F800000));
 }
 
 static void check_fma(const riscv::Machine<RISCV64>& m, const char* path)
@@ -135,6 +145,24 @@ static void check_fma(const riscv::Machine<RISCV64>& m, const char* path)
 				path, f9_lo, F32_FMA_RESIDUAL ^ 0x80000000u);
 		std::abort();
 	}
+
+	// FMSUB.S(0.1, 10, 1.0) = 0.1*10 - 1 = 1.49e-8 (fused) vs 0 (non-fused).
+	const uint32_t f13_lo = uint32_t(m.cpu.registers().getfl(13).i64);
+	if (f13_lo != F32_FMA_RESIDUAL) {
+		fprintf(stderr, "[%s] FMSUB.S(0.1,10,1): f13 lower=0x%08x, expected 0x%08x "
+				"(single-rounded fmsub residual)\n",
+				path, f13_lo, F32_FMA_RESIDUAL);
+		std::abort();
+	}
+
+	// FNMSUB.S(0.1, 10, 1.0) = -(a*b - c) = -a*b + c ≈ -1.49e-8.
+	const uint32_t f15_lo = uint32_t(m.cpu.registers().getfl(15).i64);
+	if ((f15_lo ^ F32_FMA_RESIDUAL) != 0x80000000u) {
+		fprintf(stderr, "[%s] FNMSUB.S(0.1,10,1): f15 lower=0x%08x, expected 0x%08x "
+				"(negated fnmsub residual)\n",
+				path, f15_lo, F32_FMA_RESIDUAL ^ 0x80000000u);
+		std::abort();
+	}
 }
 
 static void test_fma_interpreter()
@@ -146,6 +174,8 @@ static void test_fma_interpreter()
 	m.cpu.step_one(); // FMADD.S
 	m.cpu.step_one(); // FMADD.D
 	m.cpu.step_one(); // FNMADD.S
+	m.cpu.step_one(); // FMSUB.S
+	m.cpu.step_one(); // FNMSUB.S
 	check_fma(m, "fma-interpreter");
 }
 

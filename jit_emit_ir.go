@@ -106,53 +106,146 @@ func (e *emitter) fregDst(r uint32) ir.VReg {
 	return vr
 }
 
-// ── NaN-boxing helpers ─────────────────────────────────────────────────
-
-// boxF32 NaN-boxes a 32-bit value into f[rd].
+// ── NaN canonicalization (RISC-V ISA §11.3) ──────────────────────────
 //
-// The boxed quadword is built in an integer temp (low 32 = val, high 32 = all
-// ones), then moved into the FP destination register. Building it directly
-// into the FP register would emit an integer ORQ with an XMM destination,
-// which the lowerer cannot encode.
-func (e *emitter) boxF32(rd uint32, val ir.VReg) {
-	dst := e.fregDst(rd)
-	boxed := e.irEm.Tmp()
-	e.irEm.AndImm(boxed, val, 0xFFFFFFFF)
-	hi := e.irEm.Tmp()
-	e.irEm.Const(hi, -4294967296) // 0xFFFFFFFF00000000 as int64
-	e.irEm.Or(boxed, boxed, hi)
-	e.irEm.Mov(dst, boxed)
+// Any FP operation whose result is NaN must return the canonical
+// quiet NaN (f32 0x7FC00000, f64 0x7FF8000000000000), not a payload-
+// propagating NaN. x86 hardware (ADDSS, DIVSS, etc.) produces
+// 0xFFC00000 for some inputs (e.g. -0/-0), which is spec-noncompliant.
+// These helpers canonicalize the JIT-computed result before boxing.
+//
+// Strategy: bit-cast the float to its integer bits, test the IEEE 754
+// NaN predicate `(bits & 0x7FFFFFFF) > 0x7F800000` (equivalently: the
+// value is greater than +infinity in unsigned integer representation
+// after clearing the sign), and if true replace with canonical.
+//
+// The check emits one conditional branch — well-predicted-not-taken
+// on non-NaN inputs, so the fast-path cost is ~1 cycle.
+
+// canonF32 returns an F32 VReg equal to val if non-NaN, else the
+// canonical quiet NaN 0x7FC00000.
+func (e *emitter) canonF32(val ir.VReg) ir.VReg {
+	em := e.irEm
+	// Bit-cast val (F32 XMM) to integer bits.
+	intBits := em.Tmp()
+	em.MovT(intBits, val, ir.I64)
+	// absBits = bits & 0x7FFFFFFF (clears sign, keeps exp+mantissa in low 32)
+	absBits := em.Tmp()
+	em.AndImm(absBits, intBits, 0x7FFFFFFF)
+	// compare: absBits > 0x7F800000 ⇔ NaN (exp=all 1s AND mantissa != 0)
+	infBits := em.Tmp()
+	em.Const(infBits, 0x7F800000)
+	// Merge: intResult = NaN ? canonical : original low 32.
+	mergedInt := em.Tmp()
+	notNaNLabel := em.NewLabel()
+	doneLabel := em.NewLabel()
+	em.Branch(absBits, infBits, ir.LEU, notNaNLabel)
+	// NaN path.
+	em.Const(mergedInt, 0x7FC00000)
+	em.Jump(doneLabel)
+	// Non-NaN path: low 32 of original int bits.
+	em.PlaceLabel(notNaNLabel)
+	em.Zext(mergedInt, intBits, ir.I32)
+	em.PlaceLabel(doneLabel)
+	// Bit-cast back to F32 XMM.
+	out := em.Tmp()
+	em.MovT(out, mergedInt, ir.F32)
+	return out
 }
 
-// unboxF32 extracts 32-bit float bits; canonical NaN if improperly boxed.
+// canonF64 is the f64 counterpart.
+func (e *emitter) canonF64(val ir.VReg) ir.VReg {
+	em := e.irEm
+	intBits := em.Tmp()
+	em.MovT(intBits, val, ir.I64)
+	// absBits = bits & 0x7FFFFFFFFFFFFFFF
+	absBits := em.Tmp()
+	absMask := em.Tmp()
+	em.Const(absMask, int64(0x7FFFFFFFFFFFFFFF))
+	em.And(absBits, intBits, absMask)
+	infBits := em.Tmp()
+	em.Const(infBits, int64(0x7FF0000000000000))
+	mergedInt := em.Tmp()
+	notNaNLabel := em.NewLabel()
+	doneLabel := em.NewLabel()
+	em.Branch(absBits, infBits, ir.LEU, notNaNLabel)
+	// NaN path: canonical qNaN for f64.
+	em.Const(mergedInt, int64(0x7FF8000000000000))
+	em.Jump(doneLabel)
+	em.PlaceLabel(notNaNLabel)
+	em.Mov(mergedInt, intBits)
+	em.PlaceLabel(doneLabel)
+	out := em.Tmp()
+	em.MovT(out, mergedInt, ir.F64)
+	return out
+}
+
+// ── NaN-boxing helpers ─────────────────────────────────────────────────
 //
-// The FP source is first moved to an integer temp so the upper-half check
-// (SHR + CMP) can run on integer registers; running these directly on the
-// XMM source would emit an integer SHRQ with an XMM operand, which is invalid.
-// The returned VReg is FP-classified (defined by an F32-typed Mov) so callers
-// like FAdd / FSub / FMul / FDiv / FCmp see it in an XMM register and can lower
-// to ADDSS / SUBSS / etc. without bridging.
+// Both helpers bypass the FP VReg `freg(rs)` / `fregDst(rd)` for reads
+// and writes of the raw NaN-boxed 64-bit word, and instead access
+// f[rs]/f[rd] directly as I64 via `Load`/`Store` through `FBase()`.
+//
+// Rationale: if we read the guest FP register through its VReg, the
+// allocator's type-driven load selects MOVSS for F32-typed reads,
+// which zero-extends the upper 32 bits into XMM and destroys the
+// NaN-box signature. Subsequent MOVQ xmm→gpr then yields `upper=0`
+// and unboxF32 classifies the input as malformed, returning canonical
+// NaN for every read. Going through memory as I64 guarantees the
+// full 64 bits survive.
+//
+// The FP result is materialized via a GPR→XMM bitcast (`MovT` with
+// F32 type) so downstream FADD/FSUB/... lower to ADDSS/SUBSS.
+//
+// boxF32 writes the NaN-boxed word directly to f[rd] in memory and
+// also invalidates any cached VReg — but since we avoid `fregDst`
+// (which would mark the VReg dirty and trigger a stale writeback),
+// the memory-write is the single source of truth.
+
+// boxF32 NaN-boxes a 32-bit value into f[rd] (spec §11.2).
+func (e *emitter) boxF32(rd uint32, val ir.VReg) {
+	em := e.irEm
+	// Bit-cast val (F32-typed, in XMM) to an I64 GPR temp.
+	intBits := em.Tmp()
+	em.MovT(intBits, val, ir.I64)
+	// Mask to low 32 bits (clears any XMM garbage in high 32).
+	low := em.Tmp()
+	em.AndImm(low, intBits, 0xFFFFFFFF)
+	// OR in the NaN-box mask.
+	hi := em.Tmp()
+	em.Const(hi, int64(-1)<<32) // 0xFFFFFFFF00000000
+	boxed := em.Tmp()
+	em.Or(boxed, low, hi)
+	// Store the boxed word directly to f[rd] memory.
+	em.Store(em.FBase(), int64(rd)*8, boxed, ir.I64)
+}
+
+// unboxF32 extracts a 32-bit float from f[rs], returning canonical
+// qNaN if the box is malformed (upper 32 bits not all-ones, spec
+// §11.2). Returns an F32-typed VReg suitable for FAdd/FSub/...
 func (e *emitter) unboxF32(rs uint32) ir.VReg {
-	src := e.freg(rs)
-	srcInt := e.irEm.Tmp()
-	e.irEm.Mov(srcInt, src)
-	upper := e.irEm.Tmp()
-	e.irEm.ShrImm(upper, srcInt, 32)
-	check := e.irEm.Tmp()
-	e.irEm.Const(check, 0xFFFFFFFF)
-	intResult := e.irEm.Tmp()
-	okLabel := e.irEm.NewLabel()
-	doneLabel := e.irEm.NewLabel()
-	e.irEm.Branch(upper, check, ir.EQ, okLabel)
-	e.irEm.Const(intResult, 0x7FC00000) // canonical NaN
-	e.irEm.Jump(doneLabel)
-	e.irEm.PlaceLabel(okLabel)
-	e.irEm.Zext(intResult, srcInt, ir.I32)
-	e.irEm.PlaceLabel(doneLabel)
-	// Transfer the unboxed bits to an FP-typed VReg so downstream FP ops
-	// (FAdd/FSub/...) place it in an XMM register.
-	fpResult := e.irEm.Tmp()
-	e.irEm.MovT(fpResult, intResult, ir.F32)
+	em := e.irEm
+	// Load the raw 64-bit word from f[rs] directly as I64. This
+	// bypasses the FP VReg typing and its MOVSS-zero-extend hazard.
+	srcInt := em.Tmp()
+	em.Load(srcInt, em.FBase(), int64(rs)*8, ir.I64, false)
+	// Check upper 32 == 0xFFFFFFFF.
+	upper := em.Tmp()
+	em.ShrImm(upper, srcInt, 32)
+	check := em.Tmp()
+	em.Const(check, 0xFFFFFFFF)
+	intResult := em.Tmp()
+	okLabel := em.NewLabel()
+	doneLabel := em.NewLabel()
+	em.Branch(upper, check, ir.EQ, okLabel)
+	em.Const(intResult, 0x7FC00000) // malformed box → canonical qNaN
+	em.Jump(doneLabel)
+	em.PlaceLabel(okLabel)
+	em.Zext(intResult, srcInt, ir.I32)
+	em.PlaceLabel(doneLabel)
+	// Bit-cast the 32-bit integer bits into an F32 VReg (XMM).
+	fpResult := em.Tmp()
+	em.MovT(fpResult, intResult, ir.F32)
 	return fpResult
 }
 
@@ -352,50 +445,102 @@ func (e *emitter) emitDivW(dst, a, b ir.VReg, signed, wantRem bool) {
 	em.PlaceLabel(doneLabel)
 }
 
-// emitFMinMax emits FMIN or FMAX with NaN handling per RISC-V spec:
-// if either operand is NaN, return the other (canonical NaN if both are NaN).
-// For FMIN: return the smaller; for FMAX: return the larger.
+// emitFMinMax emits FMIN/FMAX with full RISC-V spec compliance:
+//
+//   §11.3 NaN: both-NaN → canonical qNaN; one-NaN → the non-NaN operand.
+//   §11.6 signed-zero ordering: -0.0 < +0.0.
+//
+// Emits an FP-typed dst (XMM); caller is responsible for boxing.
 func (e *emitter) emitFMinMax(dst, a, b ir.VReg, t ir.Type, isMax bool) {
 	em := e.irEm
-	// Check if a is NaN: a != a
-	aNaN := em.Tmp()
-	em.FCmp(aNaN, a, a, ir.EQ, t) // 0 if NaN, 1 if not
-	// Check if b is NaN: b != b
-	bNaN := em.Tmp()
-	em.FCmp(bNaN, b, b, ir.EQ, t) // 0 if NaN, 1 if not
+	lDone := em.NewLabel()
 
-	doneLabel := em.NewLabel()
-	aIsNaN := em.NewLabel()
-	bIsNaN := em.NewLabel()
-	pickA := em.NewLabel()
+	// 1. NaN handling.
+	aIsNum := em.Tmp()
+	em.FCmp(aIsNum, a, a, ir.EQ, t) // 1 if not NaN, 0 if NaN
+	bIsNum := em.Tmp()
+	em.FCmp(bIsNum, b, b, ir.EQ, t)
 
-	em.Branch(aNaN, ir.VRegZero, ir.EQ, aIsNaN)
-	em.Branch(bNaN, ir.VRegZero, ir.EQ, bIsNaN)
+	lAIsNum := em.NewLabel()
+	em.Branch(aIsNum, ir.VRegZero, ir.NE, lAIsNum) // a is number
+	// a is NaN.
+	lBothNaN := em.NewLabel()
+	em.Branch(bIsNum, ir.VRegZero, ir.EQ, lBothNaN) // b NaN too
+	// a NaN, b number → dst = b.
+	em.Mov(dst, b)
+	em.Jump(lDone)
+	em.PlaceLabel(lBothNaN)
+	// Both NaN → canonical qNaN.
+	canonInt := em.Tmp()
+	if t == ir.F32 {
+		em.Const(canonInt, 0x7FC00000)
+		em.MovT(dst, canonInt, ir.F32)
+	} else {
+		em.Const(canonInt, int64(0x7FF8000000000000))
+		em.MovT(dst, canonInt, ir.F64)
+	}
+	em.Jump(lDone)
 
-	// Both are numbers — compare.
+	em.PlaceLabel(lAIsNum)
+	// a is number. Check b.
+	lNumeric := em.NewLabel()
+	em.Branch(bIsNum, ir.VRegZero, ir.NE, lNumeric) // both numbers
+	// a number, b NaN → dst = a.
+	em.Mov(dst, a)
+	em.Jump(lDone)
+
+	em.PlaceLabel(lNumeric)
+	// 2. Both numeric. Handle ±0 specially, then numeric compare.
+	//
+	// Test "both operands are zero" via bit-level: (aBits | bBits)
+	// with sign bit masked off == 0 ⇔ both are +0 or -0.
+	aBits := em.Tmp()
+	em.MovT(aBits, a, ir.I64)
+	bBits := em.Tmp()
+	em.MovT(bBits, b, ir.I64)
+	orBits := em.Tmp()
+	em.Or(orBits, aBits, bBits)
+	absOr := em.Tmp()
+	if t == ir.F32 {
+		em.AndImm(absOr, orBits, 0x7FFFFFFF)
+	} else {
+		mask63 := em.Tmp()
+		em.Const(mask63, int64(0x7FFFFFFFFFFFFFFF))
+		em.And(absOr, orBits, mask63)
+	}
+	lFPCmp := em.NewLabel()
+	em.Branch(absOr, ir.VRegZero, ir.NE, lFPCmp)
+
+	// Both operands are ±0. Spec orders -0 < +0:
+	//   FMIN: return -0 if either has sign bit set; else +0.
+	//     ⇔ result = aBits | bBits (sign bit set iff either has it).
+	//   FMAX: return +0 if either has sign bit clear; else -0.
+	//     ⇔ result = aBits & bBits.
+	zeroRes := em.Tmp()
+	if isMax {
+		em.And(zeroRes, aBits, bBits)
+	} else {
+		em.Or(zeroRes, aBits, bBits)
+	}
+	em.MovT(dst, zeroRes, t)
+	em.Jump(lDone)
+
+	// 3. Regular numeric compare.
+	em.PlaceLabel(lFPCmp)
 	cmp := em.Tmp()
 	if isMax {
 		em.FCmp(cmp, a, b, ir.GT, t)
 	} else {
 		em.FCmp(cmp, a, b, ir.LT, t)
 	}
-	em.Branch(cmp, ir.VRegZero, ir.NE, pickA)
-	// Pick b.
+	lPickA := em.NewLabel()
+	em.Branch(cmp, ir.VRegZero, ir.NE, lPickA)
 	em.Mov(dst, b)
-	em.Jump(doneLabel)
-
-	em.PlaceLabel(pickA)
+	em.Jump(lDone)
+	em.PlaceLabel(lPickA)
 	em.Mov(dst, a)
-	em.Jump(doneLabel)
 
-	em.PlaceLabel(aIsNaN)
-	em.Mov(dst, b) // a is NaN → return b
-	em.Jump(doneLabel)
-
-	em.PlaceLabel(bIsNaN)
-	em.Mov(dst, a) // b is NaN → return a
-
-	em.PlaceLabel(doneLabel)
+	em.PlaceLabel(lDone)
 }
 
 func branchPred(funct3 uint32) (ir.Pred, bool) {
@@ -1717,31 +1862,59 @@ func (e *emitter) emitMisalignedFPStore(rs2 uint32, addr ir.VReg, width int, fau
 }
 
 // ── FMA family ─────────────────────────────────────────────────────────
+//
+// RISC-V spec §11.6: FMADD/FMSUB/FNMADD/FNMSUB perform a*b (+|-) c
+// with a SINGLE IEEE 754 rounding. We emit IRFma / IRFmsub / IRFnmadd /
+// IRFnmsub which the amd64 lowerer turns into VFMADD213/VFMSUB213/
+// VFNMADD213/VFNMSUB213 — native hardware FMA, single-rounded.
+//
+// RISC-V semantics:
+//   FMADD   = a*b + c       → IRFma
+//   FMSUB   = a*b - c       → IRFmsub
+//   FNMADD  = -(a*b + c)    → IRFnmadd
+//   FNMSUB  = -(a*b - c) = -a*b + c → IRFnmsub
+//
+// Post-op: canonicalize NaN per §11.3 and NaN-box (boxF32/boxF64).
 
-// emitFMA is DISABLED and terminates the block so the dispatcher falls
-// back to the interpreter for F{N}M{ADD,SUB}. Rationale:
-//
-//   1. Spec correctness (§11.6): FMA must round only once. The old
-//      body emitted FMul(a,b)+FAdd(c) — two roundings.
-//   2. Canonicalization (§11.3): the old body did not canonicalize
-//      NaN outputs.
-//
-// The interpreter (cpu.go:660-679) routes through
-// fenv.{M,MS,NMS,NMA}AddF32/64 which use x86 VFM{ADD,SUB,NMADD,NMSUB}
-// instructions — single-rounding hardware FMA — and canonicalizes via
-// canonNaN{32,64} before NaN-boxing. Correct on every path.
-//
-// Perf impact: FMA-heavy guests run slower (one interp step per FMA).
-// None of our current benchmark workloads exercise FMA. A future
-// optimization can add IRFma + VFMADD213SS/SD lowering.
 func (e *emitter) emitFMA(opcode, rd, rs1, rs2, rs3, fpfmt uint32) {
-	_ = opcode
-	_ = rd
-	_ = rs1
-	_ = rs2
-	_ = rs3
-	_ = fpfmt
-	e.terminated = true
+	if fpfmt > 1 {
+		e.terminated = true
+		return
+	}
+
+	if fpfmt == 0 { // single precision
+		a := e.unboxF32(rs1)
+		b := e.unboxF32(rs2)
+		c := e.unboxF32(rs3)
+		result := e.irEm.Tmp()
+		switch opcode {
+		case 0x43: // FMADD.S
+			e.irEm.FMA(result, a, b, c, ir.F32)
+		case 0x47: // FMSUB.S
+			e.irEm.Fmsub(result, a, b, c, ir.F32)
+		case 0x4F: // FNMADD.S
+			e.irEm.Fnmadd(result, a, b, c, ir.F32)
+		case 0x4B: // FNMSUB.S
+			e.irEm.Fnmsub(result, a, b, c, ir.F32)
+		}
+		e.boxF32(rd, e.canonF32(result))
+	} else { // double precision
+		a := e.unboxF64(rs1)
+		b := e.unboxF64(rs2)
+		c := e.unboxF64(rs3)
+		result := e.irEm.Tmp()
+		switch opcode {
+		case 0x43: // FMADD.D
+			e.irEm.FMA(result, a, b, c, ir.F64)
+		case 0x47: // FMSUB.D
+			e.irEm.Fmsub(result, a, b, c, ir.F64)
+		case 0x4F: // FNMADD.D
+			e.irEm.Fnmadd(result, a, b, c, ir.F64)
+		case 0x4B: // FNMSUB.D
+			e.irEm.Fnmsub(result, a, b, c, ir.F64)
+		}
+		e.boxF64(rd, e.canonF64(result))
+	}
 }
 
 // ── FP-OP ──────────────────────────────────────────────────────────────
@@ -1763,30 +1936,30 @@ func (e *emitter) emitFPOpS(rd, rs1, rs2, funct3, funct5 uint32) {
 		b := e.unboxF32(rs2)
 		result := e.irEm.Tmp()
 		e.irEm.FAdd(result, a, b, ir.F32)
-		e.boxF32(rd, result)
+		e.boxF32(rd, e.canonF32(result))
 	case 0x01: // FSUB.S
 		a := e.unboxF32(rs1)
 		b := e.unboxF32(rs2)
 		result := e.irEm.Tmp()
 		e.irEm.FSub(result, a, b, ir.F32)
-		e.boxF32(rd, result)
+		e.boxF32(rd, e.canonF32(result))
 	case 0x02: // FMUL.S
 		a := e.unboxF32(rs1)
 		b := e.unboxF32(rs2)
 		result := e.irEm.Tmp()
 		e.irEm.FMul(result, a, b, ir.F32)
-		e.boxF32(rd, result)
+		e.boxF32(rd, e.canonF32(result))
 	case 0x03: // FDIV.S
 		a := e.unboxF32(rs1)
 		b := e.unboxF32(rs2)
 		result := e.irEm.Tmp()
 		e.irEm.FDiv(result, a, b, ir.F32)
-		e.boxF32(rd, result)
+		e.boxF32(rd, e.canonF32(result))
 	case 0x0B: // FSQRT.S
 		a := e.unboxF32(rs1)
 		result := e.irEm.Tmp()
 		e.irEm.FSqrt(result, a, ir.F32)
-		e.boxF32(rd, result)
+		e.boxF32(rd, e.canonF32(result))
 	case 0x04: // FSGNJ.S / FSGNJN.S / FSGNJX.S
 		e.emitFsgnjS(rd, rs1, rs2, funct3)
 	case 0x05: // FMIN.S / FMAX.S
@@ -1794,12 +1967,12 @@ func (e *emitter) emitFPOpS(rd, rs1, rs2, funct3, funct5 uint32) {
 		b := e.unboxF32(rs2)
 		result := e.irEm.Tmp()
 		e.emitFMinMax(result, a, b, ir.F32, funct3 == 1) // funct3=0: MIN, 1: MAX
-		e.boxF32(rd, result)
+		e.boxF32(rd, result) // FMinMax emits canon on the two-NaN path internally
 	case 0x08: // FCVT.S.D
 		a := e.freg(rs1)
 		result := e.irEm.Tmp()
 		e.irEm.FCvtFF(result, a, ir.F64, ir.F32)
-		e.boxF32(rd, result)
+		e.boxF32(rd, e.canonF32(result))
 	case 0x14: // FEQ.S / FLT.S / FLE.S
 		e.emitFcmpS(rd, rs1, rs2, funct3)
 	case 0x18: // FCVT.{W,WU,L,LU}.S
@@ -1822,36 +1995,72 @@ func (e *emitter) emitFPOpS(rd, rs1, rs2, funct3, funct5 uint32) {
 	}
 }
 
+// boxF64 writes a 64-bit double directly into f[rd]. No NaN-boxing is
+// needed for f64 (all 64 bits are the value) but we route through
+// memory to keep the allocator from typed-loading with MOVSD before a
+// possible later re-read: the store-to-f[rd]-as-I64 makes it clean.
+func (e *emitter) boxF64(rd uint32, val ir.VReg) {
+	em := e.irEm
+	intBits := em.Tmp()
+	em.MovT(intBits, val, ir.I64)
+	em.Store(em.FBase(), int64(rd)*8, intBits, ir.I64)
+}
+
+// unboxF64 loads the 64-bit double from f[rs] as F64 suitable for
+// ADDSD/SUBSD/etc. Avoids the FP-VReg typing hazard.
+func (e *emitter) unboxF64(rs uint32) ir.VReg {
+	em := e.irEm
+	intBits := em.Tmp()
+	em.Load(intBits, em.FBase(), int64(rs)*8, ir.I64, false)
+	out := em.Tmp()
+	em.MovT(out, intBits, ir.F64)
+	return out
+}
+
 func (e *emitter) emitFPOpD(rd, rs1, rs2, funct3, funct5 uint32) {
 	switch funct5 {
 	case 0x00: // FADD.D
-		a := e.freg(rs1)
-		b := e.freg(rs2)
-		e.irEm.FAdd(e.fregDst(rd), a, b, ir.F64)
+		a := e.unboxF64(rs1)
+		b := e.unboxF64(rs2)
+		result := e.irEm.Tmp()
+		e.irEm.FAdd(result, a, b, ir.F64)
+		e.boxF64(rd, e.canonF64(result))
 	case 0x01: // FSUB.D
-		a := e.freg(rs1)
-		b := e.freg(rs2)
-		e.irEm.FSub(e.fregDst(rd), a, b, ir.F64)
+		a := e.unboxF64(rs1)
+		b := e.unboxF64(rs2)
+		result := e.irEm.Tmp()
+		e.irEm.FSub(result, a, b, ir.F64)
+		e.boxF64(rd, e.canonF64(result))
 	case 0x02: // FMUL.D
-		a := e.freg(rs1)
-		b := e.freg(rs2)
-		e.irEm.FMul(e.fregDst(rd), a, b, ir.F64)
+		a := e.unboxF64(rs1)
+		b := e.unboxF64(rs2)
+		result := e.irEm.Tmp()
+		e.irEm.FMul(result, a, b, ir.F64)
+		e.boxF64(rd, e.canonF64(result))
 	case 0x03: // FDIV.D
-		a := e.freg(rs1)
-		b := e.freg(rs2)
-		e.irEm.FDiv(e.fregDst(rd), a, b, ir.F64)
+		a := e.unboxF64(rs1)
+		b := e.unboxF64(rs2)
+		result := e.irEm.Tmp()
+		e.irEm.FDiv(result, a, b, ir.F64)
+		e.boxF64(rd, e.canonF64(result))
 	case 0x0B: // FSQRT.D
-		a := e.freg(rs1)
-		e.irEm.FSqrt(e.fregDst(rd), a, ir.F64)
+		a := e.unboxF64(rs1)
+		result := e.irEm.Tmp()
+		e.irEm.FSqrt(result, a, ir.F64)
+		e.boxF64(rd, e.canonF64(result))
 	case 0x04: // FSGNJ.D
 		e.emitFsgnjD(rd, rs1, rs2, funct3)
 	case 0x05: // FMIN.D / FMAX.D
-		a := e.freg(rs1)
-		b := e.freg(rs2)
-		e.emitFMinMax(e.fregDst(rd), a, b, ir.F64, funct3 == 1)
+		a := e.unboxF64(rs1)
+		b := e.unboxF64(rs2)
+		result := e.irEm.Tmp()
+		e.emitFMinMax(result, a, b, ir.F64, funct3 == 1)
+		e.boxF64(rd, result)
 	case 0x08: // FCVT.D.S
 		a := e.unboxF32(rs1)
-		e.irEm.FCvtFF(e.fregDst(rd), a, ir.F32, ir.F64)
+		result := e.irEm.Tmp()
+		e.irEm.FCvtFF(result, a, ir.F32, ir.F64)
+		e.boxF64(rd, e.canonF64(result))
 	case 0x14: // FEQ.D / FLT.D / FLE.D
 		e.emitFcmpD(rd, rs1, rs2, funct3)
 	case 0x18: // FCVT.{W,WU,L,LU}.D

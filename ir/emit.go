@@ -263,6 +263,44 @@ func (e *Emitter) JalrIC(target VReg, siteIdx int) {
 // ── Floating point ──
 
 func (e *Emitter) FAdd(dst, a, b VReg, t Type) { e.op3(IRFAdd, t, dst, a, b) }
+
+// FMA emits Dst = A*B + C with a single IEEE 754 rounding (fused).
+// Used for RISC-V FMADD.{S,D} — spec §11.6. Lowered to VFMADD213SS/SD.
+func (e *Emitter) FMA(dst, a, b, c VReg, t Type) {
+	e.emit(IRInstr{Op: IRFma, T: t, Dst: dst, A: a, B: b, C: c})
+	e.MarkDirty(dst)
+}
+
+// Fmsub: Dst = A*B - C. RISC-V FMSUB.{S,D}. Lowered to VFMSUB213SS/SD.
+func (e *Emitter) Fmsub(dst, a, b, c VReg, t Type) {
+	e.emit(IRInstr{Op: IRFmsub, T: t, Dst: dst, A: a, B: b, C: c})
+	e.MarkDirty(dst)
+}
+
+// Fnmadd: Dst = -(A*B + C) — RISC-V FNMADD. Lowered to VFNMSUB213SS/SD
+// because x86's VFNMSUB computes -(a*b - c) = -a*b + c — wait, let me
+// state the actual x86 semantics carefully:
+//   VFMADD213SS  dst = dst*b + c      (uses dst as a)
+//   VFMSUB213SS  dst = dst*b - c
+//   VFNMADD213SS dst = -(dst*b) + c
+//   VFNMSUB213SS dst = -(dst*b) - c
+// Mapping to RISC-V:
+//   RISC-V FMADD   = a*b + c        → VFMADD213SS
+//   RISC-V FMSUB   = a*b - c        → VFMSUB213SS
+//   RISC-V FNMADD  = -(a*b) - c     → VFNMSUB213SS
+//   RISC-V FNMSUB  = -(a*b) + c     → VFNMADD213SS
+// We'll use the semantic names (IRFnmadd, IRFnmsub) and the lowerer
+// does the RISC-V→x86 opcode mapping.
+func (e *Emitter) Fnmadd(dst, a, b, c VReg, t Type) {
+	e.emit(IRInstr{Op: IRFnmadd, T: t, Dst: dst, A: a, B: b, C: c})
+	e.MarkDirty(dst)
+}
+
+// Fnmsub: Dst = -(A*B - C) = -A*B + C. RISC-V FNMSUB.
+func (e *Emitter) Fnmsub(dst, a, b, c VReg, t Type) {
+	e.emit(IRInstr{Op: IRFnmsub, T: t, Dst: dst, A: a, B: b, C: c})
+	e.MarkDirty(dst)
+}
 func (e *Emitter) FSub(dst, a, b VReg, t Type) { e.op3(IRFSub, t, dst, a, b) }
 func (e *Emitter) FMul(dst, a, b VReg, t Type) { e.op3(IRFMul, t, dst, a, b) }
 func (e *Emitter) FDiv(dst, a, b VReg, t Type) { e.op3(IRFDiv, t, dst, a, b) }

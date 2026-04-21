@@ -357,6 +357,17 @@ func instrUses(ins *IRInstr) []VReg {
 		if ins.A != VRegZero {
 			uses = append(uses, ins.A)
 		}
+	case IRFma, IRFmsub, IRFnmadd, IRFnmsub:
+		// Ternary FP ops: A, B, C are all uses.
+		if ins.A != VRegZero {
+			uses = append(uses, ins.A)
+		}
+		if ins.B != VRegZero {
+			uses = append(uses, ins.B)
+		}
+		if ins.C != VRegZero {
+			uses = append(uses, ins.C)
+		}
 	default:
 		// Standard ops: A and B are uses.
 		if ins.A != VRegZero {
@@ -375,7 +386,7 @@ func MaxVReg(b *Block) VReg {
 	var mx VReg
 	for i := range b.Instrs {
 		ins := &b.Instrs[i]
-		for _, vr := range []VReg{ins.Dst, ins.A, ins.B} {
+		for _, vr := range []VReg{ins.Dst, ins.A, ins.B, ins.C} {
 			if vr > mx {
 				mx = vr
 			}
