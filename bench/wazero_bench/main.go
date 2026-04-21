@@ -11,6 +11,13 @@ import (
 	"github.com/tetratelabs/wazero/sys"
 )
 
+// The number of riscv instructions retired during a
+// run on compiled bench/libriscv_guest/bench_guest.c ;
+// we use this number for the numerator in native
+// benchmarking for an apples-to-apples comparison.
+const NATIVE_RETIRED = 2524935201
+const NATIVE_RETIRED_MILLIONS = 2_524_935_201 / 1_000_000
+
 func main() {
 	wasm, err := os.ReadFile(os.Args[1])
 	if err != nil {
@@ -38,8 +45,15 @@ func main() {
 		}
 	}
 
-	fmt.Printf("runtime init:   %v\n", t1.Sub(t0))
-	fmt.Printf("wasm compile:   %v    <- JIT happens here\n", t2.Sub(t1))
-	fmt.Printf("run:            %v\n", t3.Sub(t2))
+	elap10 := t1.Sub(t0)
+	elap21 := t2.Sub(t1)
+	runElap := t3.Sub(t2)
+	jitAndRunElap := t3.Sub(t1)
+	jitAndRunElapNanos := jitAndRunElap
+
+	fmt.Printf("runtime init:   %v\n", elap10)
+	fmt.Printf("wasm compile:   %v    <- JIT happens here\n", elap21)
+	fmt.Printf("run:            %v\n", runElap)
 	fmt.Printf("total (cold):   %v\n", t3.Sub(t0))
+	fmt.Printf("wasm jit-and-run MIPS   %0.3f\n", 1e9*float64(NATIVE_RETIRED_MILLIONS)/float64(jitAndRunElapNanos))
 }
