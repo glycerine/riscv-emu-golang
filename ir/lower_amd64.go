@@ -2015,13 +2015,52 @@ func (lc *lowerCtx) lowerSyscall(ins *IRInstr) {
 
 	// MOVABS $dispatcher, scratch; CALL scratch.
 	lc.loadImm64(int64(sym.Addr), amd64Scratch1)
-	p := lc.c.NewProg()
-	p.As = obj.ACALL
-	p.To.Type = obj.TYPE_REG
-	p.To.Reg = amd64Scratch1
-	lc.c.Append(p)
+	callProg := lc.c.NewProg()
+	callProg.As = obj.ACALL
+	callProg.To.Type = obj.TYPE_REG
+	callProg.To.Reg = amd64Scratch1
+	lc.c.Append(callProg)
 
-	// Write sret:
+	// Inline fast path (Option D): when InlineSyscall is on, check the
+	// dispatcher's return (0=handled, nonzero=fallback). On 0, chain-
+	// exit to the post-ECALL block. On nonzero, fall through into the
+	// cold-path sret+RET below (today's behavior).
+	//
+	//   TESTQ RAX, RAX
+	//   JNE   L_cold
+	//   <dealloc frame>
+	//   MOVABS R10, <sentinel>   ; patched to post-ECALL chainEntry
+	//   JMP    R10
+	// L_cold:
+	//   ... existing sret write + emitEpilogue ...
+	if InlineSyscall {
+		lc.emitRR(x86.ATESTQ, goasm.REG_AMD64_AX, goasm.REG_AMD64_AX)
+
+		jneCold := lc.c.NewProg()
+		jneCold.As = x86.AJNE
+		jneCold.To.Type = obj.TYPE_BRANCH
+		lc.c.Append(jneCold)
+
+		// Hot path: dealloc spill frame, MOVABS sentinel, JMP R10.
+		// Mirrors lowerChainExit; registers a chainExitInfo so finalize
+		// emits the slow-exit stub and backpatching resolves the target.
+		if lc.frameSize > 0 {
+			lc.emitRI(x86.AADDQ, lc.frameSize, goasm.REG_AMD64_SP)
+		}
+		const sentinel = int64(0x7BADC0DE7BADC0DE)
+		movProg := lc.emitMovabsSentinel(sentinel)
+		lc.chainExits = append(lc.chainExits, chainExitInfo{
+			targetPC: uint64(ins.Imm),
+			movProg:  movProg,
+		})
+		lc.emitJmpReg(amd64Scratch1)
+
+		// L_cold label. Control reaches here only via the JNE taken branch.
+		coldLabel := lc.emitNOP()
+		jneCold.To.SetTarget(coldLabel)
+	}
+
+	// Cold path (the only path when !InlineSyscall):
 	//   [RBX+ 0] = pc+4 (Imm)
 	//   [RBX+ 8] = ic  (RBP)
 	//   [RBX+16] = status (RAX — dispatcher's return: 0=jitOK or 1=jitEcall)
