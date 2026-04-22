@@ -42,9 +42,13 @@ func TestBloat_BenchGuest_0x10de(t *testing.T) {
 		//  - After MaskedLoadAddr/GuestStoreAddr + emitMisalignedStore
 		//    i=0 special-case (2026-04-22): ir=105, host=1079
 		//    (-42 bytes). Cumulative −143 bytes (−11.7%).
-		maxIRInstrs   = 105
-		maxHostBytes  = 1079
-		maxChainExits = 5
+		//  - Temporary bump (Step 2 of function-level compilation):
+		//    IRSyscall removed from lastIRWasTerminator, so finalize()
+		//    emits a dead chain exit after the ECALL block. Goes away
+		//    after Step 4 when ECALL no longer terminates emission.
+		maxIRInstrs   = 112
+		maxHostBytes  = 1160
+		maxChainExits = 6
 	)
 
 	path := os.Getenv("BENCH_ELF")
