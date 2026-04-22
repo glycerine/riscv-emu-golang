@@ -358,7 +358,7 @@ $(HELLO_GC): $(HELLO_SRC) $(HELLO_LD)
 
 hello: hello-elfs
 	@echo "── per-ECALL timing (libriscv vs GoCPU) ────────────────────────"
-	@GOCPU_VIZJIT_OFF=1 $(GO) run -tags libriscv ./bench/hellobench/
+	GOCPU_VIZJIT_OFF=1 $(GO) run -tags libriscv ./bench/hellobench/
 
 bench-wasm:
 	go run ./bench/wazero_bench $(ROOT)/bench/libriscv_guest/bench_guest.wasm
@@ -674,7 +674,9 @@ bench-summary:
 
 test:
 	@echo "── unit tests ──────────────────────────────────────────────────"
-	cd $(ROOT) && $(GO) test -count=1 -v . ./fuzzoracle 2>&1
+	GOCPU_VIZJIT_OFF=1 cd $(ROOT) && $(GO) test -count=1 -v 2>&1
+	GOCPU_VIZJIT_OFF=1 cd $(ROOT) && $(GO) test -count=1 -v ./bench/ 2>&1
+	GOCPU_VIZJIT_OFF=1 cd $(ROOT) && $(GO) test -count=1 -v ./ir/ 2>&1
 
 # ── clean ──────────────────────────────────────────────────────────────────
 
