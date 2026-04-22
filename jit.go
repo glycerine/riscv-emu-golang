@@ -275,17 +275,48 @@ func (j *JIT) InstallAOT(mem *GuestMemory, elfBytes []byte) error {
 		begin := load.VAddr
 		end := load.VAddr + load.MemSz
 		mem.AddExecRegion(begin, end, load.Writable)
-
-		ranges := enumerateBlockRanges(mem, begin, load.MemSz)
-		seg, err := j.jitCompileAOTSegment(mem, ranges, begin, end)
-		if err != nil {
-			continue
-		}
-		seg.isLikelyJIT = load.Writable
-		j.aotSegments = append(j.aotSegments, seg)
+		j.compileAOTRegion(mem, begin, end, load.MemSz, load.Writable)
 	}
 	j.refreshSoleSegment()
 	return nil
+}
+
+// InstallAOTFromMem runs the AOT translator on every executable region
+// already registered on mem (e.g., set up by LoadELFBytes). This is the
+// path RunJIT calls automatically on first entry, so callers who load
+// an ELF through LoadELFBytes get whole-program AOT without having to
+// invoke InstallAOT explicitly. Does nothing if mem has no ExecRegions.
+//
+// Individual segments that fail to compile are skipped silently — the
+// lazy compile path covers them at runtime.
+func (j *JIT) InstallAOTFromMem(mem *GuestMemory) error {
+	regions := mem.ExecRegions()
+	if len(regions) == 0 {
+		return nil
+	}
+	for _, r := range regions {
+		if r.VAddrEnd <= r.VAddrBegin {
+			continue
+		}
+		size := r.VAddrEnd - r.VAddrBegin
+		j.compileAOTRegion(mem, r.VAddrBegin, r.VAddrEnd, size, r.IsLikelyJIT)
+	}
+	j.refreshSoleSegment()
+	return nil
+}
+
+// compileAOTRegion is the shared body of InstallAOT and
+// InstallAOTFromMem: enumerate blocks in [begin, end), compile them as
+// one segment, and record it. Silently skips on failure so other
+// regions still install.
+func (j *JIT) compileAOTRegion(mem *GuestMemory, begin, end, size uint64, writable bool) {
+	ranges := enumerateBlockRanges(mem, begin, size)
+	seg, err := j.jitCompileAOTSegment(mem, ranges, begin, end)
+	if err != nil {
+		return
+	}
+	seg.isLikelyJIT = writable
+	j.aotSegments = append(j.aotSegments, seg)
 }
 
 // CloneShared returns a new JIT that shares j's AOT segments (each
@@ -663,6 +694,15 @@ func (j *JIT) stepBlockResult(_ *CPU, res jitcall.Result) (uint64, error) {
 // RunJIT executes the CPU using JIT-compiled blocks where possible,
 // falling back to the interpreter for untranslatable instructions.
 func (j *JIT) RunJIT(cpu *CPU) error {
+	// AOT is the default: on the first RunJIT call for a JIT that has
+	// no segments yet, transparently translate every executable region
+	// the loader already registered on cpu.mem. Only PCs outside those
+	// regions (self-modifying code, guest-generated blocks, tests that
+	// built a raw mem) fall back to the lazy compile path below.
+	if len(j.aotSegments) == 0 && len(cpu.mem.ExecRegions()) > 0 {
+		_ = j.InstallAOTFromMem(&cpu.mem)
+	}
+
 	for {
 		// Tohost polling — once per dispatch cycle (block granularity).
 		if cpu.watchAddr != 0 {

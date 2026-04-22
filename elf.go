@@ -169,6 +169,15 @@ func loadELFReader(mem *GuestMemory, r io.ReadSeeker) (uint64, error) {
 				return 0, fmt.Errorf("elf: zero BSS for segment %d: %v", i, f)
 			}
 		}
+
+		// Record executable extents so the JIT can auto-install AOT on
+		// first RunJIT. isJIT=true for RW+X (self-modifying code), so
+		// the segment-level flag propagates correctly — matches what
+		// InstallAOT(mem, elfBytes) does for itself.
+		if ph.Flags&pfX != 0 {
+			mem.AddExecRegion(ph.VAddr, ph.VAddr+ph.MemSz, ph.Flags&pfW != 0)
+		}
+
 		loaded++
 	}
 
