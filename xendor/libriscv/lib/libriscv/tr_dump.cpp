@@ -230,7 +230,7 @@ void dump_bintr_c_source(
         os << "# byte range: 0x" << basepc_8 << "..0x" << endpc_8
            << " (" << (endpc - basepc) << " bytes)\n";
         os << "# symbol:     " << sym << "\n";
-        os << "# host code:  pending (phase 2)\n";
+        os << "# host code:  see \"Host x86-64\" section below\n";
         os << "\n";
 
         os << "== Guest RISC-V ==\n";
@@ -329,11 +329,64 @@ std::string disasm_x86_bytes(const void* ptr, size_t len) {
     }
     ::unlink(tmpbuf);
 
-    if (!disasm.empty()) return disasm;
+    if (disasm.empty()) {
+        std::string out = hex_dump(ptr, len);
+        out += "(llvm-mc unavailable — hex dump shown)\n";
+        return out;
+    }
 
-    std::string out = hex_dump(ptr, len);
-    out += "(llvm-mc unavailable — hex dump shown)\n";
-    return out;
+    // Truncate at the first run of zero-padding disassembly past the
+    // last real instruction. TCC emits trailing 00-bytes between a
+    // function's final `ret` and the next symbol; llvm-mc decodes 00 00
+    // as "add byte ptr [rax], al". Walk the lines: remember the index
+    // after the most recent `ret`; if we see >= 4 consecutive
+    // `add byte ptr [rax]...` lines, truncate to that remembered index.
+    std::vector<std::string> lines;
+    {
+        std::istringstream in(disasm);
+        std::string ln;
+        while (std::getline(in, ln)) lines.push_back(std::move(ln));
+    }
+    auto is_zero_pad = [](const std::string& s) {
+        return s.find("add\tbyte ptr [rax], al") != std::string::npos
+            || s.find("add byte ptr [rax], al") != std::string::npos;
+    };
+    auto trimmed_ret_pos = [&]() -> size_t {
+        size_t last_ret = 0;
+        bool have_ret = false;
+        int pad_run = 0;
+        for (size_t i = 0; i < lines.size(); ++i) {
+            const auto& s = lines[i];
+            if (s.find("\tret") != std::string::npos ||
+                (s.size() > 0 && s.rfind("ret", 0) == s.size() - 3)) {
+                last_ret = i + 1;
+                have_ret = true;
+                pad_run = 0;
+            } else if (is_zero_pad(s)) {
+                ++pad_run;
+                if (have_ret && pad_run >= 4) return last_ret;
+            } else {
+                pad_run = 0;
+            }
+        }
+        return lines.size();
+    };
+    size_t keep = trimmed_ret_pos();
+
+    std::string trimmed;
+    trimmed.reserve(disasm.size());
+    for (size_t i = 0; i < keep; ++i) {
+        trimmed += lines[i];
+        trimmed += '\n';
+    }
+    if (keep < lines.size()) {
+        char note[96];
+        std::snprintf(note, sizeof(note),
+            "(%zu lines of zero-padding after last ret elided)\n",
+            lines.size() - keep);
+        trimmed += note;
+    }
+    return trimmed;
 }
 
 } // namespace
