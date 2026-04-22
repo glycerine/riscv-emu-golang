@@ -27,6 +27,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"syscall"
 	"time"
 
 	riscv "riscv"
@@ -50,16 +51,28 @@ func main() {
 	libriscvELF := mustRead(filepath.Join(*flagElfDir, "hello_libriscv.elf"))
 	gocpuELF := mustRead(filepath.Join(*flagElfDir, "hello_gocpu.elf"))
 
+	// We redirect the host process's fd=1 to /dev/null around each
+	// guest run so the direct-SYSCALL path (which writes straight to
+	// the kernel's fd=1) doesn't spam the terminal with ~30000 lines.
+	// libriscv's null_stdout callback and the GoCPU interpreter's
+	// io.Discard WriteFunc don't use fd=1, so the redirect is a no-op
+	// for them — but applying it uniformly keeps the methodology
+	// identical across runners.
+
 	// ── libriscv ──────────────────────────────────────────────────────
 	libriscvNs, stddev := meanVar(*flagRepeat, func() int64 {
-		m := libriscv.NewMachine(libriscvELF, guestMem)
-		if m == nil {
-			die("libriscv.NewMachine returned nil")
-		}
-		defer m.Close()
-		t0 := time.Now()
-		m.RunToCompletion(0)
-		return time.Since(t0).Nanoseconds()
+		var ns int64
+		withStdoutToDevNull(func() {
+			m := libriscv.NewMachine(libriscvELF, guestMem)
+			if m == nil {
+				die("libriscv.NewMachine returned nil")
+			}
+			defer m.Close()
+			t0 := time.Now()
+			m.RunToCompletion(0)
+			ns = time.Since(t0).Nanoseconds()
+		})
+		return ns
 	})
 	printLine("libriscv", libriscvNs, stddev, defaultITERS, "Hello, libriscv!")
 
@@ -70,11 +83,13 @@ func main() {
 	printLine("GoCPU interpreter", gocpuInterpNs, stddev, defaultITERS, "Hello, Go CPU!")
 
 	// ── GoCPU direct syscall (Phase 2) ────────────────────────────────
-	// Emitted only when the direct-syscall fast path is wired up.
-	// Detection is by capability flag on the JIT; until then we skip.
+	// Present when the ECALL fast path is compiled in (see
+	// riscv/internal/syscalls). Runs on a fresh JIT that uses
+	// IRSyscall emission; the guest's ECALL becomes a direct
+	// Go-asm dispatcher call + kernel SYSCALL, no Go dispatch loop.
 	if hasDirectSyscall() {
 		gocpuDirectNs, stddev := meanVar(*flagRepeat, func() int64 {
-			return runGoCPU(gocpuELF /*jit=*/, true, *flagVerify)
+			return runGoCPUDirect(gocpuELF)
 		})
 		printLine("GoCPU direct syscall", gocpuDirectNs, stddev, defaultITERS, "Hello, Go CPU!")
 	}

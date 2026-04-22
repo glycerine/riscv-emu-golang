@@ -283,6 +283,23 @@ func (e *emitter) emitReturn(pc uint64, status int) {
 	e.irEm.Ret(pc, status, ir.VRegZero)
 }
 
+// emitSyscall emits the ECALL fast path: writeback all dirty regs,
+// then emit IRSyscall which CALLs the SysV dispatcher. The dispatcher
+// returns 0 (handled → block exits with Status=jitOK) or 1 (fallback
+// → Status=jitEcall, Go NoteChain layer handles it). Either way the
+// JIT block returns after this.
+//
+// If the fast path is disabled (dispatcherAddr==0) this falls back
+// to the legacy emitReturn(pc, jitEcall) behavior.
+func (e *emitter) emitSyscall(resumePC uint64, dispatcherAddr uintptr) {
+	if dispatcherAddr == 0 {
+		e.emitReturn(resumePC, jitEcall)
+		return
+	}
+	e.irEm.WriteBackAll()
+	e.irEm.Syscall(resumePC, dispatcherAddr)
+}
+
 // allocFaultLabel allocates a per-call-site fault label and registers its
 // (PC, addrVR, status) tuple so finalize() emits a tail returning the actual
 // faulting instruction's PC and the live faulting address. Mirrors the TCC
@@ -1033,7 +1050,7 @@ func (e *emitter) emit32(insn uint32) {
 		switch insn {
 		case 0x00000073: // ECALL
 			e.advancePC(4)
-			e.emitReturn(e.pc, jitEcall)
+			e.emitSyscall(e.pc, currentSyscallDispatcherAddr())
 			e.terminated = true
 		case 0x00100073: // EBREAK
 			e.advancePC(4)
