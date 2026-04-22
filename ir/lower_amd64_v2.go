@@ -538,10 +538,7 @@ func (lc *lowerCtxV2) lowerInstr(ins *IRInstr) error {
 	case IRCall:
 		lc.v2Call(ins)
 	case IRSyscall:
-		// V2 doesn't implement the native ECALL fast path — fall back to
-		// the legacy behavior: emit a regular Ret with status=jitEcall=1
-		// (the Go NoteChain takes over). Matches pre-Phase-2 emission.
-		lc.v2Ret(&IRInstr{Op: IRRet, Imm: ins.Imm, Imm2: 1, A: VRegZero})
+		lc.v2Syscall(ins)
 
 	// FP arithmetic
 	case IRFAdd:
@@ -1048,6 +1045,55 @@ func (lc *lowerCtxV2) v2Call(ins *IRInstr) {
 	if saveSize > 0 {
 		lc.emitRI2(x86.AADDQ, saveSize, goasm.REG_AMD64_SP)
 	}
+}
+
+// v2Syscall — V2 inline ECALL fast path, mirror of V1 lowerSyscall.
+//
+// Imm  = pc+4 (resume PC)
+// Imm2 = CTab index for the dispatcher symbol
+//
+// Emits: SysV arg shuffle from pinned regs, CALL dispatcher, TESTQ RAX,
+// JEQ continue, cold fallback stub that writes sret(jitEcall) and RETs,
+// continue-label. The block keeps executing on the handled path.
+func (lc *lowerCtxV2) v2Syscall(ins *IRInstr) {
+	if int(ins.Imm2) < 0 || int(ins.Imm2) >= len(lc.blk.CTab) {
+		return
+	}
+	sym := lc.blk.CTab[ins.Imm2]
+
+	// SysV arg shuffle: RDI=xBase, RSI=memBase, RDX=memMask.
+	lc.emit2(x86.AMOVQ, amd64RegXBase, goasm.REG_AMD64_DI)
+	lc.emit2(x86.AMOVQ, amd64RegMemBase, goasm.REG_AMD64_SI)
+	lc.emit2(x86.AMOVQ, amd64RegMemMask, goasm.REG_AMD64_DX)
+
+	// MOVABS $dispatcher, R10; CALL R10.
+	lc.loadImm(int64(sym.Addr), amd64Scratch1)
+	p := lc.c.NewProg()
+	p.As = obj.ACALL
+	p.To.Type = obj.TYPE_REG
+	p.To.Reg = amd64Scratch1
+	lc.c.Append(p)
+
+	// TESTQ RAX, RAX; JEQ continue.
+	lc.emit2(x86.ATESTQ, goasm.REG_AMD64_AX, goasm.REG_AMD64_AX)
+	jz := lc.c.NewProg()
+	jz.As = x86.AJEQ
+	jz.To.Type = obj.TYPE_BRANCH
+	lc.c.Append(jz)
+
+	// Cold fallback: dispatcher returned non-zero — RET with jitEcall.
+	lc.loadImm(ins.Imm, amd64Scratch1)
+	lc.emitMR2(x86.AMOVQ, amd64Scratch1, amd64RegSret, 0)
+	lc.emitMR2(x86.AMOVQ, amd64RegIC, amd64RegSret, 8)
+	lc.emitMI2(x86.AMOVQ, 1, amd64RegSret, 16)
+	lc.emitMI2(x86.AMOVQ, 0, amd64RegSret, 24)
+	lc.emitEpilogue()
+
+	// Continue label: NOP; happy path lands here and falls through.
+	cont := lc.c.NewProg()
+	cont.As = obj.ANOP
+	lc.c.Append(cont)
+	jz.To.SetTarget(cont)
 }
 
 // ── FP ops ──

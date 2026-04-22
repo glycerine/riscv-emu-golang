@@ -40,3 +40,24 @@ func currentSyscallDispatcherAddr() uintptr {
 	}
 	return syscallDispatcherAddr
 }
+
+// inlineEcallDisabled controls whether ECALL stays inline in the JIT
+// block (false, default) or terminates the block (true). Only effective
+// when the direct-syscall fast path is also enabled; without a
+// dispatcher there is nothing to inline.
+var inlineEcallDisabled bool
+
+// DisableInlineEcall forces ECALL to terminate the JIT block. Used as
+// a rollback hatch and by tests that need the legacy block-boundary
+// semantics.
+func DisableInlineEcall() { inlineEcallDisabled = true }
+
+// EnableInlineEcall restores inline-ECALL behavior (the default).
+func EnableInlineEcall() { inlineEcallDisabled = false }
+
+// InlineEcallEnabled reports whether new JIT blocks keep ECALL inline.
+// Requires the direct-syscall fast path (DirectSyscallEnabled) as well —
+// inline only makes sense when there is a dispatcher to call.
+func InlineEcallEnabled() bool {
+	return !inlineEcallDisabled && DirectSyscallEnabled()
+}

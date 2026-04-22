@@ -87,6 +87,12 @@ func classifyFlow(mem *GuestMemory, pc uint64) (flowClass, uint64, uint64) {
 	case 0x67: // JALR
 		return flowTerm, 0, 4
 	case 0x73: // SYSTEM (ECALL, EBREAK, CSR)
+		// ECALL alone (funct7=0, rs2=0, rs1=0, funct3=0, rd=0 → insn[31:7]==0)
+		// becomes flowSeq when inline-ECALL is enabled so BFS crosses it.
+		// EBREAK and CSR* stay terminators.
+		if insn>>7 == 0 && InlineEcallEnabled() {
+			return flowSeq, 0, 4
+		}
 		return flowTerm, 0, 4
 	default:
 		return flowSeq, 0, 4

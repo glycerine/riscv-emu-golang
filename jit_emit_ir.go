@@ -1051,7 +1051,12 @@ func (e *emitter) emit32(insn uint32) {
 		case 0x00000073: // ECALL
 			e.advancePC(4)
 			e.emitSyscall(e.pc, currentSyscallDispatcherAddr())
-			e.terminated = true
+			// Terminate only when there's no fast path to stay inline on.
+			// With InlineEcallEnabled, the block continues past ECALL; the
+			// lowerer emits an inline CALL + status check.
+			if !InlineEcallEnabled() {
+				e.terminated = true
+			}
 		case 0x00100073: // EBREAK
 			e.advancePC(4)
 			e.emitReturn(e.pc, jitEbreak)

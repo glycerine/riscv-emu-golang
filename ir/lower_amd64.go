@@ -1988,17 +1988,20 @@ func (lc *lowerCtx) lowerCall(ins *IRInstr) {
 	}
 }
 
-// lowerSyscall lowers IRSyscall — the ECALL fast path.
+// lowerSyscall lowers IRSyscall — the ECALL inline fast path.
 //
 // Imm  = pc+4 (where to resume after the syscall)
 // Imm2 = CTab index for the dispatcher symbol (Addr = SysV-ABI entry)
 //
 // The emitter is required to have emitted WriteBack for all dirty
 // VRegs beforehand so the dispatcher sees fresh values in x[]. The
-// dispatcher may overwrite x[10] (a0 = return value / -errno).
+// dispatcher may overwrite x[10] (a0 = return value / -errno) and
+// clobbers every caller-saved host reg — the emitter handles guest-
+// reg reloads lazily via XReg/FRegV hooks.
 //
-// Emits: set up SysV args from pinned regs, CALL dispatcher, write
-// sret with Status = RAX, emit epilogue. Terminator.
+// Emits: SysV arg shuffle, CALL dispatcher, TESTQ RAX, JZ continue,
+// cold fallback stub (writes sret with Status=jitEcall and RETs),
+// continue-label (fall-through). Happy path stays in the block.
 func (lc *lowerCtx) lowerSyscall(ins *IRInstr) {
 	if int(ins.Imm2) < 0 || int(ins.Imm2) >= len(lc.blk.CTab) {
 		return
@@ -2021,18 +2024,32 @@ func (lc *lowerCtx) lowerSyscall(ins *IRInstr) {
 	p.To.Reg = amd64Scratch1
 	lc.c.Append(p)
 
-	// Write sret:
-	//   [RBX+ 0] = pc+4 (Imm)
-	//   [RBX+ 8] = ic  (RBP)
-	//   [RBX+16] = status (RAX — dispatcher's return: 0=jitOK or 1=jitEcall)
+	// TESTQ RAX, RAX — ZF=1 iff dispatcher handled the syscall (status=0).
+	lc.emitRR(x86.ATESTQ, goasm.REG_AMD64_AX, goasm.REG_AMD64_AX)
+
+	// JEQ continue — forward jump over the cold fallback stub.
+	jz := lc.c.NewProg()
+	jz.As = x86.AJEQ
+	jz.To.Type = obj.TYPE_BRANCH
+	lc.c.Append(jz)
+
+	// Cold fallback stub: dispatcher returned non-zero (unknown syscall).
+	// Write sret with Status=jitEcall so Go's NoteChain handles it.
+	//   [RBX+ 0] = pc+4
+	//   [RBX+ 8] = ic (RBP)
+	//   [RBX+16] = 1 (jitEcall)
 	//   [RBX+24] = 0
 	lc.loadImm64(ins.Imm, amd64Scratch1)
 	lc.emitMR(x86.AMOVQ, amd64Scratch1, amd64RegSret, 0)
 	lc.emitMR(x86.AMOVQ, amd64RegIC, amd64RegSret, 8)
-	lc.emitMR(x86.AMOVQ, goasm.REG_AMD64_AX, amd64RegSret, 16)
+	lc.emitMI(x86.AMOVQ, 1, amd64RegSret, 16)
 	lc.emitMI(x86.AMOVQ, 0, amd64RegSret, 24)
-
 	lc.emitEpilogue()
+
+	// Continue label: happy path lands here and falls through to the
+	// next IR op.
+	cont := lc.emitNOP()
+	jz.To.SetTarget(cont)
 }
 
 // liveCallerSaved returns the caller-saved registers that hold live VRegs

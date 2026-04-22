@@ -6,6 +6,18 @@ type Emitter struct {
 	dirty   []bool // dirty[vr] = true if vr written but not written back
 	nextTmp VReg   // next temporary VReg to allocate
 
+	// touched[i] = true once XReg(i) / FRegV(i-32) has been referenced
+	// anywhere in this block. Used by Syscall to mark which guest regs
+	// need lazy reload after the dispatcher CALL clobbers caller-saved
+	// host regs. Indexed in the same VReg space: 0..31 = X, 32..63 = F.
+	touched [64]bool
+
+	// needsReload[i] = true means XReg(i) / FRegV(i-32) currently holds
+	// a stale host-register value (host reg was clobbered by a CALL),
+	// and the next reference must emit IRLoad from x[]/f[] first.
+	// Cleared on reload.
+	needsReload [64]bool
+
 	// Parameter VRegs — set during NewEmitter, represent the JIT block's
 	// function arguments (pinned to host regs by the register allocator).
 	xBase   VReg // pointer to x[32] array
@@ -46,18 +58,33 @@ func (e *Emitter) Tmp() VReg {
 }
 
 // XReg returns the VReg for guest integer register x[i] (0..31).
+// If a prior IRSyscall in this block flagged i as needing reload, an
+// IRLoad from x[i] is emitted first so the host reg gets a fresh value
+// (caller-saved hosts are clobbered by the dispatcher CALL).
 func (e *Emitter) XReg(i uint32) VReg {
 	if i > 31 {
 		panic("ir.Emitter.XReg: index > 31")
 	}
+	if i != 0 && e.needsReload[i] {
+		e.needsReload[i] = false
+		e.Load(VReg(i), e.xBase, int64(i)*8, I64, false)
+	}
+	e.touched[i] = true
 	return VReg(i)
 }
 
 // FRegV returns the VReg for guest FP register f[i] (0..31).
+// Same lazy-reload semantics as XReg: reloads from f[i] on first use
+// after an IRSyscall clobber.
 func (e *Emitter) FRegV(i uint32) VReg {
 	if i > 31 {
 		panic("ir.Emitter.FRegV: index > 31")
 	}
+	if e.needsReload[32+i] {
+		e.needsReload[32+i] = false
+		e.Load(VReg(32+i), e.fBase, int64(i)*8, F64, false)
+	}
+	e.touched[32+i] = true
 	return VReg(32 + i)
 }
 
@@ -253,9 +280,13 @@ func (e *Emitter) ChainExit(targetPC uint64, exitIdx int) {
 // continues (pc+4). The caller must emit WriteBackAll before Syscall
 // so the dispatcher sees fresh guest registers in x[].
 //
-// This is a block terminator: the JIT block returns after the call
-// with Status set from the dispatcher's return value (0=jitOK on fast
-// path, 1=jitEcall for fallback to the Go NoteChain).
+// With inline-ECALL, this is NOT a block terminator — the lowerer emits
+// CALL dispatcher + TESTQ RAX + JZ continue + (cold fallback stub that
+// RETs with Status=jitEcall) + continue-label. The block keeps
+// executing. Because every AllocReg VReg lands in a caller-saved host
+// reg (RBX/RBP/R12-R15 are pinned), the CALL clobbers every live VReg.
+// Syscall marks touched guest regs as needing lazy reload — the next
+// XReg/FRegV reference emits an IRLoad before returning the VReg.
 func (e *Emitter) Syscall(resumePC uint64, dispatcherAddr uintptr) {
 	const sym = "syscall_dispatcher"
 	idx := -1
@@ -273,6 +304,20 @@ func (e *Emitter) Syscall(resumePC uint64, dispatcherAddr uintptr) {
 		e.Block.CTab = append(e.Block.CTab, CSym{Name: sym, Addr: dispatcherAddr})
 	}
 	e.emit(IRInstr{Op: IRSyscall, Imm: int64(resumePC), Imm2: int64(idx)})
+
+	// Every guest reg we've touched so far in this block may live in a
+	// caller-saved host reg that the dispatcher CALL just clobbered.
+	// Mark all for lazy reload on next use. Skip X0 (always zero).
+	for i := 1; i < 64; i++ {
+		if e.touched[i] {
+			e.needsReload[i] = true
+		}
+	}
+	// WriteBackAll ran before Syscall, so fresh values are in x[]/f[].
+	// Nothing is dirty until the next write.
+	for i := range e.dirty {
+		e.dirty[i] = false
+	}
 }
 
 // JalrIC emits a JALR-site inline cache. The lowerer emits a
