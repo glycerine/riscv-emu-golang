@@ -34,6 +34,7 @@ extern "C" int unlink(const char* path);
 #include "safe_instr_loader.hpp"
 #include "threaded_bytecodes.hpp"
 #include "tr_api.hpp"
+#include "tr_dump.hpp"
 #include "tr_types.hpp"
 #include "util/crc32.hpp"
 #ifdef RISCV_EXT_C
@@ -66,11 +67,8 @@ namespace riscv
 	// file directly in the project, which allows it to run global constructors.
 	// The constructor will register the translation with the binary translator,
 	// and we can check against this list when loading translations.
-	template <int W>
-	struct Mapping {
-		address_type<W> addr;
-		unsigned mapping_index;
-	};
+	// NOTE: `Mapping<W>` definition lives in tr_dump.hpp so the dumper can
+	// accept typed pointers to these arrays.
 
 	// This implementation is designed to make sure it's not a global constructor
 	// instead it will get zeroed from BSS
@@ -909,21 +907,17 @@ void CPU<W>::try_translate(const MachineOptions<W>& options, const std::string& 
 			// Final shared library loadable code w/footer
 			const std::string shared_library_code = *output.code + output.footer;
 
+			// Diagnostic dump: one file per compiled block, gated on the
+			// LIBRISCV_DUMP_DIR env var. Zero cost when unset. See
+			// tr_dump.hpp for format and env-var docs.
+			dump_bintr_c_source<W>(shared_library_code, output.mappings,
+				this->machine().memory, exec->translation_hash());
+
 			TIME_POINT(t9);
 			// If translate_invoke_compiler is disabled, do not compile
 			// This allows for producing embeddable code without invoking the compiler
 			if (libtcc_enabled && options.translate_invoke_compiler) {
 				extern void* libtcc_compile(const std::string&, int arch, const std::unordered_map<std::string, std::string>& defines, const std::string&);
-				// XXX: Debugging: write the compiled code to a file
-				if constexpr (false) {
-					std::ofstream ofs("libtcc_output.c", std::ios::out | std::ios::trunc);
-					if (ofs.is_open()) {
-						ofs << shared_library_code;
-						ofs.close();
-					} else {
-						fprintf(stderr, "libriscv: Failed to write libtcc output to file\n");
-					}
-				}
 				dylib = libtcc_compile(shared_library_code, W, output.defines, "");
 			} else if (options.translate_invoke_compiler) {
 				extern void* compile(const std::string&, int arch, const std::string& cflags, const std::string&);
@@ -1069,6 +1063,12 @@ void CPU<W>::activate_dylib(const MachineOptions<W>& options, DecodedExecuteSegm
 	exec.set_mapping(unique_mappings, [] (CPU<W>&, uint64_t, uint64_t, address_t) -> bintr_block_returns<W> {
 		throw MachineException(INVALID_PROGRAM, "Translation mapping outside execute area");
 	});
+
+	// Phase 2 diagnostic dump: append x86-64 disasm to each per-block
+	// file (written by Phase 1 inside binary_translate, pre-TCC).
+	// Zero cost when LIBRISCV_DUMP_DIR is unset.
+	dump_bintr_host_asm<W>(mappings, nmappings, handlers, unique_mappings,
+		exec.translation_hash());
 
 	// Apply mappings to decoder cache
 	// NOTE: It is possible to optimize this by applying from the end towards the beginning

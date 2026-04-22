@@ -155,6 +155,7 @@ endif()
 if (RISCV_BINARY_TRANSLATION)
 	list(APPEND SOURCES
 		libriscv/tr_api.cpp
+		libriscv/tr_dump.cpp
 		libriscv/tr_emit.cpp
 		libriscv/tr_translate.cpp
 	)

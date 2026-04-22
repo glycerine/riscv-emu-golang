@@ -53,6 +53,13 @@ func main() {
 	)
 	flag.Parse()
 
+	// If the user asked for GoCPU VizJit dumps, mirror the setup on the
+	// libriscv side so every block gets a companion file in
+	// debug_libriscv_dir/ with the same <tag>.asm.pc_0x... prefix.
+	// Must run before any NewMachine/InstallAOT call (libriscv reads
+	// LIBRISCV_DUMP_DIR at translation time).
+	setupLibriscvDump()
+
 	libriscvELF := mustRead(filepath.Join(*flagElfDir, "hello_libriscv.elf"))
 	gocpuELF := mustRead(filepath.Join(*flagElfDir, "hello_gocpu.elf"))
 
@@ -603,6 +610,39 @@ func printLine(label string, perCall, stddev float64, iters int, tag string) {
 	perCall /= float64(iters)
 	stddev /= float64(iters)
 	fmt.Printf("  %-20s %0.1f +/- %0.2f ns/call   %s\n", label, perCall, stddev, tag)
+}
+
+// setupLibriscvDump bridges GoCPU's VizJit dump feature with the new
+// libriscv-side dumper in xendor/libriscv/lib/libriscv/tr_dump.cpp. The
+// two sides read different env vars; this helper makes "enable dumps"
+// a single environmental switch (GOCPU_VIZJIT) that lights up both.
+//
+// Behavior:
+//   - If neither GOCPU_VIZJIT nor LIBRISCV_DUMP_DIR is set, noop.
+//   - If GOCPU_VIZJIT is set but LIBRISCV_DUMP_DIR is not, default
+//     LIBRISCV_DUMP_DIR to <parent>/debug_libriscv_dir.
+//   - Propagate GoCPU's 16-hex run tag into LIBRISCV_DUMP_TAG so both
+//     dump sets share the same <tag>.asm.pc_0x... prefix — keys `diff`
+//     alignment.
+func setupLibriscvDump() {
+	gocpuDir := os.Getenv("GOCPU_VIZJIT")
+	lrDir := os.Getenv("LIBRISCV_DUMP_DIR")
+	if gocpuDir == "" && lrDir == "" {
+		return
+	}
+	if lrDir == "" {
+		lrDir = filepath.Join(filepath.Dir(gocpuDir), "debug_libriscv_dir")
+		_ = os.Setenv("LIBRISCV_DUMP_DIR", lrDir)
+	}
+	if err := os.MkdirAll(lrDir, 0o755); err != nil {
+		fmt.Fprintf(os.Stderr, "hellobench: could not create %s: %v\n", lrDir, err)
+		return
+	}
+	if os.Getenv("LIBRISCV_DUMP_TAG") == "" {
+		_ = os.Setenv("LIBRISCV_DUMP_TAG", riscv.GetVizJitTag())
+	}
+	fmt.Fprintf(os.Stderr, "# libriscv dumps -> %s (tag=%s)\n",
+		lrDir, os.Getenv("LIBRISCV_DUMP_TAG"))
 }
 
 func mustRead(path string) []byte {

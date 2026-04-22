@@ -41,6 +41,11 @@ func getVizJitTag() string {
 	return vizJitTag
 }
 
+// GetVizJitTag returns the 16-hex-char run tag used in VizJit dump
+// filenames. Intended for callers outside this package (e.g. hellobench)
+// that want to align companion dumps with GoCPU's by sharing the tag.
+func GetVizJitTag() string { return getVizJitTag() }
+
 // vizJitEnabled returns the dump directory if VizJit is active, or
 // ("", false) if disabled. Creates the directory on first active
 // call.
