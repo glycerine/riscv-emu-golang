@@ -23,6 +23,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -40,9 +41,9 @@ const (
 
 func main() {
 	var (
-		flagRepeat  = flag.Int("repeat", 5, "take best of N runs per configuration")
-		flagVerify  = flag.Bool("verify", false, "verify output string on first run")
-		flagElfDir  = flag.String("elfdir", "bench/hello_guest", "dir containing hello_*.elf")
+		flagRepeat = flag.Int("repeat", 5, "take best of N runs per configuration")
+		flagVerify = flag.Bool("verify", false, "verify output string on first run")
+		flagElfDir = flag.String("elfdir", "bench/hello_guest", "dir containing hello_*.elf")
 	)
 	flag.Parse()
 
@@ -50,7 +51,7 @@ func main() {
 	gocpuELF := mustRead(filepath.Join(*flagElfDir, "hello_gocpu.elf"))
 
 	// ── libriscv ──────────────────────────────────────────────────────
-	libriscvNs := bestOf(*flagRepeat, func() int64 {
+	libriscvNs, stddev := meanVar(*flagRepeat, func() int64 {
 		m := libriscv.NewMachine(libriscvELF, guestMem)
 		if m == nil {
 			die("libriscv.NewMachine returned nil")
@@ -60,22 +61,22 @@ func main() {
 		m.RunToCompletion(0)
 		return time.Since(t0).Nanoseconds()
 	})
-	printLine("libriscv", libriscvNs, defaultITERS, "Hello, libriscv!")
+	printLine("libriscv", libriscvNs, stddev, defaultITERS, "Hello, libriscv!")
 
 	// ── GoCPU interpreter ─────────────────────────────────────────────
-	gocpuInterpNs := bestOf(*flagRepeat, func() int64 {
-		return runGoCPU(gocpuELF, /*jit=*/ false, *flagVerify)
+	gocpuInterpNs, stddev := meanVar(*flagRepeat, func() int64 {
+		return runGoCPU(gocpuELF /*jit=*/, false, *flagVerify)
 	})
-	printLine("GoCPU interpreter", gocpuInterpNs, defaultITERS, "Hello, Go CPU!")
+	printLine("GoCPU interpreter", gocpuInterpNs, stddev, defaultITERS, "Hello, Go CPU!")
 
 	// ── GoCPU direct syscall (Phase 2) ────────────────────────────────
 	// Emitted only when the direct-syscall fast path is wired up.
 	// Detection is by capability flag on the JIT; until then we skip.
 	if hasDirectSyscall() {
-		gocpuDirectNs := bestOf(*flagRepeat, func() int64 {
-			return runGoCPU(gocpuELF, /*jit=*/ true, *flagVerify)
+		gocpuDirectNs, stddev := meanVar(*flagRepeat, func() int64 {
+			return runGoCPU(gocpuELF /*jit=*/, true, *flagVerify)
 		})
-		printLine("GoCPU direct syscall", gocpuDirectNs, defaultITERS, "Hello, Go CPU!")
+		printLine("GoCPU direct syscall", gocpuDirectNs, stddev, defaultITERS, "Hello, Go CPU!")
 	}
 }
 
@@ -143,23 +144,31 @@ func hasDirectSyscall() bool {
 	return false
 }
 
-func bestOf(n int, run func() int64) int64 {
+func meanVar(n int, run func() int64) (mean, stddev float64) {
 	if n < 1 {
 		n = 1
 	}
-	best := run()
-	for i := 1; i < n; i++ {
-		t := run()
-		if t < best {
-			best = t
-		}
+	var tms []float64
+	var sum float64
+	for range n {
+		t := float64(run())
+		tms = append(tms, t)
+		sum += t
 	}
-	return best
+	mean = sum / float64(n)
+	var v float64
+	for _, t := range tms {
+		d := (t - mean)
+		v += d * d
+	}
+	v = v / float64(n)
+	stddev = math.Sqrt(v)
+
+	return
 }
 
-func printLine(label string, totalNs int64, iters int, tag string) {
-	perCall := totalNs / int64(iters)
-	fmt.Printf("  %-20s %6d ns/call   %s\n", label, perCall, tag)
+func printLine(label string, perCall, stddev float64, iters int, tag string) {
+	fmt.Printf("  %-20s %0.1f +/- %0.2f ns/call   %s\n", label, perCall, stddev, tag)
 }
 
 func mustRead(path string) []byte {

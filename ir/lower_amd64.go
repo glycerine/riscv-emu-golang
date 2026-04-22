@@ -797,7 +797,7 @@ func (lc *lowerCtx) lowerInstr(ins *IRInstr) error {
 		IRShl, IRShr, IRSar, // may save CX to R11
 		IRLoadX, IRStoreX, // R10/R11 for address computation
 		IRLabel, IRBranch, IRBranchImm, IRJump, // control flow
-		IRRet, IRRetDyn, IRChainExit, IRJalrIC, IRCall, // exits/calls
+		IRRet, IRRetDyn, IRChainExit, IRJalrIC, IRCall, IRSyscall, // exits/calls
 		IRFAdd, IRFSub, IRFMul, IRFDiv, IRFSqrt, IRFNeg, IRFAbs, IRFCmp, // FP uses FP scratch
 		IRFma, IRFmsub, IRFnmadd, IRFnmsub,                               // FP ternary (FMA family)
 		IRFCvtToI, IRFCvtToU, IRFCvtFromI, IRFCvtFromU, IRFCvtFF: // FP conversions
@@ -934,6 +934,8 @@ func (lc *lowerCtx) lowerInstr(ins *IRInstr) error {
 		lc.lowerJalrIC(ins)
 	case IRCall:
 		lc.lowerCall(ins)
+	case IRSyscall:
+		lc.lowerSyscall(ins)
 
 	// FP arithmetic
 	case IRFAdd:
@@ -1984,6 +1986,53 @@ func (lc *lowerCtx) lowerCall(ins *IRInstr) {
 	if saveSize > 0 {
 		lc.emitRI(x86.AADDQ, saveSize, goasm.REG_AMD64_SP)
 	}
+}
+
+// lowerSyscall lowers IRSyscall — the ECALL fast path.
+//
+// Imm  = pc+4 (where to resume after the syscall)
+// Imm2 = CTab index for the dispatcher symbol (Addr = SysV-ABI entry)
+//
+// The emitter is required to have emitted WriteBack for all dirty
+// VRegs beforehand so the dispatcher sees fresh values in x[]. The
+// dispatcher may overwrite x[10] (a0 = return value / -errno).
+//
+// Emits: set up SysV args from pinned regs, CALL dispatcher, write
+// sret with Status = RAX, emit epilogue. Terminator.
+func (lc *lowerCtx) lowerSyscall(ins *IRInstr) {
+	if int(ins.Imm2) < 0 || int(ins.Imm2) >= len(lc.blk.CTab) {
+		return
+	}
+	sym := lc.blk.CTab[ins.Imm2]
+
+	// Move pinned-callee-saved JIT context to SysV caller-saved arg regs.
+	//   RDI = xBase (R12)
+	//   RSI = memBase (R14)
+	//   RDX = memMask (R15)
+	lc.emitRR(x86.AMOVQ, amd64RegXBase, goasm.REG_AMD64_DI)
+	lc.emitRR(x86.AMOVQ, amd64RegMemBase, goasm.REG_AMD64_SI)
+	lc.emitRR(x86.AMOVQ, amd64RegMemMask, goasm.REG_AMD64_DX)
+
+	// MOVABS $dispatcher, scratch; CALL scratch.
+	lc.loadImm64(int64(sym.Addr), amd64Scratch1)
+	p := lc.c.NewProg()
+	p.As = obj.ACALL
+	p.To.Type = obj.TYPE_REG
+	p.To.Reg = amd64Scratch1
+	lc.c.Append(p)
+
+	// Write sret:
+	//   [RBX+ 0] = pc+4 (Imm)
+	//   [RBX+ 8] = ic  (RBP)
+	//   [RBX+16] = status (RAX — dispatcher's return: 0=jitOK or 1=jitEcall)
+	//   [RBX+24] = 0
+	lc.loadImm64(ins.Imm, amd64Scratch1)
+	lc.emitMR(x86.AMOVQ, amd64Scratch1, amd64RegSret, 0)
+	lc.emitMR(x86.AMOVQ, amd64RegIC, amd64RegSret, 8)
+	lc.emitMR(x86.AMOVQ, goasm.REG_AMD64_AX, amd64RegSret, 16)
+	lc.emitMI(x86.AMOVQ, 0, amd64RegSret, 24)
+
+	lc.emitEpilogue()
 }
 
 // liveCallerSaved returns the caller-saved registers that hold live VRegs

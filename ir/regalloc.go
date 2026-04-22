@@ -296,7 +296,7 @@ func instrDefs(ins *IRInstr) VReg {
 	switch ins.Op {
 	case IRStore, IRStoreX,
 		IRLabel, IRBranch, IRBranchImm, IRJump,
-		IRCall, IRRet, IRRetDyn, IRChainExit,
+		IRCall, IRRet, IRRetDyn, IRChainExit, IRSyscall,
 		IRMarkLive, IRMarkDead, IRWriteback:
 		return VRegZero
 	default:
@@ -311,7 +311,7 @@ func instrUses(ins *IRInstr) []VReg {
 	switch ins.Op {
 	case IRConst:
 		// No source VRegs — immediate only.
-	case IRLabel, IRJump, IRWriteback, IRCall, IRChainExit:
+	case IRLabel, IRJump, IRWriteback, IRCall, IRChainExit, IRSyscall:
 		// No VReg uses.
 	case IRStoreX:
 		// A = base, B = index, Dst = value (repurposed)

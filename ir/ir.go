@@ -191,6 +191,9 @@ const (
 	IRRetDyn    // return {pc=A, status=Imm, faultAddr=B}  — dynamic PC from VReg
 	IRChainExit // chain exit: {targetPC=Imm, exitIdx=Imm2}. WriteBackAll must precede.
 	IRJalrIC    // JALR site inline cache: {targetVReg=A, siteIdx=Imm}. WriteBackAll must precede.
+	IRSyscall   // ECALL fast path. Imm=pc+4 (resume), Imm2=CTab index for dispatcher sym.
+	// Calls the SysV-ABI dispatcher with (xBase, memBase, memMask), writes sret with
+	// Status=RAX (0=jitOK, 1=jitEcall), and returns. Terminator. WriteBackAll must precede.
 
 	// Floating point
 	IRFAdd      // Dst = A + B       (FP, type T)
@@ -279,6 +282,7 @@ var irOpNames = [...]string{
 	IRRetDyn:    "ret_dyn",
 	IRChainExit: "chain_exit",
 	IRJalrIC:    "jalr_ic",
+	IRSyscall:   "syscall",
 	IRFAdd:      "fadd",
 	IRFSub:      "fsub",
 	IRFMul:      "fmul",
