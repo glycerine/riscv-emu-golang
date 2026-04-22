@@ -1050,12 +1050,25 @@ func (e *emitter) emit32(insn uint32) {
 		switch insn {
 		case 0x00000073: // ECALL
 			e.advancePC(4)
-			e.emitSyscall(e.pc, currentSyscallDispatcherAddr())
-			// Terminate only when there's no fast path to stay inline on.
-			// With InlineEcallEnabled, the block continues past ECALL; the
-			// lowerer emits an inline CALL + status check.
-			if !InlineEcallEnabled() {
+			dispAddr := currentSyscallDispatcherAddr()
+			switch {
+			case dispAddr == 0:
+				// No fast path — full Go NoteChain fallback.
+				e.emitReturn(e.pc, jitEcall)
 				e.terminated = true
+			case !InlineEcallEnabled():
+				// Fast path available but inline disabled: CALL the
+				// dispatcher, then terminate the block. The lowerer's
+				// fallback stub RETs with jitEcall on non-zero status;
+				// the happy path falls through to the Ret we emit here
+				// with status=jitOK.
+				e.emitSyscall(e.pc, dispAddr)
+				e.irEm.Ret(e.pc, jitOK, ir.VRegZero)
+				e.terminated = true
+			default:
+				// Mode 1: inline continuation. Block keeps executing
+				// past the CALL; no termination here.
+				e.emitSyscall(e.pc, dispAddr)
 			}
 		case 0x00100073: // EBREAK
 			e.advancePC(4)
