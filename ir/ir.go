@@ -1,6 +1,21 @@
 package ir
 
-import "fmt"
+import (
+	"fmt"
+	"os"
+)
+
+// VIZJIT_DIR is a debug facility for viewing the assembly output.
+// It is a directory path where disassembly will be dumped.
+var VIZJIT_DIR string = "/User/jaten/go/src/github.com/glycerine/riscv-emu-golang/debug_vizjit_dir"
+
+func init() {
+	viz := os.Getenv("GOCPU_VIZJIT")
+	if viz != "" {
+		VIZJIT_DIR = viz
+		fmt.Fprintf(os.Stderr, "env var GOCPU_VIZJIT was set: writing disassembly to dir: '%v'\n", viz)
+	}
+}
 
 // VReg is a virtual register index. 0 is reserved for "discard" (sink writes,
 // zero reads — mirrors RISC-V's x0). Emitter allocates fresh VRegs via Tmp()
