@@ -877,3 +877,9 @@ darwin-perf: kpc_perf/kpc_perf.c
 linux-perf:
 	cd bench && go test -c && sudo ./perf_l1.sh ./bench.test -test.v -test.count=1 -test.benchtime=1x -test.benchmem -test.run=xxx -test.bench='^BenchmarkCPU_FullExecution$$'
 
+hello-lib:
+	# hellobench auto-sets LIBRISCV_DUMP_DIR to a sibling path 
+	# and propagates GoCPU's 16-hex run tag, so diff works:
+	# diff ~/ris/debug_vizjit_dir/<tag>.gocpu.asm.pc_<X>.asm ~/ris/debug_libriscv_dir/<tag>.libriscv.asm.pc_<X>.asm
+	GOCPU_VIZJIT=~/ris/debug_vizjit_dir \
+        go run -tags libriscv ./bench/hellobench/ # -only=libriscv

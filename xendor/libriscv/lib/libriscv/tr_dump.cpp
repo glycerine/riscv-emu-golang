@@ -146,7 +146,7 @@ void dump_guest_hex(std::ostream& os, const Memory<W>& mem, uint64_t basepc, uin
         uint32_t raw = 0;
         int n = read_one_insn<W>(mem, pc, raw);
         if (n == 0) {
-            os << "  0x" << fmt_hex(pc, 8) << "  <unreadable>\n";
+            os << "0x" << fmt_hex(pc, 8) << "  <unreadable>\n";
             break;
         }
         // All-zero encodings are "illegal" — a reliable signal of padding
@@ -157,11 +157,15 @@ void dump_guest_hex(std::ostream& os, const Memory<W>& mem, uint64_t basepc, uin
             zero_run = 0;
         }
         char buf[64];
+        // Format matches GoCPU's vizJitDisasmGuest so a Go-side post-pass
+        // can append mnemonics without touching layout. 2-byte hex gets
+        // 6 trailing spaces, 4-byte hex gets 2, so the mnemonic column
+        // lands at the same offset in both cases.
         if (n == 2) {
-            std::snprintf(buf, sizeof(buf), "  0x%08lx  %04x\n",
+            std::snprintf(buf, sizeof(buf), "0x%08lx  %04x\n",
                 (unsigned long)pc, (unsigned)(raw & 0xffff));
         } else {
-            std::snprintf(buf, sizeof(buf), "  0x%08lx  %08x\n",
+            std::snprintf(buf, sizeof(buf), "0x%08lx  %08x\n",
                 (unsigned long)pc, (unsigned)raw);
         }
         os << buf;

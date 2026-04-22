@@ -59,6 +59,11 @@ func main() {
 	// Must run before any NewMachine/InstallAOT call (libriscv reads
 	// LIBRISCV_DUMP_DIR at translation time).
 	setupLibriscvDump()
+	// After all libriscv runs finish, enrich the Guest RISC-V section
+	// of each per-block file with disassembly. The C++ dumper emits
+	// hex-only on purpose — duplicating GoCPU's RISC-V disassembler in
+	// C++ would drift.
+	defer augmentLibriscvDumpsIfEnabled()
 
 	libriscvELF := mustRead(filepath.Join(*flagElfDir, "hello_libriscv.elf"))
 	gocpuELF := mustRead(filepath.Join(*flagElfDir, "hello_gocpu.elf"))
@@ -643,6 +648,16 @@ func setupLibriscvDump() {
 	}
 	fmt.Fprintf(os.Stderr, "# libriscv dumps -> %s (tag=%s)\n",
 		lrDir, os.Getenv("LIBRISCV_DUMP_TAG"))
+}
+
+func augmentLibriscvDumpsIfEnabled() {
+	dir := os.Getenv("LIBRISCV_DUMP_DIR")
+	if dir == "" {
+		return
+	}
+	if err := riscv.AugmentLibriscvDumps(dir); err != nil {
+		fmt.Fprintf(os.Stderr, "augment libriscv dumps in %s: %v\n", dir, err)
+	}
 }
 
 func mustRead(path string) []byte {

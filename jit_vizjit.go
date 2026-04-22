@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -45,6 +46,131 @@ func getVizJitTag() string {
 // filenames. Intended for callers outside this package (e.g. hellobench)
 // that want to align companion dumps with GoCPU's by sharing the tag.
 func GetVizJitTag() string { return getVizJitTag() }
+
+// DisasmRV32 renders one 32-bit RISC-V instruction as a mnemonic.
+// Exported so external tooling (hellobench's libriscv-dump augmenter)
+// can format guest-code sections the same way VizJit does.
+func DisasmRV32(pc uint64, insn uint32) string { return disasmRV32(pc, insn) }
+
+// DisasmRVC renders one 16-bit compressed RISC-V instruction as a
+// mnemonic. See DisasmRV32.
+func DisasmRVC(insn uint16) string { return disasmRVC(insn) }
+
+// AugmentLibriscvDumps walks `dir` for files matching
+// `*.libriscv.asm.pc_*.asm` (written by libriscv's tr_dump.cpp) and
+// appends a mnemonic column to every hex line inside the
+// `== Guest RISC-V ==` section. The C++ dumper produces hex-only
+// entries on purpose, leaving disassembly to Go — the C++ side has no
+// RISC-V disassembler, and duplicating GoCPU's would drift.
+//
+// Idempotent: lines that already have a mnemonic are left alone.
+// Only the Guest RISC-V section is touched; other sections pass through.
+func AugmentLibriscvDumps(dir string) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() {
+			continue
+		}
+		if !strings.Contains(name, ".libriscv.asm.pc_") ||
+			!strings.HasSuffix(name, ".asm") {
+			continue
+		}
+		path := filepath.Join(dir, name)
+		if err := augmentOneLibriscvDump(path); err != nil {
+			fmt.Fprintf(os.Stderr, "AugmentLibriscvDumps: %s: %v\n", path, err)
+		}
+	}
+	return nil
+}
+
+func augmentOneLibriscvDump(path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	lines := strings.Split(string(data), "\n")
+
+	// Find the Guest RISC-V section bounds. Section ends at the next
+	// `== ` header or EOF.
+	var startIdx, endIdx = -1, len(lines)
+	for i, ln := range lines {
+		if ln == "== Guest RISC-V ==" {
+			startIdx = i + 1
+			continue
+		}
+		if startIdx >= 0 && strings.HasPrefix(ln, "== ") {
+			endIdx = i
+			break
+		}
+	}
+	if startIdx < 0 {
+		return nil // no section; nothing to do
+	}
+
+	changed := false
+	for i := startIdx; i < endIdx; i++ {
+		ln := lines[i]
+		// Match "0xPPPPPPPP  HHHH" (RVC, 4-hex) or
+		//       "0xPPPPPPPP  HHHHHHHH" (RV32, 8-hex). Skip lines that
+		// already have something past the hex.
+		pc, hex, ok := parseHexLine(ln)
+		if !ok {
+			continue
+		}
+		var mnem string
+		switch len(hex) {
+		case 4:
+			v, err := strconv.ParseUint(hex, 16, 16)
+			if err != nil {
+				continue
+			}
+			mnem = disasmRVC(uint16(v))
+			lines[i] = fmt.Sprintf("0x%08x  %04x      %s", pc, v, mnem)
+		case 8:
+			v, err := strconv.ParseUint(hex, 16, 32)
+			if err != nil {
+				continue
+			}
+			mnem = disasmRV32(pc, uint32(v))
+			lines[i] = fmt.Sprintf("0x%08x  %08x  %s", pc, v, mnem)
+		default:
+			continue
+		}
+		changed = true
+	}
+	if !changed {
+		return nil
+	}
+	return os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o644)
+}
+
+// parseHexLine extracts `pc` and the `hex` token from a line of form
+// "0xPPPPPPPP  HHHH" or "0xPPPPPPPP  HHHHHHHH". Returns ok=false if the
+// line isn't a plain hex-only entry (already has a mnemonic, unreadable
+// marker, blank, etc.).
+func parseHexLine(ln string) (pc uint64, hex string, ok bool) {
+	s := strings.TrimRight(ln, " \t")
+	if !strings.HasPrefix(s, "0x") {
+		return 0, "", false
+	}
+	parts := strings.Fields(s)
+	if len(parts) != 2 { // strictly two columns
+		return 0, "", false
+	}
+	pcStr := strings.TrimPrefix(parts[0], "0x")
+	v, err := strconv.ParseUint(pcStr, 16, 64)
+	if err != nil {
+		return 0, "", false
+	}
+	if ln := len(parts[1]); ln != 4 && ln != 8 {
+		return 0, "", false
+	}
+	return v, parts[1], true
+}
 
 // vizJitEnabled returns the dump directory if VizJit is active, or
 // ("", false) if disabled. Creates the directory on first active
