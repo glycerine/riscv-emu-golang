@@ -28,7 +28,8 @@ type emitResult struct {
 	startPC       uint64
 	endPC         uint64
 	numInsns      int
-	numChainExits int // number of IRChainExit instructions emitted
+	numChainExits int          // number of IRChainExit instructions emitted
+	mem           *GuestMemory // for VizJit guest disassembly
 }
 
 // deferredExit holds an external branch exit to emit at finalize time.
@@ -697,6 +698,7 @@ func (e *emitter) finalize() *emitResult {
 		endPC:         e.pc,
 		numInsns:      e.numInsns,
 		numChainExits: e.exitIdx,
+		mem:           e.mem,
 	}
 }
 
