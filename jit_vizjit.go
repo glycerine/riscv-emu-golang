@@ -55,6 +55,7 @@ func vizJitEnabled() (string, bool) {
 		if vizJitDirErr != nil {
 			fmt.Fprintf(os.Stderr, "VizJit: could not create dir %q: %v — dumps disabled\n",
 				dir, vizJitDirErr)
+			panic(fmt.Sprintf("requested but not possible VIZJIT_DIR path '%v': '%v' --fix your directories?", dir, vizJitDirErr))
 		}
 	})
 	return dir, vizJitDirOK

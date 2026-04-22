@@ -30,7 +30,6 @@ type emitResult struct {
 	startPC       uint64
 	endPC         uint64
 	numInsns      int
-	regsUsed      [32]bool
 	numChainExits int // number of IRChainExit instructions emitted
 }
 
@@ -51,13 +50,29 @@ type deferredFault struct {
 }
 
 // emitter accumulates IR for a basic block.
+//
+// regsUsed tracks guest integer registers referenced by xreg (read)
+// or xregDst (write) so the prologue can pre-load them from x[].
+//
+// NOTE: this is deliberately read/write-union (not "read-only"), even
+// though dead prologue loads for write-only regs look wasteful. The
+// invariant they preserve is subtle: WriteBackAll() at block exits
+// stores *every* dirty VReg regardless of which control-flow path
+// actually reached the xregDst. On paths where the dirty-making write
+// did not execute (e.g. a bail-label for an unvisited goto-target —
+// see finalize()), the prologue-load is what puts the correct
+// block-entry value into the VReg, so the "garbage" that gets stored
+// back is in fact the original x[i]. Skipping the load on purely
+// write-only regs breaks that invariant and causes stale host-register
+// values to leak into x[]. A proper fix requires path-sensitive
+// WriteBackAll, which is out of scope for Phase 5-B.
 type emitter struct {
 	mem            *GuestMemory
 	startPC        uint64
 	pc             uint64
 	irEm           *ir.Emitter
 	numInsns       int
-	regsUsed       [32]bool
+	regsUsed       uint32 // bit i set iff xreg(i) or xregDst(i) was called
 	terminated     bool
 	visited        map[uint64]bool
 	regionEnd      uint64
@@ -72,22 +87,25 @@ type emitter struct {
 
 // ── Register access helpers ────────────────────────────────────────────
 
-// xreg returns the VReg for integer register r and marks it as used.
+// xreg returns the VReg for integer register r (source read) and
+// marks it as used so the prologue pre-loads x[r].
 func (e *emitter) xreg(r uint32) ir.VReg {
 	if r == 0 {
 		return ir.VRegZero
 	}
-	e.regsUsed[r] = true
+	e.regsUsed |= uint32(1) << r
 	return e.irEm.XReg(r)
 }
 
-// xregDst returns the VReg for integer register r (write destination).
-// Marks the register dirty so WriteBackAll stores it at block exit.
+// xregDst returns the VReg for integer register r (write destination),
+// marks it used (prologue load) and dirty (WriteBackAll store). See
+// the comment on the emitter struct's regsUsed field for why the
+// prologue load is required even for write-only regs.
 func (e *emitter) xregDst(r uint32) ir.VReg {
 	if r == 0 {
 		return ir.VRegZero
 	}
-	e.regsUsed[r] = true
+	e.regsUsed |= uint32(1) << r
 	vr := e.irEm.XReg(r)
 	e.irEm.MarkDirty(vr)
 	return vr
@@ -652,7 +670,6 @@ func (e *emitter) finalize() *emitResult {
 		startPC:       e.startPC,
 		endPC:         e.pc,
 		numInsns:      e.numInsns,
-		regsUsed:      e.regsUsed,
 		numChainExits: e.exitIdx,
 	}
 }
@@ -907,11 +924,14 @@ func emitBlockRange(mem *GuestMemory, pc, endPC uint64) *emitResult {
 		return nil
 	}
 
-	// Prepend loads for registers that were actually used during emission.
-	// This must happen AFTER emission so regsUsed is fully populated.
+	// Prepend loads for every register referenced during emission.
+	// This deliberately loads some regs whose block-entry value is dead
+	// (e.g. `li a7, 93` with no prior use of a7) — see the comment on
+	// emitter.regsUsed for why the apparent waste is load-bearing.
+	// Must run AFTER emission so regsUsed is fully populated.
 	var loads []ir.IRInstr
 	for i := uint32(1); i < 32; i++ {
-		if e.regsUsed[i] {
+		if e.regsUsed&(uint32(1)<<i) != 0 {
 			loads = append(loads, ir.IRInstr{
 				Op: ir.IRLoad, T: ir.I64,
 				Dst: ir.VReg(i), A: irEm.XBase(),

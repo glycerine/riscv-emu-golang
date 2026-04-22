@@ -40,3 +40,25 @@ func currentSyscallDispatcherAddr() uintptr {
 	}
 	return syscallDispatcherAddr
 }
+
+// inlineEcallEnabled gates the "inline ECALL" codegen introduced in
+// Phase 5-B: when true, ECALL no longer terminates the JIT block.
+// Instead the emitter continues past it, and the lowerer adds an
+// in-block TESTQ+JZ on the dispatcher's return code (0 = continue,
+// 1 = cold fallback to jitEcall via emitEpilogue + RET).
+//
+// Default off: Steps 1-5 wire the flag through every call site
+// without changing emitted code. Step 6 flips the default.
+// Flipping to false at any time restores today's behavior for
+// subsequent blocks.
+var inlineEcallEnabled bool
+
+// SetInlineEcallEnabled toggles the inline-ECALL codegen for
+// FUTURE block emissions. Already-compiled blocks retain whatever
+// path they were compiled with.
+func SetInlineEcallEnabled(on bool) { inlineEcallEnabled = on }
+
+// InlineEcallEnabled reports whether the JIT will inline ECALL
+// into the host block (dispatcher CALL + TESTQ+JZ) vs. the legacy
+// unconditional-epilogue path.
+func InlineEcallEnabled() bool { return inlineEcallEnabled }

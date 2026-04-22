@@ -369,6 +369,10 @@ func (ins IRInstr) String() string {
 		return fmt.Sprintf("%s pc=%s status=%d fault=%s", ins.Op, ins.A, ins.Imm, ins.B)
 	case IRJalrIC:
 		return fmt.Sprintf("%s target=%s site=%d", ins.Op, ins.A, ins.Imm)
+	case IRSyscall:
+		return fmt.Sprintf("%s resumePC=0x%x ctab=%d", ins.Op, uint64(ins.Imm), ins.Imm2)
+	case IRChainExit:
+		return fmt.Sprintf("%s targetPC=0x%x exitIdx=%d", ins.Op, uint64(ins.Imm), ins.Imm2)
 	default:
 		if ins.B != VRegZero {
 			return fmt.Sprintf("%s.%s %s = %s, %s", ins.Op, ins.T, ins.Dst, ins.A, ins.B)
