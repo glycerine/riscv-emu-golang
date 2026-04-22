@@ -12,7 +12,9 @@ import (
 
 func jitcallCall(fn uintptr, x *[32]uint64, f *[32]uint64, fcsr *uint32,
 	memBase uintptr, memMask uint64) jitcall.Result {
-	return jitcall.Call(fn, x, f, fcsr, memBase, memMask)
+	return jitcall.CallAOT(fn, x, f, fcsr, memBase, memMask,
+		0, 0, 0, 0,
+		0x1000)
 }
 
 // ── scanUsedRegs unit tests ────────────────────────────────────────────

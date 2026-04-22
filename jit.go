@@ -537,8 +537,10 @@ func (j *JIT) StepBlock(cpu *CPU) (ic uint64, err error) {
 			return j.stepBlockDebugV1V2(cpu, pc, blk)
 		}
 
-		res := jitcall.Call(blk.fn, &cpu.x, &cpu.f, &cpu.fcsr,
-			cpu.mem.Base(), cpu.mem.Mask())
+		res := jitcall.CallAOT(blk.fn, &cpu.x, &cpu.f, &cpu.fcsr,
+			cpu.mem.Base(), cpu.mem.Mask(),
+			0, 0, 0, 0,
+			pc)
 		if j.trace {
 			fmt.Fprintf(os.Stderr, "JIT pc=0x%x -> PC=0x%x IC=%d status=%d\n",
 				pc, res.PC, res.IC, res.Status)
@@ -608,8 +610,10 @@ func (j *JIT) StepBlock(cpu *CPU) (ic uint64, err error) {
 func (j *JIT) stepBlockDebugV1V2(cpu *CPU, pc uint64, blk *compiledBlock) (uint64, error) {
 	if blk.shadow == nil {
 		// No V2 shadow — run V1 only (V2 compilation may have failed).
-		res := jitcall.Call(blk.fn, &cpu.x, &cpu.f, &cpu.fcsr,
-			cpu.mem.Base(), cpu.mem.Mask())
+		res := jitcall.CallAOT(blk.fn, &cpu.x, &cpu.f, &cpu.fcsr,
+			cpu.mem.Base(), cpu.mem.Mask(),
+			0, 0, 0, 0,
+			pc)
 		cpu.pc = res.PC
 		cpu.cycle += res.IC
 		return j.stepBlockResult(cpu, res)
@@ -627,11 +631,15 @@ func (j *JIT) stepBlockDebugV1V2(cpu *CPU, pc uint64, blk *compiledBlock) (uint6
 	fcsr2 = cpu.fcsr
 
 	// Run V1.
-	r1 := jitcall.Call(blk.fn, &x1, &f1, &fcsr1,
-		cpu.mem.Base(), cpu.mem.Mask())
+	r1 := jitcall.CallAOT(blk.fn, &x1, &f1, &fcsr1,
+		cpu.mem.Base(), cpu.mem.Mask(),
+		0, 0, 0, 0,
+		pc)
 	// Run V2.
-	r2 := jitcall.Call(blk.shadow.fn, &x2, &f2, &fcsr2,
-		cpu.mem.Base(), cpu.mem.Mask())
+	r2 := jitcall.CallAOT(blk.shadow.fn, &x2, &f2, &fcsr2,
+		cpu.mem.Base(), cpu.mem.Mask(),
+		0, 0, 0, 0,
+		pc)
 
 	// Compare. jitOKJalrMiss (V1 JALR IC miss) is semantically equivalent
 	// to jitOK for V2, which doesn't implement the IC — normalize before

@@ -117,8 +117,10 @@ func TestLockstep_V1V2_Execution(t *testing.T) {
 			x2[j] = v
 		}
 
-		res1 := jitcall.Call(exec1, &x1, &f1, &fcsr1, mem.Base(), mem.Mask())
-		res2 := jitcall.Call(exec2, &x2, &f2, &fcsr2, mem.Base(), mem.Mask())
+		res1 := jitcall.CallAOT(exec1, &x1, &f1, &fcsr1, mem.Base(), mem.Mask(),
+			0, 0, 0, 0, 0)
+		res2 := jitcall.CallAOT(exec2, &x2, &f2, &fcsr2, mem.Base(), mem.Mask(),
+			0, 0, 0, 0, 0)
 
 		if res1.PC != res2.PC || res1.IC != res2.IC || res1.Status != res2.Status {
 			t.Fatalf("block %d MISMATCH:\n  V1: PC=0x%x IC=%d Status=%d\n  V2: PC=0x%x IC=%d Status=%d\n  %d instrs",
