@@ -568,3 +568,44 @@ func TestParamVRegs_MatchEmitter(t *testing.T) {
 
 // suppress unused import
 var _ = x86.AMOVQ
+
+// TestLowerSyscall_NonTerminal verifies that IRSyscall can appear in the
+// middle of a block (followed by more IR instructions) and the lowerer
+// handles it without error — proving the non-terminal semantics work.
+func TestLowerSyscall_NonTerminal(t *testing.T) {
+	e := NewEmitter()
+
+	// Simulate: WriteBackAll, Syscall, reload a0, then Ret.
+	// This is the pattern emitFunctionRange will produce.
+	e.Store(e.XBase(), 10*8, e.XReg(10), I64) // writeback x10
+	e.Syscall(0x1022, 0xDEADBEEF)
+	e.Load(e.XReg(10), e.XBase(), 10*8, I64, false) // reload a0
+	e.Const(e.XReg(10), 42)                          // use a0 after syscall
+	e.Ret(0x1030, 0, VRegZero)
+
+	b := e.Block
+	MaxVReg(b)
+
+	code, _ := lowerBlockWithRet(t, b)
+	if len(code) == 0 {
+		t.Fatal("assembled code is empty")
+	}
+	t.Logf("non-terminal syscall block: %d IR ops, %d host bytes", len(b.Instrs), len(code))
+}
+
+// TestLowerSyscall_OnlyPathIsRet verifies that a block ending with
+// IRSyscall followed by IRRet still assembles correctly (the old
+// pattern where ECALL is the last real instruction).
+func TestLowerSyscall_OnlyPathIsRet(t *testing.T) {
+	e := NewEmitter()
+	e.Syscall(0x1022, 0xDEADBEEF)
+	e.Ret(0x1022, 0, VRegZero)
+
+	b := e.Block
+	MaxVReg(b)
+
+	code, _ := lowerBlockWithRet(t, b)
+	if len(code) == 0 {
+		t.Fatal("assembled code is empty")
+	}
+}

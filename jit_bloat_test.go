@@ -42,12 +42,12 @@ func TestBloat_BenchGuest_0x10de(t *testing.T) {
 		//  - After MaskedLoadAddr/GuestStoreAddr + emitMisalignedStore
 		//    i=0 special-case (2026-04-22): ir=105, host=1079
 		//    (-42 bytes). Cumulative −143 bytes (−11.7%).
-		//  - Temporary bump (Step 2 of function-level compilation):
-		//    IRSyscall removed from lastIRWasTerminator, so finalize()
-		//    emits a dead chain exit after the ECALL block. Goes away
-		//    after Step 4 when ECALL no longer terminates emission.
+		//  - Temporary bump (Steps 2-3 of function-level compilation):
+		//    IRSyscall non-terminal + lowerSyscall save/restore adds
+		//    dead code. Goes away after Step 4 when ECALL no longer
+		//    terminates emission (eliminating the finalize chain exit).
 		maxIRInstrs   = 112
-		maxHostBytes  = 1160
+		maxHostBytes  = 1240
 		maxChainExits = 6
 	)
 
