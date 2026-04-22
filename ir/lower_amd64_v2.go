@@ -537,6 +537,11 @@ func (lc *lowerCtxV2) lowerInstr(ins *IRInstr) error {
 		lc.v2RetDyn(&IRInstr{Op: IRRetDyn, A: ins.A, Imm: 0, B: VRegZero})
 	case IRCall:
 		lc.v2Call(ins)
+	case IRSyscall:
+		// V2 doesn't implement the native ECALL fast path — fall back to
+		// the legacy behavior: emit a regular Ret with status=jitEcall=1
+		// (the Go NoteChain takes over). Matches pre-Phase-2 emission.
+		lc.v2Ret(&IRInstr{Op: IRRet, Imm: ins.Imm, Imm2: 1, A: VRegZero})
 
 	// FP arithmetic
 	case IRFAdd:
