@@ -164,6 +164,28 @@ func (e *Emitter) BudgetCheck(target Label, targetPC uint64) {
 	e.Ret(targetPC, 0, VRegZero)
 }
 
+// ClearDirtySyscallRegs clears dirty flags for a0 (x10) and a1 (x11)
+// only. Called before IRSyscall so the subsequent ReloadSyscallRegs
+// picks up the dispatcher's return values from x[].
+func (e *Emitter) ClearDirtySyscallRegs() {
+	for _, vr := range []VReg{10, 11} {
+		if int(vr) < len(e.dirty) {
+			e.dirty[vr] = false
+		}
+	}
+}
+
+// ReloadSyscallRegs reloads a0 (x10) and a1 (x11) from the x[] array.
+// Matches libriscv's LOAD_SYS_REGS (tr_emit.cpp:2218-2224, regs 10..11).
+// The syscall dispatcher only writes x[10] (return value); callee-saved
+// registers are preserved by ECALL per RISC-V ABI.
+func (e *Emitter) ReloadSyscallRegs() {
+	for _, vr := range []VReg{10, 11} {
+		e.Load(vr, e.xBase, int64(vr)*8, I64, false)
+		e.MarkDirty(vr)
+	}
+}
+
 // MarkDirty records that vr has been written. No-op for VRegZero.
 func (e *Emitter) MarkDirty(vr VReg) {
 	if vr == VRegZero {
