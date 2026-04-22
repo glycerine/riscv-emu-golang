@@ -65,6 +65,12 @@ func (j *JIT) jitCompileWith(res *emitResult, useV2 bool) (*compiledBlock, error
 		return nil, fmt.Errorf("jit lower: %w", lowerErr)
 	}
 
+	// VizJit: capture Prog listing before Assemble when active.
+	var vizProgs string
+	if _, on := vizJitEnabled(); on {
+		vizProgs = ctx.DumpProgs()
+	}
+
 	// Step 4: Assemble to native bytes.
 	code, err := ctx.Assemble()
 	if err != nil {
@@ -80,6 +86,12 @@ func (j *JIT) jitCompileWith(res *emitResult, useV2 bool) (*compiledBlock, error
 		return nil, fmt.Errorf("jit mmap: %w", err)
 	}
 	copy(execMem, code)
+
+	// VizJit dump (no-op when disabled).
+	if vizProgs != "" {
+		vizJitDump(res.startPC, res.endPC, nil, res.block, vizProgs,
+			len(code), uintptr(unsafe.Pointer(&execMem[0])))
+	}
 
 	codeBase := uintptr(unsafe.Pointer(&execMem[0]))
 	blk := &compiledBlock{

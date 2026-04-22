@@ -22,10 +22,13 @@ import (
 // the lower+assemble pass and the copy+backpatch pass.
 type aotBlockCompile struct {
 	startPC     uint64
+	endPC       uint64
 	bytes       []byte
 	lowerResult *ir.LowerResult
 	baseOffset  int // offset of this block within the unified mmap
 	blk         *compiledBlock
+	block       *ir.Block // retained for VizJit dump (nil when VizJit disabled)
+	progs       string    // goasm Prog listing (empty when VizJit disabled)
 }
 
 // jitCompileAOTSegment batch-compiles every block range into one
@@ -63,6 +66,17 @@ func (j *JIT) jitCompileAOTSegment(
 		if lowerErr != nil {
 			continue // lowering failed — skip
 		}
+
+		// Capture Prog listing before Assemble (which consumes
+		// prog encoding state). Only when VizJit is active —
+		// DumpProgs is cheap but non-zero.
+		var progs string
+		var vizBlock *ir.Block
+		if _, on := vizJitEnabled(); on {
+			progs = ctx.DumpProgs()
+			vizBlock = res.block
+		}
+
 		code, err := ctx.Assemble()
 		if err != nil || len(code) == 0 {
 			continue
@@ -70,9 +84,12 @@ func (j *JIT) jitCompileAOTSegment(
 
 		compiles = append(compiles, &aotBlockCompile{
 			startPC:     r.startPC,
+			endPC:       r.endPC,
 			bytes:       code,
 			lowerResult: lowerResult,
 			baseOffset:  totalSize,
+			block:       vizBlock,
+			progs:       progs,
 		})
 		totalSize += len(code)
 	}
@@ -211,6 +228,24 @@ func (j *JIT) jitCompileAOTSegment(
 		fmt.Printf("AOT: %d blocks compiled, %d bytes native code, "+
 			"%d pre-patched chain exits, decoder_cache=%d bytes\n",
 			len(compiles), totalSize, prePatches, cacheSize)
+	}
+
+	// VizJit: dump per-block assembly/IR after codeBase is known.
+	// No-op when VizJit is disabled (field block is nil, progs empty).
+	if _, on := vizJitEnabled(); on {
+		var indexLines []string
+		indexLines = append(indexLines, fmt.Sprintf("# AOT segment 0x%x..0x%x, %d blocks",
+			vaddrBegin, vaddrEnd, len(compiles)))
+		for _, bc := range compiles {
+			if bc.block == nil {
+				continue
+			}
+			blockBase := codeBase + uintptr(bc.baseOffset)
+			vizJitDump(bc.startPC, bc.endPC, mem, bc.block, bc.progs, len(bc.bytes), blockBase)
+			indexLines = append(indexLines,
+				fmt.Sprintf("0x%08x  %s.gocpu.asm.pc_0x%08x.asm", bc.startPC, getVizJitTag(), bc.startPC))
+		}
+		vizJitDumpIndex(indexLines)
 	}
 
 	return seg, nil
