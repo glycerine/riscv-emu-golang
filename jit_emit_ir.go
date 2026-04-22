@@ -1070,8 +1070,19 @@ func (e *emitter) emit32(insn uint32) {
 		switch insn {
 		case 0x00000073: // ECALL
 			e.advancePC(4)
-			e.emitSyscall(e.pc, currentSyscallDispatcherAddr())
-			e.terminated = true
+			dispatcher := currentSyscallDispatcherAddr()
+			e.emitSyscall(e.pc, dispatcher)
+			// With InlineEcallEnabled AND the fast-path dispatcher
+			// present, the emitter continues emitting the next RV
+			// insn in the same IR block. The V1 lowerer still emits
+			// an epilogue at IRSyscall (Step 5 removes that), so
+			// control-flow-wise the host block still returns here —
+			// post-ECALL IR is dead until Step 5 lands. That's
+			// intentional: this step only verifies the emitter
+			// continuation is stable in isolation.
+			if !InlineEcallEnabled() || dispatcher == 0 {
+				e.terminated = true
+			}
 		case 0x00100073: // EBREAK
 			e.advancePC(4)
 			e.emitReturn(e.pc, jitEbreak)

@@ -253,9 +253,19 @@ func (e *Emitter) ChainExit(targetPC uint64, exitIdx int) {
 // continues (pc+4). The caller must emit WriteBackAll before Syscall
 // so the dispatcher sees fresh guest registers in x[].
 //
-// This is a block terminator: the JIT block returns after the call
-// with Status set from the dispatcher's return value (0=jitOK on fast
-// path, 1=jitEcall for fallback to the Go NoteChain).
+// With the V1 lowerer today this IS a block terminator: the JIT block
+// returns after the call with Status set from the dispatcher's return
+// value (0=jitOK on fast path, 1=jitEcall for fallback to the Go
+// NoteChain).
+//
+// Do NOT clear dirty[] here. A clear looks tempting ("WriteBackAll
+// already ran") but breaks deferred external branch exits. Those are
+// registered before the Syscall (for branches earlier in the block)
+// and their chain-exit bodies are synthesised later in finalize() as
+// WriteBackAll + ChainExit. If dirty[] is clear by finalize-time, the
+// taken-branch path jumps out without storing the dirty regs to x[],
+// and the destination block reads stale values. Observed on a
+// hello-style decrement loop where a3 never reaches zero.
 func (e *Emitter) Syscall(resumePC uint64, dispatcherAddr uintptr) {
 	const sym = "syscall_dispatcher"
 	idx := -1
