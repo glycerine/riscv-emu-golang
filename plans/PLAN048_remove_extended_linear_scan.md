@@ -65,25 +65,31 @@ This automatically retargets every caller in `regalloc_test.go` (32 call sites) 
 
 ### `ris/jit.go` (lines 240-252)
 
-Simplify `SetAllocStrategy` by removing the `"els"` case. Two reasonable options — recommend **option A**:
+Keep `SetAllocStrategy` as a no-op that always installs a fresh `FixedStaticAllocator`, regardless of the `name` argument. Preserves the existing API for any in-tree or out-of-tree callers. New body:
 
-**Option A (recommended):** delete `SetAllocStrategy` entirely, since fixed is the only choice and `NewJIT()` already installs it. Remove the `irAlloc ir.RegAllocator` interface field too — assign `FixedStaticAllocator` directly. Update the few callers (see below).
+```go
+// SetAllocStrategy used to switch between ELS and Fixed allocators; ELS has
+// been removed. The method is retained as a no-op that reinstalls the Fixed
+// Static Mapping allocator and clears cached blocks.
+func (j *JIT) SetAllocStrategy(name string) {
+    j.irAlloc = ir.NewFixedStaticAllocator()
+    j.cache = [blockCacheSize]blockCacheEntry{}
+    j.noJIT = make(map[uint64]bool)
+}
+```
 
-**Option B:** keep `SetAllocStrategy` as a no-op that always installs fixed (useful if the method is called from downstream code we don't control). Given all callers are in-tree, option A is cleaner.
+Update the doc comment accordingly. The `irAlloc ir.RegAllocator` field and `RegAllocator` interface both stay (unchanged).
 
-Callers to update (all pass "fixed" already, so they just need the `SetAllocStrategy` call removed after option A):
-- `ris/bench/jit_aot_bench_test.go:18`
-- `ris/bench/jit_chain_reference_test.go:40`
-- `ris/bench/jit_bench_test.go:111` (inside `benchJITELF`; delete the `strategy` parameter — see next)
+Existing callers in `ris/bench/` continue to work without modification, including those that pass `"els"` — they'll silently get fixed. The `"els"`-passing call sites (`jit_bench_test.go:47`, `:85-87`, `:95-97`) are still removed, but only because the benchmarks themselves are redundant with their `_Fixed` counterparts.
 
 ### `ris/bench/jit_bench_test.go`
 
-Delete ELS-using benchmarks:
-- `BenchmarkCPU_FullExecution_JIT` (lines 46-48) — calls `benchJITWith(b, "els")`. The companion `BenchmarkCPU_FullExecution_JIT_Fixed` (lines 50-52) covers the fixed case.
+Delete ELS-specific benchmarks (redundant with their `_Fixed` counterparts):
+- `BenchmarkCPU_FullExecution_JIT` (lines 46-48) — calls `benchJITWith(b, "els")`. Covered by `BenchmarkCPU_FullExecution_JIT_Fixed` (lines 50-52).
 - `BenchmarkJIT_CoreMark_ELS` (lines 85-87).
 - `BenchmarkJIT_Dhrystone_ELS` (lines 95-97).
 
-Simplify `benchJITWith` and `benchJITELF` to drop the `strategy` parameter; remove `jit.SetAllocStrategy(strategy)` (line 111). Rename remaining callers accordingly.
+`benchJITWith`/`benchJITELF` and the `strategy` parameter can stay — since `SetAllocStrategy` is now a no-op (always installs fixed), passing `"fixed"` still works and the signatures don't need to change. Alternatively, simplify by dropping the `strategy` parameter; either is fine. Leaving it is the lower-churn choice.
 
 ### `ris/bench/lower_bench_test.go`
 

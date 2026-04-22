@@ -31,10 +31,9 @@ func lowerBlock(t *testing.T, b *Block) ([]byte, *Allocation) {
 	return bytes, alloc
 }
 
-// a helper to fix up all the places where the tests did not create an Allocator
-// to invoke Allocate() on.
+// helperTestAllocate runs the fixed static register allocator on b.
 func helperTestAllocate(b *Block, pool RegPool, pinned map[VReg]int16, freq []float64) *Allocation {
-	a := NewAllocator()
+	a := NewFixedStaticAllocator()
 	return a.Allocate(b, pool, pinned, freq)
 }
 

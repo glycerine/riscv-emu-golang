@@ -237,15 +237,13 @@ func NewJIT() *JIT {
 	}
 }
 
-// SetAllocStrategy switches the register allocator.
-// Valid strategies: "els" (Extended Linear Scan), "fixed" (Fixed Static Mapping).
+// SetAllocStrategy used to switch between Extended Linear Scan and Fixed
+// Static Mapping allocators; ELS has been removed. The method is retained
+// as a no-op that reinstalls the Fixed Static Mapping allocator and clears
+// cached blocks, so existing callers (passing any strategy name) continue
+// to work.
 func (j *JIT) SetAllocStrategy(name string) {
-	switch name {
-	case "els":
-		j.irAlloc = ir.NewAllocator()
-	default:
-		j.irAlloc = ir.NewFixedStaticAllocator()
-	}
+	j.irAlloc = ir.NewFixedStaticAllocator()
 	// Clear block cache — compiled blocks used the old allocator.
 	j.cache = [blockCacheSize]blockCacheEntry{}
 	j.noJIT = make(map[uint64]bool)

@@ -92,7 +92,7 @@ func BenchmarkLower_V1(b *testing.B) {
 		blk   *ir.Block
 		alloc *ir.Allocation
 	}
-	allocator := ir.NewAllocator()
+	allocator := ir.NewFixedStaticAllocator()
 	items := make([]prepped, 0, len(results))
 	for _, r := range results {
 		pool := ir.AMD64Pool(r.Block)
@@ -133,7 +133,7 @@ func BenchmarkLower_V2(b *testing.B) {
 		blk   *ir.Block
 		alloc *ir.Allocation
 	}
-	allocator := ir.NewAllocator()
+	allocator := ir.NewFixedStaticAllocator()
 	items := make([]prepped, 0, len(results))
 	for _, r := range results {
 		pool := ir.AMD64Pool_V2(r.Block)
@@ -214,7 +214,7 @@ func TestLower_CodeSize_V1_vs_V2(t *testing.T) {
 		t.Skip("no IR blocks collected")
 	}
 
-	allocator := ir.NewAllocator()
+	allocator := ir.NewFixedStaticAllocator()
 	var v1Total, v2Total, v1Count, v2Count int
 	var totalIRInstrs int
 	for _, r := range results {

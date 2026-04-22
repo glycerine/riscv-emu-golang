@@ -43,10 +43,6 @@ func TestJIT_DispatchStats(t *testing.T) {
 	t.Logf("  noJIT set size:  %d", jit.NoJITSize())
 }
 
-func BenchmarkCPU_FullExecution_JIT(b *testing.B) {
-	benchJITWith(b, "els")
-}
-
 func BenchmarkCPU_FullExecution_JIT_Fixed(b *testing.B) {
 	benchJITWith(b, "fixed")
 }
@@ -82,18 +78,10 @@ func BenchmarkJIT_CoreMark_Fixed(b *testing.B) {
 	benchJITELF(b, loadELFFrom(b, "CM_ELF", "coremark.elf"), "fixed")
 }
 
-func BenchmarkJIT_CoreMark_ELS(b *testing.B) {
-	benchJITELF(b, loadELFFrom(b, "CM_ELF", "coremark.elf"), "els")
-}
-
 // ── Dhrystone JIT benchmarks ──────────────────────────────────────────────
 
 func BenchmarkJIT_Dhrystone_Fixed(b *testing.B) {
 	benchJITELF(b, loadELFFrom(b, "DHRY_ELF", "dhrystone.elf"), "fixed")
-}
-
-func BenchmarkJIT_Dhrystone_ELS(b *testing.B) {
-	benchJITELF(b, loadELFFrom(b, "DHRY_ELF", "dhrystone.elf"), "els")
 }
 
 // benchJITELF runs the JIT benchmark loop against an arbitrary guest

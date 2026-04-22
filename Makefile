@@ -164,7 +164,7 @@ endif
 	@echo "    make bench-setup"
 	@echo ""
 	@echo "  Benchmarks:"
-	@echo "    make bench-alloc      JIT allocator comparison (ELS vs Fixed vs TCC vs libriscv)"
+	@echo "    make bench-alloc      JIT allocator comparison (Fixed vs TCC vs libriscv)"
 	@echo "    make bench-quick      fast head-to-head (<1s)"
 	@echo "    make bench            full comparison (ours + libriscv)"
 	@echo "    make bench-ours       our GuestMemory only (no libriscv needed)"
@@ -173,8 +173,8 @@ endif
 	@echo "    make bench-smoke      quick sanity check (~3s)"
 	@echo "    make bench-coremark   CoreMark RV64 (cached vs uncached interpreter)"
 	@echo "    make bench-dhrystone  Dhrystone RV64 (cached vs uncached interpreter)"
-	@echo "    make bench-jit-coremark   CoreMark under JIT (Fixed vs ELS)"
-	@echo "    make bench-jit-dhrystone  Dhrystone under JIT (Fixed vs ELS)"
+	@echo "    make bench-jit-coremark   CoreMark under JIT (Fixed)"
+	@echo "    make bench-jit-dhrystone  Dhrystone under JIT (Fixed)"
 	@echo "    make bench-chain-ref      chain-counter reference (all 3 workloads)"
 	@echo ""
 	@echo "  Guest ELFs (normally auto-built by the bench targets):"
@@ -521,14 +521,14 @@ bench-dhrystone: dhrystone-elf
 	        ./bench/ 2>&1
 
 bench-jit-coremark: coremark-elf
-	@echo "── CoreMark (JIT, Fixed vs ELS) ────────────────────────────────"
+	@echo "── CoreMark (JIT, Fixed) ──────────────────────────────────────"
 	cd $(ROOT) && CM_ELF=$(CM_ELF) \
 	    $(GO) test -count=1 -benchtime=1x -benchmem \
 	        -run='^$$' -bench='^BenchmarkJIT_CoreMark' \
 	        ./bench/ 2>&1
 
 bench-jit-dhrystone: dhrystone-elf
-	@echo "── Dhrystone (JIT, Fixed vs ELS) ───────────────────────────────"
+	@echo "── Dhrystone (JIT, Fixed) ─────────────────────────────────────"
 	cd $(ROOT) && DHRY_ELF=$(DHRY_ELF) \
 	    $(GO) test -count=1 -benchtime=1x -benchmem \
 	        -run='^$$' -bench='^BenchmarkJIT_Dhrystone' \
@@ -604,13 +604,6 @@ bench:
 	@cd $(ROOT) && BENCH_ELF=$(GUEST_ELF) \
 	    $(GO) test $(PGO_FLAG) -count=1 -benchtime=1x -benchmem \
 	        -run='^$$' -bench='^BenchmarkCPU_FullExecution$$' \
-	        ./bench/ 2>&1 \
-	    | awk '/MIPS/{for(i=1;i<=NF;i++){if($$i=="MIPS"){print p" MIPS";next}; p=$$i}}' \
-	    || echo "(failed)"
-	@printf "  %-44s " "Go JIT — ELS allocator (native):"
-	@cd $(ROOT) && BENCH_ELF=$(GUEST_ELF) \
-	    $(GO) test $(PGO_FLAG) -count=1 -benchtime=1x -benchmem \
-	        -run='^$$' -bench='^BenchmarkCPU_FullExecution_JIT$$' \
 	        ./bench/ 2>&1 \
 	    | awk '/MIPS/{for(i=1;i<=NF;i++){if($$i=="MIPS"){print p" MIPS";next}; p=$$i}}' \
 	    || echo "(failed)"
@@ -798,7 +791,7 @@ fuzz:
 
 # fuzz-all: run every fuzz target sequentially, 4h each by default.
 # Usage:
-#   make fuzz-all                    # 4h per target (19 targets ≈ 76h)
+#   make fuzz-all                    # 4h per target (12 targets ≈ 48h)
 #   make fuzz-all FUZZ_LONG_TIME=1h  # 1h per target
 #   nohup make fuzz-all &            # background overnight
 .PHONY: fuzz-all
@@ -808,97 +801,62 @@ fuzz-all:
 	@echo "  FUZZ ALL — $(FUZZ_LONG_TIME) per target — $$(date)"
 	@echo "══════════════════════════════════════════════════════════════════"
 	@echo ""
-	@echo "── [1/19] FuzzCPU ($(FUZZ_LONG_TIME)) ──"
+	@echo "── [1/12] FuzzCPU ($(FUZZ_LONG_TIME)) ──"
 	cd $(ROOT) && FUZZ_TIMEOUT=1 $(GO) test \
 	    -run FuzzCPU -fuzz=FuzzCPU \
 	    -fuzztime=$(FUZZ_LONG_TIME) . 2>&1 || true
 	@echo ""
-	@echo "── [2/19] FuzzPeepholeTermination ($(FUZZ_LONG_TIME)) ──"
+	@echo "── [2/12] FuzzPeepholeTermination ($(FUZZ_LONG_TIME)) ──"
 	cd $(ROOT) && $(GO) test \
 	    -run FuzzPeepholeTermination -fuzz=FuzzPeepholeTermination \
 	    -fuzztime=$(FUZZ_LONG_TIME) ./ir/ 2>&1 || true
 	@echo ""
-	@echo "── [3/19] FuzzEmitterSequences ($(FUZZ_LONG_TIME)) ──"
+	@echo "── [3/12] FuzzEmitterSequences ($(FUZZ_LONG_TIME)) ──"
 	cd $(ROOT) && $(GO) test \
 	    -run FuzzEmitterSequences -fuzz=FuzzEmitterSequences \
 	    -fuzztime=$(FUZZ_LONG_TIME) ./ir/ 2>&1 || true
 	@echo ""
-	@echo "── [4/19] FuzzBlockStructure ($(FUZZ_LONG_TIME)) ──"
+	@echo "── [4/12] FuzzBlockStructure ($(FUZZ_LONG_TIME)) ──"
 	cd $(ROOT) && $(GO) test \
 	    -run FuzzBlockStructure -fuzz=FuzzBlockStructure \
 	    -fuzztime=$(FUZZ_LONG_TIME) ./ir/ 2>&1 || true
 	@echo ""
-	@echo "── [5/19] FuzzHighLevelHelpers ($(FUZZ_LONG_TIME)) ──"
+	@echo "── [5/12] FuzzHighLevelHelpers ($(FUZZ_LONG_TIME)) ──"
 	cd $(ROOT) && $(GO) test \
 	    -run FuzzHighLevelHelpers -fuzz=FuzzHighLevelHelpers \
 	    -fuzztime=$(FUZZ_LONG_TIME) ./ir/ 2>&1 || true
 	@echo ""
-	@echo "── [6/19] FuzzRegAllocInvariants ($(FUZZ_LONG_TIME)) ──"
-	cd $(ROOT) && $(GO) test \
-	    -run FuzzRegAllocInvariants -fuzz=FuzzRegAllocInvariants \
-	    -fuzztime=$(FUZZ_LONG_TIME) ./ir/ 2>&1 || true
-	@echo ""
-	@echo "── [7/19] FuzzLiveRangeConsistency ($(FUZZ_LONG_TIME)) ──"
-	cd $(ROOT) && $(GO) test \
-	    -run FuzzLiveRangeConsistency -fuzz=FuzzLiveRangeConsistency \
-	    -fuzztime=$(FUZZ_LONG_TIME) ./ir/ 2>&1 || true
-	@echo ""
-	@echo "── [8/19] FuzzSpillResurrection ($(FUZZ_LONG_TIME)) ──"
-	cd $(ROOT) && $(GO) test \
-	    -run FuzzSpillResurrection -fuzz=FuzzSpillResurrection \
-	    -fuzztime=$(FUZZ_LONG_TIME) ./ir/ 2>&1 || true
-	@echo ""
-	@echo "── [9/19] FuzzELS_NoConflicts ($(FUZZ_LONG_TIME)) ──"
-	cd $(ROOT) && $(GO) test \
-	    -run FuzzELS_NoConflicts -fuzz=FuzzELS_NoConflicts \
-	    -fuzztime=$(FUZZ_LONG_TIME) ./ir/ 2>&1 || true
-	@echo ""
-	@echo "── [10/19] FuzzELS_ForwardBranchLiveness ($(FUZZ_LONG_TIME)) ──"
-	cd $(ROOT) && $(GO) test \
-	    -run FuzzELS_ForwardBranchLiveness -fuzz=FuzzELS_ForwardBranchLiveness \
-	    -fuzztime=$(FUZZ_LONG_TIME) ./ir/ 2>&1 || true
-	@echo ""
-	@echo "── [11/19] FuzzELS_GuestRegExtension ($(FUZZ_LONG_TIME)) ──"
-	cd $(ROOT) && $(GO) test \
-	    -run FuzzELS_GuestRegExtension -fuzz=FuzzELS_GuestRegExtension \
-	    -fuzztime=$(FUZZ_LONG_TIME) ./ir/ 2>&1 || true
-	@echo ""
-	@echo "── [12/19] FuzzELS_SpillSlotUniqueness ($(FUZZ_LONG_TIME)) ──"
-	cd $(ROOT) && $(GO) test \
-	    -run FuzzELS_SpillSlotUniqueness -fuzz=FuzzELS_SpillSlotUniqueness \
-	    -fuzztime=$(FUZZ_LONG_TIME) ./ir/ 2>&1 || true
-	@echo ""
-	@echo "── [13/19] FuzzALUVsLibriscv ($(FUZZ_LONG_TIME)) ──"
+	@echo "── [6/12] FuzzALUVsLibriscv ($(FUZZ_LONG_TIME)) ──"
 	cd $(ROOT) && FUZZ_TIMEOUT=1 $(GO) test \
 	    -run FuzzALUVsLibriscv -fuzz=FuzzALUVsLibriscv \
 	    -fuzztime=$(FUZZ_LONG_TIME) ./fuzzoracle/ 2>&1 || true
 	@echo ""
-	@echo "── [14/19] FuzzStoresVsLibriscv ($(FUZZ_LONG_TIME)) ──"
+	@echo "── [7/12] FuzzStoresVsLibriscv ($(FUZZ_LONG_TIME)) ──"
 	cd $(ROOT) && FUZZ_TIMEOUT=1 $(GO) test \
 	    -run FuzzStoresVsLibriscv -fuzz=FuzzStoresVsLibriscv \
 	    -fuzztime=$(FUZZ_LONG_TIME) ./fuzzoracle/ 2>&1 || true
 	@echo ""
-	@echo "── [15/19] FuzzRVCVsLibriscv ($(FUZZ_LONG_TIME)) ──"
+	@echo "── [8/12] FuzzRVCVsLibriscv ($(FUZZ_LONG_TIME)) ──"
 	cd $(ROOT) && FUZZ_TIMEOUT=1 $(GO) test \
 	    -run FuzzRVCVsLibriscv -fuzz=FuzzRVCVsLibriscv \
 	    -fuzztime=$(FUZZ_LONG_TIME) ./fuzzoracle/ 2>&1 || true
 	@echo ""
-	@echo "── [16/19] FuzzAMOVsLibriscv ($(FUZZ_LONG_TIME)) ──"
+	@echo "── [9/12] FuzzAMOVsLibriscv ($(FUZZ_LONG_TIME)) ──"
 	cd $(ROOT) && FUZZ_TIMEOUT=1 $(GO) test \
 	    -run FuzzAMOVsLibriscv -fuzz=FuzzAMOVsLibriscv \
 	    -fuzztime=$(FUZZ_LONG_TIME) ./fuzzoracle/ 2>&1 || true
 	@echo ""
-	@echo "── [17/19] FuzzFDVsLibriscv ($(FUZZ_LONG_TIME)) ──"
+	@echo "── [10/12] FuzzFDVsLibriscv ($(FUZZ_LONG_TIME)) ──"
 	cd $(ROOT) && FUZZ_TIMEOUT=1 $(GO) test \
 	    -run FuzzFDVsLibriscv -fuzz=FuzzFDVsLibriscv \
 	    -fuzztime=$(FUZZ_LONG_TIME) ./fuzzoracle/ 2>&1 || true
 	@echo ""
-	@echo "── [18/19] FuzzCFloatVsLibriscv ($(FUZZ_LONG_TIME)) ──"
+	@echo "── [11/12] FuzzCFloatVsLibriscv ($(FUZZ_LONG_TIME)) ──"
 	cd $(ROOT) && FUZZ_TIMEOUT=1 $(GO) test \
 	    -run FuzzCFloatVsLibriscv -fuzz=FuzzCFloatVsLibriscv \
 	    -fuzztime=$(FUZZ_LONG_TIME) ./fuzzoracle/ 2>&1 || true
 	@echo ""
-	@echo "── [19/19] FuzzBitmanipVsLibriscv ($(FUZZ_LONG_TIME)) ──"
+	@echo "── [12/12] FuzzBitmanipVsLibriscv ($(FUZZ_LONG_TIME)) ──"
 	cd $(ROOT) && FUZZ_TIMEOUT=1 $(GO) test \
 	    -run FuzzBitmanipVsLibriscv -fuzz=FuzzBitmanipVsLibriscv \
 	    -fuzztime=$(FUZZ_LONG_TIME) ./fuzzoracle/ 2>&1 || true
