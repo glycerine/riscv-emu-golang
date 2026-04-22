@@ -54,7 +54,7 @@ func currentSyscallDispatcherAddr() uintptr {
 //
 // Flipping to false at any time restores today's unconditional-
 // epilogue path for subsequent block emissions.
-var inlineEcallEnabled bool
+var inlineEcallEnabled bool = true
 
 func init() {
 	ir.InlineSyscall = inlineEcallEnabled
