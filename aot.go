@@ -124,3 +124,56 @@ func enumerateBlockRanges(mem *GuestMemory, textBase, textSize uint64) []blockRa
 	}
 	return ranges
 }
+
+// enumerateFunctionRanges returns function-level ranges for the text
+// section. Without ELF symbol information, the entire text section is
+// treated as one function (the conservative fallback). This is the
+// function-level replacement for enumerateBlockRanges.
+func enumerateFunctionRanges(mem *GuestMemory, textBase, textSize uint64) []blockRange {
+	if textSize == 0 {
+		return nil
+	}
+	return []blockRange{{startPC: textBase, endPC: textBase + textSize}}
+}
+
+// collectInternalTargets scans [startPC, endPC) and returns:
+//   - targets: all intra-function branch/jump destinations
+//   - ecallConts: PC+4 for each ECALL (the continuation PC after the syscall)
+//
+// Used by the emitter to pre-create IR labels for branch targets and
+// ECALL continuation points within a function.
+func collectInternalTargets(mem *GuestMemory, startPC, endPC uint64) (
+	targets map[uint64]struct{},
+	ecallConts []uint64,
+) {
+	targets = make(map[uint64]struct{})
+
+	pc := startPC
+	for pc < endPC {
+		fc, target, insnSize := classifyFlow(mem, pc)
+		if insnSize == 0 {
+			pc += 2
+			continue
+		}
+		switch fc {
+		case flowBranch, flowJump:
+			if target >= startPC && target < endPC {
+				targets[target] = struct{}{}
+			}
+		case flowTerm:
+			// Check if this is an ECALL (not EBREAK/CSR/JALR/JAL).
+			half, _ := mem.Fetch16(pc)
+			if half&0x3 == 0x3 { // 32-bit instruction
+				insn, f := mem.Fetch32(pc)
+				if f != nil {
+					insn, _ = mem.Fetch32U(pc) // misaligned fallback
+				}
+				if insn == 0x00000073 { // ECALL
+					ecallConts = append(ecallConts, pc+4)
+				}
+			}
+		}
+		pc += insnSize
+	}
+	return targets, ecallConts
+}
