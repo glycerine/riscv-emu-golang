@@ -243,6 +243,18 @@ func vizJitDump(
 	if block != nil {
 		for _, ins := range block.Instrs {
 			sb.WriteString(ins.String())
+			if ins.Op == ir.IRDispatchBarrier && len(block.DispatchPCs) > 0 {
+				sb.WriteString(" {")
+				first := true
+				for pc, lab := range block.DispatchPCs {
+					if !first {
+						sb.WriteString(", ")
+					}
+					fmt.Fprintf(&sb, "0x%x→L%d", pc, lab)
+					first = false
+				}
+				sb.WriteByte('}')
+			}
 			sb.WriteByte('\n')
 		}
 	}

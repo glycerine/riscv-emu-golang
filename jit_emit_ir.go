@@ -1013,11 +1013,23 @@ func emitBlockRange(mem *GuestMemory, pc, endPC uint64) *emitResult {
 		}
 	}
 
+	needBarrier := len(irEm.Block.DispatchPCs) > 0
+	prepended := 0
 	if len(loads) > 0 {
 		e.irEm.Block.Instrs = append(loads, e.irEm.Block.Instrs...)
-		// Fix label indices (they shifted by len(loads)).
+		prepended += len(loads)
+	}
+	if needBarrier {
+		barrier := ir.IRInstr{Op: ir.IRDispatchBarrier}
+		rest := make([]ir.IRInstr, len(e.irEm.Block.Instrs)-prepended)
+		copy(rest, e.irEm.Block.Instrs[prepended:])
+		e.irEm.Block.Instrs = append(e.irEm.Block.Instrs[:prepended], barrier)
+		e.irEm.Block.Instrs = append(e.irEm.Block.Instrs, rest...)
+		prepended++
+	}
+	if prepended > 0 {
 		for lab, idx := range e.irEm.Block.Labels {
-			e.irEm.Block.Labels[lab] = idx + len(loads)
+			e.irEm.Block.Labels[lab] = idx + prepended
 		}
 		ir.MaxVReg(e.irEm.Block)
 	}

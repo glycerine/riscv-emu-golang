@@ -134,6 +134,7 @@ func TestIROpConstants(t *testing.T) {
 		{IRFCvtFromI, "fcvt_from_i"}, {IRFCvtFromU, "fcvt_from_u"},
 		{IRFCvtFF, "fcvt_ff"},
 		{IRMarkLive, "mark_live"}, {IRMarkDead, "mark_dead"}, {IRWriteback, "writeback"},
+		{IRDispatchBarrier, "dispatch_barrier"},
 	}
 	for _, tt := range ops {
 		if prev, ok := seen[tt.op]; ok {

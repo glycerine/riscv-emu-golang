@@ -512,6 +512,7 @@ func TestLower_AllOpsHandled(t *testing.T) {
 		IRFNeg, IRFAbs,
 		IRFCvtToI, IRFCvtToU, IRFCvtFromI, IRFCvtFromU, IRFCvtFF,
 		IRMarkLive, IRMarkDead, IRWriteback,
+		IRDispatchBarrier,
 	}
 
 	lc := &lowerCtx{

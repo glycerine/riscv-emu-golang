@@ -432,28 +432,26 @@ func (lc *lowerCtx) emitPrologue() {
 		lc.emitRI(x86.ASUBQ, lc.frameSize, goasm.REG_AMD64_SP)
 	}
 
-	// Dispatch table for function re-entry. When the Go dispatch loop
-	// re-enters a function at a mid-function PC (after BudgetCheck or
-	// ECALL fallback), the trampoline writes the target PC into
-	// sret[SretPCOffset]. We compare it against each known re-entry
-	// PC and jump to the corresponding IR label. The function entry
-	// (startPC) is the fall-through default — no comparison needed.
-	if len(lc.blk.DispatchPCs) > 0 {
-		// Load dispatch PC from sret buffer.
-		lc.emitRM(x86.AMOVQ, amd64RegSret, SretPCOffset, amd64Scratch1)
+	// Dispatch table is now emitted by IRDispatchBarrier in the
+	// instruction stream, after register loads.
+}
 
-		for guestPC, label := range lc.blk.DispatchPCs {
-			// CMP R10, imm64 — need MOVABS for 64-bit immediates.
-			lc.loadImm64(int64(guestPC), amd64Scratch2)
-			lc.emitRR(x86.ACMPQ, amd64Scratch1, amd64Scratch2)
-			jeq := lc.c.NewProg()
-			jeq.As = x86.AJEQ
-			jeq.To.Type = obj.TYPE_BRANCH
-			lc.c.Append(jeq)
-			// Forward reference — resolved when the label is placed.
-			lc.pending[label] = append(lc.pending[label], jeq)
-		}
-		// Fall through to function entry (startPC) if no match.
+// emitDispatchTable emits the PC dispatch CMP/JEQ chain for function
+// re-entry at mid-function PCs. Called when lowering IRDispatchBarrier.
+func (lc *lowerCtx) emitDispatchTable() {
+	if len(lc.blk.DispatchPCs) == 0 {
+		return
+	}
+	lc.emitRM(x86.AMOVQ, amd64RegSret, SretPCOffset, amd64Scratch1)
+
+	for guestPC, label := range lc.blk.DispatchPCs {
+		lc.loadImm64(int64(guestPC), amd64Scratch2)
+		lc.emitRR(x86.ACMPQ, amd64Scratch1, amd64Scratch2)
+		jeq := lc.c.NewProg()
+		jeq.As = x86.AJEQ
+		jeq.To.Type = obj.TYPE_BRANCH
+		lc.c.Append(jeq)
+		lc.pending[label] = append(lc.pending[label], jeq)
 	}
 }
 
@@ -835,7 +833,8 @@ func (lc *lowerCtx) lowerInstr(ins *IRInstr) error {
 		IRRet, IRRetDyn, IRChainExit, IRJalrIC, IRCall, IRSyscall, // exits/calls
 		IRFAdd, IRFSub, IRFMul, IRFDiv, IRFSqrt, IRFNeg, IRFAbs, IRFCmp, // FP uses FP scratch
 		IRFma, IRFmsub, IRFnmadd, IRFnmsub,                               // FP ternary (FMA family)
-		IRFCvtToI, IRFCvtToU, IRFCvtFromI, IRFCvtFromU, IRFCvtFF: // FP conversions
+		IRFCvtToI, IRFCvtToU, IRFCvtFromI, IRFCvtFromU, IRFCvtFF, // FP conversions
+		IRDispatchBarrier: // uses R10/R11 for dispatch PC comparison
 		lc.invalidateScratchCache()
 	}
 	switch ins.Op {
@@ -1015,6 +1014,9 @@ func (lc *lowerCtx) lowerInstr(ins *IRInstr) error {
 	// Pseudo-ops — no code emitted.
 	case IRMarkLive, IRMarkDead, IRWriteback:
 		// no-op
+
+	case IRDispatchBarrier:
+		lc.emitDispatchTable()
 
 	default:
 		return fmt.Errorf("ir.LowerAMD64: unhandled op %v at index %d", ins.Op, lc.idx)

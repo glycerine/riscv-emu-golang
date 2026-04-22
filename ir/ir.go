@@ -242,9 +242,10 @@ const (
 	IRFCvtFF    // Dst = convert(A)  F32↔F64       T=dst, U=src
 
 	// Pseudo-ops
-	IRMarkLive  // declares A live here (allocator hint)
-	IRMarkDead  // declares A dead here (allocator hint)
-	IRWriteback // writes dirty vregs back to x[] array
+	IRMarkLive        // declares A live here (allocator hint)
+	IRMarkDead        // declares A dead here (allocator hint)
+	IRWriteback       // writes dirty vregs back to x[] array
+	IRDispatchBarrier // emit PC dispatch table here (after reg loads)
 
 	// Count of IR ops (not a valid op).
 	irOpCount
@@ -327,9 +328,10 @@ var irOpNames = [...]string{
 	IRFCvtFromI: "fcvt_from_i",
 	IRFCvtFromU: "fcvt_from_u",
 	IRFCvtFF:    "fcvt_ff",
-	IRMarkLive:  "mark_live",
-	IRMarkDead:  "mark_dead",
-	IRWriteback: "writeback",
+	IRMarkLive:        "mark_live",
+	IRMarkDead:        "mark_dead",
+	IRWriteback:       "writeback",
+	IRDispatchBarrier: "dispatch_barrier",
 }
 
 // IRInstr is one IR operation. Fixed-size struct (no slices) for cache locality.
@@ -385,6 +387,8 @@ func (ins IRInstr) String() string {
 		return fmt.Sprintf("%s resumePC=0x%x ctab=%d", ins.Op, uint64(ins.Imm), ins.Imm2)
 	case IRChainExit:
 		return fmt.Sprintf("%s targetPC=0x%x exitIdx=%d", ins.Op, uint64(ins.Imm), ins.Imm2)
+	case IRDispatchBarrier:
+		return "dispatch_barrier"
 	default:
 		if ins.B != VRegZero {
 			return fmt.Sprintf("%s.%s %s = %s, %s", ins.Op, ins.T, ins.Dst, ins.A, ins.B)
@@ -402,10 +406,11 @@ type Block struct {
 	VRegLive  []VRegLiveness
 
 	// DispatchPCs maps re-entry guest PCs to their IR labels. The lowerer
-	// emits a dispatch table in the prologue that reads the incoming PC
-	// from sret[120] and jumps to the matching label. Set by the emitter
-	// for function-level blocks that have mid-function re-entry points
-	// (backward branch targets, ECALL continuations).
+	// emits a dispatch table when it encounters IRDispatchBarrier — after
+	// register loads — that reads the incoming PC from sret[120] and jumps
+	// to the matching label. Set by the emitter for function-level blocks
+	// that have mid-function re-entry points (backward branch targets,
+	// ECALL continuations).
 	DispatchPCs map[uint64]Label
 
 	maxVreg VReg // uint16
