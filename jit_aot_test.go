@@ -1,6 +1,7 @@
 package riscv
 
 import (
+	"encoding/binary"
 	"fmt"
 	"os"
 	"riscv/goasm"
@@ -43,7 +44,7 @@ func compileAOTBlock(t *testing.T, mem *GuestMemory, startPC, endPC uint64) (fn 
 
 	ctx := goasm.New(goasm.AMD64)
 	ctx.Append(ctx.NewATEXT())
-	_, err := ir.LowerAMD64AOT(ctx, res.block, alloc)
+	lowerResult, err := ir.LowerAMD64AOT(ctx, res.block, alloc)
 	if err != nil {
 		t.Fatalf("LowerAMD64AOT: %v", err)
 	}
@@ -66,6 +67,14 @@ func compileAOTBlock(t *testing.T, mem *GuestMemory, startPC, endPC uint64) (fn 
 	copy(execMem, code)
 
 	fn = uintptr(unsafe.Pointer(&execMem[0]))
+
+	// Backpatch chain-exit sentinels → slow-exit stub addresses.
+	// Same logic as jitCompileAOTSegment Pass 2.
+	for _, ce := range lowerResult.ChainExits {
+		patchOff := int(ce.MovProg.Pc) + 2
+		stubAddr := fn + uintptr(ce.StubProg.Pc)
+		binary.LittleEndian.PutUint64(execMem[patchOff:], uint64(stubAddr))
+	}
 
 	// VizJit dump — writes Guest RISC-V + IR + Host asm to disk.
 	vizJitDump(startPC, endPC, mem, res.block, progs, len(code), fn)
