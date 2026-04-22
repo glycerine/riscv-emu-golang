@@ -2161,3 +2161,49 @@ func TestLastIRWasTerminator_SyscallNotTerminal(t *testing.T) {
 		t.Error("IRRet should be a terminator")
 	}
 }
+
+// TestLazyJIT_FunctionLevel verifies that the lazy JIT path
+// (emitBlock) produces a function-level result spanning past ECALL,
+// not stopping at the first terminator like scanRegion did.
+func TestLazyJIT_FunctionLevel(t *testing.T) {
+	mem, err := NewGuestMemory(Size64MB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mem.Free()
+
+	pc := uint64(0x1000)
+	// Guest program (same as TestEmitEcallNonTerminal):
+	//   0x1000: LI a7, 64        — set syscall number
+	//   0x1004: LI a0, 1         — fd = stdout
+	//   0x1008: ECALL
+	//   0x100c: ADDI x5, x0, 99  — post-ECALL instruction
+	//   0x1010: EBREAK           — terminator
+	mem.Store32(pc+0, ienc(opOPIMM, 0, 17, 0, 64))
+	mem.Store32(pc+4, ienc(opOPIMM, 0, 10, 0, 1))
+	mem.Store32(pc+8, instrECALL)
+	mem.Store32(pc+12, ienc(opOPIMM, 0, 5, 0, 99))
+	mem.Store32(pc+16, instrEBREAK)
+
+	// Register exec region so emitBlock can find function extent.
+	mem.AddExecRegion(pc, pc+20, false)
+
+	res := emitBlock(mem, pc)
+	if res == nil {
+		t.Fatal("emitBlock returned nil")
+	}
+
+	// Should span past the ECALL — endPC should be > 0x100c.
+	if res.endPC <= pc+12 {
+		t.Errorf("emitBlock endPC = 0x%x, want > 0x%x (should continue past ECALL)",
+			res.endPC, pc+12)
+	}
+
+	// Should have at least 4 guest instructions (LI, LI, ECALL, ADDI).
+	if res.numInsns < 4 {
+		t.Errorf("emitBlock numInsns = %d, want >= 4", res.numInsns)
+	}
+
+	t.Logf("lazy JIT: %d guest insns, endPC=0x%x, %d IR ops",
+		res.numInsns, res.endPC, len(res.block.Instrs))
+}

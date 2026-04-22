@@ -865,6 +865,12 @@ func scanUsedRegs(mem *GuestMemory, startPC, endPC uint64, used *[32]bool) {
 // ── emitBlock ──────────────────────────────────────────────────────────
 
 func emitBlock(mem *GuestMemory, pc uint64) *emitResult {
+	// Find the function extent. If the PC falls inside a registered
+	// exec region, use the region bounds. Otherwise fall back to the
+	// BFS scanRegion for unknown code (e.g., JIT-generated trampolines).
+	if region := mem.FindExecRegion(pc); region != nil {
+		return emitBlockRange(mem, pc, region.VAddrEnd)
+	}
 	region := scanRegion(mem, pc)
 	if region.pcCount == 0 {
 		if debugJIT {
