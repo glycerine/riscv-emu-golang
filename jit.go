@@ -312,11 +312,11 @@ func (j *JIT) InstallAOTFromMem(mem *GuestMemory) error {
 }
 
 // compileAOTRegion is the shared body of InstallAOT and
-// InstallAOTFromMem: enumerate blocks in [begin, end), compile them as
-// one segment, and record it. Silently skips on failure so other
-// regions still install.
+// InstallAOTFromMem: enumerate function ranges in [begin, end),
+// compile them as one segment, and record it. Silently skips on
+// failure so other regions still install.
 func (j *JIT) compileAOTRegion(mem *GuestMemory, begin, end, size uint64, writable bool) {
-	ranges := enumerateBlockRanges(mem, begin, size)
+	ranges := enumerateFunctionRanges(mem, begin, size)
 	seg, err := j.jitCompileAOTSegment(mem, ranges, begin, end)
 	if err != nil {
 		return

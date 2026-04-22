@@ -1092,6 +1092,55 @@ func TestEnumerateFunctionRanges_Hello(t *testing.T) {
 	t.Logf("hello: %d function range(s) over %d bytes of .text", len(ranges), textSize)
 }
 
+// TestAOT_FunctionLevel_Hello verifies that the hello ELF compiles as
+// a single AOT block (one function) rather than multiple blocks.
+func TestAOT_FunctionLevel_Hello(t *testing.T) {
+	data, err := os.ReadFile("bench/hello_guest/hello_gocpu.elf")
+	if err != nil {
+		t.Skipf("hello ELF not found: %v", err)
+	}
+
+	mem, err := NewGuestMemory(Size64MB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mem.Free()
+
+	if _, lerr := LoadELFBytes(mem, data); lerr != nil {
+		t.Fatalf("LoadELFBytes: %v", lerr)
+	}
+
+	textBase, textSize, ok := FindTextSection(data)
+	if !ok {
+		t.Fatal("FindTextSection: not found")
+	}
+
+	j := NewJIT()
+	defer j.Close()
+
+	ranges := enumerateFunctionRanges(mem, textBase, textSize)
+	seg, err := j.jitCompileAOTSegment(mem, ranges, textBase, textBase+textSize)
+	if err != nil {
+		t.Fatalf("jitCompileAOTSegment: %v", err)
+	}
+
+	// Should produce 1 compiled block (one function).
+	if n := len(seg.blocks); n != 1 {
+		t.Errorf("got %d compiled blocks, want 1", n)
+		for pc := range seg.blocks {
+			t.Logf("  block at 0x%x", pc)
+		}
+	}
+
+	// decoder_cache should have an entry at textBase.
+	if _, ok := seg.blocks[textBase]; !ok {
+		t.Errorf("no compiled block at textBase 0x%x", textBase)
+	}
+
+	t.Logf("hello AOT: %d block(s), %d bytes native code",
+		len(seg.blocks), seg.nativeCodeSize)
+}
+
 // TestCollectInternalTargets_Hello verifies that collectInternalTargets
 // finds the backward branch target (0x101c from c.bnez) and ECALL
 // continuation PCs for the hello program.
