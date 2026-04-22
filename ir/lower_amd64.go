@@ -2513,6 +2513,23 @@ func (lc *lowerCtx) peepholeHostSpills() int {
 				mutated = true
 				return false // mutated, not deleted
 			}
+			// Pattern 4 (dead store): MOVQ X, R ; MOVQ Y, R — curr
+			// overwrites prev's destination before it can be read
+			// (adjacent, nothing reads R between). Transform prev into
+			// a self-move (MOVQ R, R) so Pattern 1 eliminates it on the
+			// next pass. Skip when prev is already a self-move (prevents
+			// infinite-mutation loop) or is protected (label target,
+			// chain-exit MOVABS, etc). Safe because stack-slot reads
+			// don't fault in our JIT, so prev's load side-effects (if
+			// any) can be discarded.
+			if prev.As == x86.AMOVQ && curr.As == x86.AMOVQ && !protected[prev] &&
+				prev.To.Type == obj.TYPE_REG &&
+				addrEqual(prev.To, curr.To) &&
+				!addrEqual(prev.From, prev.To) {
+				prev.From = prev.To
+				mutated = true
+				return false
+			}
 			return false
 		})
 		total += removed

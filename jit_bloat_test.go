@@ -33,10 +33,12 @@ func TestBloat_BenchGuest_0x10de(t *testing.T) {
 		elfPath      = "bench/libriscv_guest/bench_guest.elf"
 		blockEntryPC = uint64(0x000010de)
 
-		// High-water marks (2026-04-22 baseline: ir=100, host=1222,
-		// chain_exits=3). Lower these as optimizations land.
+		// High-water marks. Lower these as optimizations land.
+		//  - Pre-peephole baseline (2026-04-22): ir=110, host=1222.
+		//  - After post-lowering MOVQ peephole (2026-04-22): host=1150
+		//    (-72 bytes, -5.9%).
 		maxIRInstrs   = 110
-		maxHostBytes  = 1222
+		maxHostBytes  = 1150
 		maxChainExits = 5
 	)
 
