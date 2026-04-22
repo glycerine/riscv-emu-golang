@@ -841,7 +841,9 @@ func (j *JIT) RunJIT(cpu *CPU) error {
 		// that isn't yet covered by any AOT segment (e.g., the guest
 		// mmapped a new R-X region and jumped to it — LuaJIT pattern),
 		// build a segment for it now. Re-try dispatch on success.
-		if !j.InterpOnly && len(cpu.mem.execRegions) > 0 {
+		// DisableAutoAOT opts out — benchmarks and tests that measure
+		// the lazy path need to prevent on-demand AOT too.
+		if !j.InterpOnly && !j.DisableAutoAOT && len(cpu.mem.execRegions) > 0 {
 			if seg := j.nextExecuteSegment(&cpu.mem, pc); seg != nil {
 				if _, ok := seg.blocks[pc]; ok {
 					continue // retry — next lookupBlock hits the new AOT block
