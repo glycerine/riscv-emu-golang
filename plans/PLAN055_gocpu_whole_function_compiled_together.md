@@ -2,114 +2,124 @@
 
 ## Context
 
-GoCPU splits code at ECALL terminators and backward branch targets, producing 3 blocks for the hello program (0x1000, 0x101c, 0x1022). libriscv compiles the entire function as one unit with internal labels and inline syscalls. We want to replace GoCPU's block-level compilation entirely with function-level compilation, for both the AOT path and the lazy JIT path.
+GoCPU splits code at ECALL terminators and backward branch targets, producing 3 blocks for the hello program. libriscv compiles the entire function as one unit with internal labels and inline `api.system_call()`. After the syscall, libriscv's `LOAD_SYS_REGS` reloads **only registers 10-11 (a0, a1)** — the syscall return values (see `tr_emit.cpp:2218-2224`). Callee-saved registers (s0-s11, sp, gp, tp) are never reloaded — ECALL preserves them.
 
 ## Scope
-
-- **Replace** block-level compilation -- not opt-in, not coexisting
-- **Both paths**: AOT (`jitCompileAOTSegment`) and lazy JIT (`emitBlock` in `RunJIT`)
-- Modify `IRSyscall` directly to become non-terminal (no new `IRSyscallInline` op)
-- Replace `emitBlockRange`/`emitBlockLinear`/`emitBlock` with function-level equivalents
-- Replace `enumerateBlockRanges` with function boundary detection
+- **Replace** block-level compilation entirely (AOT + lazy JIT)
+- **Incremental**: each step has tests written first, then implementation
+- **Efficient syscall reload**: only a0/a1 (x10/x11), not all 31 registers
 
 ---
 
-## Phase 1: IR Layer -- Make `IRSyscall` Non-Terminal
+## Step 1: IR Layer — `ReloadSyscallRegs` + `ClearDirtySyscallRegs`
 
-### 1.1 Change `IRSyscall` semantics
-**File:** `ir/ir.go`
+### 1a: Write tests
+**File:** `ir/highlevel_test.go`
 
-`IRSyscall` (line 223) currently says "Terminator. WriteBackAll must precede." Change the comment: it is now a **mid-block call** that can be followed by more IR instructions. The lowerer handles both the success (continue) and failure (exit) paths.
+Test that `ReloadSyscallRegs()` emits exactly 2 Load instructions (for x10, x11) and marks them dirty. Test that `ClearDirtySyscallRegs()` clears dirty flags for only x10, x11.
 
-Remove `IRSyscall` from `lastIRWasTerminator()` in `jit_emit_ir.go:360`.
-
-### 1.2 Add `ReloadAllGuest()` and `ClearAllDirty()`
+### 1b: Implement
 **File:** `ir/highlevel.go`
 
 ```go
-func (e *Emitter) ClearAllDirty() {
-    for i := range e.dirty { e.dirty[i] = false }
+func (e *Emitter) ClearDirtySyscallRegs() {
+    for _, vr := range []VReg{10, 11} {
+        if int(vr) < len(e.dirty) { e.dirty[vr] = false }
+    }
 }
 
-func (e *Emitter) ReloadAllGuest() {
-    for i := uint32(1); i < 32; i++ {
-        vr := VReg(i)
-        e.Load(vr, e.xBase, int64(i)*8, I64, false)
+func (e *Emitter) ReloadSyscallRegs() {
+    for _, vr := range []VReg{10, 11} {
+        e.Load(vr, e.xBase, int64(vr)*8, I64, false)
         e.MarkDirty(vr)
     }
 }
 ```
 
-Reload all 31 integer regs unconditionally. Syscall can modify any register. Matches libriscv's `LOAD_REGS`. Cost is negligible vs syscall overhead.
+Only a0 (x10) and a1 (x11) — matching libriscv's `LOAD_SYS_REGS` which loops `reg = 10..11`. Callee-saved registers (sp, s0-s11, gp, tp) are preserved by ECALL per RISC-V ABI. The GoCPU dispatcher only writes x[10] (return value).
 
-### 1.3 Update `Syscall()` on Emitter
-**File:** `ir/emit.go`
-
-Remove the comment at line 258 saying "The emitter always terminates the IR block at Syscall." The method still emits `IRSyscall` with the same fields. The caller is now responsible for emitting `WriteBackAll` before, `ClearAllDirty` + `ReloadAllGuest` after, and **not** setting `e.terminated`.
+### 1c: Verify
+`go test -run TestReloadSyscallRegs ./ir/`
 
 ---
 
-## Phase 2: Lowerer -- Non-Terminal `lowerSyscall`
+## Step 2: Make `IRSyscall` Non-Terminal in IR
 
-### 2.1 Rewrite `lowerSyscall(ins *IRInstr)`
-**File:** `ir/lower_amd64.go` (line 2008)
+### 2a: Write tests
+**File:** `ir/ir_test.go`
 
-Replace the current terminator implementation. New sequence:
+Test that `IRSyscall` is NOT in `lastIRWasTerminator()`'s terminator list. Test that an IR block with `[IRConst, IRSyscall, IRConst, IRRet]` is valid (4 instructions, syscall in the middle).
+
+### 2b: Implement
+**Files:** `ir/ir.go`, `jit_emit_ir.go`
+
+- Update `IRSyscall` doc comment (line 223): remove "Terminator."
+- In `jit_emit_ir.go:360`, remove `IRSyscall` from `lastIRWasTerminator()`.
+- Update `ir/emit.go:256-258`: remove "The emitter always terminates the IR block at Syscall" doc.
+
+### 2c: Verify
+`go test -run TestIRSyscallNotTerminator ./ir/`
+
+---
+
+## Step 3: Rewrite `lowerSyscall` as Non-Terminal
+
+### 3a: Write tests
+**File:** `ir/lower_amd64_test.go`
+
+Test: construct a Block with `[IRLoad(x10), IRWriteback, IRSyscall, IRConst(x10, 42), IRRet]`. Lower via `LowerAMD64`. Verify no error, and that the assembled bytes are non-empty. (Proves the lowerer handles mid-block IRSyscall without crashing.)
+
+### 3b: Implement
+**File:** `ir/lower_amd64.go` (replace `lowerSyscall` at line 2008)
+
+New sequence — save/restore caller-saved regs around the CALL (like `lowerCall` does), hot path falls through:
 
 ```
-// 1. Save live caller-saved regs (same pattern as lowerCall, line 1953)
-liveInt, liveFP := lc.liveCallerSaved()
-<SUB RSP, saveSize>
-<store liveInt/liveFP to stack>
+// Save live caller-saved host registers
+<push liveInt/liveFP to stack>
 
-// 2. SysV args: RDI=xBase(R12), RSI=memBase(R14), RDX=memMask(R15)
-MOVQ R12, RDI
-MOVQ R14, RSI
-MOVQ R15, RDX
+// SysV args: RDI=xBase(R12), RSI=memBase(R14), RDX=memMask(R15)
+MOVQ R12, RDI; MOVQ R14, RSI; MOVQ R15, RDX
 
-// 3. CALL dispatcher
+// CALL dispatcher
 MOVABS R10, <addr>; CALL R10
 
-// 4. Check result
+// Check result
 TESTQ RAX, RAX
 JNE   L_fallback
 
-// 5. Hot path: restore saved regs, fall through to next IR instruction
-<load liveInt/liveFP from stack>
-<ADD RSP, saveSize>
+// Hot path: restore, continue to next IR instruction
+<pop liveInt/liveFP>
 JMP L_continue
 
-// L_fallback: syscall not handled, must exit to Go
-<load liveInt/liveFP from stack>
-<ADD RSP, saveSize>
-<write sret: pc=resumePC(Imm), ic=RBP, status=RAX, faultAddr=0>
-<deallocate spill frame>
-RET
+L_fallback:
+  <pop liveInt/liveFP>
+  <write sret: pc=resumePC, ic=RBP, status=RAX, faultAddr=0>
+  <dealloc frame; RET>
 
 L_continue:
-// next IR instruction executes here
+  // next IR instruction
 ```
 
-Key difference: the hot path (RAX==0) **does not exit** -- it restores regs and continues. Only the cold path (RAX!=0, unhandled syscall) exits via RET.
+### 3c: Remove old `InlineSyscall` chain-exit logic
+Remove lines 2042-2067 (the chain-exit hot path). Remove `ir.InlineSyscall` variable from `ir/ir.go`. Remove `inlineEcallEnabled`/`SetInlineEcallEnabled`/`InlineEcallEnabled` from `jit_syscall.go`.
 
-### 2.2 Remove the old `InlineSyscall` chain-exit logic
-The old code (line 2042-2067) emitted a chain exit on the hot path to jump to the post-ECALL block. That concept no longer exists -- the post-ECALL code is in the same function. Remove the `InlineSyscall` flag, the chain-exit-on-success path, and the `ir.InlineSyscall` variable.
-
-### 2.3 Update V2 lowerer
-**File:** `ir/lower_amd64_v2.go` (line 540-544)
-
-The V2 lowerer currently falls back to a terminator `IRRet` for `IRSyscall`. Update it to the same non-terminal pattern (or mark V2 as not supporting function-level and keep it for testing only).
+### 3d: Verify
+`go test -run TestLowerSyscallNonTerminal ./ir/`
 
 ---
 
-## Phase 3: Emitter -- Replace `emitBlockRange` with `emitFunctionRange`
+## Step 4: Update Emitter — ECALL No Longer Terminates
 
-### 3.1 Replace `emitBlockRange()`
-**File:** `jit_emit_ir.go` (line 890)
+### 4a: Write tests
+**File:** `jit_emit_ir_test.go`
 
-Rename to `emitFunctionRange()`. Changes:
+Test: emit a small function-like range containing `li a0,1; ecall; addiw a3,a3,-1; bnez a3,-8`. Verify `emitBlockRange` produces a single `emitResult` spanning the full range (not terminated at ECALL). Verify the IR contains an `IRSyscall` followed by 2 Load instructions (reload a0, a1) and then the `addiw` lowering.
 
-**(a) ECALL does not set `e.terminated`.** Replace lines 1098-1104:
+### 4b: Implement
+**File:** `jit_emit_ir.go`
+
+Change ECALL handling at line 1098-1104:
 ```go
 case 0x00000073: // ECALL
     e.advancePC(4)
@@ -118,129 +128,125 @@ case 0x00000073: // ECALL
         e.emitReturn(e.pc, jitEcall)
         e.terminated = true
     } else {
-        // Inline syscall: writeback, call, reload, continue
         e.irEm.WriteBackAll()
-        e.irEm.ClearAllDirty()
+        e.irEm.ClearDirtySyscallRegs()
         e.irEm.Syscall(e.pc, addr)
-        e.irEm.ReloadAllGuest()
-        // Do NOT set e.terminated -- emission continues
+        e.irEm.ReloadSyscallRegs()
+        // NOT terminated — emission continues
     }
 ```
 
-**(b) Pre-create labels** for all intra-function branch targets and ECALL continuation PCs (pc+4). Add a pre-scan before the main emission loop that calls a new `collectInternalTargets(mem, startPC, endPC)` and creates IR labels for each.
+### 4c: Update `scanUsedRegs` (line 709)
+Remove the early stop at SYSTEM opcode. The function-level scanner must scan the **entire** range so the prologue loads all registers used anywhere in the function.
 
-**(c) Raise limits.** Increase `maxBlockInsns` and `maxBlockIRInsns` (or replace them with function-level constants). Functions are larger than blocks.
-
-### 3.2 Replace `emitBlock()` and `emitBlockLinear()`
-**File:** `jit_emit_ir.go`
-
-- `emitBlockLinear(mem, startPC, endPC)` → calls `emitFunctionRange(mem, startPC, endPC)`
-- `emitBlock(mem, pc)` → determines function boundaries around `pc`, then calls `emitFunctionRange`. For the lazy path, use a heuristic to find function extent (scan forward for RET/end-of-region).
-
-### 3.3 Replace `scanUsedRegs()`
-**File:** `jit_emit_ir.go` (line 709)
-
-Current version stops at SYSTEM/JALR/JAL-with-link. The function-level version must scan the **entire** function range without stopping at ECALL, so the prologue loads all registers the function ever references.
-
-### 3.4 Update `finalize()`
-**File:** `jit_emit_ir.go` (line 657)
-
-The `lastIRWasTerminator()` check (line 667) no longer considers `IRSyscall` terminal, so after the last instruction in the function, if it's an ECALL, `finalize` will correctly emit a fall-through chain exit to the post-function PC (or the function ends with an explicit RET/exit syscall as most do).
+### 4d: Verify
+`go test -run TestEmitEcallNonTerminal .`
 
 ---
 
-## Phase 4: AOT Driver -- Replace Block Enumeration with Function Enumeration
+## Step 5: Replace Block Enumeration with Function Enumeration
 
-### 4.1 Replace `enumerateBlockRanges` with `enumerateFunctionRanges`
+### 5a: Write tests
+**File:** `aot_test.go`
+
+Test: for the hello ELF (0x1000..0x1030), `enumerateFunctionRanges` returns **1 range** covering the full text section — not 3 blocks. Also test `collectInternalTargets` returns the expected branch targets and ECALL continuation PCs.
+
+### 5b: Implement
 **File:** `aot.go`
 
-Replace the existing `collectBranchTargets` + `enumerateBlockRanges` with function-level enumeration:
+Replace `enumerateBlockRanges` with `enumerateFunctionRanges(mem, textBase, textSize, elfData)`:
+1. With ELF symbols: parse STT_FUNC symbols, return one range per function.
+2. Without symbols: return the entire text section as one range.
 
-1. **With ELF symbols**: Parse STT_FUNC symbols from the symbol table (existing `elf64Sym` parsing in `elf.go`). Each symbol gives a `{startPC, startPC+size}` range. Cover gaps between symbols with synthetic ranges.
-2. **Without symbols (fallback)**: Treat the entire text section as one function. This is safe — the emitter handles all control flow internally.
+Add `collectInternalTargets(mem, startPC, endPC)` — linear scan returning `(branchTargets map[uint64]struct{}, ecallContinuations []uint64)`. Used by the emitter to pre-create labels.
 
-Also add `collectInternalTargets(mem, startPC, endPC) (branchTargets map[uint64]struct{}, ecallContinuations []uint64)` — a linear scan that returns all intra-function branch/jump targets and ECALL pc+4 addresses. Used by Phase 3.1b for pre-creating labels.
+Replace `collectBranchTargets` and `enumerateBlockRanges` — delete them.
 
-### 4.2 Update `jitCompileAOTSegment`
-**File:** `jit_aot.go` (line 38)
+### 5c: Verify
+`go test -run TestEnumerateFunctionRanges .`
 
-- Pass 1 now iterates function ranges (not block ranges)
-- Calls `emitFunctionRange()` instead of `emitBlockLinear()`
-- One `compiledBlock` per function (fewer, larger blocks)
-- decoder_cache: register the function's `startPC` → `chainEntry`. For mid-function entry (e.g., external JALR targeting a post-ECALL continuation), the function prologue always re-enters from the top, which is correct because `cpu.pc` is already set by the dispatch loop and the function loads all registers from x[].
+---
 
-### 4.3 Update `nextExecuteSegment`
+## Step 6: Update AOT Driver
+
+### 6a: Write tests
+**File:** `aot_test.go`
+
+Test: compile the hello ELF through `jitCompileAOTSegment` with function ranges. Verify it produces 1 compiled block (not 3). Verify the decoder_cache has an entry at 0x1000.
+
+### 6b: Implement
+**File:** `jit_aot.go`
+
+- Pass 1: iterate function ranges, call `emitBlockLinear` (which now internally produces function-level IR since ECALL is non-terminal)
+- The rest of the pipeline (regalloc, lower, assemble, mmap, chain exits, decoder_cache) is unchanged structurally — just fewer, larger blocks.
+
 **File:** `jit_segment.go` (line 39)
+- Replace `enumerateBlockRanges` call with `enumerateFunctionRanges`.
 
-Replace `enumerateBlockRanges` call with `enumerateFunctionRanges`.
-
-### 4.4 Update lazy JIT path in `RunJIT`
-**File:** `jit.go` (line 856)
-
-`emitBlock(&cpu.mem, pc)` already delegates to the new function-level emission (Phase 3.2). The lazy path now compiles an entire function and inserts it. On subsequent dispatch, any PC within that function hits the compiled block.
-
-To make the lazy path aware of function extent: `emitBlock(mem, pc)` needs to find the function boundaries containing `pc`. Strategy:
-- Check `mem.FindExecRegion(pc)` for the bounding region
-- Within that region, use heuristic function detection: scan backward from `pc` for a likely function prologue or the region start; scan forward for RET or region end
-- Fallback: use the exec region bounds as the function range
-
-### 4.5 Remove dead code
-- Delete `enumerateBlockRanges()`, `collectBranchTargets()` from `aot.go`
-- Delete `scanRegion()` (BFS) from `jit_decode.go`
-- Remove `flowTerm` block-splitting logic from `classifyFlow` (keep `classifyFlow` itself for other uses but remove the block-boundary semantics)
-- Remove `InlineSyscall` flag and `SetInlineEcallEnabled` / `InlineEcallEnabled` from `jit_syscall.go`
-- Remove `ir.InlineSyscall` from `ir/ir.go`
+### 6c: Verify
+`go test -run TestAOT_FunctionLevel .`
 
 ---
 
-## Phase 5: VizJit and Debugging
+## Step 7: Update Lazy JIT Path
 
-**File:** `jit_vizjit.go`
+### 7a: Write tests
+**File:** `jit_emit_ir_test.go`
 
-One dump file per function. Index file shows function ranges. The hello program now produces 1 `.asm` file matching libriscv's output.
+Test: `emitBlock(mem, 0x1000)` for the hello program produces one `emitResult` spanning the full function, not just until the first ECALL.
+
+### 7b: Implement
+**File:** `jit_emit_ir.go`
+
+Update `emitBlock(mem, pc)`: instead of `scanRegion` BFS (which stops at terminators), find the function extent. Strategy:
+- Check for exec region bounds around `pc`
+- Within the region, scan forward for the end of the function (heuristic: next function symbol, or end of region)
+- Call `emitFunctionRange(mem, startPC, endPC)` (which is just `emitBlockRange` now that ECALL is non-terminal)
+
+### 7c: Remove `scanRegion` BFS
+Delete `scanRegion()` from `jit_decode.go`. It is no longer used.
+
+### 7d: Verify
+`go test -run TestLazyJIT_FunctionLevel .`
 
 ---
 
-## Phase 6: Test Updates
+## Step 8: End-to-End Validation + Cleanup
 
-### 6.1 Update tests that depend on block-level semantics
-- `TestInlineEcall_HelloEndToEnd` — still valid, but the inline ecall flag is gone. The test just runs hello and checks output.
-- `jit_decode_test.go:34-53` — tests for `InlineEcallEnabled` flag: remove.
-- `aot_test.go` — tests that check block counts need updating (fewer, larger blocks).
+### 8a: Run full test suite
+```
+go test -v .
+go test -v ./bench/ -run Test
+cd ~/ris && make hello-lib
+```
 
-### 6.2 Core validation
-- `go test -v .` — all existing CPU/memory/ELF tests
-- `go test -v ./bench/` — benchmark guest runs correctly
-- `cd ~/ris && make hello-lib` — compare assembly output (should now be 1 file)
-- `make bench-quick` — performance comparison
+Verify: GoCPU now produces **1 assembly file** in `debug_vizjit_dir`, matching libriscv's 1 file.
+
+### 8b: Cleanup dead code
+- Delete `scanRegion` from `jit_decode.go`
+- Delete `collectBranchTargets`, `enumerateBlockRanges` from `aot.go`
+- Remove `InlineSyscall`/`inlineEcallEnabled` infrastructure
+- Update VizJit index format (fewer entries per segment)
+- Remove `flowTerm` handling for ECALL in `classifyFlow` if no longer needed (keep `classifyFlow` itself for other uses)
+
+### 8c: Performance check
+`make bench-quick` — verify no regression.
 
 ---
 
 ## Key Design Decisions
 
-1. **Modify `IRSyscall` directly** — no new op, no backward compat layer. Clean replacement.
-2. **Reload all 31 integer regs after ECALL** — simple, correct, matches libriscv.
-3. **lowerSyscall saves/restores caller-saved regs** around the CALL, exactly like `lowerCall` does. The hot path continues; only the cold path (unhandled syscall) exits.
-4. **Lazy JIT uses heuristic function detection** — find exec region, use it as function bounds. No symbol table needed for the lazy path.
-5. **decoder_cache entries at function startPC only** — mid-function external entry re-enters at function top (correct because prologue reloads all regs from x[]).
+1. **Reload only a0/a1 (x10/x11) after ECALL** — matches libriscv's `LOAD_SYS_REGS` (`tr_emit.cpp:2219`, loops reg 10..11). The dispatcher only writes x[10] (return value). Callee-saved registers (s0-s11, sp, gp, tp) are preserved by ECALL per RISC-V ABI.
+2. **Modify `IRSyscall` directly** — no new op, replace semantics from "terminator" to "mid-block call."
+3. **Incremental with test-first** — each step writes tests before implementation.
+4. **Replace entirely** — no backward compat flag, no coexistence.
 
-## Critical Files (in implementation order)
-1. `ir/ir.go` — update `IRSyscall` semantics, remove `InlineSyscall`
-2. `ir/highlevel.go` — add `ReloadAllGuest()`, `ClearAllDirty()`
-3. `ir/emit.go` — update `Syscall()` doc
-4. `ir/lower_amd64.go` — rewrite `lowerSyscall()` as non-terminal
-5. `jit_emit_ir.go` — replace `emitBlockRange` with `emitFunctionRange`, update ECALL handling, update `scanUsedRegs`, update `finalize`/`lastIRWasTerminator`
-6. `aot.go` — replace `enumerateBlockRanges` with `enumerateFunctionRanges`, add `collectInternalTargets`
-7. `jit_aot.go` — update `jitCompileAOTSegment` for function ranges
-8. `jit_segment.go` — update `nextExecuteSegment`
-9. `jit.go` — update lazy path in `RunJIT`
-10. `jit_syscall.go` — remove `InlineEcallEnabled` flag
-11. `jit_decode.go` — remove `scanRegion` (BFS), clean up `classifyFlow` comments
-12. `jit_vizjit.go` — update dump format
-
-## Verification
-1. `go test -v .` — all tests pass
-2. `cd ~/ris && make hello-lib` — GoCPU produces 1 assembly file matching libriscv
-3. `make bench-quick` — performance at least matches current
-4. `go test -v ./bench/` — benchmark guests run correctly
-5. `go test -v ./fuzzoracle/` — oracle tests still pass (if libriscv is set up)
+## Critical Files (in step order)
+1. `ir/highlevel.go` + `ir/highlevel_test.go` — `ReloadSyscallRegs`, `ClearDirtySyscallRegs`
+2. `ir/ir.go` + `jit_emit_ir.go` — `IRSyscall` non-terminal semantics
+3. `ir/lower_amd64.go` — rewrite `lowerSyscall` as non-terminal
+4. `jit_emit_ir.go` — ECALL handling, `scanUsedRegs`
+5. `aot.go` — `enumerateFunctionRanges`, `collectInternalTargets`
+6. `jit_aot.go` + `jit_segment.go` — function-level AOT driver
+7. `jit.go` + `jit_decode.go` — lazy JIT path, remove `scanRegion`
+8. `jit_syscall.go` — remove `InlineEcallEnabled` infrastructure
