@@ -358,7 +358,7 @@ $(HELLO_GC): $(HELLO_SRC) $(HELLO_LD)
 
 hello: hello-elfs
 	@echo "── per-ECALL timing (libriscv vs GoCPU) ────────────────────────"
-	@$(GO) run -tags libriscv ./bench/hellobench/
+	@GOCPU_VIZJIT_OFF=1 $(GO) run -tags libriscv ./bench/hellobench/
 
 bench-wasm:
 	go run ./bench/wazero_bench $(ROOT)/bench/libriscv_guest/bench_guest.wasm
