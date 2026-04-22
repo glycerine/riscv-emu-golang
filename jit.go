@@ -215,6 +215,12 @@ type JIT struct {
 	DebugV1V2  bool            // debug: run every block through V1 AND V2, compare results
 	trace      bool            // debug: log block executions to stderr
 
+	// DisableAutoAOT opts out of RunJIT's first-entry auto-install of
+	// AOT segments based on cpu.mem.ExecRegions(). Set to true to force
+	// the lazy compile path — used by benchmarks that measure the
+	// lazy-vs-AOT gap and by tests that want to drive the fallback path.
+	DisableAutoAOT bool
+
 	irAlloc ir.RegAllocator
 
 	// Dispatch counters (for diagnostics).
@@ -699,7 +705,8 @@ func (j *JIT) RunJIT(cpu *CPU) error {
 	// the loader already registered on cpu.mem. Only PCs outside those
 	// regions (self-modifying code, guest-generated blocks, tests that
 	// built a raw mem) fall back to the lazy compile path below.
-	if len(j.aotSegments) == 0 && len(cpu.mem.ExecRegions()) > 0 {
+	// Set DisableAutoAOT on the JIT to force the lazy path end-to-end.
+	if !j.DisableAutoAOT && len(j.aotSegments) == 0 && len(cpu.mem.ExecRegions()) > 0 {
 		_ = j.InstallAOTFromMem(&cpu.mem)
 	}
 

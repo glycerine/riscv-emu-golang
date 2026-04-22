@@ -377,6 +377,12 @@ func runDhrystoneCollectCounters(t *testing.T, data []byte, aot bool) (dispatchO
 		if err := j.InstallAOT(mem, data); err != nil {
 			t.Fatal(err)
 		}
+	} else {
+		// LoadELFBytes now registers ExecRegions on mem, and RunJIT
+		// auto-installs AOT from them by default. Opt out so this
+		// branch truly exercises the lazy compile path the test is
+		// comparing against.
+		j.DisableAutoAOT = true
 	}
 	func() {
 		defer func() { _ = recover() }()
