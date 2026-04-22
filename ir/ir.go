@@ -7,9 +7,14 @@ import (
 
 // VIZJIT_DIR is a debug facility for viewing the assembly output.
 // It is a directory path where disassembly will be dumped.
-var VIZJIT_DIR string = "" // TEMP disabled for perf check
+var VIZJIT_DIR string = "/Users/jaten/go/src/github.com/glycerine/riscv-emu-golang/debug_vizjit_dir"
 
 func init() {
+	off := os.Getenv("GOCPU_VIZJIT_OFF")
+	if off != "" {
+		VIZJIT_DIR = ""
+		return
+	}
 	viz := os.Getenv("GOCPU_VIZJIT")
 	if viz != "" {
 		VIZJIT_DIR = viz
