@@ -15,3 +15,4 @@ xendor/tcc/libtcc.a
 darwin-perf
 hellobench
 debug_vizjit_dir/
+vizjit_debug_dir/
