@@ -1807,10 +1807,13 @@ func (e *emitter) emitMisalignedStore(addr, src ir.VReg, width int, faultLabel i
 	e.irEm.And(tmp1, tmp1, maskNot)
 	e.irEm.Branch(tmp1, ir.VRegZero, ir.NE, faultLabel)
 
-	// Store each byte.
+	// Store each byte. Byte 0 reuses addr directly (no AddImm by 0).
 	for i := 0; i < width; i++ {
-		ai := e.irEm.Tmp()
-		e.irEm.AddImm(ai, addr, int64(i))
+		ai := addr
+		if i > 0 {
+			ai = e.irEm.Tmp()
+			e.irEm.AddImm(ai, addr, int64(i))
+		}
 		mi := e.irEm.Tmp()
 		e.irEm.And(mi, ai, mask)
 		hi := e.irEm.Tmp()

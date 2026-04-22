@@ -38,10 +38,12 @@ func TestBloat_BenchGuest_0x10de(t *testing.T) {
 		//  - After post-lowering MOVQ peephole (2026-04-22): host=1150
 		//    (-72 bytes, -5.9%).
 		//  - After MaskedLoad/GuestStore width=1 fast path
-		//    (2026-04-22): ir=108, host=1121 (-29 bytes). Cumulative
-		//    -101 bytes (-8.3%).
-		maxIRInstrs   = 108
-		maxHostBytes  = 1121
+		//    (2026-04-22): ir=108, host=1121 (-29 bytes).
+		//  - After MaskedLoadAddr/GuestStoreAddr + emitMisalignedStore
+		//    i=0 special-case (2026-04-22): ir=105, host=1079
+		//    (-42 bytes). Cumulative −143 bytes (−11.7%).
+		maxIRInstrs   = 105
+		maxHostBytes  = 1079
 		maxChainExits = 5
 	)
 
