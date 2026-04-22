@@ -28,7 +28,14 @@ const MaxIC = 4096
 func (e *Emitter) MaskedLoad(dst, base, memBase, mask VReg, off int64, width int, signed bool, faultLabel Label) {
 	addr := e.Tmp()
 	e.AddImm(addr, base, off)
+	e.MaskedLoadAddr(dst, addr, memBase, mask, width, signed, faultLabel)
+}
 
+// MaskedLoadAddr is MaskedLoad with the address VReg pre-computed by
+// the caller. Used by the JIT emitter when it has already computed
+// addr=base+off for fault-tail reporting via allocFaultLabel — avoids
+// an otherwise-duplicate AddImm (and its spill+reload in host code).
+func (e *Emitter) MaskedLoadAddr(dst, addr, memBase, mask VReg, width int, signed bool, faultLabel Label) {
 	// OOB check: (addr | (addr + width-1)) & ~mask != 0
 	endAddr := addr
 	if width > 1 {
@@ -61,7 +68,12 @@ func (e *Emitter) MaskedLoad(dst, base, memBase, mask VReg, off int64, width int
 func (e *Emitter) GuestStore(base, memBase, mask VReg, off int64, src VReg, width int, faultLabel Label) {
 	addr := e.Tmp()
 	e.AddImm(addr, base, off)
+	e.GuestStoreAddr(addr, memBase, mask, src, width, faultLabel)
+}
 
+// GuestStoreAddr is GuestStore with the address VReg pre-computed —
+// see MaskedLoadAddr for the rationale.
+func (e *Emitter) GuestStoreAddr(addr, memBase, mask, src VReg, width int, faultLabel Label) {
 	// OOB check.
 	endAddr := addr
 	if width > 1 {

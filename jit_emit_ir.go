@@ -1692,7 +1692,7 @@ func (e *emitter) emitLoad(rd, rs1 uint32, imm int64, funct3 uint32) {
 		alignBits := e.irEm.Tmp()
 		e.irEm.AndImm(alignBits, addr, int64(width-1))
 		e.irEm.Branch(alignBits, ir.VRegZero, ir.NE, misalignLabel)
-		e.irEm.MaskedLoad(dst, base, e.irEm.MemBase(), e.irEm.MemMask(), imm, width, signed, faultLabel)
+		e.irEm.MaskedLoadAddr(dst, addr, e.irEm.MemBase(), e.irEm.MemMask(), width, signed, faultLabel)
 		doneLabel := e.irEm.NewLabel()
 		e.irEm.Jump(doneLabel)
 		e.irEm.PlaceLabel(misalignLabel)
@@ -1704,7 +1704,7 @@ func (e *emitter) emitLoad(rd, rs1 uint32, imm int64, funct3 uint32) {
 		addr := e.irEm.Tmp()
 		e.irEm.AddImm(addr, base, imm)
 		faultLabel := e.allocFaultLabel(addr, jitLoadFault)
-		e.irEm.MaskedLoad(dst, base, e.irEm.MemBase(), e.irEm.MemMask(), imm, 1, signed, faultLabel)
+		e.irEm.MaskedLoadAddr(dst, addr, e.irEm.MemBase(), e.irEm.MemMask(), 1, signed, faultLabel)
 	}
 }
 
@@ -1776,7 +1776,7 @@ func (e *emitter) emitStore(rs1, rs2 uint32, imm int64, funct3 uint32) {
 		alignBits := e.irEm.Tmp()
 		e.irEm.AndImm(alignBits, addr, int64(width-1))
 		e.irEm.Branch(alignBits, ir.VRegZero, ir.NE, misalignLabel)
-		e.irEm.GuestStore(base, e.irEm.MemBase(), e.irEm.MemMask(), imm, src, width, faultLabel)
+		e.irEm.GuestStoreAddr(addr, e.irEm.MemBase(), e.irEm.MemMask(), src, width, faultLabel)
 		doneLabel := e.irEm.NewLabel()
 		e.irEm.Jump(doneLabel)
 		e.irEm.PlaceLabel(misalignLabel)
@@ -1788,7 +1788,7 @@ func (e *emitter) emitStore(rs1, rs2 uint32, imm int64, funct3 uint32) {
 		addr := e.irEm.Tmp()
 		e.irEm.AddImm(addr, base, imm)
 		faultLabel := e.allocFaultLabel(addr, jitStoreFault)
-		e.irEm.GuestStore(base, e.irEm.MemBase(), e.irEm.MemMask(), imm, src, 1, faultLabel)
+		e.irEm.GuestStoreAddr(addr, e.irEm.MemBase(), e.irEm.MemMask(), src, 1, faultLabel)
 	}
 }
 
@@ -1852,10 +1852,10 @@ func (e *emitter) emitFPLoad(rd, rs1 uint32, imm int64, funct3 uint32) {
 
 	if funct3 == 2 { // FLW — load 32 bits, NaN-box
 		tmp := e.irEm.Tmp()
-		e.irEm.MaskedLoad(tmp, base, e.irEm.MemBase(), e.irEm.MemMask(), imm, 4, false, faultLabel)
+		e.irEm.MaskedLoadAddr(tmp, addr, e.irEm.MemBase(), e.irEm.MemMask(), 4, false, faultLabel)
 		e.boxF32(rd, tmp)
 	} else { // FLD
-		e.irEm.MaskedLoad(e.fregDst(rd), base, e.irEm.MemBase(), e.irEm.MemMask(), imm, 8, false, faultLabel)
+		e.irEm.MaskedLoadAddr(e.fregDst(rd), addr, e.irEm.MemBase(), e.irEm.MemMask(), 8, false, faultLabel)
 	}
 	doneLabel := e.irEm.NewLabel()
 	e.irEm.Jump(doneLabel)
@@ -1904,9 +1904,9 @@ func (e *emitter) emitFPStore(rs1, rs2 uint32, imm int64, funct3 uint32) {
 	if funct3 == 2 { // FSW — extract low 32 bits
 		tmp := e.irEm.Tmp()
 		e.irEm.Zext(tmp, e.freg(rs2), ir.I32)
-		e.irEm.GuestStore(base, e.irEm.MemBase(), e.irEm.MemMask(), imm, tmp, 4, faultLabel)
+		e.irEm.GuestStoreAddr(addr, e.irEm.MemBase(), e.irEm.MemMask(), tmp, 4, faultLabel)
 	} else { // FSD
-		e.irEm.GuestStore(base, e.irEm.MemBase(), e.irEm.MemMask(), imm, e.freg(rs2), 8, faultLabel)
+		e.irEm.GuestStoreAddr(addr, e.irEm.MemBase(), e.irEm.MemMask(), e.freg(rs2), 8, faultLabel)
 	}
 	doneLabel := e.irEm.NewLabel()
 	e.irEm.Jump(doneLabel)
