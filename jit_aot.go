@@ -143,11 +143,17 @@ func (j *JIT) jitCompileAOTSegment(
 		// JALR IC sentinel init — same offset convention.
 		aotBackpatchJalrICs(execMem, blockBase, bc.baseOffset, bc.lowerResult, bc.blk)
 
-		// Register only the function entry PC. Mid-function re-entries
-		// (after BudgetCheck or ECALL fallback) fall through to the
-		// lazy JIT path, which compiles a block from that PC. This
-		// avoids re-executing initialization code at the function top.
+		// Register the block at the entry PC plus every re-entry PC
+		// (backward branch targets, ECALL continuations). The dispatch
+		// table in the prologue routes to the right mid-function label.
 		blocks[bc.startPC] = bc.blk
+		targets, ecallConts := collectInternalTargets(mem, bc.startPC, bc.endPC)
+		for pc := range targets {
+			blocks[pc] = bc.blk
+		}
+		for _, pc := range ecallConts {
+			blocks[pc] = bc.blk
+		}
 	}
 
 	// ── Pass 3: pre-resolve static chain exits whose target is in the segment ──
@@ -187,16 +193,26 @@ func (j *JIT) jitCompileAOTSegment(
 	if err != nil {
 		return nil, fmt.Errorf("allocRWAnon (decoder_cache): %w", err)
 	}
-	for _, bc := range compiles {
-		if bc.startPC < vaddrBegin || bc.startPC >= vaddrEnd {
-			continue
+	writeCache := func(pc uint64, entry uintptr) {
+		if pc < vaddrBegin || pc >= vaddrEnd {
+			return
 		}
-		idx := (bc.startPC - vaddrBegin) / 2
+		idx := (pc - vaddrBegin) / 2
 		byteOff := idx * 8
-		if byteOff+8 > uint64(len(cacheMmap)) {
-			continue
+		if byteOff+8 <= uint64(len(cacheMmap)) {
+			binary.LittleEndian.PutUint64(cacheMmap[byteOff:], uint64(entry))
 		}
-		binary.LittleEndian.PutUint64(cacheMmap[byteOff:], uint64(bc.blk.chainEntry))
+	}
+	for _, bc := range compiles {
+		entry := bc.blk.chainEntry
+		writeCache(bc.startPC, entry)
+		targets, ecallConts := collectInternalTargets(mem, bc.startPC, bc.endPC)
+		for pc := range targets {
+			writeCache(pc, entry)
+		}
+		for _, pc := range ecallConts {
+			writeCache(pc, entry)
+		}
 	}
 
 	// mprotect the decoder_cache read-only. Guest cannot reach it via

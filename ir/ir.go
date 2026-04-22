@@ -401,6 +401,13 @@ type Block struct {
 	CTab      []CSym        // external call symbols
 	VRegLive  []VRegLiveness
 
+	// DispatchPCs maps re-entry guest PCs to their IR labels. The lowerer
+	// emits a dispatch table in the prologue that reads the incoming PC
+	// from sret[120] and jumps to the matching label. Set by the emitter
+	// for function-level blocks that have mid-function re-entry points
+	// (backward branch targets, ECALL continuations).
+	DispatchPCs map[uint64]Label
+
 	maxVreg VReg // uint16
 }
 

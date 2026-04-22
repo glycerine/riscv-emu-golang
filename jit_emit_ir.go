@@ -14,15 +14,13 @@ import (
 //var testIterStart int
 
 // maxBlockInsns limits the number of RISC-V instructions per JIT block.
-// Variable so tests can adjust it without recompilation.
-var maxBlockInsns = 2048
+// Set high for function-level compilation; BudgetCheck on backward
+// branches prevents infinite native loops.
+var maxBlockInsns = 1 << 20
 
-// maxBlockIRInsns limits the total IR instructions per block. Each RISC-V
-// instruction expands to ~5-10 IR ops; very large blocks hit O(N*L) in the
-// register allocator's spill phase where L is average interval length.
-// 4096 IR instructions covers ~500-800 RISC-V instructions — large enough
-// for good optimization, small enough for fast compilation.
-const maxBlockIRInsns = 2048
+// maxBlockIRInsns limits the total IR instructions per block.
+// Set high for function-level compilation.
+const maxBlockIRInsns = 1 << 20
 
 // emitResult holds the generated IR block and metadata.
 type emitResult struct {
@@ -888,6 +886,7 @@ func emitBlock(mem *GuestMemory, pc uint64) *emitResult {
 // nil (caller's decoder_cache slot stays zero → lazy fallback at run
 // time).
 func emitBlockLinear(mem *GuestMemory, startPC, endPC uint64) *emitResult {
+	vv("emitBlockLinear: startPC=0x%x endPC=0x%x size=%d", startPC, endPC, endPC-startPC)
 	if startPC >= endPC {
 		return nil
 	}
@@ -899,6 +898,9 @@ func emitBlockLinear(mem *GuestMemory, startPC, endPC uint64) *emitResult {
 // emitBlock (BFS-driven endPC via scanRegion) and emitBlockLinear
 // (explicit endPC from the AOT enumeration).
 func emitBlockRange(mem *GuestMemory, pc, endPC uint64) *emitResult {
+	vv("emitBlockRange: pc=0x%x endPC=0x%x", pc, endPC)
+	defer vv("emitBlockRange: done pc=0x%x endPC=0x%x", pc, endPC)
+
 	irEm := ir.NewEmitter()
 
 	gt := newU64setSized(256)
@@ -919,6 +921,7 @@ func emitBlockRange(mem *GuestMemory, pc, endPC uint64) *emitResult {
 	for e.numInsns < maxBlockInsns && !e.terminated && e.pc < e.regionEnd &&
 		len(irEm.Block.Instrs) < maxBlockIRInsns {
 		if e.visited[e.pc] {
+			vv("emitBlockRange: pc=0x%x already visited, terminating", e.pc)
 			e.irEm.Jump(e.getOrCreateLabel(e.pc))
 			e.gotoTargets.add(e.pc)
 			e.terminated = true
@@ -935,7 +938,11 @@ func emitBlockRange(mem *GuestMemory, pc, endPC uint64) *emitResult {
 		}
 
 		if half&0x3 != 0x3 {
+			//vv("emitBlockRange: RVC pc=0x%x half=0x%04x", e.pc, half)
 			e.emitRVC(uint16(half))
+			if e.terminated {
+				vv("emitBlockRange: terminated after RVC at pc=0x%x half=0x%04x", e.pc, half)
+			}
 		} else {
 			insn, f := mem.Fetch32(e.pc)
 			if f != nil {
@@ -949,9 +956,16 @@ func emitBlockRange(mem *GuestMemory, pc, endPC uint64) *emitResult {
 					break
 				}
 			}
+			//vv("emitBlockRange: 32bit pc=0x%x insn=0x%08x opcode=0x%02x", e.pc, insn, insn&0x7f)
 			e.emit32(insn)
+			if e.terminated {
+				vv("emitBlockRange: terminated after 32bit at pc=0x%x insn=0x%08x opcode=0x%02x", e.pc, insn, insn&0x7f)
+			}
 		}
 	}
+
+	vv("emitBlockRange: loop exit pc=0x%x numInsns=%d terminated=%v regionEnd=0x%x irInstrs=%d maxInsns=%d maxIR=%d",
+		e.pc, e.numInsns, e.terminated, e.regionEnd, len(irEm.Block.Instrs), maxBlockInsns, maxBlockIRInsns)
 
 	if e.numInsns == 0 {
 		if debugJIT {
@@ -977,6 +991,28 @@ func emitBlockRange(mem *GuestMemory, pc, endPC uint64) *emitResult {
 			})
 		}
 	}
+	// Build the dispatch table for function re-entry. Collect re-entry
+	// PCs (backward branch targets + ECALL continuations) and record
+	// their IR labels in Block.DispatchPCs. The lowerer reads this to
+	// emit a PC-based jump table in the prologue.
+	targets, ecallConts := collectInternalTargets(mem, pc, endPC)
+	if len(targets) > 0 || len(ecallConts) > 0 {
+		dpcs := make(map[uint64]ir.Label)
+		for t := range targets {
+			if t >= pc && t < endPC {
+				dpcs[t] = e.getOrCreateLabel(t)
+			}
+		}
+		for _, c := range ecallConts {
+			if c >= pc && c < endPC {
+				dpcs[c] = e.getOrCreateLabel(c)
+			}
+		}
+		if len(dpcs) > 0 {
+			irEm.Block.DispatchPCs = dpcs
+		}
+	}
+
 	if len(loads) > 0 {
 		e.irEm.Block.Instrs = append(loads, e.irEm.Block.Instrs...)
 		// Fix label indices (they shifted by len(loads)).
@@ -2378,17 +2414,25 @@ func (e *emitter) emitJAL(rd uint32, offset int64, insnSize uint64) {
 
 	if rd == 0 {
 		origPC := e.pc - insnSize
+		internal := e.visited[target] ||
+			(e.regionEnd > 0 && target >= e.startPC && target < e.regionEnd)
 		targetLabel := e.getOrCreateLabel(target)
-		// Same backward detection as emitBranch: check both PC ordering
-		// and whether the target was already emitted (visited).
 		backward := target < origPC || e.visited[target]
-		if backward {
-			e.irEm.BudgetCheck(targetLabel, target)
-		} else {
-			e.irEm.Jump(targetLabel)
+		if internal {
+			if backward {
+				e.irEm.BudgetCheck(targetLabel, target)
+			} else {
+				e.irEm.Jump(targetLabel)
+			}
+			e.gotoTargets.add(target)
+			// Do NOT follow the jump (old BFS behavior). Continue the
+			// sequential walk so all PCs in the function get labels placed.
+			return
 		}
+		// External jump — exit the block.
+		e.irEm.Jump(targetLabel)
 		e.gotoTargets.add(target)
-		e.pc = target
+		e.terminated = true
 		return
 	}
 	e.emitChainableReturn(target)

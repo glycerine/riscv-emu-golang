@@ -719,6 +719,7 @@ func (j *JIT) RunJIT(cpu *CPU) error {
 		}
 
 		pc := cpu.pc
+		vv("RunJIT: dispatch pc=0x%x", pc)
 
 		blk := j.lookupBlock(pc)
 		if blk != nil {
@@ -730,7 +731,8 @@ func (j *JIT) RunJIT(cpu *CPU) error {
 				res = jitcall.CallAOT(blk.fn, &cpu.x, &cpu.f, &cpu.fcsr,
 					cpu.mem.Base(), cpu.mem.Mask(),
 					seg.decoderCacheBase, seg.decoderCacheMask,
-					seg.vaddrBegin, seg.vaddrSize)
+					seg.vaddrBegin, seg.vaddrSize,
+					pc)
 			} else if len(j.aotSegments) > 0 {
 				// Multi-segment path. Publish the containing segment's
 				// decoder_cache params to the sret extension. Lazy blocks
@@ -748,13 +750,15 @@ func (j *JIT) RunJIT(cpu *CPU) error {
 				res = jitcall.CallAOT(blk.fn, &cpu.x, &cpu.f, &cpu.fcsr,
 					cpu.mem.Base(), cpu.mem.Mask(),
 					seg.decoderCacheBase, seg.decoderCacheMask,
-					seg.vaddrBegin, seg.vaddrSize)
+					seg.vaddrBegin, seg.vaddrSize,
+					pc)
 			} else {
 				res = jitcall.Call(blk.fn, &cpu.x, &cpu.f, &cpu.fcsr,
 					cpu.mem.Base(), cpu.mem.Mask())
 			}
 			cpu.pc = res.PC
 			cpu.cycle += res.IC
+			vv("RunJIT: returned pc=0x%x ic=%d status=%d", res.PC, res.IC, res.Status)
 
 			switch int(res.Status) {
 			case jitOK:

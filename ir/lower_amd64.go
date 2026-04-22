@@ -40,6 +40,11 @@ const (
 	amd64Scratch2   int16 = goasm.REG_AMD64_R11
 )
 
+// SretPCOffset is the byte offset within the sret buffer where the
+// dispatch PC is stored. Written by CallAOT's trampoline; read by
+// the function-level dispatch table in the JIT prologue.
+const SretPCOffset = 120
+
 // amd64SretFcsrOffset is the byte offset, relative to RBX (the sret
 // pointer passed by jitcall.Call), where the host-side fcsr pointer is
 // stored. The jitcall trampoline writes it once per Call, so callee
@@ -425,6 +430,30 @@ func (lc *lowerCtx) emitPrologue() {
 	// chained), matched by each chain exit's ADDQ.
 	if lc.frameSize > 0 {
 		lc.emitRI(x86.ASUBQ, lc.frameSize, goasm.REG_AMD64_SP)
+	}
+
+	// Dispatch table for function re-entry. When the Go dispatch loop
+	// re-enters a function at a mid-function PC (after BudgetCheck or
+	// ECALL fallback), the trampoline writes the target PC into
+	// sret[SretPCOffset]. We compare it against each known re-entry
+	// PC and jump to the corresponding IR label. The function entry
+	// (startPC) is the fall-through default — no comparison needed.
+	if len(lc.blk.DispatchPCs) > 0 {
+		// Load dispatch PC from sret buffer.
+		lc.emitRM(x86.AMOVQ, amd64RegSret, SretPCOffset, amd64Scratch1)
+
+		for guestPC, label := range lc.blk.DispatchPCs {
+			// CMP R10, imm64 — need MOVABS for 64-bit immediates.
+			lc.loadImm64(int64(guestPC), amd64Scratch2)
+			lc.emitRR(x86.ACMPQ, amd64Scratch1, amd64Scratch2)
+			jeq := lc.c.NewProg()
+			jeq.As = x86.AJEQ
+			jeq.To.Type = obj.TYPE_BRANCH
+			lc.c.Append(jeq)
+			// Forward reference — resolved when the label is placed.
+			lc.pending[label] = append(lc.pending[label], jeq)
+		}
+		// Fall through to function entry (startPC) if no match.
 	}
 }
 

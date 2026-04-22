@@ -41,4 +41,5 @@ func Call(fn uintptr, x *[32]uint64, f *[32]uint64, fcsr *uint32,
 func CallAOT(fn uintptr, x *[32]uint64, f *[32]uint64, fcsr *uint32,
 	memBase uintptr, memMask uint64,
 	decoderCacheBase uintptr, decoderCacheMask uint64,
-	vaddrBegin uint64, segSize uint64) Result
+	vaddrBegin uint64, segSize uint64,
+	pc uint64) Result

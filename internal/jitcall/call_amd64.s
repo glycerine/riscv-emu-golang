@@ -82,11 +82,12 @@ TEXT ·Call(SB), $65536-80
 
 	RET
 
-// func CallAOT(fn, x, f, fcsr, memBase, memMask, dcBase, dcMask, vBegin, segSize) Result
+// func CallAOT(fn, x, f, fcsr, memBase, memMask, dcBase, dcMask, vBegin, segSize, pc) Result
 //
-// Same as Call but also publishes four AOT-related values into the
-// sret buffer at [SP+88..112] so the JIT's JALR decoder_cache
-// lookup sequence can read them as [RBX+88..112].
+// Same as Call but also publishes AOT-related values into the sret
+// buffer so the JIT can read them as [RBX+offset]:
+//   [RBX+88..112]  decoder_cache state (JALR fast path)
+//   [RBX+120]      dispatch PC (function re-entry target)
 //
 // Go ABI0 stack layout:
 //   fn+0(FP)         uintptr        8 bytes
@@ -99,8 +100,9 @@ TEXT ·Call(SB), $65536-80
 //   dcMask+56(FP)    uint64         8
 //   vBegin+64(FP)    uint64         8
 //   segSize+72(FP)   uint64         8
-//   ret+80(FP)       Result         32
-TEXT ·CallAOT(SB), $65536-112
+//   pc+80(FP)        uint64         8
+//   ret+88(FP)       Result         32
+TEXT ·CallAOT(SB), $65536-120
 
 	// Save callee-saved registers that JIT/TCC code may clobber.
 	MOVQ	BX,  32(SP)
@@ -124,6 +126,10 @@ TEXT ·CallAOT(SB), $65536-112
 	MOVQ	segSize+72(FP), AX
 	MOVQ	AX, 112(SP)
 
+	// Publish dispatch PC at [SP+120] for function re-entry.
+	MOVQ	pc+80(FP), AX
+	MOVQ	AX, 120(SP)
+
 	// Set up System V calling convention arguments.
 	LEAQ	0(SP), DI           // RDI = hidden sret pointer
 	MOVQ	x+8(FP), SI         // RSI = x
@@ -141,10 +147,10 @@ TEXT ·CallAOT(SB), $65536-112
 	MOVQ	8(SP),  CX
 	MOVQ	16(SP), DX
 	MOVQ	24(SP), SI
-	MOVQ	AX, ret_PC+80(FP)
-	MOVQ	CX, ret_IC+88(FP)
-	MOVQ	DX, ret_Status+96(FP)
-	MOVQ	SI, ret_FaultAddr+104(FP)
+	MOVQ	AX, ret_PC+88(FP)
+	MOVQ	CX, ret_IC+96(FP)
+	MOVQ	DX, ret_Status+104(FP)
+	MOVQ	SI, ret_FaultAddr+112(FP)
 
 	// Restore callee-saved registers.
 	MOVQ	32(SP), BX
