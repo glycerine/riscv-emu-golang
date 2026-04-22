@@ -129,13 +129,13 @@ func (seg *DecodedExecuteSegment) Release() {
 	}
 }
 
-// compiledBlock holds a compiled function pointer (native IR or TCC).
+// compiledBlock holds a compiled function pointer produced by the native
+// IR pipeline.
 type compiledBlock struct {
 	fn         uintptr           // native function pointer
-	chainEntry uintptr           // entry point for chaining (native IR only)
-	chainExits []chainPatchInfo  // chain exits for patching (native IR only)
-	jalrICs    []jalrICPatchInfo // JALR IC sites for patching (native IR only)
-	tccState   unsafe.Pointer    // *C.TCCState for TCC-compiled blocks (nil for native)
+	chainEntry uintptr           // entry point for chaining
+	chainExits []chainPatchInfo  // chain exits for patching
+	jalrICs    []jalrICPatchInfo // JALR IC sites for patching
 	shadow     *compiledBlock    // V2 shadow block for DebugV1V2 comparison
 
 	// segment is the DecodedExecuteSegment that owns this block's native
@@ -146,8 +146,7 @@ type compiledBlock struct {
 
 	// nativeMmap is the per-block code slab for lazy-compiled blocks.
 	// nil for AOT blocks (their code lives in segment.nativeCodeMmap,
-	// reclaimed by segment.Release) and for TCC blocks (TCC manages its
-	// own allocations via tccState). Held here so JIT.Close can munmap.
+	// reclaimed by segment.Release). Held here so JIT.Close can munmap.
 	nativeMmap []byte
 }
 
