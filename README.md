@@ -122,3 +122,32 @@ PASS
 ok  	riscv/bench	1.621s
 
 ~~~
+
+# libriscv assembly dumps to debug_libriscv_dir
+
+~~~
+The libriscv dump facility is implemented and working end-to-end.
+
+  What landed:
+
+  - New files: xendor/libriscv/lib/libriscv/tr_dump.{hpp,cpp} — env-gated diagnostic dumper
+  - Edited: tr_translate.cpp (two hooks), lib/CMakeLists.txt, bench/hellobench/main.go, jit_vizjit.go
+  (exported GetVizJitTag), .gitignore
+
+  Output format — mirrors GoCPU's VizJit, one file per block:
+  ~/ris/debug_libriscv_dir/<tag>.libriscv.asm.pc_0x<basepc:08x>.asm
+  with sections:
+  1. Header (run tag, entry PC, byte range, symbol)
+  2. == Guest RISC-V == — raw hex per instruction
+  3. == libriscv bintr C == — the f_<pc> function body extracted from the generated C
+  4. == Host x86-64 (from TCC) == — Intel-syntax disassembly via llvm-mc, trimmed at the last ret
+
+  Usage — single-switch activation:
+  GOCPU_VIZJIT=~/ris/debug_vizjit_dir \
+    go run -tags libriscv ./bench/hellobench/ -only=libriscv
+  hellobench auto-sets LIBRISCV_DUMP_DIR to a sibling path and propagates GoCPU's 16-hex run tag, so
+  diff ~/ris/debug_vizjit_dir/<tag>.gocpu.asm.pc_<X>.asm
+  ~/ris/debug_libriscv_dir/<tag>.libriscv.asm.pc_<X>.asm just works.
+
+  Zero cost when LIBRISCV_DUMP_DIR is unset — TestLibriscvSmokeTest still passes unchanged.
+~~~
