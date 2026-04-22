@@ -98,6 +98,15 @@ func main() {
 // runGoCPU executes the gocpuELF once and returns wall-clock ns for
 // the full run. If jit is true, runs through RunJIT; otherwise runs
 // through the uncached interpreter.
+//
+// Writes are intercepted by the Go-path LinuxWriteHandler (via
+// InstallLinuxOS), so they don't reach the host kernel's fd=1. The
+// out parameter controls what the Go handler does with them:
+// io.Discard for throughput, bytes.Buffer for verify.
+//
+// This function is for the "GoCPU interpreter" runner. For the
+// "GoCPU direct syscall" runner see runGoCPUDirect — the fast-path
+// JIT bypasses InstallLinuxOS for write(2) entirely.
 func runGoCPU(elf []byte, jit bool, verify bool) int64 {
 	mem, err := riscv.NewGuestMemory(guestMem)
 	if err != nil {
@@ -151,12 +160,98 @@ func runGoCPU(elf []byte, jit bool, verify bool) int64 {
 	return elapsed
 }
 
+// runGoCPUDirect executes gocpuELF through the JIT with the native
+// ECALL fast path active, returning wall-clock ns for the full run.
+//
+// The JIT-emitted code calls the Go-asm dispatcher which issues a
+// real kernel SYSCALL(SYS_write, fd=1, …). The caller must have
+// redirected fd=1 to /dev/null (via withStdoutToDevNull) — otherwise
+// the terminal fills with 10K "Hello, Go CPU!" lines.
+//
+// We still install a Go OS personality so exit(93) can take the
+// fallback path (the dispatcher returns 1 for unknown syscalls →
+// JIT returns jitEcall → NoteChain delivers → LinuxExit panics).
+func runGoCPUDirect(elf []byte) int64 {
+	mem, err := riscv.NewGuestMemory(guestMem)
+	if err != nil {
+		die("NewGuestMemory: %v", err)
+	}
+	defer mem.Free()
+	entry, err := riscv.LoadELFBytes(mem, elf)
+	if err != nil {
+		die("LoadELFBytes: %v", err)
+	}
+
+	cpu := riscv.NewCPU(*mem)
+	cpu.SetPC(entry)
+	cpu.SetReg(2, guestSP)
+
+	// Go-path fallback still needed for exit(93).
+	cleanup := riscv.InstallLinuxOS(cpu, io.Discard)
+	defer cleanup()
+
+	j := riscv.NewJIT()
+
+	var elapsed int64
+	withStdoutToDevNull(func() {
+		t0 := time.Now()
+		var runErr error
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					if _, ok := r.(*riscv.ExitError); ok {
+						return
+					}
+					panic(r)
+				}
+			}()
+			runErr = j.RunJIT(cpu)
+		}()
+		elapsed = time.Since(t0).Nanoseconds()
+		if runErr != nil {
+			die("runGoCPUDirect: %v", runErr)
+		}
+	})
+	return elapsed
+}
+
 // hasDirectSyscall reports whether the JIT's Phase-2 fast path is
-// available. Today there is no such hook on JIT; this is a stub
-// that Phase 2 will flip.
+// compiled in. Checked at runtime so the driver transparently skips
+// the third line on platforms where the dispatcher stubs aren't
+// present.
 func hasDirectSyscall() bool {
-	// TODO(phase2): return j.HasSyscallTable() or equivalent.
-	return false
+	return riscv.DirectSyscallEnabled()
+}
+
+// withStdoutToDevNull runs fn with the host process's fd=1 temporarily
+// redirected to /dev/null. The original fd=1 is restored before
+// returning. Used around runs whose ECALL path writes directly to
+// the kernel's fd=1 (the Phase-2 direct-SYSCALL path) so the
+// benchmark doesn't spam the terminal.
+//
+// For runs that intercept writes in Go (libriscv's null_stdout
+// callback, or our Go OS personality's io.Discard WriteFunc), the
+// redirect is a no-op — fd=1 is never touched — but applying it
+// uniformly simplifies the harness.
+func withStdoutToDevNull(fn func()) {
+	devnull, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+	if err != nil {
+		die("open /dev/null: %v", err)
+	}
+	defer devnull.Close()
+
+	saved, err := syscall.Dup(1)
+	if err != nil {
+		die("dup(1): %v", err)
+	}
+	defer syscall.Close(saved)
+
+	if err := syscall.Dup2(int(devnull.Fd()), 1); err != nil {
+		die("dup2(devnull, 1): %v", err)
+	}
+	defer syscall.Dup2(saved, 1)
+
+	fn()
 }
 
 func meanVar(n int, run func() int64) (mean, stddev float64) {
@@ -183,6 +278,8 @@ func meanVar(n int, run func() int64) (mean, stddev float64) {
 }
 
 func printLine(label string, perCall, stddev float64, iters int, tag string) {
+	perCall /= float64(iters)
+	stddev /= float64(iters)
 	fmt.Printf("  %-20s %0.1f +/- %0.2f ns/call   %s\n", label, perCall, stddev, tag)
 }
 
