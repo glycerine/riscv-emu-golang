@@ -20,18 +20,27 @@ const MaxIC = 4096
 //	dst = *(T*)(memBase + (addr & mask))
 //
 // For signed sub-I64 loads, a sign-extend is included via Load.
+//
+// width=1 fast path: the page-cross clause `addr | (addr+width-1)`
+// reduces to just `addr` (addr+0 == addr, addr|addr == addr), so we
+// skip the two redundant IR ops — a small but constant savings on
+// every byte load.
 func (e *Emitter) MaskedLoad(dst, base, memBase, mask VReg, off int64, width int, signed bool, faultLabel Label) {
 	addr := e.Tmp()
 	e.AddImm(addr, base, off)
 
 	// OOB check: (addr | (addr + width-1)) & ~mask != 0
-	tmp1 := e.Tmp()
-	e.AddImm(tmp1, addr, int64(width-1))
-	e.Or(tmp1, addr, tmp1)
+	endAddr := addr
+	if width > 1 {
+		endAddr = e.Tmp()
+		e.AddImm(endAddr, addr, int64(width-1))
+		e.Or(endAddr, addr, endAddr)
+	}
 	maskNot := e.Tmp()
 	e.Not(maskNot, mask)
-	e.And(tmp1, tmp1, maskNot)
-	e.Branch(tmp1, VRegZero, NE, faultLabel)
+	oob := e.Tmp()
+	e.And(oob, endAddr, maskNot)
+	e.Branch(oob, VRegZero, NE, faultLabel)
 
 	// Masked dereference.
 	masked := e.Tmp()
@@ -47,18 +56,24 @@ func (e *Emitter) MaskedLoad(dst, base, memBase, mask VReg, off int64, width int
 //	addr = base + off
 //	if (addr | (addr + width-1)) & ~mask != 0: goto faultLabel
 //	*(T*)(memBase + (addr & mask)) = src
+//
+// width=1 fast path: same simplification as MaskedLoad.
 func (e *Emitter) GuestStore(base, memBase, mask VReg, off int64, src VReg, width int, faultLabel Label) {
 	addr := e.Tmp()
 	e.AddImm(addr, base, off)
 
 	// OOB check.
-	tmp1 := e.Tmp()
-	e.AddImm(tmp1, addr, int64(width-1))
-	e.Or(tmp1, addr, tmp1)
+	endAddr := addr
+	if width > 1 {
+		endAddr = e.Tmp()
+		e.AddImm(endAddr, addr, int64(width-1))
+		e.Or(endAddr, addr, endAddr)
+	}
 	maskNot := e.Tmp()
 	e.Not(maskNot, mask)
-	e.And(tmp1, tmp1, maskNot)
-	e.Branch(tmp1, VRegZero, NE, faultLabel)
+	oob := e.Tmp()
+	e.And(oob, endAddr, maskNot)
+	e.Branch(oob, VRegZero, NE, faultLabel)
 
 	// Masked store.
 	masked := e.Tmp()
