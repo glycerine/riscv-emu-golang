@@ -51,6 +51,10 @@ we must adjust for:
    exposes `Ctx.DumpProgs()` (Go asm syntax). `ir.IRInstr.String()`
    (`ir/ir.go:324`) pretty-prints IR. `tools/disasm_riscv.py`
    disassembles guest code from an ELF.
+8. **VizJit scaffold already exists**: `ir/ir.go:8-18` declares
+   exported `ir.VIZJIT_DIR` with a default on-path, and `init()`
+   lets env var `GOCPU_VIZJIT` override it. Step 0 builds the dump
+   logic on top of this scaffold.
 
 ## Critique of the original plan
 
@@ -82,17 +86,26 @@ hello` is still correct (though not yet faster until Step 5).
 
 ### Step 0 — `VizJit`: per-block dump at AOT compile time
 
-**Goal**: make every subsequent step observable. Activated by env var
-`GOCPU_VIZJIT=<dir>`; when set, every block compiled by
-`jitCompileAOTSegment` (and `jitCompileDebug` for lazy blocks) writes
-**one file per block** to that directory.
+**Goal**: make every subsequent step observable.
 
-**Filename**: `gocpu.asm.pc_<hex>.call_<rand>.asm`
+**Activation** — already wired in `ir/ir.go:8-18`:
+- Package-scoped exported variable `ir.VIZJIT_DIR string` with a
+  non-empty default path. Writing is ON by default without requiring
+  an env var (convenient for ad-hoc runs and where setting env
+  vars is painful, e.g. IDE launch configurations).
+- Env var `GOCPU_VIZJIT=<dir>` overrides `VIZJIT_DIR` at `init()`
+  time. To disable, set `ir.VIZJIT_DIR = ""` before `InstallAOT()`.
+- One file per block compiled by `jitCompileAOTSegment` (and
+  `jitCompileDebug` for lazy blocks) written to that directory.
+
+**Filename**: `<rand>.gocpu.asm.pc_<hex>.asm`
+- `<rand>` is a 16-hex-char random prefix from `crypto/rand`,
+  generated **once per emulator run** and reused for every block in
+  that run. Putting it **first** makes a sorted `ls` listing group
+  all outputs from one run together.
 - `<hex>` is the block's entry PC (e.g. `0x00010234`).
-- `<rand>` is a 16-hex-char random suffix from `crypto/rand`
-  (generated **once per emulator run** and reused for every block in
-  that run, so all dumps from one invocation share a session tag and
-  reruns do not overwrite prior dumps).
+- Reruns do not overwrite prior dumps because each run has a fresh
+  `<rand>`.
 
 **File contents** (three sections, in order):
 
@@ -122,9 +135,12 @@ CALL R11
 **Implementation sketch**:
 
 - New file: `jit_vizjit.go`
-  - `func vizJitDir() string` — reads `GOCPU_VIZJIT` once via
-    `sync.Once`, creates dir if set and non-empty, returns `""` if
-    disabled. Returns stable session-tag string too.
+  - `func vizJitSessionTag() string` — returns the 16-hex-char
+    `crypto/rand` tag, initialized once via `sync.Once` on first
+    call.
+  - `func vizJitEnabled() (dir string, ok bool)` — reads
+    `ir.VIZJIT_DIR`; returns `("", false)` if empty. Creates dir on
+    first enabled call (idempotent `os.MkdirAll`).
   - `func vizJitDumpAOT(startPC, endPC uint64, mem *GuestMemory,
     block *ir.Block, progs string, codeLen int, codeBase uintptr)`
   - Called at end of Pass 1 of `jitCompileAOTSegment` (before `bc`
@@ -145,17 +161,29 @@ CALL R11
 - Wire into lazy path too: `jit_native.go:jitCompileDebug` already
   captures `progDump`; reuse it.
 
-- Opportunistic extras: also write `gocpu.asm.index.<rand>.txt` at
-  `InstallAOT` return, listing `(pc → filename)` for quick lookup.
+- Opportunistic extras: also write
+  `<rand>.gocpu.asm.index.txt` at `InstallAOT` return, listing
+  `(pc → filename)` for quick lookup.
+
+**Note on `ir/ir.go` default path**: the current default value in
+`ir/ir.go:10` contains a typo (`/User/jaten/...` missing the `s`).
+Step 0 should fix it to `/Users/jaten/...` or better, make the
+default an empty string and require explicit opt-in via env var or
+programmatic assignment. Discuss with user before changing —
+preserving current behavior (default on) is the user's stated
+intent, so fixing the typo is probably enough.
 
 **Test**:
 - `GOCPU_VIZJIT=/tmp/vj go test -run TestHello .` — verify files
-  appear, have three sections, at least one block's guest disasm
-  matches `tools/disasm_riscv.py` output for that PC range.
-- Unset env var → no files written, zero-cost path.
+  appear with the `<rand>.gocpu.asm.pc_<hex>.asm` pattern, sorted
+  `ls /tmp/vj` shows all block dumps from one run contiguous, files
+  have three sections, at least one block's guest disasm matches
+  `tools/disasm_riscv.py` output for that PC range.
+- `ir.VIZJIT_DIR = ""` at test start → no files written, zero-cost
+  path; verify no perf regression in a quick benchmark.
 
-**Rollback**: revert the commit. No behavior change when env var
-unset.
+**Rollback**: revert the commit. Setting `ir.VIZJIT_DIR = ""`
+disables dumping without reverting.
 
 ---
 
