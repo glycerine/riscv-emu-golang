@@ -301,21 +301,22 @@ func (e *emitter) emitReturn(pc uint64, status int) {
 	e.irEm.Ret(pc, status, ir.VRegZero)
 }
 
-// emitSyscall emits the ECALL fast path: writeback all dirty regs,
-// then emit IRSyscall which CALLs the SysV dispatcher. The dispatcher
-// returns 0 (handled → block exits with Status=jitOK) or 1 (fallback
-// → Status=jitEcall, Go NoteChain layer handles it). Either way the
-// JIT block returns after this.
+// emitSyscall emits an inline ECALL: writeback dirty regs, call the
+// SysV dispatcher, then reload the syscall return registers (a0, a1).
+// Non-terminal: the caller should NOT set e.terminated after this.
 //
 // If the fast path is disabled (dispatcherAddr==0) this falls back
-// to the legacy emitReturn(pc, jitEcall) behavior.
+// to the legacy emitReturn(pc, jitEcall) behavior (still terminal).
 func (e *emitter) emitSyscall(resumePC uint64, dispatcherAddr uintptr) {
 	if dispatcherAddr == 0 {
 		e.emitReturn(resumePC, jitEcall)
+		e.terminated = true
 		return
 	}
 	e.irEm.WriteBackAll()
+	e.irEm.ClearDirtySyscallRegs()
 	e.irEm.Syscall(resumePC, dispatcherAddr)
+	e.irEm.ReloadSyscallRegs()
 }
 
 // allocFaultLabel allocates a per-call-site fault label and registers its
@@ -843,8 +844,12 @@ func scanUsedRegs(mem *GuestMemory, startPC, endPC uint64, used *[32]bool) {
 			}
 			// Stop at instructions the emitter terminates on.
 			switch opcode {
-			case 0x73: // SYSTEM (ECALL, EBREAK, CSR) — emitter terminates
-				return
+			case 0x73: // SYSTEM
+				// ECALL (0x00000073) is non-terminal — don't stop.
+				// EBREAK and CSR still terminate.
+				if insn != 0x00000073 {
+					return
+				}
 			case 0x67: // JALR — emitter terminates
 				return
 			case 0x6F: // JAL — emitter terminates if rd != 0
@@ -1095,13 +1100,11 @@ func (e *emitter) emit32(insn uint32) {
 
 	case 0x73: // SYSTEM
 		switch insn {
-		case 0x00000073: // ECALL — always terminates the block.
-			// Under Option D the post-ECALL PC is a separate AOT block
-			// entry (registered by aot.go's termFT), and lowerSyscall
-			// chain-exits into it on the hot path when the flag is on.
+		case 0x00000073: // ECALL — inline syscall, non-terminal.
 			e.advancePC(4)
 			e.emitSyscall(e.pc, currentSyscallDispatcherAddr())
-			e.terminated = true
+			// e.terminated is NOT set when dispatcherAddr != 0.
+			// emitSyscall sets it only in the fallback (addr==0) path.
 		case 0x00100073: // EBREAK
 			e.advancePC(4)
 			e.emitReturn(e.pc, jitEbreak)

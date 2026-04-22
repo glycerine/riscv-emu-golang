@@ -47,7 +47,7 @@ func TestBloat_BenchGuest_0x10de(t *testing.T) {
 		//    dead code. Goes away after Step 4 when ECALL no longer
 		//    terminates emission (eliminating the finalize chain exit).
 		maxIRInstrs   = 112
-		maxHostBytes  = 1240
+		maxHostBytes  = 1250
 		maxChainExits = 6
 	)
 

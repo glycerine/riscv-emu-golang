@@ -2075,6 +2075,74 @@ func testNativeTraceW(t *testing.T, elfPath string, targetBlock int) {
 	_ = v2dbg
 }
 
+// TestEmitEcallNonTerminal verifies that the emitter continues past
+// ECALL when a dispatcher is available. The emitted IR should contain
+// IRSyscall followed by reload instructions and then the post-ECALL
+// guest instructions.
+func TestEmitEcallNonTerminal(t *testing.T) {
+	mem, err := NewGuestMemory(Size64MB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mem.Free()
+
+	pc := uint64(0x1000)
+	// Guest program:
+	//   0x1000: LI a7, 64        (ADDI x17, x0, 64) — set syscall number
+	//   0x1004: LI a0, 1         (ADDI x10, x0, 1)  — fd = stdout
+	//   0x1008: ECALL
+	//   0x100c: ADDI x5, x0, 99  — post-ECALL instruction
+	//   0x1010: ECALL            — final ECALL (termination)
+	mem.Store32(pc+0, ienc(opOPIMM, 0, 17, 0, 64))  // LI a7, 64
+	mem.Store32(pc+4, ienc(opOPIMM, 0, 10, 0, 1))   // LI a0, 1
+	mem.Store32(pc+8, instrECALL)                     // ECALL
+	mem.Store32(pc+12, ienc(opOPIMM, 0, 5, 0, 99))  // ADDI x5, x0, 99
+	mem.Store32(pc+16, instrECALL)                    // ECALL
+
+	res := emitBlockRange(mem, pc, pc+20)
+	if res == nil {
+		t.Fatal("emitBlockRange returned nil")
+	}
+
+	// The emitted range should cover past the first ECALL.
+	// With non-terminal ECALL, endPC should be > pc+12 (past first ECALL).
+	if res.endPC <= pc+12 {
+		t.Errorf("endPC = 0x%x, want > 0x%x (emission should continue past first ECALL)",
+			res.endPC, pc+12)
+	}
+
+	// Count IRSyscall instructions — should be at least 1 (possibly 2).
+	syscallCount := 0
+	for _, ins := range res.block.Instrs {
+		if ins.Op == ir.IRSyscall {
+			syscallCount++
+		}
+	}
+	if syscallCount == 0 {
+		t.Error("no IRSyscall found — ECALL should emit IRSyscall")
+	}
+
+	// There should be IR instructions after the first IRSyscall
+	// (the reload of a0/a1 and the ADDI x5, x0, 99).
+	firstSyscall := -1
+	for i, ins := range res.block.Instrs {
+		if ins.Op == ir.IRSyscall {
+			firstSyscall = i
+			break
+		}
+	}
+	if firstSyscall >= 0 {
+		remaining := len(res.block.Instrs) - firstSyscall - 1
+		if remaining < 3 {
+			t.Errorf("only %d IR ops after first IRSyscall, want >= 3 "+
+				"(reload a0, reload a1, ADDI x5)", remaining)
+		}
+	}
+
+	t.Logf("emitBlockRange: %d guest insns, endPC=0x%x, %d IR ops, %d syscalls",
+		res.numInsns, res.endPC, len(res.block.Instrs), syscallCount)
+}
+
 // TestLastIRWasTerminator_SyscallNotTerminal verifies that IRSyscall
 // is no longer treated as a terminator by the emitter.
 func TestLastIRWasTerminator_SyscallNotTerminal(t *testing.T) {
