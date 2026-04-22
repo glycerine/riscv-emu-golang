@@ -258,6 +258,45 @@ func (c *Ctx) Sym() *obj.LSym { return c.sym }
 // Ctxt returns the raw Link context for advanced use.
 func (c *Ctx) Ctxt() *obj.Link { return c.ctxt }
 
+// First returns the head of the Prog chain (the ATEXT Prog), or nil
+// if nothing has been appended yet. Walk via p.Link. Read-only access
+// intended; to modify the chain use Peephole.
+func (c *Ctx) First() *obj.Prog { return c.firstProg }
+
+// Peephole walks adjacent Prog pairs (prev, curr) in the chain and
+// invokes f. When f returns true, curr is unlinked from the chain and
+// the next iteration compares the same prev against curr's successor.
+// Mutations to prev or curr performed by f (via pointer) persist.
+// Returns the number of Progs removed.
+//
+// Callers are responsible for ensuring that deleted Progs are not
+// referenced outside the chain (e.g., as branch targets via
+// p.To.Target, or as external pointers to MOVABS/label Progs). The
+// ATEXT header Prog is never passed as curr.
+//
+// Safe to call only before Assemble.
+func (c *Ctx) Peephole(f func(prev, curr *obj.Prog) bool) int {
+	if c.firstProg == nil {
+		return 0
+	}
+	removed := 0
+	prev := c.firstProg
+	for curr := prev.Link; curr != nil; {
+		if f(prev, curr) {
+			prev.Link = curr.Link
+			if curr == c.last {
+				c.last = prev
+			}
+			removed++
+			curr = prev.Link
+			continue
+		}
+		prev = curr
+		curr = curr.Link
+	}
+	return removed
+}
+
 // HostArch returns the Arch matching the current build host (GOARCH).
 func HostArch() Arch {
 	switch runtime.GOARCH {

@@ -362,6 +362,12 @@ func lowerAMD64Impl(ctx *goasm.Ctx, b *Block, alloc *Allocation, aot bool) (*Low
 		return nil, fmt.Errorf("ir.LowerAMD64: %d unresolved forward labels", len(lc.pending))
 	}
 
+	// Post-lowering peephole: remove redundant spill/reload and self-
+	// move MOVQs left by the FixedStaticAllocator. Runs before slow-
+	// exit stub emission so the stubs (small, no spill patterns) don't
+	// need to be protected individually.
+	lc.peepholeHostSpills()
+
 	// Emit slow exit stubs for chain exits and build result.
 	result := &LowerResult{
 		ChainEntryProg: lc.chainEntryProg,
@@ -2402,4 +2408,137 @@ func (lc *lowerCtx) lowerFCvtFF(ins *IRInstr) {
 	}
 	lc.emitRR(op, a, dst)
 	lc.defCommit(ins.Dst, dst)
+}
+
+// ── Post-lowering peephole ──
+
+// peepholeHostSpills removes redundant MOVQ pairs produced by the
+// FixedStaticAllocator's spill-everything strategy. Patterns deleted
+// (curr is the one unlinked; prev is kept intact):
+//
+//  1. MOVQ A, A               (self-move: degenerate no-op).
+//  2. MOVQ A, B ; MOVQ B, A   (mirror: second restores what first wrote).
+//
+// Runs to a fixed point — deletions can expose new adjacent pairs.
+//
+// Safety: a pre-pass builds the set of Progs that MUST NOT be deleted —
+// the chain-entry NOP, chain-exit MOVABS sentinels, JALR IC metadata
+// Progs, label-NOP anchors (labelProg), and any Prog referenced as
+// another Prog's To.Target. The matched patterns are MOVQ with REG or
+// MEM operands only (not CONST), so MOVABS sentinels are naturally
+// excluded from matching, but we keep them in the protected set as a
+// belt-and-braces check in case the encoder adds variants.
+func (lc *lowerCtx) peepholeHostSpills() int {
+	protected := map[*obj.Prog]bool{}
+	if lc.chainEntryProg != nil {
+		protected[lc.chainEntryProg] = true
+	}
+	for _, ce := range lc.chainExits {
+		if ce.movProg != nil {
+			protected[ce.movProg] = true
+		}
+	}
+	for _, ic := range lc.jalrICs {
+		for _, p := range ic.pcMov {
+			if p != nil {
+				protected[p] = true
+			}
+		}
+		for _, p := range ic.fnMov {
+			if p != nil {
+				protected[p] = true
+			}
+		}
+		if ic.jeq0Prog != nil {
+			protected[ic.jeq0Prog] = true
+		}
+		if ic.jne1Prog != nil {
+			protected[ic.jne1Prog] = true
+		}
+		if ic.hit0Prog != nil {
+			protected[ic.hit0Prog] = true
+		}
+	}
+	for _, p := range lc.labelProg {
+		if p != nil {
+			protected[p] = true
+		}
+	}
+	// Any Prog used as a branch target in the chain.
+	for p := lc.c.First(); p != nil; p = p.Link {
+		if p.To.Type == obj.TYPE_BRANCH {
+			if t := p.To.Target(); t != nil {
+				protected[t] = true
+			}
+		}
+	}
+
+	total := 0
+	for {
+		mutated := false
+		removed := lc.c.Peephole(func(prev, curr *obj.Prog) bool {
+			if protected[curr] {
+				return false
+			}
+			// Pattern 1: MOVQ A, A — self-move.
+			if curr.As == x86.AMOVQ &&
+				curr.From.Type == obj.TYPE_REG &&
+				curr.To.Type == obj.TYPE_REG &&
+				curr.From.Reg == curr.To.Reg {
+				return true
+			}
+			// Pattern 2: MOVQ A, B ; MOVQ B, A — mirror pair. curr is a
+			// no-op because B received A from prev and we're storing it
+			// back unchanged.
+			if prev.As == x86.AMOVQ && curr.As == x86.AMOVQ &&
+				addrEqual(prev.From, curr.To) &&
+				addrEqual(prev.To, curr.From) {
+				return true
+			}
+			// Pattern 3 (rewrite, not delete): MOVQ A, B ; MOVQ B, C →
+			// MOVQ A, C. Same prog count but breaks the chain through B,
+			// often enabling Pattern 1 or 2 to fire on the next pass.
+			// Skip when the rewrite would produce an illegal mem→mem
+			// MOVQ or leave curr unchanged (A == C).
+			if prev.As == x86.AMOVQ && curr.As == x86.AMOVQ && !protected[prev] &&
+				addrEqual(prev.To, curr.From) &&
+				!addrEqual(prev.From, curr.From) {
+				if prev.From.Type == obj.TYPE_MEM && curr.To.Type == obj.TYPE_MEM {
+					return false // would be illegal mem→mem
+				}
+				if prev.From.Type != obj.TYPE_REG && prev.From.Type != obj.TYPE_MEM {
+					return false // don't rewrite using CONST etc.
+				}
+				curr.From = prev.From
+				mutated = true
+				return false // mutated, not deleted
+			}
+			return false
+		})
+		total += removed
+		if removed == 0 && !mutated {
+			break
+		}
+	}
+	return total
+}
+
+// addrEqual reports whether two obj.Addr operands refer to the same
+// register or memory location. Only REG and MEM types are compared;
+// other types (CONST, BRANCH, etc.) always return false.
+func addrEqual(a, b obj.Addr) bool {
+	if a.Type != b.Type {
+		return false
+	}
+	switch a.Type {
+	case obj.TYPE_REG:
+		return a.Reg == b.Reg
+	case obj.TYPE_MEM:
+		return a.Reg == b.Reg &&
+			a.Offset == b.Offset &&
+			a.Index == b.Index &&
+			a.Scale == b.Scale &&
+			a.Name == b.Name
+	}
+	return false
 }
