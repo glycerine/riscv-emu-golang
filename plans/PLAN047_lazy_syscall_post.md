@@ -34,15 +34,33 @@ Post-call reload is lazy: `from_reg(n)` re-reads `cpu->r[n]` on the
 syscall but never read again pays zero reload cost. The C compiler
 handles caller-saved clobbers via ordinary C call semantics.
 
-## Our analog (with FixedStaticAllocator)
+## Our analog (allocator-agnostic)
 
-`ir/regalloc_fixed.go` assigns each used VReg **one** host register for
-the entire block (interval `[0, n-1]`). Because RBX/RBP/R12-R15 are
-pinned to sret/IC/xBase/fBase/memBase/memMask, every `AllocReg` VReg
-ends up in a caller-saved host reg — all clobbered by the dispatcher
-CALL. Temps (`e.Tmp()`) are instruction-local in the current emitter
-pattern and don't span ECALL, so we only need to worry about X1..X31
-and F0..F31 (the guest register VRegs exposed via `XReg`/`FRegV`).
+This design works with both `ir/regalloc_fixed.go` (fixed static, one
+host reg per VReg for the whole block) and `ir/regalloc.go` (ELS, with
+interval splitting) — because the reload is emitted as a standard
+`IRLoad` op, which both allocators handle as a new def (creating a
+fresh interval post-ECALL).
+
+- **Fixed static**: every used VReg is pinned to one host reg for the
+  block. Because RBX/RBP/R12-R15 are pinned to sret/IC/xBase/fBase/
+  memBase/memMask, every `AllocReg` VReg lives in a caller-saved host
+  reg — guaranteed clobbered by the dispatcher CALL. The IRLoad after
+  the CALL reassigns a fresh value to the same host reg, so subsequent
+  uses read correct data.
+- **ELS**: IRSyscall stays modeled as "no uses, no defs"
+  (`ir/regalloc.go:299,314`), but the IRLoad we emit at first
+  post-ECALL use creates a new def point, starting a new live
+  interval. The pre-ECALL interval naturally ends at the last use
+  before the call (dirty VRegs end at the WriteBack store; clean
+  VRegs end at their last read). If a pre-ECALL VReg has no
+  post-ECALL use, no reload is emitted — the caller-saved clobber
+  harms nothing because the interval already ended.
+
+Temps (`e.Tmp()`) are instruction-local in the current emitter pattern
+and don't span ECALL under either allocator, so we only need to worry
+about X1..X31 and F0..F31 (the guest register VRegs exposed via
+`XReg`/`FRegV`).
 
 To be lazy like libriscv: after ECALL, mark every touched X/F VReg
 `needsReload`. On the next reference through `XReg(i)` / `FRegV(i)`,
