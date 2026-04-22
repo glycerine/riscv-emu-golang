@@ -1124,20 +1124,21 @@ func TestAOT_FunctionLevel_Hello(t *testing.T) {
 		t.Fatalf("jitCompileAOTSegment: %v", err)
 	}
 
-	// Should produce 1 compiled block (one function).
-	if n := len(seg.blocks); n != 1 {
-		t.Errorf("got %d compiled blocks, want 1", n)
-		for pc := range seg.blocks {
-			t.Logf("  block at 0x%x", pc)
-		}
-	}
-
-	// decoder_cache should have an entry at textBase.
+	// All block map entries should point to the same compiledBlock
+	// (one function, multiple re-entry PCs).
 	if _, ok := seg.blocks[textBase]; !ok {
 		t.Errorf("no compiled block at textBase 0x%x", textBase)
 	}
+	var theBlock *compiledBlock
+	for pc, blk := range seg.blocks {
+		if theBlock == nil {
+			theBlock = blk
+		} else if blk != theBlock {
+			t.Errorf("block at 0x%x is a different compiledBlock (expected all same)", pc)
+		}
+	}
 
-	t.Logf("hello AOT: %d block(s), %d bytes native code",
+	t.Logf("hello AOT: %d block map entries, 1 compiled function, %d bytes native code",
 		len(seg.blocks), seg.nativeCodeSize)
 }
 
