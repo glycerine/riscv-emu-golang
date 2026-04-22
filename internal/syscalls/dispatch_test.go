@@ -70,4 +70,64 @@ func TestDispatchAddr(t *testing.T) {
 	if DispatchAddr() == 0 {
 		t.Fatal("DispatchAddr() returned 0")
 	}
+	if NullWriteCallbackAddr() == 0 {
+		t.Fatal("NullWriteCallbackAddr() returned 0")
+	}
+}
+
+// TestDispatchNullCallback verifies that when the null callback is
+// registered, SYS_write takes the callback path — no kernel syscall
+// happens (we prove this by using a fd that would fail if written:
+// fd = -1), and x[10] ends up equal to count.
+func TestDispatchNullCallback(t *testing.T) {
+	RegisterWriteCallback(NullWriteCallbackAddr())
+	defer RegisterWriteCallback(0)
+
+	var regs [32]uint64
+	guestMem := make([]byte, 4096)
+	regs[17] = 64
+	regs[10] = ^uint64(0) // fd = -1, would EBADF in kernel; callback ignores it
+	regs[11] = 0x100
+	regs[12] = 42 // arbitrary count
+
+	memBase := uintptr(unsafe.Pointer(&guestMem[0]))
+	memMask := uint64(len(guestMem) - 1)
+
+	ret := CallDispatch(unsafe.Pointer(&regs[0]), memBase, memMask)
+	if ret != 0 {
+		t.Fatalf("CallDispatch returned %d, want 0 (handled)", ret)
+	}
+	if regs[10] != 42 {
+		t.Fatalf("x[10] after null callback = %d, want 42 (count)", int64(regs[10]))
+	}
+}
+
+// TestDispatchClearCallback verifies that setting the callback back
+// to 0 restores the SYSCALL fast path.
+func TestDispatchClearCallback(t *testing.T) {
+	// First install null cb so we know state can be toggled.
+	RegisterWriteCallback(NullWriteCallbackAddr())
+	RegisterWriteCallback(0) // clear
+
+	// With callback cleared, a write to an invalid fd should flow
+	// through the kernel and get back -EBADF (a large negative as u64).
+	var regs [32]uint64
+	guestMem := make([]byte, 4096)
+	regs[17] = 64
+	regs[10] = ^uint64(0) // -1
+	regs[11] = 0x100
+	regs[12] = 4
+
+	memBase := uintptr(unsafe.Pointer(&guestMem[0]))
+	memMask := uint64(len(guestMem) - 1)
+
+	ret := CallDispatch(unsafe.Pointer(&regs[0]), memBase, memMask)
+	if ret != 0 {
+		t.Fatalf("CallDispatch returned %d, want 0", ret)
+	}
+	// Expect kernel to have returned an error (negative ssize_t cast
+	// to uint64 → high bit set). Just check it's not equal to count.
+	if regs[10] == 4 {
+		t.Fatalf("x[10] = count after clearing callback; callback still active")
+	}
 }

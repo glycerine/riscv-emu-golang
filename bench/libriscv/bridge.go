@@ -14,6 +14,7 @@ package libriscv_bench
 #include <stdint.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
 
 // ── silent callbacks ───────────────────────────────────────────────────────
 
@@ -22,6 +23,55 @@ static void null_error(void *o, int t, const char *m, long d) {
 }
 static void null_stdout(void *o, const char *m, unsigned n) {
     (void)o; (void)m; (void)n;
+}
+
+// real_write_stdout forwards bytes to the host kernel via write(2).
+// Used by the apples-to-apples benchmark where we want libriscv's
+// per-ECALL cost to include actual kernel-entry overhead (matching
+// what the GoCPU direct-syscall runner pays). Callers are expected
+// to redirect fd=1 appropriately (e.g., to /dev/null) before use.
+static void real_write_stdout(void *o, const char *m, unsigned n) {
+    (void)o;
+    ssize_t w = write(1, m, n);
+    (void)w;
+}
+
+// ── capturing stdout callback ──────────────────────────────────────────────
+// CaptureBuffer accumulates bytes written by the guest to fd=1/2 via
+// libriscv's opts.output path. Backed by realloc-by-doubling so amortized
+// cost per byte is O(1). Used by hellobench for regression verification.
+
+typedef struct {
+    char   *data;
+    size_t  len;
+    size_t  cap;
+} CaptureBuffer;
+
+static CaptureBuffer *new_capture_buffer(void) {
+    return (CaptureBuffer*)calloc(1, sizeof(CaptureBuffer));
+}
+static void free_capture_buffer(CaptureBuffer *cb) {
+    if (cb == NULL) return;
+    free(cb->data);
+    free(cb);
+}
+static size_t capture_buffer_len(CaptureBuffer *cb) {
+    return cb->len;
+}
+static const char *capture_buffer_data(CaptureBuffer *cb) {
+    return cb->data;
+}
+static void capture_stdout(void *o, const char *m, unsigned n) {
+    CaptureBuffer *cb = (CaptureBuffer*)o;
+    size_t need = cb->len + n;
+    if (need > cb->cap) {
+        size_t ncap = cb->cap ? cb->cap : 1024;
+        while (ncap < need) ncap *= 2;
+        cb->data = (char*)realloc(cb->data, ncap);
+        cb->cap = ncap;
+    }
+    memcpy(cb->data + cb->len, m, n);
+    cb->len = need;
 }
 
 // ── timing ─────────────────────────────────────────────────────────────────
@@ -54,6 +104,37 @@ static RISCVMachine *new_bench_machine_no_jit(const void *elf, size_t elf_size,
     opts.no_translate   = 1;
     opts.error          = null_error;
     opts.output         = null_stdout;
+    return libriscv_new(elf, (unsigned)elf_size, &opts);
+}
+
+// new_capturing_machine routes guest stdout into a caller-supplied
+// CaptureBuffer. Used by the hellobench harness to verify output
+// bytes match the expected "Hello, libriscv!\n" × 10000 on every run.
+static RISCVMachine *new_capturing_machine(const void *elf, size_t elf_size,
+                                             uint64_t memory_bytes,
+                                             CaptureBuffer *cb) {
+    RISCVOptions opts;
+    libriscv_set_defaults(&opts);
+    opts.max_memory     = memory_bytes;
+    opts.strict_sandbox = 1;
+    opts.error          = null_error;
+    opts.output         = capture_stdout;
+    opts.opaque         = cb;
+    return libriscv_new(elf, (unsigned)elf_size, &opts);
+}
+
+// new_real_write_machine routes guest stdout through the host kernel
+// via write(2). Used for the apples-to-apples comparison — libriscv's
+// per-ECALL cost then includes a real kernel-entry cost, matching
+// the GoCPU direct-syscall runner's path.
+static RISCVMachine *new_real_write_machine(const void *elf, size_t elf_size,
+                                              uint64_t memory_bytes) {
+    RISCVOptions opts;
+    libriscv_set_defaults(&opts);
+    opts.max_memory     = memory_bytes;
+    opts.strict_sandbox = 1;
+    opts.error          = null_error;
+    opts.output         = real_write_stdout;
     return libriscv_new(elf, (unsigned)elf_size, &opts);
 }
 
@@ -148,6 +229,81 @@ func NewMachineNoJIT(elf []byte, memBytes uint64) *Machine {
 		return nil
 	}
 	return &Machine{m: m}
+}
+
+// NewMachineRealWrite creates a libriscv machine whose guest fd=1/2
+// writes go through the host kernel via write(2). Used by the
+// apples-to-apples benchmark — libriscv's measured cost then includes
+// kernel entry, matching what the GoCPU direct-syscall runner pays.
+func NewMachineRealWrite(elf []byte, memBytes uint64) *Machine {
+	m := C.new_real_write_machine(
+		unsafe.Pointer(&elf[0]),
+		C.size_t(len(elf)),
+		C.uint64_t(memBytes),
+	)
+	if m == nil {
+		return nil
+	}
+	return &Machine{m: m}
+}
+
+// CapturingMachine is a libriscv machine that accumulates guest
+// stdout/stderr writes into a C-side buffer. Use CapturedOutput to
+// retrieve the bytes and Close to free everything.
+//
+// Use this instead of NewMachine when the caller wants to verify
+// guest output on every benchmark run — see bench/hellobench.
+type CapturingMachine struct {
+	m  *C.RISCVMachine
+	cb *C.CaptureBuffer
+}
+
+// NewMachineCapturing creates a machine whose guest stdout (fd 1/2)
+// is captured into a Go-accessible buffer. Returns nil on failure.
+func NewMachineCapturing(elf []byte, memBytes uint64) *CapturingMachine {
+	cb := C.new_capture_buffer()
+	if cb == nil {
+		return nil
+	}
+	m := C.new_capturing_machine(
+		unsafe.Pointer(&elf[0]),
+		C.size_t(len(elf)),
+		C.uint64_t(memBytes),
+		cb,
+	)
+	if m == nil {
+		C.free_capture_buffer(cb)
+		return nil
+	}
+	return &CapturingMachine{m: m, cb: cb}
+}
+
+// Close frees the machine and the capture buffer.
+func (m *CapturingMachine) Close() {
+	if m.m != nil {
+		C.delete_machine(m.m)
+		m.m = nil
+	}
+	if m.cb != nil {
+		C.free_capture_buffer(m.cb)
+		m.cb = nil
+	}
+}
+
+// RunToCompletion runs the guest until exit or insnLimit is reached.
+func (m *CapturingMachine) RunToCompletion(insnLimit uint64) uint64 {
+	return uint64(C.run_to_completion(m.m, C.uint64_t(insnLimit)))
+}
+
+// CapturedOutput returns a copy of the bytes the guest has written
+// via fd=1/2 since the machine was created. Safe to call after
+// RunToCompletion.
+func (m *CapturingMachine) CapturedOutput() []byte {
+	n := int(C.capture_buffer_len(m.cb))
+	if n == 0 {
+		return nil
+	}
+	return C.GoBytes(unsafe.Pointer(C.capture_buffer_data(m.cb)), C.int(n))
 }
 
 // Close frees the machine.

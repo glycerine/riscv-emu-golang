@@ -41,3 +41,37 @@ func CallDispatch(xptr unsafe.Pointer, memBase uintptr, memMask uint64) uint64
 //
 //go:noescape
 func DispatchAddr() uintptr
+
+// jitDispatchWriteCallback is a C-ABI function pointer the dispatcher
+// consults on the SYS_write fast path. When zero (the default), the
+// dispatcher issues a direct kernel SYSCALL. When non-zero, the
+// dispatcher CALLs the registered function instead — useful for
+// apples-to-apples benchmarking against libriscv's no-kernel
+// `null_stdout` callback.
+//
+// Callback ABI (System V AMD64):
+//
+//	int64 callback(uintptr fd, uintptr hostBuf, uintptr count)
+//
+// Return value is stored into guest x[10] as the write's result.
+//
+// Not safe for concurrent modification; set once before starting
+// the JIT and clear afterwards.
+var jitDispatchWriteCallback uintptr
+
+// RegisterWriteCallback installs a C-ABI function pointer as the
+// dispatcher's SYS_write handler. Pass 0 to restore the direct-SYSCALL
+// fast path (the default). See NullWriteCallbackAddr for the builtin
+// no-op callback used in benchmarks.
+func RegisterWriteCallback(addr uintptr) {
+	jitDispatchWriteCallback = addr
+}
+
+// NullWriteCallbackAddr returns the address of a built-in SysV-ABI
+// callback that does no work and returns `count` as "bytes written".
+// Mirrors libriscv's null_stdout for dispatch-only cost measurement.
+//
+// Implemented in dispatch_<goos>_amd64.s.
+//
+//go:noescape
+func NullWriteCallbackAddr() uintptr

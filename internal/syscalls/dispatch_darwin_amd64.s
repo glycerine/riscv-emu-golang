@@ -18,6 +18,15 @@ jit_write:
 	MOVQ	88(R10), R11         // guest buf
 	ANDQ	DX, R11              // bounds-mask
 	ADDQ	SI, R11              // + memBase = host ptr
+
+	// Phase 4: consult the optional write-callback. If non-nil, call
+	// it instead of issuing a kernel SYSCALL. Used for dispatch-only
+	// benchmarking (match libriscv's null_stdout cost model).
+	MOVQ	·jitDispatchWriteCallback(SB), AX
+	TESTQ	AX, AX
+	JNZ	jit_write_callback
+
+	// Fast path: inline kernel SYSCALL.
 	MOVQ	96(R10), DX          // count
 	MOVQ	R11, SI              // host buf
 	MOVQ	80(R10), DI          // fd
@@ -26,6 +35,22 @@ jit_write:
 
 	MOVQ	AX, 80(R10)
 	XORQ	AX, AX
+	RET
+
+jit_write_callback:
+	// Callback ABI: RDI=fd, RSI=hostBuf, RDX=count; return RAX.
+	MOVQ	96(R10), DX          // count
+	MOVQ	R11, SI              // host buf
+	MOVQ	80(R10), DI          // fd
+	CALL	AX                   // callback pointer in AX from load above
+	MOVQ	AX, 80(R10)          // x[10] = bytes "written"
+	XORQ	AX, AX               // status = 0 (handled)
+	RET
+
+// Built-in null callback — SysV ABI, returns RDX (count) as RAX.
+// Mirrors libriscv's null_stdout: does no work, pretends success.
+TEXT nullWriteCallback<>(SB), NOSPLIT|NOFRAME, $0-0
+	MOVQ	DX, AX
 	RET
 
 TEXT ·CallDispatch(SB), NOSPLIT, $0-32
@@ -38,5 +63,10 @@ TEXT ·CallDispatch(SB), NOSPLIT, $0-32
 
 TEXT ·DispatchAddr(SB), NOSPLIT, $0-8
 	LEAQ	jit_dispatch<>(SB), AX
+	MOVQ	AX, ret+0(FP)
+	RET
+
+TEXT ·NullWriteCallbackAddr(SB), NOSPLIT, $0-8
+	LEAQ	nullWriteCallback<>(SB), AX
 	MOVQ	AX, ret+0(FP)
 	RET

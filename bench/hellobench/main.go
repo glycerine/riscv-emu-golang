@@ -2,20 +2,23 @@
 
 // hellobench — per-ECALL timing comparison for the "Hello, …" guest.
 //
-// Runs three RV64 emulator configurations on functionally-identical
-// guest ELFs (differing only in the literal message string), reports
-// wall-clock per-ECALL cost averaged over ITERS iterations.
+// For each configuration we
+//
+//	(1) run once with full output capture and verify the bytes
+//	    match "Hello, <tag>!\n" × 10000 — any divergence dies loudly;
+//	(2) run N times with a cheap sink (null_stdout / io.Discard /
+//	    /dev/null) and report mean ± stddev ns/call.
+//
+// The verify pass is the regression guardrail: a dispatcher bug that
+// silently drops or corrupts bytes can't hide behind a "slightly
+// faster" timing. The timed pass uses a cheap sink so capture
+// overhead (tempfile writes in the direct-syscall case, ~3 µs/call)
+// doesn't confound the numbers.
 //
 //	$ cd ~/ris && make hello
-//	  libriscv             ???  ns/call   Hello, libriscv!
-//	  GoCPU interpreter    ???  ns/call   Hello, Go CPU!
-//	  GoCPU direct syscall ???  ns/call   Hello, Go CPU!   (Phase 2)
-//
-// The third line is only emitted once Phase 2 (native SYSCALL fast
-// path) lands. Until then the driver prints two lines.
-//
-// Guest output is discarded (io.Discard / null_stdout) to keep the
-// terminal readable when running millions of iterations.
+//	  libriscv             ??? ns/call   Hello, libriscv!
+//	  GoCPU interpreter    ??? ns/call   Hello, Go CPU!
+//	  GoCPU direct syscall ??? ns/call   Hello, Go CPU!
 package main
 
 import (
@@ -27,11 +30,13 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"syscall"
 	"time"
 
 	riscv "riscv"
 	libriscv "riscv/bench/libriscv"
+	"riscv/internal/syscalls"
 )
 
 const (
@@ -42,8 +47,7 @@ const (
 
 func main() {
 	var (
-		flagRepeat = flag.Int("repeat", 5, "take best of N runs per configuration")
-		flagVerify = flag.Bool("verify", false, "verify output string on first run")
+		flagRepeat = flag.Int("repeat", 5, "number of timed runs per configuration")
 		flagElfDir = flag.String("elfdir", "bench/hello_guest", "dir containing hello_*.elf")
 	)
 	flag.Parse()
@@ -51,63 +55,82 @@ func main() {
 	libriscvELF := mustRead(filepath.Join(*flagElfDir, "hello_libriscv.elf"))
 	gocpuELF := mustRead(filepath.Join(*flagElfDir, "hello_gocpu.elf"))
 
-	// We redirect the host process's fd=1 to /dev/null around each
-	// guest run so the direct-SYSCALL path (which writes straight to
-	// the kernel's fd=1) doesn't spam the terminal with ~30000 lines.
-	// libriscv's null_stdout callback and the GoCPU interpreter's
-	// io.Discard WriteFunc don't use fd=1, so the redirect is a no-op
-	// for them — but applying it uniformly keeps the methodology
-	// identical across runners.
+	// ── correctness first. Any failure dies loudly. ────────────────────
+	verifyLibriscv(libriscvELF, "Hello, libriscv!\n")
+	verifyLibriscvRealWrite(libriscvELF, "Hello, libriscv!\n")
+	verifyGoCPUInterp(gocpuELF, "Hello, Go CPU!\n")
+	if hasDirectSyscall() {
+		verifyGoCPUDirect(gocpuELF, "Hello, Go CPU!\n")
+		// The direct-callback path's output is discarded by the null
+		// callback — nothing to capture. Dispatcher correctness for
+		// the callback path is covered by
+		// internal/syscalls/dispatch_test.go:TestDispatchNullCallback.
+	}
 
-	// ── libriscv ──────────────────────────────────────────────────────
+	// ── timed runs with cheap sinks ────────────────────────────────────
+	//
+	// Each emulator gets (a) a dispatch-only line where guest stdout
+	// never reaches the kernel (libriscv null_stdout, GoCPU io.Discard,
+	// GoCPU null callback) and (b) a kernel-inclusive line (libriscv
+	// with real write, GoCPU direct SYSCALL). The dispatch-only pair
+	// is directly comparable; the kernel-inclusive pair is the
+	// realistic production cost.
+
 	libriscvNs, stddev := meanVar(*flagRepeat, func() int64 {
-		var ns int64
-		withStdoutToDevNull(func() {
-			m := libriscv.NewMachine(libriscvELF, guestMem)
-			if m == nil {
-				die("libriscv.NewMachine returned nil")
-			}
-			defer m.Close()
-			t0 := time.Now()
-			m.RunToCompletion(0)
-			ns = time.Since(t0).Nanoseconds()
-		})
-		return ns
+		return timeLibriscv(libriscvELF)
 	})
 	printLine("libriscv", libriscvNs, stddev, defaultITERS, "Hello, libriscv!")
 
-	// ── GoCPU interpreter ─────────────────────────────────────────────
+	libriscvRWNs, stddev := meanVar(*flagRepeat, func() int64 {
+		return timeLibriscvRealWrite(libriscvELF)
+	})
+	printLine("libriscv real write", libriscvRWNs, stddev, defaultITERS, "Hello, libriscv!")
+
 	gocpuInterpNs, stddev := meanVar(*flagRepeat, func() int64 {
-		return runGoCPU(gocpuELF /*jit=*/, false, *flagVerify)
+		return timeGoCPU(gocpuELF, false)
 	})
 	printLine("GoCPU interpreter", gocpuInterpNs, stddev, defaultITERS, "Hello, Go CPU!")
 
-	// ── GoCPU direct syscall (Phase 2) ────────────────────────────────
-	// Present when the ECALL fast path is compiled in (see
-	// riscv/internal/syscalls). Runs on a fresh JIT that uses
-	// IRSyscall emission; the guest's ECALL becomes a direct
-	// Go-asm dispatcher call + kernel SYSCALL, no Go dispatch loop.
 	if hasDirectSyscall() {
 		gocpuDirectNs, stddev := meanVar(*flagRepeat, func() int64 {
-			return runGoCPUDirect(gocpuELF)
+			return timeGoCPUDirect(gocpuELF, false /*callback*/)
 		})
 		printLine("GoCPU direct syscall", gocpuDirectNs, stddev, defaultITERS, "Hello, Go CPU!")
+
+		gocpuCbNs, stddev := meanVar(*flagRepeat, func() int64 {
+			return timeGoCPUDirect(gocpuELF, true /*callback*/)
+		})
+		printLine("GoCPU direct callback", gocpuCbNs, stddev, defaultITERS, "Hello, Go CPU!")
 	}
 }
 
-// runGoCPU executes the gocpuELF once and returns wall-clock ns for
-// the full run. If jit is true, runs through RunJIT; otherwise runs
-// through the uncached interpreter.
-//
-// Writes are intercepted by the Go-path LinuxWriteHandler (via
-// InstallLinuxOS), so they don't reach the host kernel's fd=1. The
-// out parameter controls what the Go handler does with them:
-// io.Discard for throughput, bytes.Buffer for verify.
-//
-// This function is for the "GoCPU interpreter" runner. For the
-// "GoCPU direct syscall" runner see runGoCPUDirect — the fast-path
-// JIT bypasses InstallLinuxOS for write(2) entirely.
-func runGoCPU(elf []byte, jit bool, verify bool) int64 {
+// ── correctness (verify) runs — one-shot per config ──────────────────
+
+func verifyLibriscv(elf []byte, expectedLine string) {
+	m := libriscv.NewMachineCapturing(elf, guestMem)
+	if m == nil {
+		die("libriscv.NewMachineCapturing returned nil")
+	}
+	defer m.Close()
+	m.RunToCompletion(0)
+	verifyOutput("libriscv", m.CapturedOutput(), expectedLine)
+}
+
+func verifyLibriscvRealWrite(elf []byte, expectedLine string) {
+	// Real-write mode goes through kernel write(1, …). Redirect fd=1
+	// to a tempfile so we can actually read what libriscv emitted.
+	captured := withStdoutToTempFile(func() {
+		m := libriscv.NewMachineRealWrite(elf, guestMem)
+		if m == nil {
+			die("libriscv.NewMachineRealWrite returned nil")
+		}
+		defer m.Close()
+		m.RunToCompletion(0)
+	})
+	verifyOutput("libriscv real write", captured, expectedLine)
+}
+
+func verifyGoCPUInterp(elf []byte, expectedLine string) {
 	mem, err := riscv.NewGuestMemory(guestMem)
 	if err != nil {
 		die("NewGuestMemory: %v", err)
@@ -117,19 +140,101 @@ func runGoCPU(elf []byte, jit bool, verify bool) int64 {
 	if err != nil {
 		die("LoadELFBytes: %v", err)
 	}
-
 	cpu := riscv.NewCPU(*mem)
 	cpu.SetPC(entry)
 	cpu.SetReg(2, guestSP)
 
-	var out io.Writer = io.Discard
-	var buf *bytes.Buffer
-	if verify {
-		buf = &bytes.Buffer{}
-		out = buf
+	var buf bytes.Buffer
+	_, err = riscv.RunWithLinuxOS(cpu, &buf)
+	if err != nil {
+		die("RunWithLinuxOS: %v", err)
 	}
+	verifyOutput("GoCPU interpreter", buf.Bytes(), expectedLine)
+}
 
-	cleanup := riscv.InstallLinuxOS(cpu, out)
+func verifyGoCPUDirect(elf []byte, expectedLine string) {
+	mem, err := riscv.NewGuestMemory(guestMem)
+	if err != nil {
+		die("NewGuestMemory: %v", err)
+	}
+	defer mem.Free()
+	entry, err := riscv.LoadELFBytes(mem, elf)
+	if err != nil {
+		die("LoadELFBytes: %v", err)
+	}
+	cpu := riscv.NewCPU(*mem)
+	cpu.SetPC(entry)
+	cpu.SetReg(2, guestSP)
+
+	cleanup := riscv.InstallLinuxOS(cpu, io.Discard) // fallback for exit(93)
+	defer cleanup()
+
+	j := riscv.NewJIT()
+
+	captured := withStdoutToTempFile(func() {
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					if _, ok := r.(*riscv.ExitError); ok {
+						return
+					}
+					panic(r)
+				}
+			}()
+			if err := j.RunJIT(cpu); err != nil {
+				die("RunJIT: %v", err)
+			}
+		}()
+	})
+	verifyOutput("GoCPU direct syscall", captured, expectedLine)
+}
+
+// ── timed (sink) runs — called N times for mean/stddev ───────────────
+
+func timeLibriscv(elf []byte) int64 {
+	m := libriscv.NewMachine(elf, guestMem)
+	if m == nil {
+		die("libriscv.NewMachine returned nil")
+	}
+	defer m.Close()
+	t0 := time.Now()
+	m.RunToCompletion(0)
+	return time.Since(t0).Nanoseconds()
+}
+
+// timeLibriscvRealWrite times libriscv with its output callback routed
+// through kernel write(2). Guest fd=1 is redirected to /dev/null.
+func timeLibriscvRealWrite(elf []byte) int64 {
+	m := libriscv.NewMachineRealWrite(elf, guestMem)
+	if m == nil {
+		die("libriscv.NewMachineRealWrite returned nil")
+	}
+	defer m.Close()
+
+	var elapsed int64
+	withStdoutToDevNull(func() {
+		t0 := time.Now()
+		m.RunToCompletion(0)
+		elapsed = time.Since(t0).Nanoseconds()
+	})
+	return elapsed
+}
+
+func timeGoCPU(elf []byte, jit bool) int64 {
+	mem, err := riscv.NewGuestMemory(guestMem)
+	if err != nil {
+		die("NewGuestMemory: %v", err)
+	}
+	defer mem.Free()
+	entry, err := riscv.LoadELFBytes(mem, elf)
+	if err != nil {
+		die("LoadELFBytes: %v", err)
+	}
+	cpu := riscv.NewCPU(*mem)
+	cpu.SetPC(entry)
+	cpu.SetReg(2, guestSP)
+
+	cleanup := riscv.InstallLinuxOS(cpu, io.Discard)
 	defer cleanup()
 
 	t0 := time.Now()
@@ -152,26 +257,20 @@ func runGoCPU(elf []byte, jit bool, verify bool) int64 {
 	}()
 	elapsed := time.Since(t0).Nanoseconds()
 	if runErr != nil {
-		die("run (jit=%v): %v", jit, runErr)
-	}
-	if verify && buf.Len() == 0 {
-		die("verify: no output captured (jit=%v)", jit)
+		die("timeGoCPU (jit=%v): %v", jit, runErr)
 	}
 	return elapsed
 }
 
-// runGoCPUDirect executes gocpuELF through the JIT with the native
-// ECALL fast path active, returning wall-clock ns for the full run.
+// timeGoCPUDirect runs gocpuELF through the JIT with the native ECALL
+// fast path. When useCallback is false, the dispatcher issues a real
+// kernel SYSCALL — fd=1 redirected to /dev/null to avoid terminal
+// spam. When useCallback is true, the dispatcher invokes the built-in
+// null callback instead — no kernel entry, no redirection needed.
 //
-// The JIT-emitted code calls the Go-asm dispatcher which issues a
-// real kernel SYSCALL(SYS_write, fd=1, …). The caller must have
-// redirected fd=1 to /dev/null (via withStdoutToDevNull) — otherwise
-// the terminal fills with 10K "Hello, Go CPU!" lines.
-//
-// We still install a Go OS personality so exit(93) can take the
-// fallback path (the dispatcher returns 1 for unknown syscalls →
-// JIT returns jitEcall → NoteChain delivers → LinuxExit panics).
-func runGoCPUDirect(elf []byte) int64 {
+// Returned value is elapsed ns for the run only (JIT setup and
+// teardown excluded).
+func timeGoCPUDirect(elf []byte, useCallback bool) int64 {
 	mem, err := riscv.NewGuestMemory(guestMem)
 	if err != nil {
 		die("NewGuestMemory: %v", err)
@@ -181,19 +280,21 @@ func runGoCPUDirect(elf []byte) int64 {
 	if err != nil {
 		die("LoadELFBytes: %v", err)
 	}
-
 	cpu := riscv.NewCPU(*mem)
 	cpu.SetPC(entry)
 	cpu.SetReg(2, guestSP)
 
-	// Go-path fallback still needed for exit(93).
 	cleanup := riscv.InstallLinuxOS(cpu, io.Discard)
 	defer cleanup()
 
+	if useCallback {
+		syscalls.RegisterWriteCallback(syscalls.NullWriteCallbackAddr())
+		defer syscalls.RegisterWriteCallback(0)
+	}
+
 	j := riscv.NewJIT()
 
-	var elapsed int64
-	withStdoutToDevNull(func() {
+	runGuest := func() int64 {
 		t0 := time.Now()
 		var runErr error
 		func() {
@@ -207,10 +308,20 @@ func runGoCPUDirect(elf []byte) int64 {
 			}()
 			runErr = j.RunJIT(cpu)
 		}()
-		elapsed = time.Since(t0).Nanoseconds()
+		elapsed := time.Since(t0).Nanoseconds()
 		if runErr != nil {
-			die("runGoCPUDirect: %v", runErr)
+			die("timeGoCPUDirect: %v", runErr)
 		}
+		return elapsed
+	}
+
+	if useCallback {
+		// Null callback doesn't touch fd=1 — no redirection needed.
+		return runGuest()
+	}
+	var elapsed int64
+	withStdoutToDevNull(func() {
+		elapsed = runGuest()
 	})
 	return elapsed
 }
@@ -223,16 +334,88 @@ func hasDirectSyscall() bool {
 	return riscv.DirectSyscallEnabled()
 }
 
-// withStdoutToDevNull runs fn with the host process's fd=1 temporarily
-// redirected to /dev/null. The original fd=1 is restored before
-// returning. Used around runs whose ECALL path writes directly to
-// the kernel's fd=1 (the Phase-2 direct-SYSCALL path) so the
-// benchmark doesn't spam the terminal.
-//
-// For runs that intercept writes in Go (libriscv's null_stdout
-// callback, or our Go OS personality's io.Discard WriteFunc), the
-// redirect is a no-op — fd=1 is never touched — but applying it
-// uniformly simplifies the harness.
+// ── correctness checking ─────────────────────────────────────────────
+
+// verifyOutput compares got to expectedLine × defaultITERS. On
+// mismatch, die() with a concise locator: length, first-differing
+// byte position, and context on both sides.
+func verifyOutput(label string, got []byte, expectedLine string) {
+	want := strings.Repeat(expectedLine, defaultITERS)
+	if len(got) != len(want) {
+		die("%s: captured %d bytes, want %d\n  got [first 32]:  %q\n  want[first 32]:  %q",
+			label, len(got), len(want),
+			first32(got), first32([]byte(want)))
+	}
+	if bytes.Equal(got, []byte(want)) {
+		return
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			a := max(0, i-8)
+			b := min(len(got), i+24)
+			die("%s: byte %d mismatch\n  got : %q\n  want: %q",
+				label, i, got[a:b], want[a:b])
+		}
+	}
+}
+
+func first32(b []byte) []byte {
+	if len(b) <= 32 {
+		return b
+	}
+	return b[:32]
+}
+
+// ── host fd=1 redirection helpers ────────────────────────────────────
+
+// withStdoutToTempFile runs fn with fd=1 redirected to a tempfile and
+// returns the captured bytes. Used by the verify path for the
+// direct-SYSCALL runner where writes target kernel fd=1 directly.
+func withStdoutToTempFile(fn func()) []byte {
+	tmpf, err := os.CreateTemp("", "hellocap-*")
+	if err != nil {
+		die("CreateTemp: %v", err)
+	}
+	defer os.Remove(tmpf.Name())
+	defer tmpf.Close()
+
+	saved, err := syscall.Dup(1)
+	if err != nil {
+		die("dup(1): %v", err)
+	}
+	defer syscall.Close(saved)
+
+	if err := syscall.Dup2(int(tmpf.Fd()), 1); err != nil {
+		die("dup2(tmp, 1): %v", err)
+	}
+	restored := false
+	defer func() {
+		if !restored {
+			syscall.Dup2(saved, 1)
+		}
+	}()
+
+	fn()
+
+	if err := syscall.Dup2(saved, 1); err != nil {
+		die("dup2(restore): %v", err)
+	}
+	restored = true
+
+	if _, err := tmpf.Seek(0, 0); err != nil {
+		die("seek: %v", err)
+	}
+	data, err := io.ReadAll(tmpf)
+	if err != nil {
+		die("read: %v", err)
+	}
+	return data
+}
+
+// withStdoutToDevNull runs fn with fd=1 redirected to /dev/null.
+// Used by the timed runs of the direct-SYSCALL runner — the sink
+// must be a real kernel fd (otherwise SYSCALL's write would go to
+// the terminal), and /dev/null is the cheapest real sink available.
 func withStdoutToDevNull(fn func()) {
 	devnull, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
 	if err != nil {
@@ -253,6 +436,8 @@ func withStdoutToDevNull(fn func()) {
 
 	fn()
 }
+
+// ── stats + utilities ────────────────────────────────────────────────
 
 func meanVar(n int, run func() int64) (mean, stddev float64) {
 	if n < 1 {
