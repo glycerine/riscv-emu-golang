@@ -93,12 +93,12 @@ func main() {
 
 	if hasDirectSyscall() {
 		gocpuDirectNs, stddev := meanVar(*flagRepeat, func() int64 {
-			return timeGoCPUDirect(gocpuELF, false /*callback*/)
+			return timeGoCPUDirect(gocpuELF, true /*realSystemCall*/)
 		})
 		printLine("GoCPU direct syscall", gocpuDirectNs, stddev, defaultITERS, "Hello, Go CPU!")
 
 		gocpuCbNs, stddev := meanVar(*flagRepeat, func() int64 {
-			return timeGoCPUDirect(gocpuELF, true /*callback*/)
+			return timeGoCPUDirect(gocpuELF, false /*realSystemCall*/)
 		})
 		printLine("GoCPU direct callback", gocpuCbNs, stddev, defaultITERS, "Hello, Go CPU!")
 	}
@@ -263,14 +263,14 @@ func timeGoCPU(elf []byte, jit bool) int64 {
 }
 
 // timeGoCPUDirect runs gocpuELF through the JIT with the native ECALL
-// fast path. When useCallback is false, the dispatcher issues a real
-// kernel SYSCALL — fd=1 redirected to /dev/null to avoid terminal
-// spam. When useCallback is true, the dispatcher invokes the built-in
+// fast path. When realSystemCall is true, the dispatcher issues a
+// real kernel SYSCALL — fd=1 redirected to /dev/null to avoid
+// terminal spam. When false, the dispatcher invokes the built-in
 // null callback instead — no kernel entry, no redirection needed.
 //
 // Returned value is elapsed ns for the run only (JIT setup and
 // teardown excluded).
-func timeGoCPUDirect(elf []byte, useCallback bool) int64 {
+func timeGoCPUDirect(elf []byte, realSystemCall bool) int64 {
 	mem, err := riscv.NewGuestMemory(guestMem)
 	if err != nil {
 		die("NewGuestMemory: %v", err)
@@ -287,7 +287,7 @@ func timeGoCPUDirect(elf []byte, useCallback bool) int64 {
 	cleanup := riscv.InstallLinuxOS(cpu, io.Discard)
 	defer cleanup()
 
-	if useCallback {
+	if !realSystemCall {
 		syscalls.RegisterWriteCallback(syscalls.NullWriteCallbackAddr())
 		defer syscalls.RegisterWriteCallback(0)
 	}
@@ -315,7 +315,7 @@ func timeGoCPUDirect(elf []byte, useCallback bool) int64 {
 		return elapsed
 	}
 
-	if useCallback {
+	if !realSystemCall {
 		// Null callback doesn't touch fd=1 — no redirection needed.
 		return runGuest()
 	}
