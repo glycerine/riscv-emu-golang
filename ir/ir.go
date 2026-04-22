@@ -220,9 +220,11 @@ const (
 	IRRetDyn    // return {pc=A, status=Imm, faultAddr=B}  — dynamic PC from VReg
 	IRChainExit // chain exit: {targetPC=Imm, exitIdx=Imm2}. WriteBackAll must precede.
 	IRJalrIC    // JALR site inline cache: {targetVReg=A, siteIdx=Imm}. WriteBackAll must precede.
-	IRSyscall   // ECALL fast path. Imm=pc+4 (resume), Imm2=CTab index for dispatcher sym.
-	// Calls the SysV-ABI dispatcher with (xBase, memBase, memMask), writes sret with
-	// Status=RAX (0=jitOK, 1=jitEcall), and returns. Terminator. WriteBackAll must precede.
+	IRSyscall // ECALL inline call. Imm=pc+4 (resume), Imm2=CTab index for dispatcher sym.
+	// Calls the SysV-ABI dispatcher with (xBase, memBase, memMask). Non-terminal:
+	// on success (RAX==0) execution continues at the next IR instruction; on failure
+	// (RAX!=0) the lowerer exits to Go. WriteBackAll must precede; caller should
+	// ReloadSyscallRegs after to pick up the a0/a1 return values.
 
 	// Floating point
 	IRFAdd      // Dst = A + B       (FP, type T)

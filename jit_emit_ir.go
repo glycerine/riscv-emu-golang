@@ -358,7 +358,7 @@ func (e *emitter) lastIRWasTerminator() bool {
 		return false
 	}
 	switch ins[len(ins)-1].Op {
-	case ir.IRRet, ir.IRRetDyn, ir.IRSyscall, ir.IRChainExit, ir.IRJalrIC:
+	case ir.IRRet, ir.IRRetDyn, ir.IRChainExit, ir.IRJalrIC:
 		return true
 	}
 	return false

@@ -256,6 +256,41 @@ func TestWidthToType_Panics(t *testing.T) {
 	widthToType(3)
 }
 
+func TestIRSyscall_MidBlock(t *testing.T) {
+	// IRSyscall should be valid in the middle of a block — it is not a terminator.
+	e := NewEmitter()
+	e.Const(e.XReg(10), 1)
+	e.Syscall(0x1022, 0xDEADBEEF)
+	e.Const(e.XReg(10), 42)
+	e.Ret(0x1030, 0, VRegZero)
+
+	// Block should have 4+ instructions with IRSyscall not last.
+	if len(e.Block.Instrs) < 4 {
+		t.Fatalf("block has %d instrs, want >= 4", len(e.Block.Instrs))
+	}
+
+	// Find IRSyscall — it should NOT be the last instruction.
+	syscallIdx := -1
+	for i, ins := range e.Block.Instrs {
+		if ins.Op == IRSyscall {
+			syscallIdx = i
+			break
+		}
+	}
+	if syscallIdx < 0 {
+		t.Fatal("no IRSyscall found in block")
+	}
+	if syscallIdx == len(e.Block.Instrs)-1 {
+		t.Error("IRSyscall should not be the last instruction — it is non-terminal")
+	}
+
+	// Verify the block ends with IRRet.
+	last := e.Block.Instrs[len(e.Block.Instrs)-1]
+	if last.Op != IRRet {
+		t.Errorf("last instruction is %v, want IRRet", last.Op)
+	}
+}
+
 func TestCSym(t *testing.T) {
 	cs := CSym{Name: "jit_sqrt", Addr: 0x12345678}
 	if cs.Name != "jit_sqrt" {

@@ -2074,3 +2074,22 @@ func testNativeTraceW(t *testing.T, elfPath string, targetBlock int) {
 	}
 	_ = v2dbg
 }
+
+// TestLastIRWasTerminator_SyscallNotTerminal verifies that IRSyscall
+// is no longer treated as a terminator by the emitter.
+func TestLastIRWasTerminator_SyscallNotTerminal(t *testing.T) {
+	e := &emitter{irEm: ir.NewEmitter()}
+
+	// Emit an IRSyscall as the last instruction.
+	e.irEm.Syscall(0x1022, 0xDEAD)
+
+	if e.lastIRWasTerminator() {
+		t.Error("IRSyscall should NOT be a terminator — function-level compilation continues past ECALL")
+	}
+
+	// Verify that actual terminators still report true.
+	e.irEm.Ret(0x1030, 0, ir.VRegZero)
+	if !e.lastIRWasTerminator() {
+		t.Error("IRRet should be a terminator")
+	}
+}
