@@ -247,15 +247,10 @@ func (e *Emitter) ChainExit(targetPC uint64, exitIdx int) {
 	e.emit(IRInstr{Op: IRChainExit, Imm: int64(targetPC), Imm2: int64(exitIdx)})
 }
 
-// Syscall emits an ECALL fast-path dispatch to the SysV-ABI
-// dispatcher at dispatcherAddr (obtained from
-// riscv/internal/syscalls.DispatchAddr()). resumePC is where execution
-// continues (pc+4). The caller must emit WriteBackAll before Syscall
-// so the dispatcher sees fresh guest registers in x[].
-//
-// The emitter always terminates the IR block at Syscall — post-ECALL
-// code lives in a separate AOT block entered via chain exit from
-// lowerSyscall. dirty[] is therefore never mutated here.
+// Syscall emits an ECALL inline call to the SysV-ABI dispatcher at
+// dispatcherAddr. resumePC is where execution continues (pc+4).
+// Non-terminal: the caller should emit WriteBackAll + ClearDirtySyscallRegs
+// before and reload a0/a1 after so they reflect the return values.
 func (e *Emitter) Syscall(resumePC uint64, dispatcherAddr uintptr) {
 	const sym = "syscall_dispatcher"
 	idx := -1

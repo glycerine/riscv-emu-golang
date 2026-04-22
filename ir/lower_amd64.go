@@ -40,6 +40,11 @@ const (
 	amd64Scratch2   int16 = goasm.REG_AMD64_R11
 )
 
+// SretPCOffset is the byte offset within the sret buffer where the
+// dispatch PC is stored. Written by CallAOT's trampoline; read by
+// the function-level dispatch table in the JIT prologue.
+const SretPCOffset = 120
+
 // amd64SretFcsrOffset is the byte offset, relative to RBX (the sret
 // pointer passed by jitcall.Call), where the host-side fcsr pointer is
 // stored. The jitcall trampoline writes it once per Call, so callee
@@ -426,6 +431,36 @@ func (lc *lowerCtx) emitPrologue() {
 	if lc.frameSize > 0 {
 		lc.emitRI(x86.ASUBQ, lc.frameSize, goasm.REG_AMD64_SP)
 	}
+
+	// Dispatch table is now emitted by IRDispatchBarrier in the
+	// instruction stream, after register loads.
+}
+
+// emitDispatchTable emits the PC dispatch CMP/JEQ chain for function
+// re-entry at mid-function PCs. Called when lowering IRDispatchBarrier.
+func (lc *lowerCtx) emitDispatchTable() {
+	if len(lc.blk.DispatchPCs) == 0 {
+		return
+	}
+	lc.emitRM(x86.AMOVQ, amd64RegSret, SretPCOffset, amd64Scratch1)
+
+	for guestPC, label := range lc.blk.DispatchPCs {
+		lc.loadImm64(int64(guestPC), amd64Scratch2)
+		lc.emitRR(x86.ACMPQ, amd64Scratch1, amd64Scratch2)
+		jeq := lc.c.NewProg()
+		jeq.As = x86.AJEQ
+		jeq.To.Type = obj.TYPE_BRANCH
+		lc.c.Append(jeq)
+		lc.pending[label] = append(lc.pending[label], jeq)
+	}
+
+	// Fall-through: no dispatch PC matched. Return to Go for re-dispatch
+	// instead of silently executing from the wrong point in the function.
+	lc.emitMR(x86.AMOVQ, amd64Scratch1, amd64RegSret, 0)  // sret.PC = dispatch PC
+	lc.emitMR(x86.AMOVQ, amd64RegIC, amd64RegSret, 8)     // sret.IC
+	lc.emitMI(x86.AMOVQ, 0, amd64RegSret, 16)             // sret.Status = jitOK
+	lc.emitMI(x86.AMOVQ, 0, amd64RegSret, 24)             // sret.FaultAddr = 0
+	lc.emitEpilogue()
 }
 
 func (lc *lowerCtx) emitEpilogue() {
@@ -457,6 +492,11 @@ func (lc *lowerCtx) emitJmpReg(reg int16) {
 // lowerChainExit emits a chain exit sequence: dealloc spill frame,
 // MOVABS R10 with a sentinel (to be backpatched), JMP R10.
 func (lc *lowerCtx) lowerChainExit(ins *IRInstr) {
+	// Write target guest PC to sret[120] so the target block's
+	// dispatch table routes to the correct label on chained entry.
+	lc.loadImm64(ins.Imm, amd64Scratch2)
+	lc.emitMR(x86.AMOVQ, amd64Scratch2, amd64RegSret, SretPCOffset)
+
 	// Deallocate spill frame.
 	if lc.frameSize > 0 {
 		lc.emitRI(x86.AADDQ, lc.frameSize, goasm.REG_AMD64_SP)
@@ -562,7 +602,9 @@ func (lc *lowerCtx) lowerJalrIC(ins *IRInstr) {
 	jne1.To.Type = obj.TYPE_BRANCH
 	lc.c.Append(jne1)
 
-	// Hit-1 path (fall-through from stage 1): dealloc frame, load fn1, JMP R10.
+	// Hit-1 path (fall-through from stage 1): publish tgt to sret[120]
+	// so the target block's dispatch table routes correctly.
+	lc.emitMR(x86.AMOVQ, amd64Scratch2, amd64RegSret, SretPCOffset)
 	if lc.frameSize > 0 {
 		lc.emitRI(x86.AADDQ, lc.frameSize, goasm.REG_AMD64_SP)
 	}
@@ -573,7 +615,8 @@ func (lc *lowerCtx) lowerJalrIC(ins *IRInstr) {
 	hit0 := lc.emitNOP()
 	jeq0.To.SetTarget(hit0)
 
-	// Hit-0 path: dealloc frame, load fn0, JMP R10.
+	// Hit-0 path: publish tgt to sret[120], dealloc frame, load fn0, JMP R10.
+	lc.emitMR(x86.AMOVQ, amd64Scratch2, amd64RegSret, SretPCOffset)
 	if lc.frameSize > 0 {
 		lc.emitRI(x86.AADDQ, lc.frameSize, goasm.REG_AMD64_SP)
 	}
@@ -686,6 +729,9 @@ func emitDecoderCacheLookup(lc *lowerCtx, tgt int16) {
 	jz.As = x86.AJEQ
 	jz.To.Type = obj.TYPE_BRANCH
 	lc.c.Append(jz)
+
+	// Publish tgt to sret[120] for the target block's dispatch table.
+	lc.emitMR(x86.AMOVQ, tgt, amd64RegSret, SretPCOffset)
 
 	// ADDQ $frameSize, RSP         ; dealloc our spill frame (if any)
 	if lc.frameSize > 0 {
@@ -806,7 +852,8 @@ func (lc *lowerCtx) lowerInstr(ins *IRInstr) error {
 		IRRet, IRRetDyn, IRChainExit, IRJalrIC, IRCall, IRSyscall, // exits/calls
 		IRFAdd, IRFSub, IRFMul, IRFDiv, IRFSqrt, IRFNeg, IRFAbs, IRFCmp, // FP uses FP scratch
 		IRFma, IRFmsub, IRFnmadd, IRFnmsub,                               // FP ternary (FMA family)
-		IRFCvtToI, IRFCvtToU, IRFCvtFromI, IRFCvtFromU, IRFCvtFF: // FP conversions
+		IRFCvtToI, IRFCvtToU, IRFCvtFromI, IRFCvtFromU, IRFCvtFF, // FP conversions
+		IRDispatchBarrier: // uses R10/R11 for dispatch PC comparison
 		lc.invalidateScratchCache()
 	}
 	switch ins.Op {
@@ -986,6 +1033,9 @@ func (lc *lowerCtx) lowerInstr(ins *IRInstr) error {
 	// Pseudo-ops — no code emitted.
 	case IRMarkLive, IRMarkDead, IRWriteback:
 		// no-op
+
+	case IRDispatchBarrier:
+		lc.emitDispatchTable()
 
 	default:
 		return fmt.Errorf("ir.LowerAMD64: unhandled op %v at index %d", ins.Op, lc.idx)
@@ -1994,24 +2044,39 @@ func (lc *lowerCtx) lowerCall(ins *IRInstr) {
 	}
 }
 
-// lowerSyscall lowers IRSyscall — the ECALL fast path.
+// lowerSyscall lowers IRSyscall — non-terminal inline ECALL.
 //
-// Imm  = pc+4 (where to resume after the syscall)
+// Imm  = pc+4 (resume PC, used only on the fallback exit path)
 // Imm2 = CTab index for the dispatcher symbol (Addr = SysV-ABI entry)
 //
 // The emitter is required to have emitted WriteBack for all dirty
 // VRegs beforehand so the dispatcher sees fresh values in x[]. The
 // dispatcher may overwrite x[10] (a0 = return value / -errno).
 //
-// Emits: set up SysV args from pinned regs, CALL dispatcher, write
-// sret with Status = RAX, emit epilogue. Terminator.
+// Non-terminal: on success (RAX==0) execution continues at the next
+// IR instruction. On failure (RAX!=0, unhandled syscall) exits to Go
+// via sret + RET. Live caller-saved host registers are saved/restored
+// around the CALL so subsequent IR instructions see correct values.
 func (lc *lowerCtx) lowerSyscall(ins *IRInstr) {
 	if int(ins.Imm2) < 0 || int(ins.Imm2) >= len(lc.blk.CTab) {
 		return
 	}
 	sym := lc.blk.CTab[ins.Imm2]
 
-	// Move pinned-callee-saved JIT context to SysV caller-saved arg regs.
+	// ── Save live caller-saved host registers ──
+	liveInt, liveFP := lc.liveCallerSaved()
+	saveSize := int64(len(liveInt)+len(liveFP)) * 8
+	if saveSize > 0 {
+		lc.emitRI(x86.ASUBQ, saveSize, goasm.REG_AMD64_SP)
+	}
+	for i, r := range liveInt {
+		lc.emitMR(x86.AMOVQ, r, goasm.REG_AMD64_SP, int64(i)*8)
+	}
+	for i, r := range liveFP {
+		lc.emitMR(x86.AMOVSD, r, goasm.REG_AMD64_SP, int64(len(liveInt)+i)*8)
+	}
+
+	// ── Set up SysV args from pinned callee-saved regs ──
 	//   RDI = xBase (R12)
 	//   RSI = memBase (R14)
 	//   RDX = memMask (R15)
@@ -2019,7 +2084,7 @@ func (lc *lowerCtx) lowerSyscall(ins *IRInstr) {
 	lc.emitRR(x86.AMOVQ, amd64RegMemBase, goasm.REG_AMD64_SI)
 	lc.emitRR(x86.AMOVQ, amd64RegMemMask, goasm.REG_AMD64_DX)
 
-	// MOVABS $dispatcher, scratch; CALL scratch.
+	// ── CALL dispatcher ──
 	lc.loadImm64(int64(sym.Addr), amd64Scratch1)
 	callProg := lc.c.NewProg()
 	callProg.As = obj.ACALL
@@ -2027,57 +2092,62 @@ func (lc *lowerCtx) lowerSyscall(ins *IRInstr) {
 	callProg.To.Reg = amd64Scratch1
 	lc.c.Append(callProg)
 
-	// Inline fast path (Option D): when InlineSyscall is on, check the
-	// dispatcher's return (0=handled, nonzero=fallback). On 0, chain-
-	// exit to the post-ECALL block. On nonzero, fall through into the
-	// cold-path sret+RET below (today's behavior).
-	//
-	//   TESTQ RAX, RAX
-	//   JNE   L_cold
-	//   <dealloc frame>
-	//   MOVABS R10, <sentinel>   ; patched to post-ECALL chainEntry
-	//   JMP    R10
-	// L_cold:
-	//   ... existing sret write + emitEpilogue ...
-	if InlineSyscall {
-		lc.emitRR(x86.ATESTQ, goasm.REG_AMD64_AX, goasm.REG_AMD64_AX)
+	// ── Check result: RAX==0 means handled, RAX!=0 means fallback ──
+	lc.emitRR(x86.ATESTQ, goasm.REG_AMD64_AX, goasm.REG_AMD64_AX)
 
-		jneCold := lc.c.NewProg()
-		jneCold.As = x86.AJNE
-		jneCold.To.Type = obj.TYPE_BRANCH
-		lc.c.Append(jneCold)
+	jneFallback := lc.c.NewProg()
+	jneFallback.As = x86.AJNE
+	jneFallback.To.Type = obj.TYPE_BRANCH
+	lc.c.Append(jneFallback)
 
-		// Hot path: dealloc spill frame, MOVABS sentinel, JMP R10.
-		// Mirrors lowerChainExit; registers a chainExitInfo so finalize
-		// emits the slow-exit stub and backpatching resolves the target.
-		if lc.frameSize > 0 {
-			lc.emitRI(x86.AADDQ, lc.frameSize, goasm.REG_AMD64_SP)
-		}
-		const sentinel = int64(0x7BADC0DE7BADC0DE)
-		movProg := lc.emitMovabsSentinel(sentinel)
-		lc.chainExits = append(lc.chainExits, chainExitInfo{
-			targetPC: uint64(ins.Imm),
-			movProg:  movProg,
-		})
-		lc.emitJmpReg(amd64Scratch1)
-
-		// L_cold label. Control reaches here only via the JNE taken branch.
-		coldLabel := lc.emitNOP()
-		jneCold.To.SetTarget(coldLabel)
+	// ── Hot path (RAX==0): restore saved regs, fall through ──
+	for i, r := range liveInt {
+		lc.emitRM(x86.AMOVQ, goasm.REG_AMD64_SP, int64(i)*8, r)
+	}
+	for i, r := range liveFP {
+		lc.emitRM(x86.AMOVSD, goasm.REG_AMD64_SP, int64(len(liveInt)+i)*8, r)
+	}
+	if saveSize > 0 {
+		lc.emitRI(x86.AADDQ, saveSize, goasm.REG_AMD64_SP)
 	}
 
-	// Cold path (the only path when !InlineSyscall):
-	//   [RBX+ 0] = pc+4 (Imm)
-	//   [RBX+ 8] = ic  (RBP)
-	//   [RBX+16] = status (RAX — dispatcher's return: 0=jitOK or 1=jitEcall)
-	//   [RBX+24] = 0
+	// Jump over the fallback path to the next IR instruction.
+	jmpContinue := lc.c.NewProg()
+	jmpContinue.As = obj.AJMP
+	jmpContinue.To.Type = obj.TYPE_BRANCH
+	lc.c.Append(jmpContinue)
+
+	// ── Cold path (RAX!=0): restore, write sret, exit to Go ──
+	// RAX holds the dispatcher's non-zero return. We must write sret
+	// BEFORE restoring saved regs, because the restore clobbers RAX
+	// with whatever VReg was allocated there pre-CALL. However, a
+	// non-zero return always means jitEcall (=1), so use the constant.
+	fallbackLabel := lc.emitNOP()
+	jneFallback.To.SetTarget(fallbackLabel)
+
+	// Restore saved regs.
+	for i, r := range liveInt {
+		lc.emitRM(x86.AMOVQ, goasm.REG_AMD64_SP, int64(i)*8, r)
+	}
+	for i, r := range liveFP {
+		lc.emitRM(x86.AMOVSD, goasm.REG_AMD64_SP, int64(len(liveInt)+i)*8, r)
+	}
+	if saveSize > 0 {
+		lc.emitRI(x86.AADDQ, saveSize, goasm.REG_AMD64_SP)
+	}
+
+	// sret: {pc=resumePC, ic=RBP, status=jitEcall(1), faultAddr=0}
 	lc.loadImm64(ins.Imm, amd64Scratch1)
 	lc.emitMR(x86.AMOVQ, amd64Scratch1, amd64RegSret, 0)
 	lc.emitMR(x86.AMOVQ, amd64RegIC, amd64RegSret, 8)
-	lc.emitMR(x86.AMOVQ, goasm.REG_AMD64_AX, amd64RegSret, 16)
+	lc.emitMI(x86.AMOVQ, 1, amd64RegSret, 16) // jitEcall = 1
 	lc.emitMI(x86.AMOVQ, 0, amd64RegSret, 24)
 
 	lc.emitEpilogue()
+
+	// ── Continue label: hot path lands here ──
+	continueLabel := lc.emitNOP()
+	jmpContinue.To.SetTarget(continueLabel)
 }
 
 // liveCallerSaved returns the caller-saved registers that hold live VRegs

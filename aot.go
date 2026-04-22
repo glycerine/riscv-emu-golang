@@ -124,3 +124,98 @@ func enumerateBlockRanges(mem *GuestMemory, textBase, textSize uint64) []blockRa
 	}
 	return ranges
 }
+
+// enumerateFunctionRanges returns function-level ranges for the text
+// section. When elfData is non-nil, STT_FUNC symbols split the region
+// into per-function ranges. Without symbols (elfData==nil or no
+// STT_FUNC entries), the entire text section is one range.
+func enumerateFunctionRanges(mem *GuestMemory, textBase, textSize uint64, elfData []byte) []blockRange {
+	if textSize == 0 {
+		return nil
+	}
+	textEnd := textBase + textSize
+
+	if elfData != nil {
+		funcs := FindFunctions(elfData)
+		// Filter to functions within [textBase, textEnd).
+		var ranges []blockRange
+		for _, f := range funcs {
+			start := f.Addr
+			end := f.Addr + f.Size
+			if start >= textEnd || end <= textBase {
+				continue
+			}
+			if start < textBase {
+				start = textBase
+			}
+			if end > textEnd {
+				end = textEnd
+			}
+			ranges = append(ranges, blockRange{startPC: start, endPC: end})
+		}
+		if len(ranges) > 0 {
+			// Cover any gaps between functions with their own ranges
+			// so the full text section is covered.
+			var covered []blockRange
+			cur := textBase
+			for _, r := range ranges {
+				if r.startPC > cur {
+					covered = append(covered, blockRange{startPC: cur, endPC: r.startPC})
+				}
+				covered = append(covered, r)
+				if r.endPC > cur {
+					cur = r.endPC
+				}
+			}
+			if cur < textEnd {
+				covered = append(covered, blockRange{startPC: cur, endPC: textEnd})
+			}
+			return covered
+		}
+	}
+
+	// Fallback: entire text section as one function.
+	return []blockRange{{startPC: textBase, endPC: textEnd}}
+}
+
+// collectInternalTargets scans [startPC, endPC) and returns:
+//   - targets: all intra-function branch/jump destinations
+//   - ecallConts: PC+4 for each ECALL (the continuation PC after the syscall)
+//
+// Used by the emitter to pre-create IR labels for branch targets and
+// ECALL continuation points within a function.
+func collectInternalTargets(mem *GuestMemory, startPC, endPC uint64) (
+	targets map[uint64]struct{},
+	ecallConts []uint64,
+) {
+	targets = make(map[uint64]struct{})
+
+	pc := startPC
+	for pc < endPC {
+		fc, target, insnSize := classifyFlow(mem, pc)
+		if insnSize == 0 {
+			pc += 2
+			continue
+		}
+		switch fc {
+		case flowBranch, flowJump:
+			if target >= startPC && target < endPC {
+				targets[target] = struct{}{}
+			}
+		case flowTerm:
+			// Check if this is an ECALL (not EBREAK/CSR/JALR/JAL).
+			half, _ := mem.Fetch16(pc)
+			if half&0x3 == 0x3 { // 32-bit instruction
+				insn, f := mem.Fetch32(pc)
+				if f != nil {
+					insn, _ = mem.Fetch32U(pc) // misaligned fallback
+				}
+				if insn == 0x00000073 { // ECALL
+					ecallConts = append(ecallConts, pc+4)
+				}
+			}
+		}
+		pc += insnSize
+	}
+	return targets, ecallConts
+}

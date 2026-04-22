@@ -12,7 +12,9 @@ import (
 
 func jitcallCall(fn uintptr, x *[32]uint64, f *[32]uint64, fcsr *uint32,
 	memBase uintptr, memMask uint64) jitcall.Result {
-	return jitcall.Call(fn, x, f, fcsr, memBase, memMask)
+	return jitcall.CallAOT(fn, x, f, fcsr, memBase, memMask,
+		0, 0, 0, 0,
+		0x1000)
 }
 
 // ── scanUsedRegs unit tests ────────────────────────────────────────────
@@ -2073,4 +2075,194 @@ func testNativeTraceW(t *testing.T, elfPath string, targetBlock int) {
 		}
 	}
 	_ = v2dbg
+}
+
+// TestEmitEcallNonTerminal verifies that the emitter continues past
+// ECALL when a dispatcher is available. The emitted IR should contain
+// IRSyscall followed by reload instructions and then the post-ECALL
+// guest instructions.
+func TestEmitEcallNonTerminal(t *testing.T) {
+	mem, err := NewGuestMemory(Size64MB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mem.Free()
+
+	pc := uint64(0x1000)
+	// Guest program:
+	//   0x1000: LI a7, 64        (ADDI x17, x0, 64) — set syscall number
+	//   0x1004: LI a0, 1         (ADDI x10, x0, 1)  — fd = stdout
+	//   0x1008: ECALL
+	//   0x100c: ADDI x5, x0, 99  — post-ECALL instruction
+	//   0x1010: ECALL            — final ECALL (termination)
+	mem.Store32(pc+0, ienc(opOPIMM, 0, 17, 0, 64))  // LI a7, 64
+	mem.Store32(pc+4, ienc(opOPIMM, 0, 10, 0, 1))   // LI a0, 1
+	mem.Store32(pc+8, instrECALL)                     // ECALL
+	mem.Store32(pc+12, ienc(opOPIMM, 0, 5, 0, 99))  // ADDI x5, x0, 99
+	mem.Store32(pc+16, instrECALL)                    // ECALL
+
+	res := emitBlockRange(mem, pc, pc+20)
+	if res == nil {
+		t.Fatal("emitBlockRange returned nil")
+	}
+
+	// The emitted range should cover past the first ECALL.
+	// With non-terminal ECALL, endPC should be > pc+12 (past first ECALL).
+	if res.endPC <= pc+12 {
+		t.Errorf("endPC = 0x%x, want > 0x%x (emission should continue past first ECALL)",
+			res.endPC, pc+12)
+	}
+
+	// Count IRSyscall instructions — should be at least 1 (possibly 2).
+	syscallCount := 0
+	for _, ins := range res.block.Instrs {
+		if ins.Op == ir.IRSyscall {
+			syscallCount++
+		}
+	}
+	if syscallCount == 0 {
+		t.Error("no IRSyscall found — ECALL should emit IRSyscall")
+	}
+
+	// There should be IR instructions after the first IRSyscall
+	// (the reload of a0/a1 and the ADDI x5, x0, 99).
+	firstSyscall := -1
+	for i, ins := range res.block.Instrs {
+		if ins.Op == ir.IRSyscall {
+			firstSyscall = i
+			break
+		}
+	}
+	if firstSyscall >= 0 {
+		remaining := len(res.block.Instrs) - firstSyscall - 1
+		if remaining < 3 {
+			t.Errorf("only %d IR ops after first IRSyscall, want >= 3 "+
+				"(reload a0, reload a1, ADDI x5)", remaining)
+		}
+	}
+
+	t.Logf("emitBlockRange: %d guest insns, endPC=0x%x, %d IR ops, %d syscalls",
+		res.numInsns, res.endPC, len(res.block.Instrs), syscallCount)
+}
+
+// TestLastIRWasTerminator_SyscallNotTerminal verifies that IRSyscall
+// is no longer treated as a terminator by the emitter.
+func TestLastIRWasTerminator_SyscallNotTerminal(t *testing.T) {
+	e := &emitter{irEm: ir.NewEmitter()}
+
+	// Emit an IRSyscall as the last instruction.
+	e.irEm.Syscall(0x1022, 0xDEAD)
+
+	if e.lastIRWasTerminator() {
+		t.Error("IRSyscall should NOT be a terminator — function-level compilation continues past ECALL")
+	}
+
+	// Verify that actual terminators still report true.
+	e.irEm.Ret(0x1030, 0, ir.VRegZero)
+	if !e.lastIRWasTerminator() {
+		t.Error("IRRet should be a terminator")
+	}
+}
+
+// TestLazyJIT_FunctionLevel verifies that the lazy JIT path
+// (emitBlock) produces a function-level result spanning past ECALL,
+// not stopping at the first terminator like scanRegion did.
+func TestLazyJIT_FunctionLevel(t *testing.T) {
+	mem, err := NewGuestMemory(Size64MB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mem.Free()
+
+	pc := uint64(0x1000)
+	// Guest program (same as TestEmitEcallNonTerminal):
+	//   0x1000: LI a7, 64        — set syscall number
+	//   0x1004: LI a0, 1         — fd = stdout
+	//   0x1008: ECALL
+	//   0x100c: ADDI x5, x0, 99  — post-ECALL instruction
+	//   0x1010: EBREAK           — terminator
+	mem.Store32(pc+0, ienc(opOPIMM, 0, 17, 0, 64))
+	mem.Store32(pc+4, ienc(opOPIMM, 0, 10, 0, 1))
+	mem.Store32(pc+8, instrECALL)
+	mem.Store32(pc+12, ienc(opOPIMM, 0, 5, 0, 99))
+	mem.Store32(pc+16, instrEBREAK)
+
+	// Register exec region so emitBlock can find function extent.
+	mem.AddExecRegion(pc, pc+20, false)
+
+	res := emitBlock(mem, pc)
+	if res == nil {
+		t.Fatal("emitBlock returned nil")
+	}
+
+	// Should span past the ECALL — endPC should be > 0x100c.
+	if res.endPC <= pc+12 {
+		t.Errorf("emitBlock endPC = 0x%x, want > 0x%x (should continue past ECALL)",
+			res.endPC, pc+12)
+	}
+
+	// Should have at least 4 guest instructions (LI, LI, ECALL, ADDI).
+	if res.numInsns < 4 {
+		t.Errorf("emitBlock numInsns = %d, want >= 4", res.numInsns)
+	}
+
+	t.Logf("lazy JIT: %d guest insns, endPC=0x%x, %d IR ops",
+		res.numInsns, res.endPC, len(res.block.Instrs))
+}
+
+// TestEmit_BoundaryEcall_TerminalReturn verifies that when ECALL is
+// the last instruction in a function-level block (continuation PC =
+// endPC), the fall-through emits IRRet (terminal return to Go), NOT
+// IRChainExit (which could be pre-patched to the same block's
+// chainEntry, creating an infinite native loop).
+func TestEmit_BoundaryEcall_TerminalReturn(t *testing.T) {
+	if !DirectSyscallEnabled() {
+		t.Skip("direct syscall not enabled — boundary ECALL takes legacy path")
+	}
+
+	mem, err := NewGuestMemory(Size64MB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mem.Free()
+
+	// Function: 5 instructions, ECALL is the last.
+	//   addi x17, x0, 64  — a7 = SYS_write
+	//   addi x10, x0, 1   — a0 = stdout
+	//   lui  x11, 2        — a1 = 0x2000
+	//   addi x12, x0, 5   — a2 = 5
+	//   ecall
+	mem.Store32(0x1000, 0x04000893) // addi x17, x0, 64
+	mem.Store32(0x1004, 0x00100513) // addi x10, x0, 1
+	mem.Store32(0x1008, 0x000025B7) // lui  x11, 2
+	mem.Store32(0x100C, 0x00500613) // addi x12, x0, 5
+	mem.Store32(0x1010, 0x00000073) // ecall
+
+	res := emitBlockLinear(mem, 0x1000, 0x1014)
+	if res == nil {
+		t.Fatal("emitBlockLinear returned nil")
+	}
+
+	endPC := uint64(0x1014)
+
+	for _, ins := range res.block.Instrs {
+		if ins.Op == ir.IRChainExit && uint64(ins.Imm) == endPC {
+			t.Fatalf("found IRChainExit targeting endPC 0x%x — "+
+				"boundary ECALL hot path would chain instead of terminal-returning", endPC)
+		}
+	}
+
+	foundRet := false
+	for _, ins := range res.block.Instrs {
+		if ins.Op == ir.IRRet && ins.Imm == int64(endPC) && ins.Imm2 == 0 {
+			foundRet = true
+			break
+		}
+	}
+	if !foundRet {
+		t.Fatalf("no IRRet(pc=0x%x, status=jitOK) found — "+
+			"boundary ECALL hot path has no terminal return", endPC)
+	}
+
+	t.Logf("boundary ECALL at 0x1010: fall-through correctly emits IRRet to 0x%x", endPC)
 }

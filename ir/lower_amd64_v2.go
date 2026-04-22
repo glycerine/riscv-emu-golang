@@ -574,7 +574,7 @@ func (lc *lowerCtxV2) lowerInstr(ins *IRInstr) error {
 		lc.v2FCvtFF(ins)
 
 	// Pseudo-ops
-	case IRMarkLive, IRMarkDead, IRWriteback:
+	case IRMarkLive, IRMarkDead, IRWriteback, IRDispatchBarrier:
 		// no-op
 
 	default:

@@ -89,7 +89,7 @@ func (j *JIT) jitCompileWith(res *emitResult, useV2 bool) (*compiledBlock, error
 
 	// VizJit dump (no-op when disabled).
 	if vizProgs != "" {
-		vizJitDump(res.startPC, res.endPC, nil, res.block, vizProgs,
+		vizJitDump(res.startPC, res.endPC, res.mem, res.block, vizProgs,
 			len(code), uintptr(unsafe.Pointer(&execMem[0])))
 	}
 

@@ -37,10 +37,10 @@ type chainPatchInfo struct {
 // check still runs — sites cache whatever they last held — but the
 // self-modifying-code (SMC) stalls caused by repeated patching stop.
 type jalrICPatchInfo struct {
-	siteIdx     int
-	pcPatchOff  [2]int // byte offsets of cache_pc[0], cache_pc[1]
-	fnPatchOff  [2]int // byte offsets of cache_fn[0], cache_fn[1]
-	missStreak  uint32 // total patch attempts for this site
+	siteIdx    int
+	pcPatchOff [2]int // byte offsets of cache_pc[0], cache_pc[1]
+	fnPatchOff [2]int // byte offsets of cache_fn[0], cache_fn[1]
+	missStreak uint32 // total patch attempts for this site
 }
 
 // jalrICDeoptThreshold is the number of miss-patches a JALR IC site
@@ -281,7 +281,7 @@ func (j *JIT) InstallAOT(mem *GuestMemory, elfBytes []byte) error {
 		begin := load.VAddr
 		end := load.VAddr + load.MemSz
 		mem.AddExecRegion(begin, end, load.Writable)
-		j.compileAOTRegion(mem, begin, end, load.MemSz, load.Writable)
+		j.compileAOTRegion(mem, begin, end, load.MemSz, load.Writable, elfBytes)
 	}
 	j.refreshSoleSegment()
 	return nil
@@ -305,18 +305,18 @@ func (j *JIT) InstallAOTFromMem(mem *GuestMemory) error {
 			continue
 		}
 		size := r.VAddrEnd - r.VAddrBegin
-		j.compileAOTRegion(mem, r.VAddrBegin, r.VAddrEnd, size, r.IsLikelyJIT)
+		j.compileAOTRegion(mem, r.VAddrBegin, r.VAddrEnd, size, r.IsLikelyJIT, mem.elfData)
 	}
 	j.refreshSoleSegment()
 	return nil
 }
 
 // compileAOTRegion is the shared body of InstallAOT and
-// InstallAOTFromMem: enumerate blocks in [begin, end), compile them as
-// one segment, and record it. Silently skips on failure so other
-// regions still install.
-func (j *JIT) compileAOTRegion(mem *GuestMemory, begin, end, size uint64, writable bool) {
-	ranges := enumerateBlockRanges(mem, begin, size)
+// InstallAOTFromMem: enumerate function ranges in [begin, end),
+// compile them as one segment, and record it. Silently skips on
+// failure so other regions still install.
+func (j *JIT) compileAOTRegion(mem *GuestMemory, begin, end, size uint64, writable bool, elfData []byte) {
+	ranges := enumerateFunctionRanges(mem, begin, size, elfData)
 	seg, err := j.jitCompileAOTSegment(mem, ranges, begin, end)
 	if err != nil {
 		return
@@ -537,8 +537,10 @@ func (j *JIT) StepBlock(cpu *CPU) (ic uint64, err error) {
 			return j.stepBlockDebugV1V2(cpu, pc, blk)
 		}
 
-		res := jitcall.Call(blk.fn, &cpu.x, &cpu.f, &cpu.fcsr,
-			cpu.mem.Base(), cpu.mem.Mask())
+		res := jitcall.CallAOT(blk.fn, &cpu.x, &cpu.f, &cpu.fcsr,
+			cpu.mem.Base(), cpu.mem.Mask(),
+			0, 0, 0, 0,
+			pc)
 		if j.trace {
 			fmt.Fprintf(os.Stderr, "JIT pc=0x%x -> PC=0x%x IC=%d status=%d\n",
 				pc, res.PC, res.IC, res.Status)
@@ -608,8 +610,10 @@ func (j *JIT) StepBlock(cpu *CPU) (ic uint64, err error) {
 func (j *JIT) stepBlockDebugV1V2(cpu *CPU, pc uint64, blk *compiledBlock) (uint64, error) {
 	if blk.shadow == nil {
 		// No V2 shadow — run V1 only (V2 compilation may have failed).
-		res := jitcall.Call(blk.fn, &cpu.x, &cpu.f, &cpu.fcsr,
-			cpu.mem.Base(), cpu.mem.Mask())
+		res := jitcall.CallAOT(blk.fn, &cpu.x, &cpu.f, &cpu.fcsr,
+			cpu.mem.Base(), cpu.mem.Mask(),
+			0, 0, 0, 0,
+			pc)
 		cpu.pc = res.PC
 		cpu.cycle += res.IC
 		return j.stepBlockResult(cpu, res)
@@ -627,11 +631,15 @@ func (j *JIT) stepBlockDebugV1V2(cpu *CPU, pc uint64, blk *compiledBlock) (uint6
 	fcsr2 = cpu.fcsr
 
 	// Run V1.
-	r1 := jitcall.Call(blk.fn, &x1, &f1, &fcsr1,
-		cpu.mem.Base(), cpu.mem.Mask())
+	r1 := jitcall.CallAOT(blk.fn, &x1, &f1, &fcsr1,
+		cpu.mem.Base(), cpu.mem.Mask(),
+		0, 0, 0, 0,
+		pc)
 	// Run V2.
-	r2 := jitcall.Call(blk.shadow.fn, &x2, &f2, &fcsr2,
-		cpu.mem.Base(), cpu.mem.Mask())
+	r2 := jitcall.CallAOT(blk.shadow.fn, &x2, &f2, &fcsr2,
+		cpu.mem.Base(), cpu.mem.Mask(),
+		0, 0, 0, 0,
+		pc)
 
 	// Compare. jitOKJalrMiss (V1 JALR IC miss) is semantically equivalent
 	// to jitOK for V2, which doesn't implement the IC — normalize before
@@ -719,6 +727,7 @@ func (j *JIT) RunJIT(cpu *CPU) error {
 		}
 
 		pc := cpu.pc
+		//vv("RunJIT: dispatch pc=0x%x", pc)
 
 		blk := j.lookupBlock(pc)
 		if blk != nil {
@@ -727,10 +736,13 @@ func (j *JIT) RunJIT(cpu *CPU) error {
 				// Fast path: single segment. Publish its decoder_cache
 				// params directly — no findSegment, no blk.segment deref,
 				// no null-chain.
+				//vv("about to jitcall.CallAOT() at blk.fn = 0x%x; chainEntry = 0x%x", blk.fn, blk.chainEntry)
 				res = jitcall.CallAOT(blk.fn, &cpu.x, &cpu.f, &cpu.fcsr,
 					cpu.mem.Base(), cpu.mem.Mask(),
 					seg.decoderCacheBase, seg.decoderCacheMask,
-					seg.vaddrBegin, seg.vaddrSize)
+					seg.vaddrBegin, seg.vaddrSize,
+					pc)
+				//vv("back from jitcall.CallAOT() with res = '%#v'", res)
 			} else if len(j.aotSegments) > 0 {
 				// Multi-segment path. Publish the containing segment's
 				// decoder_cache params to the sret extension. Lazy blocks
@@ -748,17 +760,27 @@ func (j *JIT) RunJIT(cpu *CPU) error {
 				res = jitcall.CallAOT(blk.fn, &cpu.x, &cpu.f, &cpu.fcsr,
 					cpu.mem.Base(), cpu.mem.Mask(),
 					seg.decoderCacheBase, seg.decoderCacheMask,
-					seg.vaddrBegin, seg.vaddrSize)
+					seg.vaddrBegin, seg.vaddrSize,
+					pc)
 			} else {
-				res = jitcall.Call(blk.fn, &cpu.x, &cpu.f, &cpu.fcsr,
-					cpu.mem.Base(), cpu.mem.Mask())
+				res = jitcall.CallAOT(blk.fn, &cpu.x, &cpu.f, &cpu.fcsr,
+					cpu.mem.Base(), cpu.mem.Mask(),
+					0, 0, 0, 0,
+					pc)
 			}
 			cpu.pc = res.PC
 			cpu.cycle += res.IC
+			//vv("RunJIT: returned pc=0x%x ic=%d status=%d", res.PC, res.IC, res.Status)
 
 			switch int(res.Status) {
 			case jitOK:
 				j.DispatchOK++
+				if res.IC == 0 {
+					// Bail label hit — block had no code for this PC.
+					// Fall through to compilation/interpreter.
+					//vv("bail label hit - block had no code for this PC.")
+					break
+				}
 				// Patch this block's chain exit to jump directly to the target.
 				// When a chain exit isn't patched, the slow stub returns here.
 				// After patching, future executions jump directly — bypassing Go.

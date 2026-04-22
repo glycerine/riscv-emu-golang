@@ -1042,3 +1042,148 @@ func TestAOT_SegmentRefcount_RetainPreventsFree(t *testing.T) {
 		t.Error("decoderCacheMmap not freed at refcount=0")
 	}
 }
+
+// TestEnumerateFunctionRanges_Hello verifies that the hello ELF
+// (0x1000..0x1030) produces a single function range covering the
+// entire text section — not 3 blocks as enumerateBlockRanges did.
+func TestEnumerateFunctionRanges_Hello(t *testing.T) {
+	data, err := os.ReadFile("bench/hello_guest/hello_gocpu.elf")
+	if err != nil {
+		t.Skipf("hello ELF not found: %v", err)
+	}
+
+	mem, err := NewGuestMemory(Size64MB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mem.Free()
+
+	if _, lerr := LoadELFBytes(mem, data); lerr != nil {
+		t.Fatalf("LoadELFBytes: %v", lerr)
+	}
+
+	textBase, textSize, ok := FindTextSection(data)
+	if !ok {
+		t.Fatal("FindTextSection: not found")
+	}
+
+	ranges := enumerateFunctionRanges(mem, textBase, textSize, data)
+	if len(ranges) == 0 {
+		t.Fatal("enumerateFunctionRanges returned no ranges")
+	}
+
+	// The hello program is one function — expect 1 range.
+	if len(ranges) != 1 {
+		t.Errorf("got %d function ranges, want 1; ranges:", len(ranges))
+		for i, r := range ranges {
+			t.Logf("  [%d] 0x%x..0x%x", i, r.startPC, r.endPC)
+		}
+	}
+
+	// Range should cover the full text section.
+	if ranges[0].startPC != textBase {
+		t.Errorf("startPC = 0x%x, want 0x%x", ranges[0].startPC, textBase)
+	}
+	last := ranges[len(ranges)-1]
+	if last.endPC != textBase+textSize {
+		t.Errorf("endPC = 0x%x, want 0x%x", last.endPC, textBase+textSize)
+	}
+
+	t.Logf("hello: %d function range(s) over %d bytes of .text", len(ranges), textSize)
+}
+
+// TestAOT_FunctionLevel_Hello verifies that the hello ELF compiles as
+// a single AOT block (one function) rather than multiple blocks.
+func TestAOT_FunctionLevel_Hello(t *testing.T) {
+	data, err := os.ReadFile("bench/hello_guest/hello_gocpu.elf")
+	if err != nil {
+		t.Skipf("hello ELF not found: %v", err)
+	}
+
+	mem, err := NewGuestMemory(Size64MB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mem.Free()
+
+	if _, lerr := LoadELFBytes(mem, data); lerr != nil {
+		t.Fatalf("LoadELFBytes: %v", lerr)
+	}
+
+	textBase, textSize, ok := FindTextSection(data)
+	if !ok {
+		t.Fatal("FindTextSection: not found")
+	}
+
+	j := NewJIT()
+	defer j.Close()
+
+	ranges := enumerateFunctionRanges(mem, textBase, textSize, data)
+	seg, err := j.jitCompileAOTSegment(mem, ranges, textBase, textBase+textSize)
+	if err != nil {
+		t.Fatalf("jitCompileAOTSegment: %v", err)
+	}
+
+	// All block map entries should point to the same compiledBlock
+	// (one function, multiple re-entry PCs).
+	if _, ok := seg.blocks[textBase]; !ok {
+		t.Errorf("no compiled block at textBase 0x%x", textBase)
+	}
+	var theBlock *compiledBlock
+	for pc, blk := range seg.blocks {
+		if theBlock == nil {
+			theBlock = blk
+		} else if blk != theBlock {
+			t.Errorf("block at 0x%x is a different compiledBlock (expected all same)", pc)
+		}
+	}
+
+	t.Logf("hello AOT: %d block map entries, 1 compiled function, %d bytes native code",
+		len(seg.blocks), seg.nativeCodeSize)
+}
+
+// TestCollectInternalTargets_Hello verifies that collectInternalTargets
+// finds the backward branch target (0x101c from c.bnez) and ECALL
+// continuation PCs for the hello program.
+func TestCollectInternalTargets_Hello(t *testing.T) {
+	data, err := os.ReadFile("bench/hello_guest/hello_gocpu.elf")
+	if err != nil {
+		t.Skipf("hello ELF not found: %v", err)
+	}
+
+	mem, err := NewGuestMemory(Size64MB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mem.Free()
+
+	if _, lerr := LoadELFBytes(mem, data); lerr != nil {
+		t.Fatalf("LoadELFBytes: %v", lerr)
+	}
+
+	textBase, textSize, ok := FindTextSection(data)
+	if !ok {
+		t.Fatal("FindTextSection: not found")
+	}
+
+	targets, ecallConts := collectInternalTargets(mem, textBase, textBase+textSize)
+
+	// The hello program has c.bnez a3, -8 at 0x1024 targeting 0x101c.
+	if _, ok := targets[0x101c]; !ok {
+		t.Error("expected branch target 0x101c (from c.bnez at 0x1024)")
+	}
+
+	// Two ECALLs at 0x101e and 0x102c → continuations at 0x1022 and 0x1030.
+	foundCont := make(map[uint64]bool)
+	for _, pc := range ecallConts {
+		foundCont[pc] = true
+	}
+	if !foundCont[0x1022] {
+		t.Error("expected ECALL continuation at 0x1022 (after ECALL at 0x101e)")
+	}
+	if !foundCont[0x1030] {
+		t.Error("expected ECALL continuation at 0x1030 (after ECALL at 0x102c)")
+	}
+
+	t.Logf("hello: %d branch targets, %d ECALL continuations", len(targets), len(ecallConts))
+}

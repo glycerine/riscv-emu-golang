@@ -56,7 +56,8 @@ func execBlock(t *testing.T, b *Block, x *[32]uint64, v2 bool) jitcall.Result {
 	copy(mem, code)
 	var f [32]uint64
 	var fcsr uint32
-	return jitcall.Call(uintptr(unsafe.Pointer(&mem[0])), x, &f, &fcsr, 0, 0)
+	return jitcall.CallAOT(uintptr(unsafe.Pointer(&mem[0])), x, &f, &fcsr, 0, 0,
+		0, 0, 0, 0, 0)
 }
 
 // ── Single-instruction exhaustive tests ──

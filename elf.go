@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 )
 
 // ELF64 constants we care about.
@@ -96,6 +97,7 @@ func LoadELF(mem *GuestMemory, path string) (entry uint64, err error) {
 
 // LoadELFBytes loads an ELF64 RISC-V executable from an in-memory byte slice.
 func LoadELFBytes(mem *GuestMemory, data []byte) (entry uint64, err error) {
+	mem.elfData = data
 	return loadELFReader(mem, &byteReader{data: data})
 }
 
@@ -306,6 +308,74 @@ func FindSymbolAddr(data []byte, name string) (uint64, bool) {
 		}
 	}
 	return 0, false
+}
+
+// FuncInfo describes one STT_FUNC symbol from the ELF symbol table.
+type FuncInfo struct {
+	Addr uint64
+	Size uint64
+}
+
+// FindFunctions returns all STT_FUNC symbols from the ELF, sorted by
+// address. Used by enumerateFunctionRanges to split the text section
+// into per-function compilation units.
+func FindFunctions(data []byte) []FuncInfo {
+	le := binary.LittleEndian
+
+	if len(data) < 64 || string(data[:4]) != elfMagic || data[4] != elfClass64 {
+		return nil
+	}
+
+	shOff := le.Uint64(data[40:])
+	shEntSize := le.Uint16(data[58:])
+	shNum := le.Uint16(data[60:])
+	if shOff == 0 || shNum == 0 || shEntSize < 64 {
+		return nil
+	}
+
+	var symtab elf64Shdr
+	found := false
+	for i := 0; i < int(shNum); i++ {
+		off := int(shOff) + i*int(shEntSize)
+		if off+64 > len(data) {
+			return nil
+		}
+		if err := binary.Read(&byteReader{data: data[off:]}, le, &symtab); err != nil {
+			return nil
+		}
+		if symtab.Type == shtSymtab {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return nil
+	}
+
+	entSize := int(symtab.EntSize)
+	if entSize < 24 {
+		entSize = 24
+	}
+	nSyms := int(symtab.Size) / entSize
+
+	const sttFunc = 2
+	var funcs []FuncInfo
+	for i := 0; i < nSyms; i++ {
+		off := int(symtab.Offset) + i*entSize
+		if off+24 > len(data) {
+			break
+		}
+		var sym elf64Sym
+		if err := binary.Read(&byteReader{data: data[off:]}, le, &sym); err != nil {
+			break
+		}
+		if sym.Info&0xf == sttFunc && sym.Value != 0 && sym.Size > 0 {
+			funcs = append(funcs, FuncInfo{Addr: sym.Value, Size: sym.Size})
+		}
+	}
+
+	sort.Slice(funcs, func(i, j int) bool { return funcs[i].Addr < funcs[j].Addr })
+	return funcs
 }
 
 // FindTextSection parses the ELF section headers in data and returns

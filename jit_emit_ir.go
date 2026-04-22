@@ -14,15 +14,13 @@ import (
 //var testIterStart int
 
 // maxBlockInsns limits the number of RISC-V instructions per JIT block.
-// Variable so tests can adjust it without recompilation.
-var maxBlockInsns = 2048
+// Set high for function-level compilation; BudgetCheck on backward
+// branches prevents infinite native loops.
+var maxBlockInsns = 1 << 20
 
-// maxBlockIRInsns limits the total IR instructions per block. Each RISC-V
-// instruction expands to ~5-10 IR ops; very large blocks hit O(N*L) in the
-// register allocator's spill phase where L is average interval length.
-// 4096 IR instructions covers ~500-800 RISC-V instructions — large enough
-// for good optimization, small enough for fast compilation.
-const maxBlockIRInsns = 2048
+// maxBlockIRInsns limits the total IR instructions per block.
+// Set high for function-level compilation.
+const maxBlockIRInsns = 1 << 20
 
 // emitResult holds the generated IR block and metadata.
 type emitResult struct {
@@ -30,7 +28,8 @@ type emitResult struct {
 	startPC       uint64
 	endPC         uint64
 	numInsns      int
-	numChainExits int // number of IRChainExit instructions emitted
+	numChainExits int          // number of IRChainExit instructions emitted
+	mem           *GuestMemory // for VizJit guest disassembly
 }
 
 // deferredExit holds an external branch exit to emit at finalize time.
@@ -81,8 +80,9 @@ type emitter struct {
 	icEmitted      bool
 	deferredExits  []deferredExit
 	deferredFaults []deferredFault
-	exitIdx        int // counter for chain exit indices
-	jalrSiteIdx    int // counter for JALR inline-cache site indices
+	exitIdx            int      // counter for chain exit indices
+	jalrSiteIdx        int      // counter for JALR inline-cache site indices
+	boundaryEcallConts []uint64 // ECALL continuations at regionEnd (need terminal bail labels)
 }
 
 // ── Register access helpers ────────────────────────────────────────────
@@ -301,21 +301,22 @@ func (e *emitter) emitReturn(pc uint64, status int) {
 	e.irEm.Ret(pc, status, ir.VRegZero)
 }
 
-// emitSyscall emits the ECALL fast path: writeback all dirty regs,
-// then emit IRSyscall which CALLs the SysV dispatcher. The dispatcher
-// returns 0 (handled → block exits with Status=jitOK) or 1 (fallback
-// → Status=jitEcall, Go NoteChain layer handles it). Either way the
-// JIT block returns after this.
+// emitSyscall emits an inline ECALL: writeback dirty regs, call the
+// SysV dispatcher, then reload the syscall return registers (a0, a1).
+// Non-terminal: the caller should NOT set e.terminated after this.
 //
 // If the fast path is disabled (dispatcherAddr==0) this falls back
-// to the legacy emitReturn(pc, jitEcall) behavior.
+// to the legacy emitReturn(pc, jitEcall) behavior (still terminal).
 func (e *emitter) emitSyscall(resumePC uint64, dispatcherAddr uintptr) {
 	if dispatcherAddr == 0 {
 		e.emitReturn(resumePC, jitEcall)
+		e.terminated = true
 		return
 	}
 	e.irEm.WriteBackAll()
+	e.irEm.ClearDirtySyscallRegs()
 	e.irEm.Syscall(resumePC, dispatcherAddr)
+	e.irEm.ReloadSyscallRegs()
 }
 
 // allocFaultLabel allocates a per-call-site fault label and registers its
@@ -358,7 +359,7 @@ func (e *emitter) lastIRWasTerminator() bool {
 		return false
 	}
 	switch ins[len(ins)-1].Op {
-	case ir.IRRet, ir.IRRetDyn, ir.IRSyscall, ir.IRChainExit, ir.IRJalrIC:
+	case ir.IRRet, ir.IRRetDyn, ir.IRChainExit, ir.IRJalrIC:
 		return true
 	}
 	return false
@@ -502,8 +503,8 @@ func (e *emitter) emitDivW(dst, a, b ir.VReg, signed, wantRem bool) {
 
 // emitFMinMax emits FMIN/FMAX with full RISC-V spec compliance:
 //
-//   §11.3 NaN: both-NaN → canonical qNaN; one-NaN → the non-NaN operand.
-//   §11.6 signed-zero ordering: -0.0 < +0.0.
+//	§11.3 NaN: both-NaN → canonical qNaN; one-NaN → the non-NaN operand.
+//	§11.6 signed-zero ordering: -0.0 < +0.0.
 //
 // Emits an FP-typed dst (XMM); caller is responsible for boxing.
 func (e *emitter) emitFMinMax(dst, a, b ir.VReg, t ir.Type, isMax bool) {
@@ -665,7 +666,11 @@ func (e *emitter) finalize() *emitResult {
 	// quad) still get a return here so the interpreter fallback path
 	// keeps working.
 	if !e.lastIRWasTerminator() {
-		e.emitChainableReturn(e.pc)
+		if len(e.boundaryEcallConts) > 0 {
+			e.emitReturn(e.pc, jitOK)
+		} else {
+			e.emitChainableReturn(e.pc)
+		}
 	}
 
 	// Bail labels: goto targets not emitted. Deterministic order is critical —
@@ -676,6 +681,17 @@ func (e *emitter) finalize() *emitResult {
 			e.emitChainableReturn(target)
 		}
 	})
+
+	// ECALL continuations at the block boundary: the emitter loop
+	// didn't reach these PCs, so their labels are unplaced. Emit a
+	// terminal return (not chainable) so the dispatch table can route
+	// here and Go re-dispatches to a different block.
+	for _, c := range e.boundaryEcallConts {
+		if !e.visited[c] {
+			e.irEm.PlaceLabel(e.getOrCreateLabel(c))
+			e.emitReturn(c, jitOK)
+		}
+	}
 
 	// Deferred external exits.
 	for _, de := range e.deferredExits {
@@ -698,6 +714,7 @@ func (e *emitter) finalize() *emitResult {
 		endPC:         e.pc,
 		numInsns:      e.numInsns,
 		numChainExits: e.exitIdx,
+		mem:           e.mem,
 	}
 }
 
@@ -843,8 +860,12 @@ func scanUsedRegs(mem *GuestMemory, startPC, endPC uint64, used *[32]bool) {
 			}
 			// Stop at instructions the emitter terminates on.
 			switch opcode {
-			case 0x73: // SYSTEM (ECALL, EBREAK, CSR) — emitter terminates
-				return
+			case 0x73: // SYSTEM
+				// ECALL (0x00000073) is non-terminal — don't stop.
+				// EBREAK and CSR still terminate.
+				if insn != 0x00000073 {
+					return
+				}
 			case 0x67: // JALR — emitter terminates
 				return
 			case 0x6F: // JAL — emitter terminates if rd != 0
@@ -860,6 +881,12 @@ func scanUsedRegs(mem *GuestMemory, startPC, endPC uint64, used *[32]bool) {
 // ── emitBlock ──────────────────────────────────────────────────────────
 
 func emitBlock(mem *GuestMemory, pc uint64) *emitResult {
+	// Find the function extent. If the PC falls inside a registered
+	// exec region, use the region bounds. Otherwise fall back to the
+	// BFS scanRegion for unknown code (e.g., JIT-generated trampolines).
+	if region := mem.FindExecRegion(pc); region != nil {
+		return emitBlockRange(mem, pc, region.VAddrEnd)
+	}
 	region := scanRegion(mem, pc)
 	if region.pcCount == 0 {
 		if debugJIT {
@@ -877,6 +904,7 @@ func emitBlock(mem *GuestMemory, pc uint64) *emitResult {
 // nil (caller's decoder_cache slot stays zero → lazy fallback at run
 // time).
 func emitBlockLinear(mem *GuestMemory, startPC, endPC uint64) *emitResult {
+	//vv("emitBlockLinear: startPC=0x%x endPC=0x%x size=%d", startPC, endPC, endPC-startPC)
 	if startPC >= endPC {
 		return nil
 	}
@@ -888,6 +916,9 @@ func emitBlockLinear(mem *GuestMemory, startPC, endPC uint64) *emitResult {
 // emitBlock (BFS-driven endPC via scanRegion) and emitBlockLinear
 // (explicit endPC from the AOT enumeration).
 func emitBlockRange(mem *GuestMemory, pc, endPC uint64) *emitResult {
+	//vv("emitBlockRange: pc=0x%x endPC=0x%x", pc, endPC)
+	//defer vv("emitBlockRange: done pc=0x%x endPC=0x%x", pc, endPC)
+
 	irEm := ir.NewEmitter()
 
 	gt := newU64setSized(256)
@@ -908,6 +939,7 @@ func emitBlockRange(mem *GuestMemory, pc, endPC uint64) *emitResult {
 	for e.numInsns < maxBlockInsns && !e.terminated && e.pc < e.regionEnd &&
 		len(irEm.Block.Instrs) < maxBlockIRInsns {
 		if e.visited[e.pc] {
+			//vv("emitBlockRange: pc=0x%x already visited, terminating", e.pc)
 			e.irEm.Jump(e.getOrCreateLabel(e.pc))
 			e.gotoTargets.add(e.pc)
 			e.terminated = true
@@ -924,7 +956,11 @@ func emitBlockRange(mem *GuestMemory, pc, endPC uint64) *emitResult {
 		}
 
 		if half&0x3 != 0x3 {
+			//vv("emitBlockRange: RVC pc=0x%x half=0x%04x", e.pc, half)
 			e.emitRVC(uint16(half))
+			if e.terminated {
+				//vv("emitBlockRange: terminated after RVC at pc=0x%x half=0x%04x", e.pc, half)
+			}
 		} else {
 			insn, f := mem.Fetch32(e.pc)
 			if f != nil {
@@ -938,9 +974,15 @@ func emitBlockRange(mem *GuestMemory, pc, endPC uint64) *emitResult {
 					break
 				}
 			}
+			//vv("emitBlockRange: 32bit pc=0x%x insn=0x%08x opcode=0x%02x", e.pc, insn, insn&0x7f)
 			e.emit32(insn)
+			if e.terminated {
+				//vv("emitBlockRange: terminated after 32bit at pc=0x%x insn=0x%08x opcode=0x%02x", e.pc, insn, insn&0x7f)
+			}
 		}
 	}
+
+	//vv("emitBlockRange: loop exit pc=0x%x numInsns=%d terminated=%v regionEnd=0x%x irInstrs=%d maxInsns=%d maxIR=%d", e.pc, e.numInsns, e.terminated, e.regionEnd, len(irEm.Block.Instrs), maxBlockInsns, maxBlockIRInsns)
 
 	if e.numInsns == 0 {
 		if debugJIT {
@@ -966,11 +1008,57 @@ func emitBlockRange(mem *GuestMemory, pc, endPC uint64) *emitResult {
 			})
 		}
 	}
+	// Build the dispatch table for function re-entry. Collect re-entry
+	// PCs (backward branch targets + ECALL continuations) and record
+	// their IR labels in Block.DispatchPCs. The lowerer reads this to
+	// emit a PC-based jump table in the prologue.
+	targets, ecallConts := collectInternalTargets(mem, pc, endPC)
+	// ECALL continuations at endPC were not visited by the emitter
+	// loop (it exits when pc >= regionEnd). Record them so finalize()
+	// places their labels with terminal returns (not chainable — a
+	// chain_exit back to the same PC would be an infinite loop).
+	for _, c := range ecallConts {
+		if c == endPC {
+			e.boundaryEcallConts = append(e.boundaryEcallConts, c)
+		}
+	}
+	if len(targets) > 0 || len(ecallConts) > 0 {
+		dpcs := make(map[uint64]ir.Label)
+		// Include startPC so the dispatch table routes first entry and
+		// chain exits targeting the function start correctly.
+		dpcs[pc] = e.getOrCreateLabel(pc)
+		for t := range targets {
+			if t >= pc && t < endPC {
+				dpcs[t] = e.getOrCreateLabel(t)
+			}
+		}
+		for _, c := range ecallConts {
+			if c >= pc && c <= endPC {
+				dpcs[c] = e.getOrCreateLabel(c)
+			}
+		}
+		if len(dpcs) > 0 {
+			irEm.Block.DispatchPCs = dpcs
+		}
+	}
+
+	needBarrier := len(irEm.Block.DispatchPCs) > 0
+	prepended := 0
 	if len(loads) > 0 {
 		e.irEm.Block.Instrs = append(loads, e.irEm.Block.Instrs...)
-		// Fix label indices (they shifted by len(loads)).
+		prepended += len(loads)
+	}
+	if needBarrier {
+		barrier := ir.IRInstr{Op: ir.IRDispatchBarrier}
+		rest := make([]ir.IRInstr, len(e.irEm.Block.Instrs)-prepended)
+		copy(rest, e.irEm.Block.Instrs[prepended:])
+		e.irEm.Block.Instrs = append(e.irEm.Block.Instrs[:prepended], barrier)
+		e.irEm.Block.Instrs = append(e.irEm.Block.Instrs, rest...)
+		prepended++
+	}
+	if prepended > 0 {
 		for lab, idx := range e.irEm.Block.Labels {
-			e.irEm.Block.Labels[lab] = idx + len(loads)
+			e.irEm.Block.Labels[lab] = idx + prepended
 		}
 		ir.MaxVReg(e.irEm.Block)
 	}
@@ -1095,13 +1183,11 @@ func (e *emitter) emit32(insn uint32) {
 
 	case 0x73: // SYSTEM
 		switch insn {
-		case 0x00000073: // ECALL — always terminates the block.
-			// Under Option D the post-ECALL PC is a separate AOT block
-			// entry (registered by aot.go's termFT), and lowerSyscall
-			// chain-exits into it on the hot path when the flag is on.
+		case 0x00000073: // ECALL — inline syscall, non-terminal.
 			e.advancePC(4)
 			e.emitSyscall(e.pc, currentSyscallDispatcherAddr())
-			e.terminated = true
+			// e.terminated is NOT set when dispatcherAddr != 0.
+			// emitSyscall sets it only in the fallback (addr==0) path.
 		case 0x00100073: // EBREAK
 			e.advancePC(4)
 			e.emitReturn(e.pc, jitEbreak)
@@ -2037,7 +2123,7 @@ func (e *emitter) emitFPOpS(rd, rs1, rs2, funct3, funct5 uint32) {
 		b := e.unboxF32(rs2)
 		result := e.irEm.Tmp()
 		e.emitFMinMax(result, a, b, ir.F32, funct3 == 1) // funct3=0: MIN, 1: MAX
-		e.boxF32(rd, result) // FMinMax emits canon on the two-NaN path internally
+		e.boxF32(rd, result)                             // FMinMax emits canon on the two-NaN path internally
 	case 0x08: // FCVT.S.D
 		a := e.freg(rs1)
 		result := e.irEm.Tmp()
@@ -2369,17 +2455,25 @@ func (e *emitter) emitJAL(rd uint32, offset int64, insnSize uint64) {
 
 	if rd == 0 {
 		origPC := e.pc - insnSize
+		internal := e.visited[target] ||
+			(e.regionEnd > 0 && target >= e.startPC && target < e.regionEnd)
 		targetLabel := e.getOrCreateLabel(target)
-		// Same backward detection as emitBranch: check both PC ordering
-		// and whether the target was already emitted (visited).
 		backward := target < origPC || e.visited[target]
-		if backward {
-			e.irEm.BudgetCheck(targetLabel, target)
-		} else {
-			e.irEm.Jump(targetLabel)
+		if internal {
+			if backward {
+				e.irEm.BudgetCheck(targetLabel, target)
+			} else {
+				e.irEm.Jump(targetLabel)
+			}
+			e.gotoTargets.add(target)
+			// Do NOT follow the jump (old BFS behavior). Continue the
+			// sequential walk so all PCs in the function get labels placed.
+			return
 		}
+		// External jump — exit the block.
+		e.irEm.Jump(targetLabel)
 		e.gotoTargets.add(target)
-		e.pc = target
+		e.terminated = true
 		return
 	}
 	e.emitChainableReturn(target)

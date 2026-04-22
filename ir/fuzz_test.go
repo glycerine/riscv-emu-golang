@@ -192,7 +192,8 @@ func FuzzEmitterSequences(f *testing.F) {
 			if ins.Dst == VRegZero && ins.Op != IRStore && ins.Op != IRStoreX &&
 				ins.Op != IRLabel && ins.Op != IRBranch && ins.Op != IRBranchImm &&
 				ins.Op != IRJump && ins.Op != IRCall && ins.Op != IRRet &&
-				ins.Op != IRMarkLive && ins.Op != IRMarkDead && ins.Op != IRWriteback {
+				ins.Op != IRMarkLive && ins.Op != IRMarkDead && ins.Op != IRWriteback &&
+				ins.Op != IRDispatchBarrier {
 				t.Fatalf("VRegZero as Dst in instr[%d]: %v", i, ins)
 			}
 		}
@@ -362,7 +363,8 @@ func FuzzBlockStructure(f *testing.F) {
 			if ins.Dst == VRegZero && ins.Op != IRStore && ins.Op != IRStoreX &&
 				ins.Op != IRLabel && ins.Op != IRBranch && ins.Op != IRBranchImm &&
 				ins.Op != IRJump && ins.Op != IRCall && ins.Op != IRRet &&
-				ins.Op != IRMarkLive && ins.Op != IRMarkDead && ins.Op != IRWriteback {
+				ins.Op != IRMarkLive && ins.Op != IRMarkDead && ins.Op != IRWriteback &&
+				ins.Op != IRDispatchBarrier {
 				t.Fatalf("VRegZero as Dst in instr[%d]: %v", i, ins)
 			}
 		}

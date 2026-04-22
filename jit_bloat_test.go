@@ -42,8 +42,12 @@ func TestBloat_BenchGuest_0x10de(t *testing.T) {
 		//  - After MaskedLoadAddr/GuestStoreAddr + emitMisalignedStore
 		//    i=0 special-case (2026-04-22): ir=105, host=1079
 		//    (-42 bytes). Cumulative −143 bytes (−11.7%).
-		maxIRInstrs   = 105
-		maxHostBytes  = 1079
+		//  - Function-level compilation (Steps 1-7): block at 0x10de
+		//    now includes the full function, not just one basic block.
+		//    IR and host bytes are larger in absolute terms but chain
+		//    exits drop to 0 (all control flow is internal).
+		maxIRInstrs   = 300
+		maxHostBytes  = 4100
 		maxChainExits = 5
 	)
 

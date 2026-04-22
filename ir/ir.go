@@ -9,13 +9,9 @@ import (
 // It is a directory path where disassembly will be dumped.
 var VIZJIT_DIR string = "/Users/jaten/go/src/github.com/glycerine/riscv-emu-golang/debug_vizjit_dir"
 
-// InlineSyscall gates lowerSyscall's inline fast path. When true, a
-// successful dispatcher return (RAX==0) chains directly to the
-// post-ECALL block via the existing chain-exit machinery; a non-zero
-// return falls through to the cold-path sret write + RET (today's
-// behavior). When false, lowerSyscall unconditionally takes the
-// cold path after the dispatcher CALL (bit-identical to pre-Step-5).
-// Set from the root package's SetInlineEcallEnabled.
+// InlineSyscall is unused but retained temporarily to avoid breaking
+// the root package's SetInlineEcallEnabled until that is cleaned up.
+// TODO: remove once jit_syscall.go's InlineEcallEnabled is deleted.
 var InlineSyscall bool
 
 func init() {
@@ -220,9 +216,11 @@ const (
 	IRRetDyn    // return {pc=A, status=Imm, faultAddr=B}  — dynamic PC from VReg
 	IRChainExit // chain exit: {targetPC=Imm, exitIdx=Imm2}. WriteBackAll must precede.
 	IRJalrIC    // JALR site inline cache: {targetVReg=A, siteIdx=Imm}. WriteBackAll must precede.
-	IRSyscall   // ECALL fast path. Imm=pc+4 (resume), Imm2=CTab index for dispatcher sym.
-	// Calls the SysV-ABI dispatcher with (xBase, memBase, memMask), writes sret with
-	// Status=RAX (0=jitOK, 1=jitEcall), and returns. Terminator. WriteBackAll must precede.
+	IRSyscall // ECALL inline call. Imm=pc+4 (resume), Imm2=CTab index for dispatcher sym.
+	// Calls the SysV-ABI dispatcher with (xBase, memBase, memMask). Non-terminal:
+	// on success (RAX==0) execution continues at the next IR instruction; on failure
+	// (RAX!=0) the lowerer exits to Go. WriteBackAll must precede; caller should
+	// ReloadSyscallRegs after to pick up the a0/a1 return values.
 
 	// Floating point
 	IRFAdd      // Dst = A + B       (FP, type T)
@@ -244,9 +242,10 @@ const (
 	IRFCvtFF    // Dst = convert(A)  F32↔F64       T=dst, U=src
 
 	// Pseudo-ops
-	IRMarkLive  // declares A live here (allocator hint)
-	IRMarkDead  // declares A dead here (allocator hint)
-	IRWriteback // writes dirty vregs back to x[] array
+	IRMarkLive        // declares A live here (allocator hint)
+	IRMarkDead        // declares A dead here (allocator hint)
+	IRWriteback       // writes dirty vregs back to x[] array
+	IRDispatchBarrier // emit PC dispatch table here (after reg loads)
 
 	// Count of IR ops (not a valid op).
 	irOpCount
@@ -329,9 +328,10 @@ var irOpNames = [...]string{
 	IRFCvtFromI: "fcvt_from_i",
 	IRFCvtFromU: "fcvt_from_u",
 	IRFCvtFF:    "fcvt_ff",
-	IRMarkLive:  "mark_live",
-	IRMarkDead:  "mark_dead",
-	IRWriteback: "writeback",
+	IRMarkLive:        "mark_live",
+	IRMarkDead:        "mark_dead",
+	IRWriteback:       "writeback",
+	IRDispatchBarrier: "dispatch_barrier",
 }
 
 // IRInstr is one IR operation. Fixed-size struct (no slices) for cache locality.
@@ -378,7 +378,7 @@ func (ins IRInstr) String() string {
 	case IRCall:
 		return fmt.Sprintf("%s [%d]", ins.Op, ins.Imm)
 	case IRRet:
-		return fmt.Sprintf("%s pc=%d status=%d fault=%s", ins.Op, ins.Imm, ins.Imm2, ins.A)
+		return fmt.Sprintf("%s pc=0x%x status=%d fault=%s", ins.Op, uint64(ins.Imm), ins.Imm2, ins.A)
 	case IRRetDyn:
 		return fmt.Sprintf("%s pc=%s status=%d fault=%s", ins.Op, ins.A, ins.Imm, ins.B)
 	case IRJalrIC:
@@ -387,6 +387,8 @@ func (ins IRInstr) String() string {
 		return fmt.Sprintf("%s resumePC=0x%x ctab=%d", ins.Op, uint64(ins.Imm), ins.Imm2)
 	case IRChainExit:
 		return fmt.Sprintf("%s targetPC=0x%x exitIdx=%d", ins.Op, uint64(ins.Imm), ins.Imm2)
+	case IRDispatchBarrier:
+		return "dispatch_barrier"
 	default:
 		if ins.B != VRegZero {
 			return fmt.Sprintf("%s.%s %s = %s, %s", ins.Op, ins.T, ins.Dst, ins.A, ins.B)
@@ -402,6 +404,14 @@ type Block struct {
 	NextLabel Label         // fresh label allocator
 	CTab      []CSym        // external call symbols
 	VRegLive  []VRegLiveness
+
+	// DispatchPCs maps re-entry guest PCs to their IR labels. The lowerer
+	// emits a dispatch table when it encounters IRDispatchBarrier — after
+	// register loads — that reads the incoming PC from sret[120] and jumps
+	// to the matching label. Set by the emitter for function-level blocks
+	// that have mid-function re-entry points (backward branch targets,
+	// ECALL continuations).
+	DispatchPCs map[uint64]Label
 
 	maxVreg VReg // uint16
 }

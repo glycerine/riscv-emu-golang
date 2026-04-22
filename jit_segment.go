@@ -36,7 +36,7 @@ func (j *JIT) nextExecuteSegment(mem *GuestMemory, pc uint64) *DecodedExecuteSeg
 	isJIT := region.IsLikelyJIT
 	size := end - begin
 
-	ranges := enumerateBlockRanges(mem, begin, size)
+	ranges := enumerateFunctionRanges(mem, begin, size, nil)
 	if len(ranges) == 0 {
 		return nil
 	}
