@@ -1,8 +1,8 @@
 package riscv
 
 import (
-	"encoding/binary"
 	"fmt"
+	"os"
 	"riscv/goasm"
 	"riscv/internal/jitcall"
 	"riscv/ir"
@@ -76,6 +76,14 @@ func compileAOTBlock(t *testing.T, mem *GuestMemory, startPC, endPC uint64) (fn 
 
 	// Also log the progs to test output for immediate visibility.
 	t.Logf("Host asm (%d bytes):\n%s", len(code), progs)
+
+	// Write raw bytes for offline disassembly:
+	//   objdump -b binary -m i386:x86-64 -D debug_vizjit_dir/*.bin
+	if dir, on := vizJitEnabled(); on {
+		binPath := fmt.Sprintf("%s/%s.gocpu.pc_0x%08x.bin", dir, getVizJitTag(), startPC)
+		_ = os.WriteFile(binPath, code, 0o644)
+		t.Logf("Raw bytes: %s", binPath)
+	}
 
 	cleanup = func() { syscall.Munmap(execMem) }
 	return
