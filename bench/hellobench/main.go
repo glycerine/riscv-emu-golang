@@ -162,6 +162,74 @@ func runOnly(mode string, repeat int, libriscvELF, gocpuELF []byte) {
 
 	mean, stddev := meanVar(repeat, fn)
 	printLine(mode, mean, stddev, defaultITERS, tag)
+
+	// For gocpu modes, also run a single instrumented pass and print
+	// the JIT dispatch / chain-patch / fallback counters. Answers the
+	// question: after each ECALL, did the JIT chain to the next block
+	// natively, or did it round-trip back to Go?
+	if strings.HasPrefix(mode, "gocpu-") && mode != "gocpu-interp" {
+		realSys := mode == "gocpu-syscall"
+		j := timeGoCPUDirectCollectCounters(gocpuELF, realSys)
+		dispatchTotal := j.DispatchOK + j.DispatchOther + j.DispatchInterp
+		fmt.Fprintf(os.Stderr, "# JIT counters for one run of %d guest ECALLs:\n", defaultITERS)
+		fmt.Fprintf(os.Stderr, "#   DispatchOK       = %d   (block returned to Go with jitOK)\n", j.DispatchOK)
+		fmt.Fprintf(os.Stderr, "#   DispatchOther    = %d   (ecall/fault/ebreak returns)\n", j.DispatchOther)
+		fmt.Fprintf(os.Stderr, "#   DispatchInterp   = %d   (interpreter fallback)\n", j.DispatchInterp)
+		fmt.Fprintf(os.Stderr, "#   DispatchCompile  = %d   (lazy block compilations)\n", j.DispatchCompile)
+		fmt.Fprintf(os.Stderr, "#   ChainPatched     = %d   (chain-exit sentinels → direct-jump targets)\n", j.ChainPatched)
+		fmt.Fprintf(os.Stderr, "#   ChainPatchedJalr = %d   (JALR IC site patches)\n", j.ChainPatchedJalr)
+		fmt.Fprintf(os.Stderr, "#   JalrICMisses     = %d   (JALR IC returns to Go)\n", j.JalrICMisses)
+		fmt.Fprintf(os.Stderr, "#   total dispatch returns: %d over ~%d guest insns + %d ECALLs\n",
+			dispatchTotal, defaultITERS*9, defaultITERS)
+	}
+}
+
+// timeGoCPUDirectCollectCounters runs one VM to completion and returns
+// the JIT so the caller can inspect dispatch/chain counters. Mirrors
+// timeGoCPUDirect's structure but returns *JIT instead of elapsed ns.
+func timeGoCPUDirectCollectCounters(elf []byte, realSystemCall bool) *riscv.JIT {
+	mem, err := riscv.NewGuestMemory(guestMem)
+	if err != nil {
+		die("NewGuestMemory: %v", err)
+	}
+	defer mem.Free()
+	entry, err := riscv.LoadELFBytes(mem, elf)
+	if err != nil {
+		die("LoadELFBytes: %v", err)
+	}
+	cpu := riscv.NewCPU(*mem)
+	cpu.SetPC(entry)
+	cpu.SetReg(2, guestSP)
+	cleanup := riscv.InstallLinuxOS(cpu, io.Discard)
+	defer cleanup()
+
+	if !realSystemCall {
+		syscalls.RegisterWriteCallback(syscalls.NullWriteCallbackAddr())
+		defer syscalls.RegisterWriteCallback(0)
+	}
+
+	j := riscv.NewJIT()
+	if err := j.InstallAOTFromMem(mem); err != nil {
+		die("InstallAOTFromMem: %v", err)
+	}
+
+	run := func() {
+		defer func() {
+			if r := recover(); r != nil {
+				if _, ok := r.(*riscv.ExitError); ok {
+					return
+				}
+				panic(r)
+			}
+		}()
+		_ = j.RunJIT(cpu)
+	}
+	if realSystemCall {
+		withStdoutToDevNull(run)
+	} else {
+		run()
+	}
+	return j
 }
 
 // ── correctness (verify) runs — one-shot per config ──────────────────
