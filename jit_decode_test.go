@@ -7,10 +7,13 @@ import (
 	"testing"
 )
 
-// TestClassifyFlow_EcallGated confirms the InlineEcallEnabled flag
-// is the only lever that changes ECALL classification. EBREAK and
-// CSR* must remain terminators under both settings.
-func TestClassifyFlow_EcallGated(t *testing.T) {
+// TestClassifyFlow_EcallNotGated confirms ECALL classification is
+// independent of InlineEcallEnabled — all three SYSTEM-opcode
+// instructions (ECALL, EBREAK, CSR*) must always return flowTerm.
+// Under Option D the AOT enumerator relies on flowTerm to register
+// pc+4 as a new block entry, which lowerSyscall then targets with a
+// chain exit when the flag is on.
+func TestClassifyFlow_EcallNotGated(t *testing.T) {
 	mem, err := NewGuestMemory(Size64KB)
 	if err != nil {
 		t.Fatalf("NewGuestMemory: %v", err)
@@ -19,8 +22,6 @@ func TestClassifyFlow_EcallGated(t *testing.T) {
 
 	const pc = uint64(0x100)
 
-	// Helper: write one 32-bit insn at pc and restore prior flag state
-	// between cases.
 	writeInsn := func(insn uint32) {
 		if f := mem.Store16(pc, uint16(insn)); f != nil {
 			t.Fatalf("Store16: %v", f)
@@ -34,40 +35,37 @@ func TestClassifyFlow_EcallGated(t *testing.T) {
 	defer SetInlineEcallEnabled(saved)
 
 	type row struct {
-		name   string
-		insn   uint32
-		flag   bool
-		wantFC flowClass
+		name string
+		insn uint32
+		flag bool
 	}
 	rows := []row{
-		{"ECALL flag=off → flowTerm", 0x00000073, false, flowTerm},
-		{"ECALL flag=on → flowSeq", 0x00000073, true, flowSeq},
-		{"EBREAK flag=off → flowTerm", 0x00100073, false, flowTerm},
-		{"EBREAK flag=on → flowTerm", 0x00100073, true, flowTerm},
-		{"CSRRW flag=off → flowTerm", 0x30001073, false, flowTerm},
-		{"CSRRW flag=on → flowTerm", 0x30001073, true, flowTerm},
+		{"ECALL flag=off", 0x00000073, false},
+		{"ECALL flag=on", 0x00000073, true},
+		{"EBREAK flag=off", 0x00100073, false},
+		{"EBREAK flag=on", 0x00100073, true},
+		{"CSRRW flag=off", 0x30001073, false},
+		{"CSRRW flag=on", 0x30001073, true},
 	}
 
 	for _, r := range rows {
 		writeInsn(r.insn)
 		SetInlineEcallEnabled(r.flag)
 		gotFC, _, sz := classifyFlow(mem, pc)
-		if gotFC != r.wantFC || sz != 4 {
-			t.Errorf("%s: got (fc=%v, sz=%d), want (fc=%v, sz=4)",
-				r.name, gotFC, sz, r.wantFC)
+		if gotFC != flowTerm || sz != 4 {
+			t.Errorf("%s: got (fc=%v, sz=%d), want (fc=flowTerm, sz=4)",
+				r.name, gotFC, sz)
 		}
 	}
 }
 
-// TestInlineEcall_HelloEndToEnd runs the full hello-world ELF with the
-// InlineEcallEnabled flag on. Until Step 5 lands the V1 lowerer still
-// emits a RET after IRSyscall, so post-ECALL IR is dead at the host
-// level and behavior should be bit-identical to the flag-off run —
-// but the emitter will have continued past the ECALL, and
-// classifyFlow will have treated ECALL as sequential when scanning
-// the region. This test exists to catch a regression in Step 3 where
-// the emitter continuation inadvertently breaks pre-ECALL branch
-// exits (as happened with the dirty[] clear experiment).
+// TestInlineEcall_HelloEndToEnd runs the full hello-world ELF with
+// the InlineEcallEnabled flag on. After Step 4 (Option D) and until
+// Step 5 lands, flag-on behavior is bit-identical to flag-off: the
+// emitter terminates at every ECALL and the V1 lowerer still emits
+// an unconditional epilogue. This test guards that identity, so when
+// Step 5 starts emitting the inline TESTQ+JNZ+ChainExit pattern we
+// can attribute any regression to Step 5 specifically.
 func TestInlineEcall_HelloEndToEnd(t *testing.T) {
 	if !DirectSyscallEnabled() {
 		t.Skip("direct syscall fast path disabled")

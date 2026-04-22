@@ -86,17 +86,10 @@ func classifyFlow(mem *GuestMemory, pc uint64) (flowClass, uint64, uint64) {
 		return flowTerm, 0, 4 // function call
 	case 0x67: // JALR
 		return flowTerm, 0, 4
-	case 0x73: // SYSTEM (ECALL, EBREAK, CSR)
-		// With InlineEcallEnabled, ECALL (insn == 0x00000073) is classified
-		// as sequential so scanRegion BFS can discover code past it and the
-		// enclosing block can cover post-ECALL instructions too. EBREAK and
-		// CSR remain terminators. The emitter still terminates on ECALL
-		// until Step 3 flips that; for now, the classifier change only
-		// affects scanRegion's view of the CFG (visible as larger block
-		// ranges in VizJit dumps).
-		if InlineEcallEnabled() && insn == 0x00000073 {
-			return flowSeq, 0, 4
-		}
+	case 0x73: // SYSTEM (ECALL, EBREAK, CSR) — all terminate the block.
+		// ECALL always terminates: the AOT enumerator registers pc+4 as a
+		// new block start via termFT in aot.go, which lowerSyscall targets
+		// with a chain exit when InlineEcallEnabled is on.
 		return flowTerm, 0, 4
 	default:
 		return flowSeq, 0, 4
