@@ -501,8 +501,8 @@ func (e *emitter) emitDivW(dst, a, b ir.VReg, signed, wantRem bool) {
 
 // emitFMinMax emits FMIN/FMAX with full RISC-V spec compliance:
 //
-//   §11.3 NaN: both-NaN → canonical qNaN; one-NaN → the non-NaN operand.
-//   §11.6 signed-zero ordering: -0.0 < +0.0.
+//	§11.3 NaN: both-NaN → canonical qNaN; one-NaN → the non-NaN operand.
+//	§11.6 signed-zero ordering: -0.0 < +0.0.
 //
 // Emits an FP-typed dst (XMM); caller is responsible for boxing.
 func (e *emitter) emitFMinMax(dst, a, b ir.VReg, t ir.Type, isMax bool) {
@@ -886,7 +886,7 @@ func emitBlock(mem *GuestMemory, pc uint64) *emitResult {
 // nil (caller's decoder_cache slot stays zero → lazy fallback at run
 // time).
 func emitBlockLinear(mem *GuestMemory, startPC, endPC uint64) *emitResult {
-	vv("emitBlockLinear: startPC=0x%x endPC=0x%x size=%d", startPC, endPC, endPC-startPC)
+	//vv("emitBlockLinear: startPC=0x%x endPC=0x%x size=%d", startPC, endPC, endPC-startPC)
 	if startPC >= endPC {
 		return nil
 	}
@@ -898,8 +898,8 @@ func emitBlockLinear(mem *GuestMemory, startPC, endPC uint64) *emitResult {
 // emitBlock (BFS-driven endPC via scanRegion) and emitBlockLinear
 // (explicit endPC from the AOT enumeration).
 func emitBlockRange(mem *GuestMemory, pc, endPC uint64) *emitResult {
-	vv("emitBlockRange: pc=0x%x endPC=0x%x", pc, endPC)
-	defer vv("emitBlockRange: done pc=0x%x endPC=0x%x", pc, endPC)
+	//vv("emitBlockRange: pc=0x%x endPC=0x%x", pc, endPC)
+	//defer vv("emitBlockRange: done pc=0x%x endPC=0x%x", pc, endPC)
 
 	irEm := ir.NewEmitter()
 
@@ -921,7 +921,7 @@ func emitBlockRange(mem *GuestMemory, pc, endPC uint64) *emitResult {
 	for e.numInsns < maxBlockInsns && !e.terminated && e.pc < e.regionEnd &&
 		len(irEm.Block.Instrs) < maxBlockIRInsns {
 		if e.visited[e.pc] {
-			vv("emitBlockRange: pc=0x%x already visited, terminating", e.pc)
+			//vv("emitBlockRange: pc=0x%x already visited, terminating", e.pc)
 			e.irEm.Jump(e.getOrCreateLabel(e.pc))
 			e.gotoTargets.add(e.pc)
 			e.terminated = true
@@ -941,7 +941,7 @@ func emitBlockRange(mem *GuestMemory, pc, endPC uint64) *emitResult {
 			//vv("emitBlockRange: RVC pc=0x%x half=0x%04x", e.pc, half)
 			e.emitRVC(uint16(half))
 			if e.terminated {
-				vv("emitBlockRange: terminated after RVC at pc=0x%x half=0x%04x", e.pc, half)
+				//vv("emitBlockRange: terminated after RVC at pc=0x%x half=0x%04x", e.pc, half)
 			}
 		} else {
 			insn, f := mem.Fetch32(e.pc)
@@ -959,13 +959,12 @@ func emitBlockRange(mem *GuestMemory, pc, endPC uint64) *emitResult {
 			//vv("emitBlockRange: 32bit pc=0x%x insn=0x%08x opcode=0x%02x", e.pc, insn, insn&0x7f)
 			e.emit32(insn)
 			if e.terminated {
-				vv("emitBlockRange: terminated after 32bit at pc=0x%x insn=0x%08x opcode=0x%02x", e.pc, insn, insn&0x7f)
+				//vv("emitBlockRange: terminated after 32bit at pc=0x%x insn=0x%08x opcode=0x%02x", e.pc, insn, insn&0x7f)
 			}
 		}
 	}
 
-	vv("emitBlockRange: loop exit pc=0x%x numInsns=%d terminated=%v regionEnd=0x%x irInstrs=%d maxInsns=%d maxIR=%d",
-		e.pc, e.numInsns, e.terminated, e.regionEnd, len(irEm.Block.Instrs), maxBlockInsns, maxBlockIRInsns)
+	//vv("emitBlockRange: loop exit pc=0x%x numInsns=%d terminated=%v regionEnd=0x%x irInstrs=%d maxInsns=%d maxIR=%d", e.pc, e.numInsns, e.terminated, e.regionEnd, len(irEm.Block.Instrs), maxBlockInsns, maxBlockIRInsns)
 
 	if e.numInsns == 0 {
 		if debugJIT {
@@ -2094,7 +2093,7 @@ func (e *emitter) emitFPOpS(rd, rs1, rs2, funct3, funct5 uint32) {
 		b := e.unboxF32(rs2)
 		result := e.irEm.Tmp()
 		e.emitFMinMax(result, a, b, ir.F32, funct3 == 1) // funct3=0: MIN, 1: MAX
-		e.boxF32(rd, result) // FMinMax emits canon on the two-NaN path internally
+		e.boxF32(rd, result)                             // FMinMax emits canon on the two-NaN path internally
 	case 0x08: // FCVT.S.D
 		a := e.freg(rs1)
 		result := e.irEm.Tmp()

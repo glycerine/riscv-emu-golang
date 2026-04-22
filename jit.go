@@ -37,10 +37,10 @@ type chainPatchInfo struct {
 // check still runs — sites cache whatever they last held — but the
 // self-modifying-code (SMC) stalls caused by repeated patching stop.
 type jalrICPatchInfo struct {
-	siteIdx     int
-	pcPatchOff  [2]int // byte offsets of cache_pc[0], cache_pc[1]
-	fnPatchOff  [2]int // byte offsets of cache_fn[0], cache_fn[1]
-	missStreak  uint32 // total patch attempts for this site
+	siteIdx    int
+	pcPatchOff [2]int // byte offsets of cache_pc[0], cache_pc[1]
+	fnPatchOff [2]int // byte offsets of cache_fn[0], cache_fn[1]
+	missStreak uint32 // total patch attempts for this site
 }
 
 // jalrICDeoptThreshold is the number of miss-patches a JALR IC site
@@ -719,7 +719,7 @@ func (j *JIT) RunJIT(cpu *CPU) error {
 		}
 
 		pc := cpu.pc
-		vv("RunJIT: dispatch pc=0x%x", pc)
+		//vv("RunJIT: dispatch pc=0x%x", pc)
 
 		blk := j.lookupBlock(pc)
 		if blk != nil {
@@ -753,12 +753,14 @@ func (j *JIT) RunJIT(cpu *CPU) error {
 					seg.vaddrBegin, seg.vaddrSize,
 					pc)
 			} else {
-				res = jitcall.Call(blk.fn, &cpu.x, &cpu.f, &cpu.fcsr,
-					cpu.mem.Base(), cpu.mem.Mask())
+				res = jitcall.CallAOT(blk.fn, &cpu.x, &cpu.f, &cpu.fcsr,
+					cpu.mem.Base(), cpu.mem.Mask(),
+					0, 0, 0, 0,
+					pc)
 			}
 			cpu.pc = res.PC
 			cpu.cycle += res.IC
-			vv("RunJIT: returned pc=0x%x ic=%d status=%d", res.PC, res.IC, res.Status)
+			//vv("RunJIT: returned pc=0x%x ic=%d status=%d", res.PC, res.IC, res.Status)
 
 			switch int(res.Status) {
 			case jitOK:
