@@ -1,8 +1,8 @@
 package riscv
 
 // jit_native.go — Native IR→machine-code compilation pipeline.
-// Replaces TCC: emitBlock produces ir.Block, which is lowered and assembled
-// to native code via the goasm package (no cgo).
+// emitBlock produces ir.Block, which is lowered and assembled to native
+// code via the goasm package (no cgo).
 
 import (
 	"encoding/binary"

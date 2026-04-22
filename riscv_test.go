@@ -325,8 +325,8 @@ func TestRISCVTests_UA_JIT(t *testing.T) {
 
 // JIT FP tests skipped: the JIT does not propagate fflags (FP exception flags)
 // back to fcsr. FP arithmetic works correctly, but riscv-tests check fflags
-// via CSR reads which see stale values. Enabling these requires injecting an
-// fflags capture function via tcc_add_symbol after each FP operation.
+// via CSR reads which see stale values. Enabling these requires capturing
+// host fflags after each FP operation.
 func TestRISCVTests_UF_JIT(t *testing.T) {
 	t.Skip("JIT does not propagate fflags — FP compliance tests fail on flag checks")
 	entries, err := filepath.Glob(filepath.Join(rvTestsDir, "rv64uf-p-*"))

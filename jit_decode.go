@@ -1,7 +1,7 @@
 package riscv
 
-// jit_decode.go — Shared decode-only functions used by both the TCC and
-// IR JIT emission paths. No build tag — compiled unconditionally.
+// jit_decode.go — Decode-only helpers used by the IR JIT emission path.
+// No build tag — compiled unconditionally.
 
 // maxIC is the per-execution instruction budget. At every backward branch/jump
 // we check `ic < maxIC` before continuing the loop in native code. If the

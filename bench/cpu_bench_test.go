@@ -80,22 +80,6 @@ func runJITBenchGuestWith(cpu *riscv.CPU, jit *riscv.JIT) (exitCode int, insns u
 	return
 }
 
-func runTccJITBenchGuestWith(cpu *riscv.CPU, jit *riscv.JIT) (exitCode int, insns uint64) {
-	defer func() {
-		if r := recover(); r != nil {
-			if ex, ok := r.(*riscv.ExitError); ok {
-				exitCode = ex.Code
-				insns = cpu.Cycle()
-				return
-			}
-			panic(r)
-		}
-	}()
-	_ = jit.TccRunJIT(cpu)
-	insns = cpu.Cycle()
-	return
-}
-
 // runCachedBenchGuest uses the decoder cache (RunCached) instead of the
 // un-cached RunWithChain. The cache is sized to cover typical executable
 // segments (~256 KB) based at the ELF entry.

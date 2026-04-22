@@ -164,7 +164,7 @@ endif
 	@echo "    make bench-setup"
 	@echo ""
 	@echo "  Benchmarks:"
-	@echo "    make bench-alloc      JIT allocator comparison (Fixed vs TCC vs libriscv)"
+	@echo "    make bench-alloc      JIT allocator comparison (Fixed vs libriscv)"
 	@echo "    make bench-quick      fast head-to-head (<1s)"
 	@echo "    make bench            full comparison (ours + libriscv)"
 	@echo "    make bench-ours       our GuestMemory only (no libriscv needed)"
@@ -196,7 +196,7 @@ endif
 
 # ── setup pipeline ─────────────────────────────────────────────────────────
 
-bench-setup: check-tools libriscv-build guest-elf libtcc-build
+bench-setup: check-tools libriscv-build guest-elf
 	go install github.com/tetratelabs/wazero/cmd/wazero@latest
 	@echo "we use vendored xendor/libriscv now, and do not pull from github."
 	@echo ""
@@ -614,13 +614,6 @@ bench:
 	        ./bench/ 2>&1 \
 	    | awk '/MIPS/{for(i=1;i<=NF;i++){if($$i=="MIPS"){print p" MIPS";next}; p=$$i}}' \
 	    || echo "(failed)"
-	@printf "  %-44s " "Go JIT — TCC backend:"
-	@cd $(ROOT) && BENCH_ELF=$(GUEST_ELF) CGO_ENABLED=1 \
-	    $(GO) test $(PGO_FLAG) -count=1 -benchtime=1x -benchmem \
-	        -run='^$$' -bench='^BenchmarkCPU_FullExecution_JIT_TCC$$' \
-	        ./bench/ 2>&1 \
-	    | awk '/MIPS/{for(i=1;i<=NF;i++){if($$i=="MIPS"){print p" MIPS";next}; p=$$i}}' \
-	    || echo "(failed)"
 	@printf "  %-44s " "libriscv — JIT (TCC):"
 	@cd $(ROOT) && \
 	    CGO_CFLAGS="$(CGO_CFLAGS_VAL)" \
@@ -873,46 +866,6 @@ mem:
 	go test -run=xxx -bench=BenchmarkCPU_FullExecution -benchtime=1x -memprofile mem.prof ./bench/
 	go tool pprof -http=:8080 mem.prof
 
-
-# ── libtcc.a build ─────────────────────────────────────────────────────────
-# Reuses the TCC source already fetched by libriscv's CMake FetchContent at
-# $(BUILD)/_deps/tinycc-src. No additional clone needed.
-
-TCC_SRC_DIR := $(BUILD)/_deps/tinycc-src
-TCC_ARCHIVE := $(ROOT)xendor/tcc/libtcc.a
-TCC_HDR_DST := $(ROOT)xendor/tcc/libtcc.h
-
-# Target macros: keep in sync with xendor/libriscv/lib/CMakeLists.txt:255-288
-ifeq ($(PLATFORM),macos)
-  TCC_TARGET_DEFS := -DTARGETOS_Darwin=1 -DTCC_TARGET_MACHO=1
-  ifeq ($(shell uname -m),arm64)
-    TCC_TARGET_DEFS += -DTCC_TARGET_ARM64=1
-  else
-    TCC_TARGET_DEFS += -DTCC_TARGET_X86_64=1
-  endif
-else
-  TCC_TARGET_DEFS := -DTARGETOS_Linux=1
-  ifeq ($(shell uname -m),aarch64)
-    TCC_TARGET_DEFS += -DTCC_TARGET_ARM64=1
-  else
-    TCC_TARGET_DEFS += -DTCC_TARGET_X86_64=1
-  endif
-endif
-
-TCC_CFLAGS := -O2 -fPIC \
-              -DCONFIG_TCC_PREDEFS=1 -DTCC_VERSION=\"0.9.27\" \
-              -DTCC_IS_NATIVE=1 -DCONFIG_TCC_BACKTRACE=0 -DCONFIG_TCC_BCHECK=0 \
-              $(TCC_TARGET_DEFS)
-
-libtcc-build: $(TCC_ARCHIVE)
-$(TCC_ARCHIVE): $(LIB_CAPI)
-	@echo "── building xendor/tcc/libtcc.a  [$(PLATFORM)/$(shell uname -m)] ──"
-	@test -f $(TCC_SRC_DIR)/libtcc.c || { echo "  ✗ $(TCC_SRC_DIR)/libtcc.c not found — run 'make libriscv-build' first"; exit 1; }
-	cc $(TCC_CFLAGS) -I$(TCC_SRC_DIR) -c $(TCC_SRC_DIR)/libtcc.c -o $(TCC_SRC_DIR)/libtcc.o
-	ar rcs $(TCC_ARCHIVE) $(TCC_SRC_DIR)/libtcc.o
-	cp $(TCC_SRC_DIR)/libtcc.h $(TCC_HDR_DST)
-	@echo "  ✓ $(TCC_ARCHIVE): $$(du -h $(TCC_ARCHIVE) | cut -f1)"
-	@echo "  ✓ $$(file $(TCC_ARCHIVE) | cut -d: -f2- | xargs)"
 
 darwin-perf: kpc_perf/kpc_perf.c
 	cd kpc_perf && clang -O2 -o ../bench/darwin-perf kpc_perf.c -framework CoreFoundation && cd ..
