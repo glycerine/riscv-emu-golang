@@ -281,7 +281,7 @@ func (j *JIT) InstallAOT(mem *GuestMemory, elfBytes []byte) error {
 		begin := load.VAddr
 		end := load.VAddr + load.MemSz
 		mem.AddExecRegion(begin, end, load.Writable)
-		j.compileAOTRegion(mem, begin, end, load.MemSz, load.Writable)
+		j.compileAOTRegion(mem, begin, end, load.MemSz, load.Writable, elfBytes)
 	}
 	j.refreshSoleSegment()
 	return nil
@@ -305,7 +305,7 @@ func (j *JIT) InstallAOTFromMem(mem *GuestMemory) error {
 			continue
 		}
 		size := r.VAddrEnd - r.VAddrBegin
-		j.compileAOTRegion(mem, r.VAddrBegin, r.VAddrEnd, size, r.IsLikelyJIT)
+		j.compileAOTRegion(mem, r.VAddrBegin, r.VAddrEnd, size, r.IsLikelyJIT, mem.elfData)
 	}
 	j.refreshSoleSegment()
 	return nil
@@ -315,8 +315,8 @@ func (j *JIT) InstallAOTFromMem(mem *GuestMemory) error {
 // InstallAOTFromMem: enumerate function ranges in [begin, end),
 // compile them as one segment, and record it. Silently skips on
 // failure so other regions still install.
-func (j *JIT) compileAOTRegion(mem *GuestMemory, begin, end, size uint64, writable bool) {
-	ranges := enumerateFunctionRanges(mem, begin, size)
+func (j *JIT) compileAOTRegion(mem *GuestMemory, begin, end, size uint64, writable bool, elfData []byte) {
+	ranges := enumerateFunctionRanges(mem, begin, size, elfData)
 	seg, err := j.jitCompileAOTSegment(mem, ranges, begin, end)
 	if err != nil {
 		return

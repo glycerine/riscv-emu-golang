@@ -126,14 +126,56 @@ func enumerateBlockRanges(mem *GuestMemory, textBase, textSize uint64) []blockRa
 }
 
 // enumerateFunctionRanges returns function-level ranges for the text
-// section. Without ELF symbol information, the entire text section is
-// treated as one function (the conservative fallback). This is the
-// function-level replacement for enumerateBlockRanges.
-func enumerateFunctionRanges(mem *GuestMemory, textBase, textSize uint64) []blockRange {
+// section. When elfData is non-nil, STT_FUNC symbols split the region
+// into per-function ranges. Without symbols (elfData==nil or no
+// STT_FUNC entries), the entire text section is one range.
+func enumerateFunctionRanges(mem *GuestMemory, textBase, textSize uint64, elfData []byte) []blockRange {
 	if textSize == 0 {
 		return nil
 	}
-	return []blockRange{{startPC: textBase, endPC: textBase + textSize}}
+	textEnd := textBase + textSize
+
+	if elfData != nil {
+		funcs := FindFunctions(elfData)
+		// Filter to functions within [textBase, textEnd).
+		var ranges []blockRange
+		for _, f := range funcs {
+			start := f.Addr
+			end := f.Addr + f.Size
+			if start >= textEnd || end <= textBase {
+				continue
+			}
+			if start < textBase {
+				start = textBase
+			}
+			if end > textEnd {
+				end = textEnd
+			}
+			ranges = append(ranges, blockRange{startPC: start, endPC: end})
+		}
+		if len(ranges) > 0 {
+			// Cover any gaps between functions with their own ranges
+			// so the full text section is covered.
+			var covered []blockRange
+			cur := textBase
+			for _, r := range ranges {
+				if r.startPC > cur {
+					covered = append(covered, blockRange{startPC: cur, endPC: r.startPC})
+				}
+				covered = append(covered, r)
+				if r.endPC > cur {
+					cur = r.endPC
+				}
+			}
+			if cur < textEnd {
+				covered = append(covered, blockRange{startPC: cur, endPC: textEnd})
+			}
+			return covered
+		}
+	}
+
+	// Fallback: entire text section as one function.
+	return []blockRange{{startPC: textBase, endPC: textEnd}}
 }
 
 // collectInternalTargets scans [startPC, endPC) and returns:

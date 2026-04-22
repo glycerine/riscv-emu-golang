@@ -155,6 +155,12 @@ type GuestMemory struct {
 	// AddExecRegion / RemoveExecRegion / FindExecRegion in guestmem_exec.go.
 	// The list stays small (≤ handful of entries); linear scan is fine.
 	execRegions []ExecRegion
+
+	// elfData holds the raw ELF bytes loaded by LoadELFBytes, retained
+	// so the AOT translator can parse STT_FUNC symbols for function-
+	// level compilation without requiring callers to thread elfBytes
+	// through every path.
+	elfData []byte
 }
 
 // NewGuestMemory allocates a guest address space of the given size.

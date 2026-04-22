@@ -1067,7 +1067,7 @@ func TestEnumerateFunctionRanges_Hello(t *testing.T) {
 		t.Fatal("FindTextSection: not found")
 	}
 
-	ranges := enumerateFunctionRanges(mem, textBase, textSize)
+	ranges := enumerateFunctionRanges(mem, textBase, textSize, data)
 	if len(ranges) == 0 {
 		t.Fatal("enumerateFunctionRanges returned no ranges")
 	}
@@ -1118,7 +1118,7 @@ func TestAOT_FunctionLevel_Hello(t *testing.T) {
 	j := NewJIT()
 	defer j.Close()
 
-	ranges := enumerateFunctionRanges(mem, textBase, textSize)
+	ranges := enumerateFunctionRanges(mem, textBase, textSize, data)
 	seg, err := j.jitCompileAOTSegment(mem, ranges, textBase, textBase+textSize)
 	if err != nil {
 		t.Fatalf("jitCompileAOTSegment: %v", err)
