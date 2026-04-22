@@ -49,11 +49,29 @@ func main() {
 	var (
 		flagRepeat = flag.Int("repeat", 5, "number of timed runs per configuration")
 		flagElfDir = flag.String("elfdir", "bench/hello_guest", "dir containing hello_*.elf")
+		flagOnly   = flag.String("only", "", "run only one configuration: libriscv|libriscv-real|gocpu-interp|gocpu-syscall|gocpu-callback. Intended for CPU profiling — attach `sample $PID 10` or Xcode Instruments to the running process.")
 	)
 	flag.Parse()
 
 	libriscvELF := mustRead(filepath.Join(*flagElfDir, "hello_libriscv.elf"))
 	gocpuELF := mustRead(filepath.Join(*flagElfDir, "hello_gocpu.elf"))
+
+	// ── profiling mode: single configuration, large repeat ─────────────
+	//
+	// Example macOS profiling session:
+	//   ./hellobench -only=libriscv       -repeat=100000 &   # libriscv
+	//   sample $! 10 -file /tmp/libriscv.sampled
+	//   ./hellobench -only=gocpu-callback -repeat=100000 &   # GoCPU
+	//   sample $! 10 -file /tmp/gocpu.sampled
+	//   diff <(awk '/Call graph/,0' /tmp/libriscv.sampled) \
+	//        <(awk '/Call graph/,0' /tmp/gocpu.sampled)
+	//
+	// PID printing is done before the run so external samplers can
+	// attach before the hot loop starts.
+	if *flagOnly != "" {
+		runOnly(*flagOnly, *flagRepeat, libriscvELF, gocpuELF)
+		return
+	}
 
 	// ── correctness first. Any failure dies loudly. ────────────────────
 	verifyLibriscv(libriscvELF, "Hello, libriscv!\n")
@@ -102,6 +120,48 @@ func main() {
 		})
 		printLine("GoCPU direct callback", gocpuCbNs, stddev, defaultITERS, "Hello, Go CPU!")
 	}
+}
+
+// runOnly executes a single configuration repeat times, printing the
+// process PID first (for external sampler attach) and the mean
+// ns/call at the end. No verify pass, no correctness check — this is
+// a profiling harness, not a correctness harness.
+func runOnly(mode string, repeat int, libriscvELF, gocpuELF []byte) {
+	var fn func() int64
+	var tag string
+	switch mode {
+	case "libriscv":
+		fn = func() int64 { return timeLibriscv(libriscvELF) }
+		tag = "Hello, libriscv!"
+	case "libriscv-real":
+		fn = func() int64 { return timeLibriscvRealWrite(libriscvELF) }
+		tag = "Hello, libriscv!"
+	case "gocpu-interp":
+		fn = func() int64 { return timeGoCPU(gocpuELF, false) }
+		tag = "Hello, Go CPU!"
+	case "gocpu-syscall":
+		if !hasDirectSyscall() {
+			die("gocpu-syscall requested but DirectSyscall path is not built")
+		}
+		fn = func() int64 { return timeGoCPUDirect(gocpuELF, true) }
+		tag = "Hello, Go CPU!"
+	case "gocpu-callback":
+		if !hasDirectSyscall() {
+			die("gocpu-callback requested but DirectSyscall path is not built")
+		}
+		fn = func() int64 { return timeGoCPUDirect(gocpuELF, false) }
+		tag = "Hello, Go CPU!"
+	default:
+		die("unknown -only mode: %q", mode)
+	}
+
+	fmt.Fprintf(os.Stderr, "# hellobench -only=%s pid=%d repeat=%d iters_per_run=%d\n",
+		mode, os.Getpid(), repeat, defaultITERS)
+	fmt.Fprintln(os.Stderr, "# sleeping 1s before hot loop — attach sampler now.")
+	time.Sleep(1 * time.Second)
+
+	mean, stddev := meanVar(repeat, fn)
+	printLine(mode, mean, stddev, defaultITERS, tag)
 }
 
 // ── correctness (verify) runs — one-shot per config ──────────────────
@@ -293,6 +353,15 @@ func timeGoCPUDirect(elf []byte, realSystemCall bool) int64 {
 	}
 
 	j := riscv.NewJIT()
+
+	// Pre-install AOT BEFORE timing starts, matching libriscv's
+	// convention where NewMachine (which translates guest code) runs
+	// before the RunToCompletion timer. Without this, GoCPU's timed
+	// region includes AOT compilation while libriscv's does not — a
+	// ~2.5× apples-to-oranges difference.
+	if err := j.InstallAOTFromMem(mem); err != nil {
+		die("InstallAOTFromMem: %v", err)
+	}
 
 	runGuest := func() int64 {
 		t0 := time.Now()
