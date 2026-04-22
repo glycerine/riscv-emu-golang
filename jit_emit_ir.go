@@ -344,6 +344,26 @@ func (e *emitter) emitChainableReturn(pc uint64) {
 	e.exitIdx++
 }
 
+// lastIRWasTerminator reports whether the final IR instruction
+// emitted into the current block is a terminator op whose lowered
+// x86 unconditionally leaves the block. When true, finalize()'s
+// fall-through emitChainableReturn is dead code and is skipped.
+//
+// Recognised terminators: IRRet, IRRetDyn, IRSyscall, IRChainExit,
+// IRJalrIC. Any future IR op whose lowerer unconditionally exits
+// the block must be added to this switch.
+func (e *emitter) lastIRWasTerminator() bool {
+	ins := e.irEm.Block.Instrs
+	if len(ins) == 0 {
+		return false
+	}
+	switch ins[len(ins)-1].Op {
+	case ir.IRRet, ir.IRRetDyn, ir.IRSyscall, ir.IRChainExit, ir.IRJalrIC:
+		return true
+	}
+	return false
+}
+
 func (e *emitter) emitWriteBackAll() {
 	e.irEm.WriteBackAll()
 }
@@ -635,11 +655,18 @@ func irStoreWidth(funct3 uint32) int {
 // ── finalize ───────────────────────────────────────────────────────────
 
 func (e *emitter) finalize() *emitResult {
-	// Fall-through return. Always emitted — for blocks that already have an
-	// explicit Ret (ECALL, EBREAK, JAL) this is dead code. For blocks that
-	// terminated due to untranslatable instructions (CSR, unknown opcode),
-	// this IS the return path.
-	e.emitChainableReturn(e.pc)
+	// Fall-through return. Emitted only when the last IR is not already a
+	// terminator. Blocks that hit a hard terminator (ECALL, EBREAK, JAL
+	// rd!=0, JALR, branch patterns) already left via IRSyscall/IRRet/
+	// IRChainExit/IRJalrIC/IRRetDyn; adding another fall-through would
+	// emit ~47 bytes of unreachable code (store + MOVABS+JMP + slow-exit
+	// stub) after the cold RET. Blocks that terminated without emitting a
+	// terminator IR (CSR/unknown SYSTEM, unknown opcode, unknown RVC
+	// quad) still get a return here so the interpreter fallback path
+	// keeps working.
+	if !e.lastIRWasTerminator() {
+		e.emitChainableReturn(e.pc)
+	}
 
 	// Bail labels: goto targets not emitted. Deterministic order is critical —
 	// random order changes IR indices, affecting register allocation.
