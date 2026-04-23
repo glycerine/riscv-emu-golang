@@ -324,7 +324,6 @@ func TestAOTInstall_RunDhrystone(t *testing.T) {
 //   AOT mode:  DispatchOK ~70K,   JalrICMisses <100 (decoder_cache
 //              hot path catches ≥99% of JALRs)
 func TestAOTDispatch_DhrystoneReducesRoundTrips(t *testing.T) {
-	t.Skip("rv8 lowerer does not implement JALR IC inline caching yet (Stage 14)")
 	data, err := os.ReadFile("bench/dhrystone.elf")
 	if err != nil {
 		t.Skipf("bench/dhrystone.elf: %v", err)

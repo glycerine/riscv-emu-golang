@@ -157,19 +157,13 @@ func (lc *lowerCtxRV8) emitPrologue() {
 	lc.emitMR(x86.AMOVQ, goasm.REG_AMD64_R8, goasm.REG_AMD64_DI, 128)
 	lc.emitMR(x86.AMOVQ, goasm.REG_AMD64_R9, goasm.REG_AMD64_DI, 136)
 
+	// Zero sret.IC for first entry. On chain entry, sret.IC holds the
+	// previous block's IC value (written by rv8ChainExit).
+	lc.emitMI(x86.AMOVQ, 0, goasm.REG_AMD64_DI, 8)
+
 	// Copy sret from RDI to RAX so first-entry and chain-entry share
 	// the same code path below (chain entry arrives with RAX=sret).
 	lc.emit2(x86.AMOVQ, goasm.REG_AMD64_DI, rv8StgA)
-
-	// Zero IC (first entry only; chain entry preserves IC across blocks).
-	// Must happen AFTER sret publish and copy since VRIC's host register
-	// might be DI.
-	if int(VRIC) < len(lc.alloc.Kind) && lc.alloc.Kind[VRIC] == AllocReg {
-		host := lc.rIdx.lookup(VRIC, 0)
-		if host >= 0 {
-			lc.emit2(x86.AXORQ, host, host)
-		}
-	}
 
 	// ── Chain entry point ──
 	// Chained blocks JMP here with RAX=sret, RBP already set.
@@ -212,9 +206,22 @@ func (lc *lowerCtxRV8) emitPrologue() {
 	// VRIC, VRMemBase, VRMemMask need explicit initialization here.
 	lc.emitRM(x86.AMOVQ, goasm.REG_AMD64_SP, lc.sretOffset, rv8StgB) // RCX = sret
 
-	// Zero VRIC spill slot if stack-allocated.
-	if int(VRIC) < len(lc.alloc.Kind) && lc.alloc.Kind[VRIC] == AllocStack {
-		lc.emitMI(x86.AMOVQ, 0, goasm.REG_AMD64_SP, int64(lc.alloc.SpillSlot[VRIC])*8)
+	// Load IC from sret.IC. On first entry this is 0 (zeroed in the
+	// first-entry path). On chain entry this carries forward from the
+	// previous block (written by rv8ChainExit before frame dealloc).
+	// Must happen AFTER RISC-V reg loads since those may clobber IC's
+	// host register.
+	if int(VRIC) < len(lc.alloc.Kind) {
+		lc.emitRM(x86.AMOVQ, rv8StgB, 8, rv8StgA) // RAX = sret.IC
+		switch lc.alloc.Kind[VRIC] {
+		case AllocReg:
+			host := lc.rIdx.lookup(VRIC, 0)
+			if host >= 0 {
+				lc.emit2(x86.AMOVQ, rv8StgA, host)
+			}
+		case AllocStack:
+			lc.storeSpill(rv8StgA, lc.alloc.SpillSlot[VRIC])
+		}
 	}
 
 	// Load VRMemBase/VRMemMask from sret buffer AFTER RISC-V regs,
@@ -406,7 +413,7 @@ func (lc *lowerCtxRV8) lowerInstr(ins *IRInstr) error {
 	case IRChainExit:
 		lc.rv8ChainExit(ins)
 	case IRJalrIC:
-		lc.rv8RetDyn(&IRInstr{Op: IRRetDyn, A: ins.A, Imm: 0, B: VRegZero})
+		lc.rv8JalrIC(ins)
 	case IRCall:
 		lc.rv8Call(ins)
 	case IRSyscall:
@@ -1490,6 +1497,123 @@ func (lc *lowerCtxRV8) rv8Syscall(ins *IRInstr) {
 	}
 	lc.emitMI(x86.AMOVQ, 1, rv8StgA, 16)        // Result.Status = jitEcall
 	lc.emitMI(x86.AMOVQ, 0, rv8StgA, 24)        // Result.FaultAddr = 0
+	lc.emitEpilogue()
+}
+
+// ── JALR inline cache (decoder_cache lookup) ──
+//
+// IRJalrIC: target PC in VReg A, site index in Imm.
+// Performs an inline decoder_cache lookup using params published in the
+// sret buffer by CallAOT:
+//   [sret+88]  = decoderCacheBase
+//   [sret+96]  = decoderCacheMask
+//   [sret+104] = vaddrBegin
+//   [sret+112] = segSize
+//
+// On hit: chain-exit to the cached chainEntry (no Go round-trip).
+// On miss: return to Go with Status=jitOKJalrMiss so the dispatcher
+// can compile/lookup and re-enter.
+
+func (lc *lowerCtxRV8) rv8JalrIC(ins *IRInstr) {
+	// Save target PC before storeRegsBack clobbers host registers.
+	pcSaveOff := lc.sretOffset + 16
+	if ins.A != VRegZero {
+		hr := lc.hostReg(ins.A)
+		if hr >= 0 {
+			lc.emitMR(x86.AMOVQ, hr, goasm.REG_AMD64_SP, pcSaveOff)
+		} else {
+			a := lc.stageInt(ins.A, 0)
+			lc.emitMR(x86.AMOVQ, a, goasm.REG_AMD64_SP, pcSaveOff)
+		}
+	}
+
+	icStaged := lc.stageICToScratch()
+	lc.storeRegsBack()
+
+	// Load sret and target PC.
+	lc.emitRM(x86.AMOVQ, goasm.REG_AMD64_SP, lc.sretOffset, rv8StgA) // RAX = sret
+	if ins.A != VRegZero {
+		lc.emitRM(x86.AMOVQ, goasm.REG_AMD64_SP, pcSaveOff, rv8StgB) // RCX = target
+	} else {
+		lc.emit2(x86.AXORQ, rv8StgB, rv8StgB)
+	}
+
+	// Write Result.PC = target (needed on both hit and miss paths).
+	lc.emitMR(x86.AMOVQ, rv8StgB, rv8StgA, 0)
+
+	// Write Result.IC.
+	if icStaged {
+		lc.emitRM(x86.AMOVQ, goasm.REG_AMD64_SP, lc.sretOffset+8, goasm.REG_AMD64_DX)
+		lc.emitMR(x86.AMOVQ, goasm.REG_AMD64_DX, rv8StgA, 8)
+	} else {
+		lc.emitMI(x86.AMOVQ, 0, rv8StgA, 8)
+	}
+
+	// Check if decoder_cache is available (dcBase != 0).
+	lc.emitRM(x86.AMOVQ, rv8StgA, 88, goasm.REG_AMD64_DX) // DX = dcBase
+	lc.emit2(x86.ATESTQ, goasm.REG_AMD64_DX, goasm.REG_AMD64_DX)
+	missJmp := lc.c.NewProg()
+	missJmp.As = x86.AJEQ
+	missJmp.To.Type = obj.TYPE_BRANCH
+	lc.c.Append(missJmp)
+
+	// Bounds check: (target - vaddrBegin) < segSize (unsigned).
+	// RCX = target, RAX = sret, DX = dcBase (will reload as needed).
+	lc.emit2(x86.AMOVQ, rv8StgB, goasm.REG_AMD64_DX) // DX = target (copy)
+	lc.emitRM(x86.AMOVQ, rv8StgA, 104, rv8StgB)      // RCX = vaddrBegin
+	lc.emit2(x86.ASUBQ, rv8StgB, goasm.REG_AMD64_DX)  // DX = target - vaddrBegin
+	lc.emitRM(x86.AMOVQ, rv8StgA, 112, rv8StgB)       // RCX = segSize
+	lc.emit2(x86.ACMPQ, goasm.REG_AMD64_DX, rv8StgB)  // cmp (target-vaddrBegin), segSize
+	missJmp2 := lc.c.NewProg()
+	missJmp2.As = x86.AJCC // JAE (unsigned >=) → out of bounds
+	missJmp2.To.Type = obj.TYPE_BRANCH
+	lc.c.Append(missJmp2)
+
+	// Compute byte offset: ((target - vaddrBegin) >> 1) << 3 = * 4.
+	// DX = target - vaddrBegin.
+	lc.emitRI(x86.ASHLQ, 2, goasm.REG_AMD64_DX) // DX = (target-vaddrBegin)*4
+	// Mask: DX &= dcMask.
+	lc.emitRM(x86.AMOVQ, rv8StgA, 96, rv8StgB) // RCX = dcMask
+	lc.emit2(x86.AANDQ, rv8StgB, goasm.REG_AMD64_DX)
+
+	// Load entry: DX = *(dcBase + DX).
+	lc.emitRM(x86.AMOVQ, rv8StgA, 88, rv8StgB) // RCX = dcBase
+	p := lc.c.NewProg()
+	p.As = x86.AMOVQ
+	p.From.Type = obj.TYPE_MEM
+	p.From.Reg = rv8StgB
+	p.From.Index = goasm.REG_AMD64_DX
+	p.From.Scale = 1
+	p.To.Type = obj.TYPE_REG
+	p.To.Reg = goasm.REG_AMD64_DX
+	lc.c.Append(p)
+
+	// Check entry != 0.
+	lc.emit2(x86.ATESTQ, goasm.REG_AMD64_DX, goasm.REG_AMD64_DX)
+	missJmp3 := lc.c.NewProg()
+	missJmp3.As = x86.AJEQ
+	missJmp3.To.Type = obj.TYPE_BRANCH
+	lc.c.Append(missJmp3)
+
+	// HIT: chain exit to cached chainEntry.
+	// RAX = sret, DX = chainEntry. Dealloc frame and JMP.
+	lc.emitRI(x86.AADDQ, lc.frameSize, goasm.REG_AMD64_SP)
+	jp := lc.c.NewProg()
+	jp.As = obj.AJMP
+	jp.To.Type = obj.TYPE_REG
+	jp.To.Reg = goasm.REG_AMD64_DX
+	lc.c.Append(jp)
+
+	// MISS: return to Go with jitOKJalrMiss.
+	missNop := lc.c.NewProg()
+	missNop.As = obj.ANOP
+	lc.c.Append(missNop)
+	missJmp.To.SetTarget(missNop)
+	missJmp2.To.SetTarget(missNop)
+	missJmp3.To.SetTarget(missNop)
+
+	lc.emitMI(x86.AMOVQ, int64(JitOKJalrMiss), rv8StgA, 16)
+	lc.emitMI(x86.AMOVQ, int64(ins.Imm), rv8StgA, 24)
 	lc.emitEpilogue()
 }
 
