@@ -44,18 +44,32 @@ func runSimpleLoopJIT(t *testing.T, iters uint64) (*CPU, *JIT) {
 	return cpu, jit
 }
 
-// D2 — Every compiled block has at least one chain exit. finalize emits
-// a fall-through chain return unconditionally (jit_emit_ir.go:454), so
-// any block whose IR we compile carries chain-exit metadata.
+// D2 — Compiled blocks that don't end with a boundary ECALL have at
+// least one chain exit (the fall-through emitChainableReturn).
+//
+// Blocks whose last instruction IS an ECALL at the boundary correctly
+// emit IRRet (terminal return) instead of IRChainExit, so they have
+// zero chain exits. To test the chain-exit path we extend the block
+// past the ECALL with a NOP via an exec region.
 func TestChaining_ChainExitsPopulated_OnCompiledBlock(t *testing.T) {
-	insns := []uint32{
-		ienc(opOPIMM, 0, 1, 0, 42), // ADDI x1, x0, 42
-		instrECALL,
+	mem, err := NewGuestMemory(Size64MB)
+	if err != nil {
+		t.Fatal(err)
 	}
-	cpu, mem := newTestCPU(t, Size64MB, 0x1000, insns)
 	defer mem.Free()
+	insns := []uint32{
+		ienc(opOPIMM, 0, 1, 0, 42), // ADDI x1, x0, 42 at 0x1000
+		instrECALL,                   // ECALL at 0x1004
+		0x00000013,                   // NOP at 0x1008
+		0x00000013,                   // NOP at 0x100C
+	}
+	storeInsns(mem, 0x1000, insns)
+	mem.AddExecRegion(0x1000, 0x1010, false)
+	cpu := NewCPU(*mem)
+	cpu.SetPC(0x1000)
 	cpu.Notes.Push(ecallStop)
 	jit := NewJIT()
+	jit.DisableAutoAOT = true
 	jit.RunJIT(cpu)
 
 	blk := jit.lookupBlock(0x1000)
@@ -76,14 +90,24 @@ func TestChaining_ChainExitsPopulated_OnCompiledBlock(t *testing.T) {
 // be 49 BA (REX.W+B, MOV R10 imm64). If they're not, the offset math
 // is wrong and patchChainTarget would clobber some other instruction.
 func TestChaining_PatchPointsAtImm64_OfMovABS(t *testing.T) {
-	insns := []uint32{
-		ienc(opOPIMM, 0, 1, 0, 1),
-		instrECALL,
+	mem, err := NewGuestMemory(Size64MB)
+	if err != nil {
+		t.Fatal(err)
 	}
-	cpu, mem := newTestCPU(t, Size64MB, 0x1000, insns)
 	defer mem.Free()
+	insns := []uint32{
+		ienc(opOPIMM, 0, 1, 0, 1), // ADDI at 0x1000
+		instrECALL,                  // ECALL at 0x1004
+		0x00000013,                  // NOP at 0x1008
+		0x00000013,                  // NOP at 0x100C
+	}
+	storeInsns(mem, 0x1000, insns)
+	mem.AddExecRegion(0x1000, 0x1010, false)
+	cpu := NewCPU(*mem)
+	cpu.SetPC(0x1000)
 	cpu.Notes.Push(ecallStop)
 	jit := NewJIT()
+	jit.DisableAutoAOT = true
 	jit.RunJIT(cpu)
 
 	blk := jit.lookupBlock(0x1000)
