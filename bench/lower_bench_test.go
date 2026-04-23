@@ -95,8 +95,8 @@ func BenchmarkLower_V1(b *testing.B) {
 	allocator := ir.NewFixedStaticAllocator()
 	items := make([]prepped, 0, len(results))
 	for _, r := range results {
-		pool := ir.AMD64Pool(r.Block)
-		alloc := allocator.Allocate(r.Block, pool, ir.AMD64Pinned(), nil)
+		pool := ir.RV8Pool(r.Block)
+		alloc := allocator.Allocate(r.Block, pool, ir.RV8Pinned(), nil)
 		items = append(items, prepped{r.Block, alloc})
 	}
 	b.Logf("collected %d IR blocks", len(items))
@@ -109,7 +109,7 @@ func BenchmarkLower_V1(b *testing.B) {
 		for _, it := range items {
 			ctx := goasm.New(goasm.AMD64)
 			ctx.Append(ctx.NewATEXT())
-			if _, err := ir.LowerAMD64(ctx, it.blk, it.alloc); err != nil {
+			if _, err := ir.LowerAMD64_RV8(ctx, it.blk, it.alloc); err != nil {
 				continue
 			}
 			_, _ = ctx.Assemble()
@@ -136,8 +136,8 @@ func BenchmarkLower_V2(b *testing.B) {
 	allocator := ir.NewFixedStaticAllocator()
 	items := make([]prepped, 0, len(results))
 	for _, r := range results {
-		pool := ir.AMD64Pool_V2(r.Block)
-		alloc := allocator.Allocate(r.Block, pool, ir.AMD64Pinned(), nil)
+		pool := ir.RV8Pool(r.Block)
+		alloc := allocator.Allocate(r.Block, pool, ir.RV8Pinned(), nil)
 		items = append(items, prepped{r.Block, alloc})
 	}
 	b.Logf("collected %d IR blocks", len(items))
@@ -150,7 +150,7 @@ func BenchmarkLower_V2(b *testing.B) {
 		for _, it := range items {
 			ctx := goasm.New(goasm.AMD64)
 			ctx.Append(ctx.NewATEXT())
-			if _, err := ir.LowerAMD64_V2(ctx, it.blk, it.alloc); err != nil {
+			if _, err := ir.LowerAMD64_RV8(ctx, it.blk, it.alloc); err != nil {
 				continue
 			}
 			_, _ = ctx.Assemble()
@@ -192,7 +192,6 @@ func BenchmarkExec_V2(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		cpu, mem := newBenchCPU(b, elfData)
 		jit := riscv.NewJIT()
-		jit.UseV2 = true
 		_, insns := runJITBenchGuestWith(cpu, jit)
 		totalInsns += insns
 		mem.Free()
@@ -222,11 +221,11 @@ func TestLower_CodeSize_V1_vs_V2(t *testing.T) {
 		totalIRInstrs += len(blk.Instrs)
 
 		// V1
-		pool1 := ir.AMD64Pool(blk)
-		alloc1 := allocator.Allocate(blk, pool1, ir.AMD64Pinned(), nil)
+		pool1 := ir.RV8Pool(blk)
+		alloc1 := allocator.Allocate(blk, pool1, ir.RV8Pinned(), nil)
 		ctx1 := goasm.New(goasm.AMD64)
 		ctx1.Append(ctx1.NewATEXT())
-		if _, err := ir.LowerAMD64(ctx1, blk, alloc1); err == nil {
+		if _, err := ir.LowerAMD64_RV8(ctx1, blk, alloc1); err == nil {
 			if code, err := ctx1.Assemble(); err == nil {
 				v1Total += len(code)
 				v1Count++
@@ -234,11 +233,11 @@ func TestLower_CodeSize_V1_vs_V2(t *testing.T) {
 		}
 
 		// V2
-		pool2 := ir.AMD64Pool_V2(blk)
-		alloc2 := allocator.Allocate(blk, pool2, ir.AMD64Pinned(), nil)
+		pool2 := ir.RV8Pool(blk)
+		alloc2 := allocator.Allocate(blk, pool2, ir.RV8Pinned(), nil)
 		ctx2 := goasm.New(goasm.AMD64)
 		ctx2.Append(ctx2.NewATEXT())
-		if _, err := ir.LowerAMD64_V2(ctx2, blk, alloc2); err == nil {
+		if _, err := ir.LowerAMD64_RV8(ctx2, blk, alloc2); err == nil {
 			if code, err := ctx2.Assemble(); err == nil {
 				v2Total += len(code)
 				v2Count++

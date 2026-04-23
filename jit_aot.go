@@ -52,17 +52,13 @@ func (j *JIT) jitCompileAOTSegment(
 		if res == nil || res.numInsns == 0 {
 			continue // untranslatable; decoder_cache slot stays 0
 		}
-		pool := ir.AMD64Pool(res.block)
-		pinned := ir.AMD64Pinned()
+		pool := ir.RV8Pool(res.block)
+		pinned := ir.RV8Pinned()
 		alloc := j.irAlloc.Allocate(res.block, pool, pinned, nil)
 
-		// Fresh Ctx per block — assembled bytes accumulate independently.
-		// Use LowerAMD64AOT so every JALR emits the decoder_cache fast
-		// path that reads from the sret extension published by
-		// jitcall.CallAOT.
 		ctx := goasm.New(goasm.AMD64)
 		ctx.Append(ctx.NewATEXT())
-		lowerResult, lowerErr := ir.LowerAMD64AOT(ctx, res.block, alloc)
+		lowerResult, lowerErr := ir.LowerAMD64_RV8(ctx, res.block, alloc)
 		if lowerErr != nil {
 			continue // lowering failed — skip
 		}
@@ -132,8 +128,10 @@ func (j *JIT) jitCompileAOTSegment(
 		// position into execMem — that's bc.baseOffset + patchOff.
 		for _, ce := range bc.lowerResult.ChainExits {
 			patchOff := int(ce.MovProg.Pc) + 2
-			stubAddr := blockBase + uintptr(ce.StubProg.Pc)
-			binary.LittleEndian.PutUint64(execMem[bc.baseOffset+patchOff:], uint64(stubAddr))
+			if ce.StubProg != nil {
+				stubAddr := blockBase + uintptr(ce.StubProg.Pc)
+				binary.LittleEndian.PutUint64(execMem[bc.baseOffset+patchOff:], uint64(stubAddr))
+			}
 			bc.blk.chainExits = append(bc.blk.chainExits, chainPatchInfo{
 				targetPC:    ce.TargetPC,
 				patchOffset: patchOff,

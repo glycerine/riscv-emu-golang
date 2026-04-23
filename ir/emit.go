@@ -27,11 +27,12 @@ func NewEmitter() *Emitter {
 	}
 	// Pre-allocate parameter VRegs. These correspond to the JIT block's
 	// function signature: block_entry(x[], f[], fcsr, mem_base, mem_mask).
-	e.xBase = e.Tmp()
-	e.fBase = e.Tmp()
-	e.ic = e.Tmp()
-	e.memBase = e.Tmp()
-	e.memMask = e.Tmp()
+	e.xBase = e.Tmp()   // t64 = VRXBase
+	e.fBase = e.Tmp()   // t65 = VRFBase
+	e.ic = e.Tmp()      // t66 = VRIC
+	e.memBase = e.Tmp() // t67 = VRMemBase
+	e.memMask = e.Tmp() // t68 = VRMemMask
+	e.Tmp()             // t69 = VRRegFile (reserved, pinned to RBP)
 	return e
 }
 

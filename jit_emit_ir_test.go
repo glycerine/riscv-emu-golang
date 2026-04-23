@@ -807,7 +807,7 @@ func TestSRL_ExactIR_V2(t *testing.T) {
 
 	blk := e.Block
 	j := NewJIT()
-	compiled, cerr := j.jitCompileV2(&emitResult{block: blk, numInsns: 3})
+	compiled, cerr := j.jitCompile(&emitResult{block: blk, numInsns: 3})
 	if cerr != nil {
 		t.Fatalf("compile: %v", cerr)
 	}
@@ -853,8 +853,8 @@ func TestSRL_ExactIR_DumpAlloc(t *testing.T) {
 	e.Ret(0x592, 0, ir.VRegZero)
 
 	blk := e.Block
-	pool := ir.AMD64Pool(blk)
-	pinned := ir.AMD64Pinned()
+	pool := ir.RV8Pool(blk)
+	pinned := ir.RV8Pinned()
 	j := NewJIT()
 	alloc := j.irAlloc.Allocate(blk, pool, pinned, nil)
 
@@ -976,7 +976,7 @@ func TestSRL_Block61_V1vV2(t *testing.T) {
 	r1 := jitcallCall(c1.fn, &x1v, &f1v, &fcsr1, mem.Base(), mem.Mask())
 
 	// V2
-	c2, err := j.jitCompileV2(&emitResult{block: blk, numInsns: 9})
+	c2, err := j.jitCompile(&emitResult{block: blk, numInsns: 9})
 	if err != nil {
 		t.Fatalf("V2 compile: %v", err)
 	}
@@ -1087,7 +1087,7 @@ func TestSRL_Block61_V1vV2b(t *testing.T) {
 	}
 	r1 := jitcallCall(c1.fn, &xv1, &fv1, &fc1, mem.Base(), mem.Mask())
 
-	c2, err := j.jitCompileV2(&emitResult{block: blk, numInsns: 9})
+	c2, err := j.jitCompile(&emitResult{block: blk, numInsns: 9})
 	if err != nil {
 		t.Fatalf("V2 compile: %v", err)
 	}
@@ -1142,7 +1142,6 @@ func TestSRL_RealBlock_V1vV2(t *testing.T) {
 
 	jitV1 := NewJIT()
 	jitV2 := NewJIT()
-	jitV2.UseV2 = true
 
 	for block := 0; block < 200; block++ {
 		if cpu1.pc != cpu2.pc {
@@ -1208,9 +1207,9 @@ func TestSRL_Block39_Alloc(t *testing.T) {
 	}
 	//t.Logf("block: numInsns=%d, %d IR instrs", res.numInsns, len(res.block.Instrs))
 
-	pool := ir.AMD64Pool(res.block)
+	pool := ir.RV8Pool(res.block)
 	j := NewJIT()
-	alloc := j.irAlloc.Allocate(res.block, pool, ir.AMD64Pinned(), nil)
+	alloc := j.irAlloc.Allocate(res.block, pool, ir.RV8Pinned(), nil)
 
 	// Find all intervals for x1.
 	for _, ia := range alloc.IntervalMap {
@@ -1244,7 +1243,6 @@ func TestDebugV1V2_SRL(t *testing.T) {
 	cpu.Notes.Push(func(c *CPU, n Note) NoteDisposition { return NoteHandled })
 
 	jit := NewJIT()
-	jit.DebugV1V2 = true // compile every block with V1+V2, compare results
 
 	defer func() {
 		if r := recover(); r != nil {
@@ -1286,8 +1284,8 @@ func TestDebugV1V2_SRL_DumpAlloc(t *testing.T) {
 			res := emitBlock(&cpu.mem, cpu.pc)
 			if res != nil && res.startPC <= 0x322 && res.endPC > 0x322 {
 				//t.Logf("found block: startPC=0x%x endPC=0x%x numInsns=%d irLen=%d", res.startPC, res.endPC, res.numInsns, len(res.block.Instrs))
-				pool := ir.AMD64Pool(res.block)
-				alloc := j.irAlloc.Allocate(res.block, pool, ir.AMD64Pinned(), nil)
+				pool := ir.RV8Pool(res.block)
+				alloc := j.irAlloc.Allocate(res.block, pool, ir.RV8Pinned(), nil)
 				for _, ia := range alloc.IntervalMap {
 					vr := ia.Interval.VReg
 					if vr == ir.VReg(11) || vr == ir.VReg(12) {
@@ -1325,7 +1323,6 @@ func TestMetaIterOrder_SRL(t *testing.T) {
 			cpu.SetPC(0)
 			cpu.Notes.Push(func(c *CPU, n Note) NoteDisposition { return NoteHandled })
 			jit := NewJIT()
-			jit.DebugV1V2 = true
 			defer func() {
 				if r := recover(); r != nil {
 					t.Fatalf("V1/V2 mismatch at iterStart=%d: %v", offset, r)
@@ -1371,7 +1368,6 @@ func TestMetaIterOrder_AllUI(t *testing.T) {
 					cpu.SetPC(0)
 					cpu.Notes.Push(func(c *CPU, n Note) NoteDisposition { return NoteHandled })
 					jit := NewJIT()
-					jit.DebugV1V2 = true
 					defer func() {
 						if r := recover(); r != nil {
 							t.Fatalf("V1/V2 mismatch at iterStart=%d: %v", offset, r)
@@ -1411,7 +1407,6 @@ func TestBisectBlockSize(t *testing.T) {
 		cpu.SetPC(0)
 		cpu.Notes.Push(func(c *CPU, note Note) NoteDisposition { return NoteHandled })
 		jit := NewJIT()
-		jit.DebugV1V2 = true
 
 		panicked := false
 		func() {
@@ -1456,7 +1451,6 @@ func TestBisectBlockSize2(t *testing.T) {
 		cpu.SetPC(0)
 		cpu.Notes.Push(func(c *CPU, note Note) NoteDisposition { return NoteHandled })
 		jit := NewJIT()
-		jit.DebugV1V2 = true
 
 		func() {
 			defer func() {
@@ -1505,7 +1499,6 @@ func TestBisectBlockSize3(t *testing.T) {
 		cpu.SetPC(0)
 		cpu.Notes.Push(func(c *CPU, note Note) NoteDisposition { return NoteHandled })
 		jit := NewJIT()
-		jit.DebugV1V2 = true
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
@@ -1568,8 +1561,8 @@ func TestDumpBlock_0x34e(t *testing.T) {
 			res := emitBlock(&cpu.mem, pc)
 			if res != nil && res.startPC <= 0x34e && res.endPC > 0x34e {
 				//t.Logf("block at 0x%x covers 0x34e: numInsns=%d irLen=%d", res.startPC, res.numInsns, len(res.block.Instrs))
-				pool := ir.AMD64Pool(res.block)
-				alloc := jit.irAlloc.Allocate(res.block, pool, ir.AMD64Pinned(), nil)
+				pool := ir.RV8Pool(res.block)
+				alloc := jit.irAlloc.Allocate(res.block, pool, ir.RV8Pinned(), nil)
 				// Print IR and allocation for shift instructions
 				for i, ins := range res.block.Instrs {
 					if ins.Op == ir.IRShr || ins.Op == ir.IRShl || ins.Op == ir.IRSar {
@@ -1629,8 +1622,8 @@ func TestDumpBlock_0x34e_v2(t *testing.T) {
 	//t.Logf("block: start=0x%x end=0x%x insns=%d irLen=%d", res.startPC, res.endPC, res.numInsns, len(res.block.Instrs))
 
 	j := NewJIT()
-	pool := ir.AMD64Pool(res.block)
-	alloc := j.irAlloc.Allocate(res.block, pool, ir.AMD64Pinned(), nil)
+	pool := ir.RV8Pool(res.block)
+	alloc := j.irAlloc.Allocate(res.block, pool, ir.RV8Pinned(), nil)
 	for i, ins := range res.block.Instrs {
 		if ins.Op == ir.IRShr || ins.Op == ir.IRShl || ins.Op == ir.IRSar {
 			aHost := findHost(alloc, ins.A, i)
@@ -1661,9 +1654,9 @@ func TestDumpBlock_0x34e_v3(t *testing.T) {
 		t.Fatal("nil")
 	}
 
-	pool := ir.AMD64Pool(res.block)
+	pool := ir.RV8Pool(res.block)
 	j := NewJIT()
-	alloc := j.irAlloc.Allocate(res.block, pool, ir.AMD64Pinned(), nil)
+	alloc := j.irAlloc.Allocate(res.block, pool, ir.RV8Pinned(), nil)
 
 	//t.Logf("StackSlots=%d", alloc.StackSlots)
 	for i := 0; i < len(alloc.Kind); i++ {
@@ -1723,13 +1716,13 @@ func TestNativeTrace_0x34e(t *testing.T) {
 
 	// Compile with V1.
 	j := NewJIT()
-	_, v1dbg, err := j.jitCompileDebug(res, false)
+	_, v1dbg, err := j.jitCompileDebug(res)
 	if err != nil {
 		t.Fatalf("V1 compile: %v", err)
 	}
 
 	// Compile with V2.
-	_, v2dbg, err := j.jitCompileDebug(res, true)
+	_, v2dbg, err := j.jitCompileDebug(res)
 	if err != nil {
 		t.Fatalf("V2 compile: %v", err)
 	}
@@ -1776,7 +1769,7 @@ func TestNativeTrace_0x34e(t *testing.T) {
 	copy(xSnap[:], cpu.x[:])
 
 	// Execute with V1.
-	blkV1, _, err := jit.jitCompileDebug(res, false)
+	blkV1, _, err := jit.jitCompileDebug(res)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1787,7 +1780,7 @@ func TestNativeTrace_0x34e(t *testing.T) {
 
 	// Restore and execute with V2.
 	copy(cpu.x[:], xSnap[:])
-	blkV2, _, err := jit.jitCompileDebug(res, true)
+	blkV2, _, err := jit.jitCompileDebug(res)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1871,7 +1864,7 @@ func TestDumpBlock_ld_st_0x1a0(t *testing.T) {
 
 	// Also dump the Prog listing.
 	j := NewJIT()
-	_, dbg, cerr := j.jitCompileDebug(res, false)
+	_, dbg, cerr := j.jitCompileDebug(res)
 	if cerr != nil {
 		t.Fatalf("V1 compile: %v", cerr)
 	}
@@ -1993,11 +1986,11 @@ func testNativeTraceW(t *testing.T, elfPath string, targetBlock int) {
 	//t.Logf("block: start=0x%x end=0x%x insns=%d irLen=%d", res.startPC, res.endPC, res.numInsns, len(res.block.Instrs))
 
 	// Compile with V1 and V2.
-	blkV1, v1dbg, err := jit.jitCompileDebug(res, false)
+	blkV1, v1dbg, err := jit.jitCompileDebug(res)
 	if err != nil {
 		t.Fatalf("V1 compile: %v", err)
 	}
-	blkV2, v2dbg, err := jit.jitCompileDebug(res, true)
+	blkV2, v2dbg, err := jit.jitCompileDebug(res)
 	if err != nil {
 		t.Fatalf("V2 compile: %v", err)
 	}

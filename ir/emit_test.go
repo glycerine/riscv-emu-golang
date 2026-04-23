@@ -10,9 +10,9 @@ func TestEmitter_NewEmitter(t *testing.T) {
 	if len(e.Block.Instrs) != 0 {
 		t.Errorf("Block.Instrs has %d entries, want 0", len(e.Block.Instrs))
 	}
-	// 5 param VRegs should have been allocated.
-	if e.nextTmp != VRegTempStart+5 {
-		t.Errorf("nextTmp = %d, want %d", e.nextTmp, VRegTempStart+5)
+	// 6 param VRegs should have been allocated (5 params + VRRegFile).
+	if e.nextTmp != VRegTempStart+6 {
+		t.Errorf("nextTmp = %d, want %d", e.nextTmp, VRegTempStart+6)
 	}
 	if e.xBase != VReg(64) || e.fBase != VReg(65) || e.ic != VReg(66) ||
 		e.memBase != VReg(67) || e.memMask != VReg(68) {
@@ -28,8 +28,8 @@ func TestEmitter_Tmp(t *testing.T) {
 	if first >= second {
 		t.Errorf("Tmp not monotonic: first=%d second=%d", first, second)
 	}
-	if first != VRegTempStart+5 { // 5 params already allocated
-		t.Errorf("first Tmp = %d, want %d", first, VRegTempStart+5)
+	if first != VRegTempStart+6 { // 5 params + VRRegFile already allocated
+		t.Errorf("first Tmp = %d, want %d", first, VRegTempStart+6)
 	}
 }
 

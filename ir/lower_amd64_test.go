@@ -16,22 +16,7 @@ import (
 // lowerBlock runs the full pipeline: allocate + lower + assemble.
 func lowerBlock(t *testing.T, b *Block) ([]byte, *Allocation) {
 	t.Helper()
-	pool := AMD64Pool(b)
-	pinned := AMD64Pinned()
-	alloc := helperTestAllocate(b, pool, pinned, nil)
-
-	ctx := goasm.New(goasm.AMD64)
-	ctx.Append(ctx.NewATEXT())
-	if _, err := LowerAMD64(ctx, b, alloc); err != nil {
-		t.Fatalf("LowerAMD64: %v", err)
-	}
-	ctx.Append(ctx.NewRET()) // safety net RET
-
-	bytes, err := ctx.Assemble()
-	if err != nil {
-		t.Fatalf("Assemble: %v", err)
-	}
-	return bytes, alloc
+	return lowerBlockRV8(t, b)
 }
 
 // helperTestAllocate runs the fixed static register allocator on b.
@@ -43,110 +28,22 @@ func helperTestAllocate(b *Block, pool RegPool, pinned map[VReg]int16, freq []fl
 // lowerBlockWithRet runs pipeline for blocks that already contain IRRet.
 func lowerBlockWithRet(t *testing.T, b *Block) ([]byte, *Allocation) {
 	t.Helper()
-	pool := AMD64Pool(b)
-	pinned := AMD64Pinned()
-	alloc := helperTestAllocate(b, pool, pinned, nil)
-
-	ctx := goasm.New(goasm.AMD64)
-	ctx.Append(ctx.NewATEXT())
-	if _, err := LowerAMD64(ctx, b, alloc); err != nil {
-		t.Fatalf("LowerAMD64: %v", err)
-	}
-
-	bytes, err := ctx.Assemble()
-	if err != nil {
-		t.Fatalf("Assemble: %v", err)
-	}
-	return bytes, alloc
+	return lowerBlockRV8(t, b)
 }
 
 // ── Phase A: Types, Stubs, Pool Definitions ──
 
-func TestAMD64Pool_NoDiv(t *testing.T) {
+func TestLowerRV8_EmptyBlock(t *testing.T) {
 	b := NewBlock()
-	// No DIV/MUL ops → full pool.
-	b.Instrs = []IRInstr{
-		{Op: IRAdd, T: I64, Dst: VReg(1), A: VReg(2), B: VReg(3)},
-	}
-	b.maxVreg = MaxVReg(b)
-	pool := AMD64Pool(b)
-	if len(pool.IntRegs) != 7 {
-		t.Errorf("want 7 int regs, got %d", len(pool.IntRegs))
-	}
-	if len(pool.FPRegs) != 16 {
-		t.Errorf("want 16 FP regs, got %d", len(pool.FPRegs))
-	}
-	// Verify RAX and RDX are present.
-	hasAX, hasDX := false, false
-	for _, r := range pool.IntRegs {
-		if r == goasm.REG_AMD64_AX {
-			hasAX = true
-		}
-		if r == goasm.REG_AMD64_DX {
-			hasDX = true
-		}
-	}
-	if !hasAX || !hasDX {
-		t.Errorf("no-div pool should contain RAX and RDX")
-	}
-}
-
-func TestAMD64Pool_WithDiv(t *testing.T) {
-	b := NewBlock()
-	b.Instrs = []IRInstr{
-		{Op: IRDivS, T: I64, Dst: VReg(1), A: VReg(2), B: VReg(3)},
-	}
-	pool := AMD64Pool(b)
-	if len(pool.IntRegs) != 5 {
-		t.Errorf("want 5 int regs (no RAX/RDX/RBP), got %d", len(pool.IntRegs))
-	}
-	// Verify RAX and RDX are absent.
-	for _, r := range pool.IntRegs {
-		if r == goasm.REG_AMD64_AX {
-			t.Error("div pool should not contain RAX")
-		}
-		if r == goasm.REG_AMD64_DX {
-			t.Error("div pool should not contain RDX")
-		}
-	}
-}
-
-func TestAMD64Pinned(t *testing.T) {
-	pinned := AMD64Pinned()
-	if len(pinned) != 5 {
-		t.Errorf("want 5 pinned VRegs, got %d", len(pinned))
-	}
-	checks := map[VReg]int16{
-		VRXBase:   goasm.REG_AMD64_R12,
-		VRFBase:   goasm.REG_AMD64_R13,
-		VRIC:      goasm.REG_AMD64_BP,
-		VRMemBase: goasm.REG_AMD64_R14,
-		VRMemMask: goasm.REG_AMD64_R15,
-	}
-	for vr, wantReg := range checks {
-		got, ok := pinned[vr]
-		if !ok {
-			t.Errorf("pinned[%v] missing", vr)
-			continue
-		}
-		if got != wantReg {
-			t.Errorf("pinned[%v] = %d, want %d", vr, got, wantReg)
-		}
-	}
-}
-
-func TestLowerAMD64_EmptyBlock(t *testing.T) {
-	b := NewBlock()
-	pool := AMD64Pool(b)
-	alloc := helperTestAllocate(b, pool, AMD64Pinned(), nil)
+	pool := RV8Pool(b)
+	alloc := helperTestAllocate(b, pool, RV8Pinned(), nil)
 
 	ctx := goasm.New(goasm.AMD64)
 	ctx.Append(ctx.NewATEXT())
-	_, err := LowerAMD64(ctx, b, alloc)
+	_, err := LowerAMD64_RV8(ctx, b, alloc)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	ctx.Append(ctx.NewRET())
 	bytes, err := ctx.Assemble()
 	if err != nil {
 		t.Fatalf("Assemble: %v", err)
@@ -156,11 +53,11 @@ func TestLowerAMD64_EmptyBlock(t *testing.T) {
 	}
 }
 
-func TestLowerAMD64_NilAlloc(t *testing.T) {
+func TestLowerRV8_NilAlloc(t *testing.T) {
 	b := NewBlock()
 	ctx := goasm.New(goasm.AMD64)
 	ctx.Append(ctx.NewATEXT())
-	_, err := LowerAMD64(ctx, b, nil)
+	_, err := LowerAMD64_RV8(ctx, b, nil)
 	if err == nil {
 		t.Error("expected error for nil allocation")
 	}
@@ -499,8 +396,6 @@ func TestLower_IRMarkLive_NoOp(t *testing.T) {
 // ── Verify all ops have a handler ──
 
 func TestLower_AllOpsHandled(t *testing.T) {
-	// Build a block with one of each non-pseudo op and verify LowerAMD64
-	// doesn't return "unhandled op".
 	allOps := []IROp{
 		IRLoad, IRStore, IRLoadX, IRStoreX,
 		IRAdd, IRAddImm, IRSub, IRSubImm, IRMul,
@@ -517,7 +412,7 @@ func TestLower_AllOpsHandled(t *testing.T) {
 		IRMarkLive, IRMarkDead, IRWriteback,
 	}
 
-	lc := &lowerCtx{
+	lc := &lowerCtxRV8{
 		blk:       &Block{CTab: []CSym{{Name: "test", Addr: 0x12345}}},
 		alloc:     &Allocation{Kind: make([]AllocKind, 256), SpillSlot: make([]int16, 256)},
 		c:         goasm.New(goasm.AMD64),
@@ -526,7 +421,6 @@ func TestLower_AllOpsHandled(t *testing.T) {
 	}
 	lc.c.Append(lc.c.NewATEXT())
 
-	// Place a label so branch targets resolve.
 	lc.placeLabel(Label(0))
 
 	for _, op := range allOps {

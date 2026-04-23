@@ -11,7 +11,7 @@ import (
 // Part A — chain-exit foundation tests at the jitCompile boundary.
 //
 // A1/A4/A5 live in ir/lower_amd64_chain_test.go and exercise LowerAMD64
-// directly. The tests here drive jitCompileWith(useV2=false) — the Fixed
+// directly. The tests here drive jitCompile(useV2=false) — the Fixed
 // Static Mapping production path — and inspect the compiledBlock's
 // chainExits and the bytes at patchOffset within the executable page.
 //
@@ -32,7 +32,7 @@ func buildChainExitOnlyBlock(targetPC uint64) *ir.Block {
 	return b
 }
 
-// A2 — After jitCompileWith(useV2=false), the compiled block's chainExits
+// A2 — After jitCompile(useV2=false), the compiled block's chainExits
 // are populated and their patchOffset points into the executable page.
 // The 8 bytes at patchOffset equal the slow-exit stub address (codeBase +
 // StubProg.Pc), which is how jit_native.go backpatches the sentinel.
@@ -41,9 +41,9 @@ func TestJITChain_Foundation_StubBackpatched(t *testing.T) {
 
 	blk := buildChainExitOnlyBlock(targetPC)
 	j := NewJIT() // Fixed Static Mapping by default.
-	compiled, err := j.jitCompileWith(&emitResult{block: blk, numInsns: 0}, false)
+	compiled, err := j.jitCompile(&emitResult{block: blk, numInsns: 0})
 	if err != nil {
-		t.Fatalf("jitCompileWith: %v", err)
+		t.Fatalf("jitCompile: %v", err)
 	}
 	if len(compiled.chainExits) != 1 {
 		t.Fatalf("len(chainExits) = %d, want 1 (emitChainableReturn's TODO "+
@@ -74,17 +74,16 @@ func TestJITChain_Foundation_StubBackpatched(t *testing.T) {
 		t.Errorf("imm64 at patchOffset is zero (patchOffset=%d)", ce.patchOffset)
 	}
 
-	// Sanity: the two bytes just before patchOffset should be 0x49 0xBA
-	// (REX.W+B + MOV-to-R10 opcode). If this fires, the +2 offset is pointed
-	// at the imm64 slice but the encoding it's embedded in is wrong.
+	// Sanity: the two bytes just before patchOffset should be 0x48 0xB9
+	// (REX.W + MOV-to-RCX opcode). rv8 uses RCX as the chain-exit staging reg.
 	if ce.patchOffset < 2 {
 		t.Fatalf("patchOffset = %d < 2, can't check MOVABS prefix", ce.patchOffset)
 	}
 	//nolint:gosec // test-only inspection
 	prefix := (*[2]byte)(unsafe.Pointer(compiled.fn + uintptr(ce.patchOffset-2)))
-	if prefix[0] != 0x49 || prefix[1] != 0xBA {
-		t.Errorf("bytes at patchOffset-2 = %02x %02x, want 49 BA "+
-			"(REX.W+B, MOV R10 imm64)", prefix[0], prefix[1])
+	if prefix[0] != 0x48 || prefix[1] != 0xB9 {
+		t.Errorf("bytes at patchOffset-2 = %02x %02x, want 48 B9 "+
+			"(REX.W, MOV RCX imm64)", prefix[0], prefix[1])
 	}
 }
 
@@ -96,9 +95,9 @@ func TestJITChain_Foundation_PatchTargetRoundtrip(t *testing.T) {
 
 	blk := buildChainExitOnlyBlock(targetPC)
 	j := NewJIT()
-	compiled, err := j.jitCompileWith(&emitResult{block: blk, numInsns: 0}, false)
+	compiled, err := j.jitCompile(&emitResult{block: blk, numInsns: 0})
 	if err != nil {
-		t.Fatalf("jitCompileWith: %v", err)
+		t.Fatalf("jitCompile: %v", err)
 	}
 	if len(compiled.chainExits) != 1 {
 		t.Fatalf("len(chainExits) = %d, want 1", len(compiled.chainExits))

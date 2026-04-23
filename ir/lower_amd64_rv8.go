@@ -118,6 +118,11 @@ func LowerAMD64_RV8(ctx *goasm.Ctx, b *Block, alloc *Allocation) (*LowerResult, 
 		return nil, fmt.Errorf("ir.LowerAMD64_RV8: %d unresolved forward labels", len(lc.pending))
 	}
 
+	// Emit slow exit stubs for chain exits that aren't resolved at link time.
+	for i := range lc.chainExits {
+		lc.chainExits[i].stubProg = lc.emitSlowExitStub(lc.chainExits[i].targetPC)
+	}
+
 	result := &LowerResult{
 		ChainEntryProg: lc.chainEntryProg,
 	}
@@ -125,6 +130,15 @@ func LowerAMD64_RV8(ctx *goasm.Ctx, b *Block, alloc *Allocation) (*LowerResult, 
 		result.ChainExits = append(result.ChainExits, ChainExitDesc{
 			TargetPC: lc.chainExits[i].targetPC,
 			MovProg:  lc.chainExits[i].movProg,
+			StubProg: lc.chainExits[i].stubProg,
+		})
+	}
+	for i := range lc.jalrICs {
+		result.JalrICs = append(result.JalrICs, JalrICDesc{
+			SiteIdx:  lc.jalrICs[i].siteIdx,
+			PcMov:    lc.jalrICs[i].pcMov,
+			FnMov:    lc.jalrICs[i].fnMov,
+			StubProg: lc.jalrICs[i].stubProg,
 		})
 	}
 	return result, nil
@@ -137,17 +151,25 @@ func (lc *lowerCtxRV8) emitPrologue() {
 	// RBP = register file base, RSI by trampoline ABI.
 	lc.emit2(x86.AMOVQ, goasm.REG_AMD64_SI, goasm.REG_AMD64_BP)
 
+	// Publish memBase (R8) and memMask (R9) into the sret buffer so they
+	// survive across chained blocks. Uses RDI (sret) directly — must
+	// happen BEFORE the IC zero which may clobber DI.
+	lc.emitMR(x86.AMOVQ, goasm.REG_AMD64_R8, goasm.REG_AMD64_DI, 128)
+	lc.emitMR(x86.AMOVQ, goasm.REG_AMD64_R9, goasm.REG_AMD64_DI, 136)
+
+	// Copy sret from RDI to RAX so first-entry and chain-entry share
+	// the same code path below (chain entry arrives with RAX=sret).
+	lc.emit2(x86.AMOVQ, goasm.REG_AMD64_DI, rv8StgA)
+
 	// Zero IC (first entry only; chain entry preserves IC across blocks).
+	// Must happen AFTER sret publish and copy since VRIC's host register
+	// might be DI.
 	if int(VRIC) < len(lc.alloc.Kind) && lc.alloc.Kind[VRIC] == AllocReg {
 		host := lc.rIdx.lookup(VRIC, 0)
 		if host >= 0 {
 			lc.emit2(x86.AXORQ, host, host)
 		}
 	}
-
-	// Copy sret from RDI to RAX so first-entry and chain-entry share
-	// the same code path below (chain entry arrives with RAX=sret).
-	lc.emit2(x86.AMOVQ, goasm.REG_AMD64_DI, rv8StgA)
 
 	// ── Chain entry point ──
 	// Chained blocks JMP here with RAX=sret, RBP already set.
@@ -182,6 +204,44 @@ func (lc *lowerCtxRV8) emitPrologue() {
 				off := int64(rv8FPRegOffset) + int64(vr-32)*8
 				lc.emitRM(x86.AMOVSD, goasm.REG_AMD64_BP, off, host)
 			}
+		}
+	}
+
+	// Initialize parameter VRegs that can't be resolved statically.
+	// VRXBase/VRFBase/VRRegFile are handled in stageInt (always RBP-based).
+	// VRIC, VRMemBase, VRMemMask need explicit initialization here.
+	lc.emitRM(x86.AMOVQ, goasm.REG_AMD64_SP, lc.sretOffset, rv8StgB) // RCX = sret
+
+	// Zero VRIC spill slot if stack-allocated.
+	if int(VRIC) < len(lc.alloc.Kind) && lc.alloc.Kind[VRIC] == AllocStack {
+		lc.emitMI(x86.AMOVQ, 0, goasm.REG_AMD64_SP, int64(lc.alloc.SpillSlot[VRIC])*8)
+	}
+
+	// Load VRMemBase/VRMemMask from sret buffer AFTER RISC-V regs,
+	// because a RISC-V reg may share the same host register and we
+	// need memBase/memMask to win.
+	if int(VRMemBase) < len(lc.alloc.Kind) {
+		switch lc.alloc.Kind[VRMemBase] {
+		case AllocReg:
+			host := lc.rIdx.lookup(VRMemBase, 0)
+			if host >= 0 {
+				lc.emitRM(x86.AMOVQ, rv8StgB, 128, host)
+			}
+		case AllocStack:
+			lc.emitRM(x86.AMOVQ, rv8StgB, 128, rv8StgA)
+			lc.storeSpill(rv8StgA, lc.alloc.SpillSlot[VRMemBase])
+		}
+	}
+	if int(VRMemMask) < len(lc.alloc.Kind) {
+		switch lc.alloc.Kind[VRMemMask] {
+		case AllocReg:
+			host := lc.rIdx.lookup(VRMemMask, 0)
+			if host >= 0 {
+				lc.emitRM(x86.AMOVQ, rv8StgB, 136, host)
+			}
+		case AllocStack:
+			lc.emitRM(x86.AMOVQ, rv8StgB, 136, rv8StgA)
+			lc.storeSpill(rv8StgA, lc.alloc.SpillSlot[VRMemMask])
 		}
 	}
 }
@@ -350,7 +410,7 @@ func (lc *lowerCtxRV8) lowerInstr(ins *IRInstr) error {
 	case IRCall:
 		lc.rv8Call(ins)
 	case IRSyscall:
-		lc.rv8Ret(&IRInstr{Op: IRRet, Imm: ins.Imm, Imm2: 1, A: VRegZero})
+		lc.rv8Syscall(ins)
 
 	// FP arithmetic
 	case IRFAdd:
@@ -401,6 +461,23 @@ func (lc *lowerCtxRV8) stageInt(v VReg, idx int) int16 {
 	}
 	if v == VRegZero {
 		lc.emit2(x86.AXORQ, stg, stg)
+		return stg
+	}
+	// VRXBase and VRRegFile are the register file base, always in RBP.
+	if v == VRXBase || v == VRRegFile {
+		lc.emit2(x86.AMOVQ, goasm.REG_AMD64_BP, stg)
+		return stg
+	}
+	// VRFBase is the FP register file base at RBP+256.
+	if v == VRFBase {
+		p := lc.c.NewProg()
+		p.As = x86.ALEAQ
+		p.From.Type = obj.TYPE_MEM
+		p.From.Reg = goasm.REG_AMD64_BP
+		p.From.Offset = int64(rv8FPRegOffset)
+		p.To.Type = obj.TYPE_REG
+		p.To.Reg = stg
+		lc.c.Append(p)
 		return stg
 	}
 	hr := lc.hostReg(v)
@@ -473,6 +550,28 @@ func (lc *lowerCtxRV8) commitDst(v VReg, hostReg int16) {
 			lc.storeSpill(hostReg, lc.alloc.SpillSlot[v])
 		}
 	}
+}
+
+// stageICToScratch saves the instruction counter to [RSP+sretOffset+8]
+// before storeRegsBack, which might clobber the host register.
+// Returns true if the IC was staged (caller should write it to sret).
+func (lc *lowerCtxRV8) stageICToScratch() bool {
+	if int(VRIC) >= len(lc.alloc.Kind) {
+		return false
+	}
+	switch lc.alloc.Kind[VRIC] {
+	case AllocReg:
+		hr := lc.hostReg(VRIC)
+		if hr >= 0 {
+			lc.emitMR(x86.AMOVQ, hr, goasm.REG_AMD64_SP, lc.sretOffset+8)
+			return true
+		}
+	case AllocStack:
+		lc.loadSpill(lc.alloc.SpillSlot[VRIC], rv8StgA)
+		lc.emitMR(x86.AMOVQ, rv8StgA, goasm.REG_AMD64_SP, lc.sretOffset+8)
+		return true
+	}
+	return false
 }
 
 // ── Register resolution ──
@@ -832,25 +931,31 @@ func (lc *lowerCtxRV8) rv8MulHigh(ins *IRInstr, signed bool) {
 }
 
 func (lc *lowerCtxRV8) rv8MulHSU(ins *IRInstr) {
-	a := lc.stageInt(ins.A, 0) // RAX = signed
-	b := lc.stageInt(ins.B, 1) // RCX = unsigned
+	a := lc.stageInt(ins.A, 0) // RAX = signed operand
+	b := lc.stageInt(ins.B, 1) // RCX = unsigned operand
 
 	rdxLive := lc.isRegLive(goasm.REG_AMD64_DX)
 	if rdxLive {
 		lc.emitMR(x86.AMOVQ, goasm.REG_AMD64_DX, goasm.REG_AMD64_SP, lc.sretOffset+8)
 	}
 
-	lc.emit2(x86.AMOVQ, a, goasm.REG_AMD64_AX)
-	lc.emitRI(x86.ASARQ, 63, a) // RAX staging = sign bits
-	lc.emit2(x86.AANDQ, b, a)   // correction = (a_neg) ? b : 0
+	// Compute correction = (A < 0) ? B : 0 using RDX as temp.
+	// A is in RAX — keep it there for MULQ.
+	lc.emit2(x86.AMOVQ, a, goasm.REG_AMD64_DX)       // RDX = A
+	lc.emitRI(x86.ASARQ, 63, goasm.REG_AMD64_DX)      // RDX = sign(A)
+	lc.emit2(x86.AANDQ, b, goasm.REG_AMD64_DX)        // RDX = correction
+	lc.emitMR(x86.AMOVQ, goasm.REG_AMD64_DX, goasm.REG_AMD64_SP, lc.sretOffset+16) // save correction
 
+	// Unsigned multiply: RDX:RAX = A * B (A still in RAX).
 	p := lc.c.NewProg()
 	p.As = x86.AMULQ
 	p.From.Type = obj.TYPE_REG
 	p.From.Reg = b
 	lc.c.Append(p)
 
-	lc.emit2(x86.ASUBQ, a, goasm.REG_AMD64_DX)
+	// Subtract correction from high bits.
+	lc.emitRM(x86.AMOVQ, goasm.REG_AMD64_SP, lc.sretOffset+16, rv8StgA)
+	lc.emit2(x86.ASUBQ, rv8StgA, goasm.REG_AMD64_DX)
 
 	dst := lc.writeDst(ins.Dst)
 	if dst != goasm.REG_AMD64_DX {
@@ -1006,16 +1111,7 @@ func (lc *lowerCtxRV8) rv8Jump(ins *IRInstr) {
 }
 
 func (lc *lowerCtxRV8) rv8Ret(ins *IRInstr) {
-	// Stage IC before storing regs (VRIC might be in a host reg we'll clobber).
-	var icStaged bool
-	if int(VRIC) < len(lc.alloc.Kind) && lc.alloc.Kind[VRIC] == AllocReg {
-		hr := lc.hostReg(VRIC)
-		if hr >= 0 {
-			// Save IC to a scratch location on stack before storing regs back.
-			lc.emitMR(x86.AMOVQ, hr, goasm.REG_AMD64_SP, lc.sretOffset+8)
-			icStaged = true
-		}
-	}
+	icStaged := lc.stageICToScratch()
 
 	lc.storeRegsBack()
 
@@ -1060,15 +1156,7 @@ func (lc *lowerCtxRV8) rv8RetDyn(ins *IRInstr) {
 		}
 	}
 
-	// Stage IC.
-	var icStaged bool
-	if int(VRIC) < len(lc.alloc.Kind) && lc.alloc.Kind[VRIC] == AllocReg {
-		hr := lc.hostReg(VRIC)
-		if hr >= 0 {
-			lc.emitMR(x86.AMOVQ, hr, goasm.REG_AMD64_SP, lc.sretOffset+8)
-			icStaged = true
-		}
-	}
+	icStaged := lc.stageICToScratch()
 
 	lc.storeRegsBack()
 
@@ -1119,10 +1207,20 @@ func (lc *lowerCtxRV8) rv8RetDyn(ins *IRInstr) {
 // across chained blocks).
 
 func (lc *lowerCtxRV8) rv8ChainExit(ins *IRInstr) {
+	// Save IC to sret.IC BEFORE storeRegsBack/dealloc — the slow exit
+	// stub reads it from sret after the frame is gone.
+	icStaged := lc.stageICToScratch()
+
 	lc.storeRegsBack()
 
 	// Load sret from stack into RAX — carry it to the next block.
 	lc.emitRM(x86.AMOVQ, goasm.REG_AMD64_SP, lc.sretOffset, rv8StgA)
+
+	// Write IC to sret.IC while the frame is still alive.
+	if icStaged {
+		lc.emitRM(x86.AMOVQ, goasm.REG_AMD64_SP, lc.sretOffset+8, rv8StgB)
+		lc.emitMR(x86.AMOVQ, rv8StgB, rv8StgA, 8)
+	}
 
 	// Deallocate frame.
 	lc.emitRI(x86.AADDQ, lc.frameSize, goasm.REG_AMD64_SP)
@@ -1148,6 +1246,38 @@ func (lc *lowerCtxRV8) rv8ChainExit(ins *IRInstr) {
 	jp.To.Type = obj.TYPE_REG
 	jp.To.Reg = rv8StgB
 	lc.c.Append(jp)
+}
+
+// emitSlowExitStub emits a fallback stub for chain exits that can't be
+// resolved at link time. The stub stores regs back, writes the target PC
+// to the sret result, and returns to the trampoline.
+func (lc *lowerCtxRV8) emitSlowExitStub(targetPC uint64) *obj.Prog {
+	first := lc.c.NewProg()
+	first.As = obj.ANOP
+	lc.c.Append(first)
+
+	// RAX holds sret from the chain exit path (loaded before frame dealloc).
+	// RBP still points at the register file. Regs were already stored back
+	// by the chain exit before it deallocated the frame. sret.IC was
+	// written by rv8ChainExit before dealloc — don't overwrite it.
+
+	// Result.PC
+	lc.loadImm(int64(targetPC), rv8StgB)
+	lc.emitMR(x86.AMOVQ, rv8StgB, rv8StgA, 0)
+
+	// Result.IC — already set by rv8ChainExit; leave it.
+
+	// Result.Status = 0
+	lc.emitMI(x86.AMOVQ, 0, rv8StgA, 16)
+
+	// Result.FaultAddr = 0
+	lc.emitMI(x86.AMOVQ, 0, rv8StgA, 24)
+
+	p := lc.c.NewProg()
+	p.As = obj.ARET
+	lc.c.Append(p)
+
+	return first
 }
 
 func (lc *lowerCtxRV8) rv8Call(ins *IRInstr) {
@@ -1201,6 +1331,108 @@ func (lc *lowerCtxRV8) rv8Call(ins *IRInstr) {
 	if saveSize > 0 {
 		lc.emitRI(x86.AADDQ, saveSize, goasm.REG_AMD64_SP)
 	}
+}
+
+// ── Syscall ──
+//
+// IRSyscall: call the SysV dispatcher with (xBase, memBase, memMask).
+// On return, RAX holds the status: 0=jitOK (chain-exit to resumePC),
+// non-zero=jitEcall (return to Go dispatcher).
+// WriteBackAll was already emitted by the emitter before IRSyscall.
+
+func (lc *lowerCtxRV8) rv8Syscall(ins *IRInstr) {
+	if int(ins.Imm2) >= len(lc.blk.CTab) {
+		lc.rv8Ret(&IRInstr{Op: IRRet, Imm: ins.Imm, Imm2: 1, A: VRegZero})
+		return
+	}
+	sym := lc.blk.CTab[ins.Imm2]
+
+	// Stage IC to scratch BEFORE the CALL — the call clobbers caller-saved regs.
+	icStaged := lc.stageICToScratch()
+
+	// Set up SysV args: RDI=xBase(RBP), RSI=memBase, RDX=memMask.
+	lc.emit2(x86.AMOVQ, goasm.REG_AMD64_BP, goasm.REG_AMD64_DI)
+
+	memBaseHost := lc.hostReg(VRMemBase)
+	if memBaseHost >= 0 {
+		lc.emit2(x86.AMOVQ, memBaseHost, goasm.REG_AMD64_SI)
+	} else if int(VRMemBase) < len(lc.alloc.Kind) && lc.alloc.Kind[VRMemBase] == AllocStack {
+		lc.loadSpill(lc.alloc.SpillSlot[VRMemBase], goasm.REG_AMD64_SI)
+	} else {
+		lc.emitRM(x86.AMOVQ, goasm.REG_AMD64_SP, lc.sretOffset, rv8StgA)
+		lc.emitRM(x86.AMOVQ, rv8StgA, 128, goasm.REG_AMD64_SI)
+	}
+
+	memMaskHost := lc.hostReg(VRMemMask)
+	if memMaskHost >= 0 {
+		lc.emit2(x86.AMOVQ, memMaskHost, goasm.REG_AMD64_DX)
+	} else if int(VRMemMask) < len(lc.alloc.Kind) && lc.alloc.Kind[VRMemMask] == AllocStack {
+		lc.loadSpill(lc.alloc.SpillSlot[VRMemMask], goasm.REG_AMD64_DX)
+	} else {
+		lc.emitRM(x86.AMOVQ, goasm.REG_AMD64_SP, lc.sretOffset, rv8StgA)
+		lc.emitRM(x86.AMOVQ, rv8StgA, 136, goasm.REG_AMD64_DX)
+	}
+
+	lc.loadImm(int64(sym.Addr), rv8StgA)
+	p := lc.c.NewProg()
+	p.As = obj.ACALL
+	p.To.Type = obj.TYPE_REG
+	p.To.Reg = rv8StgA
+	lc.c.Append(p)
+
+	// RAX = dispatcher return: 0=jitOK, non-zero=jitEcall.
+	lc.emit2(x86.ATESTQ, goasm.REG_AMD64_AX, goasm.REG_AMD64_AX)
+	slowPath := lc.c.NewProg()
+	slowPath.As = x86.AJNE
+	slowPath.To.Type = obj.TYPE_BRANCH
+	lc.c.Append(slowPath)
+
+	// Fast path (status=0): write IC to sret, then chain exit.
+	lc.emitRM(x86.AMOVQ, goasm.REG_AMD64_SP, lc.sretOffset, rv8StgA) // RAX = sret
+	if icStaged {
+		lc.emitRM(x86.AMOVQ, goasm.REG_AMD64_SP, lc.sretOffset+8, rv8StgB)
+		lc.emitMR(x86.AMOVQ, rv8StgB, rv8StgA, 8) // sret.IC = saved IC
+	}
+	lc.emitRI(x86.AADDQ, lc.frameSize, goasm.REG_AMD64_SP)
+
+	const sentinel = int64(0x7BADC0DE7BADC0DE)
+	movProg := lc.c.NewProg()
+	movProg.As = x86.AMOVQ
+	movProg.From.Type = obj.TYPE_CONST
+	movProg.From.Offset = sentinel
+	movProg.To.Type = obj.TYPE_REG
+	movProg.To.Reg = rv8StgB
+	lc.c.Append(movProg)
+
+	lc.chainExits = append(lc.chainExits, chainExitInfo{
+		targetPC: uint64(ins.Imm),
+		movProg:  movProg,
+	})
+
+	jp := lc.c.NewProg()
+	jp.As = obj.AJMP
+	jp.To.Type = obj.TYPE_REG
+	jp.To.Reg = rv8StgB
+	lc.c.Append(jp)
+
+	// Slow path (status!=0): return with jitEcall + IC.
+	slowNop := lc.c.NewProg()
+	slowNop.As = obj.ANOP
+	lc.c.Append(slowNop)
+	slowPath.To.SetTarget(slowNop)
+
+	lc.emitRM(x86.AMOVQ, goasm.REG_AMD64_SP, lc.sretOffset, rv8StgA)
+	lc.loadImm(ins.Imm, rv8StgB)
+	lc.emitMR(x86.AMOVQ, rv8StgB, rv8StgA, 0)  // Result.PC = resumePC
+	if icStaged {
+		lc.emitRM(x86.AMOVQ, goasm.REG_AMD64_SP, lc.sretOffset+8, rv8StgB)
+		lc.emitMR(x86.AMOVQ, rv8StgB, rv8StgA, 8) // Result.IC = saved IC
+	} else {
+		lc.emitMI(x86.AMOVQ, 0, rv8StgA, 8)
+	}
+	lc.emitMI(x86.AMOVQ, 1, rv8StgA, 16)        // Result.Status = jitEcall
+	lc.emitMI(x86.AMOVQ, 0, rv8StgA, 24)        // Result.FaultAddr = 0
+	lc.emitEpilogue()
 }
 
 // ── FP ops ──

@@ -136,7 +136,6 @@ type compiledBlock struct {
 	chainEntry uintptr           // entry point for chaining
 	chainExits []chainPatchInfo  // chain exits for patching
 	jalrICs    []jalrICPatchInfo // JALR IC sites for patching
-	shadow     *compiledBlock    // V2 shadow block for DebugV1V2 comparison
 
 	// segment is the DecodedExecuteSegment that owns this block's native
 	// code, or nil for lazy-compiled blocks. Set at AOT install time;
@@ -211,8 +210,6 @@ type JIT struct {
 	cache      [blockCacheSize]blockCacheEntry
 	noJIT      map[uint64]bool // PCs where translation failed — don't retry
 	InterpOnly bool            // debug: force all-interpreter mode
-	UseV2      bool            // bench: use V2 lowerer for comparison
-	DebugV1V2  bool            // debug: run every block through V1 AND V2, compare results
 	trace      bool            // debug: log block executions to stderr
 
 	// DisableAutoAOT opts out of RunJIT's first-entry auto-install of
@@ -532,11 +529,6 @@ func (j *JIT) StepBlock(cpu *CPU) (ic uint64, err error) {
 
 	blk := j.lookupBlock(pc)
 	if blk != nil {
-		// ── Debug V1-vs-V2 comparison ──
-		if j.DebugV1V2 {
-			return j.stepBlockDebugV1V2(cpu, pc, blk)
-		}
-
 		res := jitcall.Call(blk.fn, &cpu.x, &cpu.f, &cpu.fcsr,
 			cpu.mem.Base(), cpu.mem.Mask())
 		if j.trace {
@@ -580,15 +572,8 @@ func (j *JIT) StepBlock(cpu *CPU) (ic uint64, err error) {
 	if !j.InterpOnly && !j.noJIT[pc] {
 		res := emitBlock(&cpu.mem, pc)
 		if res != nil && res.numInsns > 0 {
-			compiled, cerr := j.jitCompileWith(res, j.UseV2)
+			compiled, cerr := j.jitCompile(res)
 			if cerr == nil {
-				// When DebugV1V2, also compile a V2 shadow block.
-				if j.DebugV1V2 && !j.UseV2 {
-					v2, v2err := j.jitCompileWith(res, true)
-					if v2err == nil {
-						compiled.shadow = v2
-					}
-				}
 				j.insertBlock(pc, compiled)
 				return j.StepBlock(cpu) // retry with compiled block
 			}
@@ -605,81 +590,6 @@ func (j *JIT) StepBlock(cpu *CPU) (ic uint64, err error) {
 // stepBlockDebugV1V2 runs a block through both V1 and V2, compares all
 // register outputs, and panics with full diagnostics on first mismatch.
 // The V1 result is used to update cpu state (it's the production path).
-func (j *JIT) stepBlockDebugV1V2(cpu *CPU, pc uint64, blk *compiledBlock) (uint64, error) {
-	if blk.shadow == nil {
-		// No V2 shadow — run V1 only (V2 compilation may have failed).
-		res := jitcall.Call(blk.fn, &cpu.x, &cpu.f, &cpu.fcsr,
-			cpu.mem.Base(), cpu.mem.Mask())
-		cpu.pc = res.PC
-		cpu.cycle += res.IC
-		return j.stepBlockResult(cpu, res)
-	}
-
-	// Snapshot input state.
-	var x1, x2 [32]uint64
-	var f1, f2 [32]uint64
-	var fcsr1, fcsr2 uint32
-	x1 = cpu.x
-	x2 = cpu.x
-	f1 = cpu.f
-	f2 = cpu.f
-	fcsr1 = cpu.fcsr
-	fcsr2 = cpu.fcsr
-
-	// Run V1.
-	r1 := jitcall.Call(blk.fn, &x1, &f1, &fcsr1,
-		cpu.mem.Base(), cpu.mem.Mask())
-	// Run V2.
-	r2 := jitcall.Call(blk.shadow.fn, &x2, &f2, &fcsr2,
-		cpu.mem.Base(), cpu.mem.Mask())
-
-	// Compare. jitOKJalrMiss (V1 JALR IC miss) is semantically equivalent
-	// to jitOK for V2, which doesn't implement the IC — normalize before
-	// comparison so DebugV1V2 doesn't flag this as a mismatch.
-	s1 := r1.Status
-	if int(s1) == jitOKJalrMiss {
-		s1 = jitOK
-	}
-	mismatch := false
-	if r1.PC != r2.PC || r1.IC != r2.IC || s1 != r2.Status {
-		fmt.Fprintf(os.Stderr, "DEBUG V1V2 pc=0x%x: Result mismatch\n", pc)
-		fmt.Fprintf(os.Stderr, "  V1: PC=0x%x IC=%d Status=%d\n", r1.PC, r1.IC, r1.Status)
-		fmt.Fprintf(os.Stderr, "  V2: PC=0x%x IC=%d Status=%d\n", r2.PC, r2.IC, r2.Status)
-		mismatch = true
-	}
-	for i := 0; i < 32; i++ {
-		if x1[i] != x2[i] {
-			fmt.Fprintf(os.Stderr, "  x[%d]: V1=0x%x V2=0x%x\n", i, x1[i], x2[i])
-			mismatch = true
-		}
-	}
-	for i := 0; i < 32; i++ {
-		if f1[i] != f2[i] {
-			fmt.Fprintf(os.Stderr, "  f[%d]: V1=0x%x V2=0x%x\n", i, f1[i], f2[i])
-			mismatch = true
-		}
-	}
-	if mismatch {
-		// Dump input state for reproduction.
-		fmt.Fprintf(os.Stderr, "  Input x[]: ")
-		for i := 0; i < 32; i++ {
-			if cpu.x[i] != 0 {
-				fmt.Fprintf(os.Stderr, "x[%d]=0x%x ", i, cpu.x[i])
-			}
-		}
-		fmt.Fprintf(os.Stderr, "\n")
-		panic(fmt.Sprintf("DebugV1V2: V1/V2 mismatch at pc=0x%x", pc))
-	}
-
-	// Apply V1 result to cpu (production path).
-	cpu.x = x1
-	cpu.f = f1
-	cpu.fcsr = fcsr1
-	cpu.pc = r1.PC
-	cpu.cycle += r1.IC
-	return j.stepBlockResult(cpu, r1)
-}
-
 func (j *JIT) stepBlockResult(_ *CPU, res jitcall.Result) (uint64, error) {
 	switch int(res.Status) {
 	case jitOK:
@@ -855,7 +765,7 @@ func (j *JIT) RunJIT(cpu *CPU) error {
 		if !j.InterpOnly && !j.noJIT[pc] {
 			res := emitBlock(&cpu.mem, pc)
 			if res != nil && res.numInsns > 0 {
-				blk, err := j.jitCompileWith(res, j.UseV2)
+				blk, err := j.jitCompile(res)
 				if err == nil {
 					j.DispatchCompile++
 					j.insertBlock(pc, blk)

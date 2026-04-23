@@ -42,8 +42,12 @@ func TestBloat_BenchGuest_0x10de(t *testing.T) {
 		//  - After MaskedLoadAddr/GuestStoreAddr + emitMisalignedStore
 		//    i=0 special-case (2026-04-22): ir=105, host=1079
 		//    (-42 bytes). Cumulative −143 bytes (−11.7%).
+		//  - After rv8 always-stage lowerer (2026-04-23): ir=105,
+		//    host=1582 (+503 bytes). Expected: every operand is staged
+		//    through RAX/RCX. CISC memory operands (Stage 12) will
+		//    recover most of this.
 		maxIRInstrs   = 105
-		maxHostBytes  = 1079
+		maxHostBytes  = 1650
 		maxChainExits = 5
 	)
 
@@ -75,16 +79,16 @@ func TestBloat_BenchGuest_0x10de(t *testing.T) {
 
 	// Register-allocate and lower through the same AOT path production uses.
 	j := NewJIT()
-	pool := ir.AMD64Pool(res.block)
-	pinned := ir.AMD64Pinned()
+	pool := ir.RV8Pool(res.block)
+	pinned := ir.RV8Pinned()
 	alloc := j.irAlloc.Allocate(res.block, pool, pinned, nil)
 
 	ctx := goasm.New(goasm.AMD64)
 	ctx.Append(ctx.NewATEXT())
 
-	lowerRes, err := ir.LowerAMD64AOT(ctx, res.block, alloc)
+	lowerRes, err := ir.LowerAMD64_RV8(ctx, res.block, alloc)
 	if err != nil {
-		t.Fatalf("LowerAMD64AOT: %v", err)
+		t.Fatalf("LowerAMD64_RV8: %v", err)
 	}
 
 	// Capture Progs listing BEFORE Assemble (which finalizes encoding).

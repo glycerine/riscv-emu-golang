@@ -10,27 +10,17 @@ import (
 	"unsafe"
 )
 
-// compileIR compiles an IR block using the specified lowerer, returns executable memory.
-func compileIR(t *testing.T, b *ir.Block, useV2 bool) (uintptr, []byte) {
+// compileIR compiles an IR block using the rv8 lowerer, returns executable memory.
+func compileIR(t *testing.T, b *ir.Block) (uintptr, []byte) {
 	t.Helper()
-	var pool ir.RegPool
-	if useV2 {
-		pool = ir.AMD64Pool_V2(b)
-	} else {
-		pool = ir.AMD64Pool(b)
-	}
-	pinned := ir.AMD64Pinned()
+	pool := ir.RV8Pool(b)
+	pinned := ir.RV8Pinned()
 	j := NewJIT()
 	alloc := j.irAlloc.Allocate(b, pool, pinned, nil)
 
 	ctx := goasm.New(goasm.AMD64)
 	ctx.Append(ctx.NewATEXT())
-	var err error
-	if useV2 {
-		_, err = ir.LowerAMD64_V2(ctx, b, alloc)
-	} else {
-		_, err = ir.LowerAMD64(ctx, b, alloc)
-	}
+	_, err := ir.LowerAMD64_RV8(ctx, b, alloc)
 	if err != nil {
 		t.Fatalf("lower: %v", err)
 	}
@@ -57,9 +47,9 @@ func freeExecMem(mem []byte) {
 	}
 }
 
-// TestLockstep_V1V2_Execution compiles the same IR block with both lowerers
-// and verifies identical execution results.
-func TestLockstep_V1V2_Execution(t *testing.T) {
+// TestRV8_RandomBlocks compiles random IR blocks with the rv8 lowerer
+// and verifies they execute without crashing and return expected PC.
+func TestRV8_RandomBlocks(t *testing.T) {
 	rng := rand.New(rand.NewSource(12345))
 	const numBlocks = 2000
 	const maxInsns = 25
@@ -78,57 +68,33 @@ func TestLockstep_V1V2_Execution(t *testing.T) {
 			continue
 		}
 
-		// Try V1 first. If it fails to lower/assemble, skip.
-		pool1 := ir.AMD64Pool(blk)
-		alloc1 := j.irAlloc.Allocate(blk, pool1, ir.AMD64Pinned(), nil)
-		ctx1 := goasm.New(goasm.AMD64)
-		ctx1.Append(ctx1.NewATEXT())
-		if _, err := ir.LowerAMD64(ctx1, blk, alloc1); err != nil {
+		pool := ir.RV8Pool(blk)
+		alloc := j.irAlloc.Allocate(blk, pool, ir.RV8Pinned(), nil)
+		ctx := goasm.New(goasm.AMD64)
+		ctx.Append(ctx.NewATEXT())
+		if _, err := ir.LowerAMD64_RV8(ctx, blk, alloc); err != nil {
 			continue
 		}
-		code1, err := ctx1.Assemble()
-		if err != nil || len(code1) == 0 {
+		code, err := ctx.Assemble()
+		if err != nil || len(code) == 0 {
 			continue
 		}
 
-		// V2 must succeed.
-		pool2 := ir.AMD64Pool_V2(blk)
-		alloc2 := j.irAlloc.Allocate(blk, pool2, ir.AMD64Pinned(), nil)
-		ctx2 := goasm.New(goasm.AMD64)
-		ctx2.Append(ctx2.NewATEXT())
-		if _, err := ir.LowerAMD64_V2(ctx2, blk, alloc2); err != nil {
-			t.Fatalf("block %d: V2 lower failed: %v", i, err)
-		}
-		code2, err := ctx2.Assemble()
-		if err != nil {
-			t.Fatalf("block %d: V2 assemble failed: %v", i, err)
-		}
+		exec, back := mmapCode(t, code)
 
-		exec1, back1 := mmapCode(t, code1)
-		exec2, back2 := mmapCode(t, code2)
-
-		// Identical inputs.
-		var x1, x2 [32]uint64
-		var f1, f2 [32]uint64
-		var fcsr1, fcsr2 uint32
+		var x [32]uint64
+		var f [32]uint64
+		var fcsr uint32
 		for j := 1; j <= 6; j++ {
-			v := rng.Uint64()
-			x1[j] = v
-			x2[j] = v
+			x[j] = rng.Uint64()
 		}
 
-		res1 := jitcall.Call(exec1, &x1, &f1, &fcsr1, mem.Base(), mem.Mask())
-		res2 := jitcall.Call(exec2, &x2, &f2, &fcsr2, mem.Base(), mem.Mask())
-
-		if res1.PC != res2.PC || res1.IC != res2.IC || res1.Status != res2.Status {
-			t.Fatalf("block %d MISMATCH:\n  V1: PC=0x%x IC=%d Status=%d\n  V2: PC=0x%x IC=%d Status=%d\n  %d instrs",
-				i, res1.PC, res1.IC, res1.Status,
-				res2.PC, res2.IC, res2.Status,
-				len(blk.Instrs))
+		res := jitcall.Call(exec, &x, &f, &fcsr, mem.Base(), mem.Mask())
+		if res.PC != 0x1000 {
+			t.Fatalf("block %d: PC=0x%x want 0x1000 (%d instrs)", i, res.PC, len(blk.Instrs))
 		}
 
-		freeExecMem(back1)
-		freeExecMem(back2)
+		freeExecMem(back)
 	}
 }
 
@@ -142,15 +108,13 @@ func mmapCode(t *testing.T, code []byte) (uintptr, []byte) {
 	return uintptr(unsafe.Pointer(&execMem[0])), execMem
 }
 
-// genLockstepBlock generates a valid IR block for lockstep comparison.
-// Only uses integer ops (no memory loads/stores, no FP — those need memory setup).
+// genLockstepBlock generates a valid IR block for testing.
 func genLockstepBlock(rng *rand.Rand, n int, maxVR int) *ir.Block {
 	e := ir.NewEmitter()
 	if n < 1 {
 		n = 1
 	}
 
-	// Initialize some temps.
 	numInit := maxVR
 	if numInit > n {
 		numInit = n

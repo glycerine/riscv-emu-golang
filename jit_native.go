@@ -27,40 +27,18 @@ func getJITCtx() *goasm.Ctx {
 
 // jitCompile compiles an IR block to native code and returns a compiledBlock.
 func (j *JIT) jitCompile(res *emitResult) (*compiledBlock, error) {
-	return j.jitCompileWith(res, false)
-}
-
-func (j *JIT) jitCompileV2(res *emitResult) (*compiledBlock, error) {
-	return j.jitCompileWith(res, true)
-}
-
-func (j *JIT) jitCompileWith(res *emitResult, useV2 bool) (*compiledBlock, error) {
 	if res.block == nil {
 		return nil, fmt.Errorf("jit: nil block")
 	}
 
-	// Step 1: Register allocation.
-	var pool ir.RegPool
-	if useV2 {
-		pool = ir.AMD64Pool_V2(res.block)
-	} else {
-		pool = ir.AMD64Pool(res.block)
-	}
-	pinned := ir.AMD64Pinned()
+	pool := ir.RV8Pool(res.block)
+	pinned := ir.RV8Pinned()
 	alloc := j.irAlloc.Allocate(res.block, pool, pinned, nil)
 
-	// Step 2: Reuse assembler context and emit ATEXT prologue.
 	ctx := getJITCtx()
 	ctx.Append(ctx.NewATEXT())
 
-	// Step 3: Lower IR to x86-64 Progs.
-	var lowerResult *ir.LowerResult
-	var lowerErr error
-	if useV2 {
-		lowerResult, lowerErr = ir.LowerAMD64_V2(ctx, res.block, alloc)
-	} else {
-		lowerResult, lowerErr = ir.LowerAMD64(ctx, res.block, alloc)
-	}
+	lowerResult, lowerErr := ir.LowerAMD64_RV8(ctx, res.block, alloc)
 	if lowerErr != nil {
 		return nil, fmt.Errorf("jit lower: %w", lowerErr)
 	}
@@ -103,13 +81,15 @@ func (j *JIT) jitCompileWith(res *emitResult, useV2 bool) (*compiledBlock, error
 	if lowerResult != nil && lowerResult.ChainEntryProg != nil {
 		blk.chainEntry = codeBase + uintptr(lowerResult.ChainEntryProg.Pc)
 		for _, ce := range lowerResult.ChainExits {
-			// The MOVABS R10, imm64 encoding is: 49 BA <8 bytes imm64>.
-			// The imm64 starts at byte offset +2 from the instruction start.
 			patchOff := int(ce.MovProg.Pc) + 2
-			stubAddr := codeBase + uintptr(ce.StubProg.Pc)
 
-			// Backpatch the sentinel to point to the slow exit stub.
-			binary.LittleEndian.PutUint64(execMem[patchOff:], uint64(stubAddr))
+			// If a slow exit stub exists, backpatch the sentinel to
+			// point to it. Otherwise the sentinel remains until chain
+			// linking patches in the real target address.
+			if ce.StubProg != nil {
+				stubAddr := codeBase + uintptr(ce.StubProg.Pc)
+				binary.LittleEndian.PutUint64(execMem[patchOff:], uint64(stubAddr))
+			}
 
 			blk.chainExits = append(blk.chainExits, chainPatchInfo{
 				targetPC:    ce.TargetPC,
@@ -162,36 +142,21 @@ type compileDebugInfo struct {
 }
 
 // jitCompileDebug compiles an IR block and returns debug info (Prog listing + assembled bytes).
-func (j *JIT) jitCompileDebug(res *emitResult, useV2 bool) (*compiledBlock, *compileDebugInfo, error) {
+func (j *JIT) jitCompileDebug(res *emitResult) (*compiledBlock, *compileDebugInfo, error) {
 	if res.block == nil {
 		return nil, nil, fmt.Errorf("jit: nil block")
 	}
 
-	var pool ir.RegPool
-	if useV2 {
-		pool = ir.AMD64Pool_V2(res.block)
-	} else {
-		pool = ir.AMD64Pool(res.block)
-	}
-	pinned := ir.AMD64Pinned()
+	pool := ir.RV8Pool(res.block)
+	pinned := ir.RV8Pinned()
 	alloc := j.irAlloc.Allocate(res.block, pool, pinned, nil)
 
 	ctx := goasm.New(goasm.AMD64)
 	ctx.Append(ctx.NewATEXT())
 
-	var lowerResult *ir.LowerResult
-	if useV2 {
-		var lowerErr error
-		lowerResult, lowerErr = ir.LowerAMD64_V2(ctx, res.block, alloc)
-		if lowerErr != nil {
-			return nil, nil, fmt.Errorf("jit lower: %w", lowerErr)
-		}
-	} else {
-		var lowerErr error
-		lowerResult, lowerErr = ir.LowerAMD64(ctx, res.block, alloc)
-		if lowerErr != nil {
-			return nil, nil, fmt.Errorf("jit lower: %w", lowerErr)
-		}
+	lowerResult, lowerErr := ir.LowerAMD64_RV8(ctx, res.block, alloc)
+	if lowerErr != nil {
+		return nil, nil, fmt.Errorf("jit lower: %w", lowerErr)
 	}
 
 	// Capture Prog listing before assembly.
@@ -215,15 +180,17 @@ func (j *JIT) jitCompileDebug(res *emitResult, useV2 bool) (*compiledBlock, *com
 	blk := &compiledBlock{fn: codeBase, nativeMmap: execMem}
 
 	// Backpatch chain-exit sentinels to the slow-exit stubs and record
-	// metadata, same as jitCompileWith. Without this, any chain exit in
+	// metadata, same as jitCompile. Without this, any chain exit in
 	// the block would JMP to the literal sentinel 0x7BADC0DE7BADC0DE and
 	// segfault when executed.
 	if lowerResult != nil && lowerResult.ChainEntryProg != nil {
 		blk.chainEntry = codeBase + uintptr(lowerResult.ChainEntryProg.Pc)
 		for _, ce := range lowerResult.ChainExits {
 			patchOff := int(ce.MovProg.Pc) + 2
-			stubAddr := codeBase + uintptr(ce.StubProg.Pc)
-			binary.LittleEndian.PutUint64(execMem[patchOff:], uint64(stubAddr))
+			if ce.StubProg != nil {
+				stubAddr := codeBase + uintptr(ce.StubProg.Pc)
+				binary.LittleEndian.PutUint64(execMem[patchOff:], uint64(stubAddr))
+			}
 			blk.chainExits = append(blk.chainExits, chainPatchInfo{
 				targetPC:    ce.TargetPC,
 				patchOffset: patchOff,

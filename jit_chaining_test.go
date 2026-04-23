@@ -73,8 +73,7 @@ func TestChaining_ChainExitsPopulated_OnCompiledBlock(t *testing.T) {
 }
 
 // D3 — The bytes immediately before each chain exit's patchOffset must
-// be 49 BA (REX.W+B, MOV R10 imm64). If they're not, the offset math
-// is wrong and patchChainTarget would clobber some other instruction.
+// be 48 B9 (REX.W, MOV RCX imm64). rv8 uses RCX as the chain-exit staging reg.
 func TestChaining_PatchPointsAtImm64_OfMovABS(t *testing.T) {
 	insns := []uint32{
 		ienc(opOPIMM, 0, 1, 0, 1),
@@ -97,9 +96,9 @@ func TestChaining_PatchPointsAtImm64_OfMovABS(t *testing.T) {
 		}
 		//nolint:gosec // reading JIT code bytes for test verification
 		p := (*[2]byte)(unsafe.Pointer(blk.fn + uintptr(ce.patchOffset-2)))
-		if p[0] != 0x49 || p[1] != 0xBA {
+		if p[0] != 0x48 || p[1] != 0xB9 {
 			t.Errorf("exit %d: bytes before patchOffset = %02x %02x, "+
-				"want 49 BA", i, p[0], p[1])
+				"want 48 B9", i, p[0], p[1])
 		}
 	}
 }
