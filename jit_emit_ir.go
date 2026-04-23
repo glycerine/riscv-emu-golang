@@ -666,7 +666,11 @@ func (e *emitter) finalize() *emitResult {
 	// quad) still get a return here so the interpreter fallback path
 	// keeps working.
 	if !e.lastIRWasTerminator() {
-		e.emitChainableReturn(e.pc)
+		if len(e.boundaryEcallConts) > 0 {
+			e.emitReturn(e.pc, jitOK)
+		} else {
+			e.emitChainableReturn(e.pc)
+		}
 	}
 
 	// Bail labels: goto targets not emitted. Deterministic order is critical —

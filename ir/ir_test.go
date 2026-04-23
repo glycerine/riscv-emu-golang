@@ -212,7 +212,7 @@ func TestIRInstrString_Branch(t *testing.T) {
 
 func TestIRInstrString_Ret(t *testing.T) {
 	ins := IRInstr{Op: IRRet, Imm: 0x80001000, Imm2: 3, A: VReg(64)}
-	want := "ret pc=2147487744 status=3 fault=t64"
+	want := "ret pc=0x80001000 status=3 fault=t64"
 	if got := ins.String(); got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}

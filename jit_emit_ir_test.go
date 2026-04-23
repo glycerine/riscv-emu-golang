@@ -2209,3 +2209,60 @@ func TestLazyJIT_FunctionLevel(t *testing.T) {
 	t.Logf("lazy JIT: %d guest insns, endPC=0x%x, %d IR ops",
 		res.numInsns, res.endPC, len(res.block.Instrs))
 }
+
+// TestEmit_BoundaryEcall_TerminalReturn verifies that when ECALL is
+// the last instruction in a function-level block (continuation PC =
+// endPC), the fall-through emits IRRet (terminal return to Go), NOT
+// IRChainExit (which could be pre-patched to the same block's
+// chainEntry, creating an infinite native loop).
+func TestEmit_BoundaryEcall_TerminalReturn(t *testing.T) {
+	if !DirectSyscallEnabled() {
+		t.Skip("direct syscall not enabled — boundary ECALL takes legacy path")
+	}
+
+	mem, err := NewGuestMemory(Size64MB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mem.Free()
+
+	// Function: 5 instructions, ECALL is the last.
+	//   addi x17, x0, 64  — a7 = SYS_write
+	//   addi x10, x0, 1   — a0 = stdout
+	//   lui  x11, 2        — a1 = 0x2000
+	//   addi x12, x0, 5   — a2 = 5
+	//   ecall
+	mem.Store32(0x1000, 0x04000893) // addi x17, x0, 64
+	mem.Store32(0x1004, 0x00100513) // addi x10, x0, 1
+	mem.Store32(0x1008, 0x000025B7) // lui  x11, 2
+	mem.Store32(0x100C, 0x00500613) // addi x12, x0, 5
+	mem.Store32(0x1010, 0x00000073) // ecall
+
+	res := emitBlockLinear(mem, 0x1000, 0x1014)
+	if res == nil {
+		t.Fatal("emitBlockLinear returned nil")
+	}
+
+	endPC := uint64(0x1014)
+
+	for _, ins := range res.block.Instrs {
+		if ins.Op == ir.IRChainExit && uint64(ins.Imm) == endPC {
+			t.Fatalf("found IRChainExit targeting endPC 0x%x — "+
+				"boundary ECALL hot path would chain instead of terminal-returning", endPC)
+		}
+	}
+
+	foundRet := false
+	for _, ins := range res.block.Instrs {
+		if ins.Op == ir.IRRet && ins.Imm == int64(endPC) && ins.Imm2 == 0 {
+			foundRet = true
+			break
+		}
+	}
+	if !foundRet {
+		t.Fatalf("no IRRet(pc=0x%x, status=jitOK) found — "+
+			"boundary ECALL hot path has no terminal return", endPC)
+	}
+
+	t.Logf("boundary ECALL at 0x1010: fall-through correctly emits IRRet to 0x%x", endPC)
+}
