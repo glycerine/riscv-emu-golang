@@ -250,7 +250,7 @@ func (e *Emitter) ChainExit(targetPC uint64, exitIdx int) {
 // Syscall emits an ECALL inline call to the SysV-ABI dispatcher at
 // dispatcherAddr. resumePC is where execution continues (pc+4).
 // Non-terminal: the caller should emit WriteBackAll + ClearDirtySyscallRegs
-// before and ReloadSyscallRegs after so a0/a1 reflect the return values.
+// before and reload a0/a1 after so they reflect the return values.
 func (e *Emitter) Syscall(resumePC uint64, dispatcherAddr uintptr) {
 	const sym = "syscall_dispatcher"
 	idx := -1

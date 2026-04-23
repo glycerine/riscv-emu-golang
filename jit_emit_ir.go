@@ -315,7 +315,10 @@ func (e *emitter) emitSyscall(resumePC uint64, dispatcherAddr uintptr) {
 	e.irEm.WriteBackAll()
 	e.irEm.ClearDirtySyscallRegs()
 	e.irEm.Syscall(resumePC, dispatcherAddr)
-	e.irEm.ReloadSyscallRegs()
+	for _, r := range []uint32{10, 11} {
+		dst := e.xregDst(r)
+		e.irEm.Load(dst, e.irEm.XBase(), int64(r)*8, ir.I64, false)
+	}
 }
 
 // allocFaultLabel allocates a per-call-site fault label and registers its
