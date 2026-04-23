@@ -453,6 +453,14 @@ func (lc *lowerCtx) emitDispatchTable() {
 		lc.c.Append(jeq)
 		lc.pending[label] = append(lc.pending[label], jeq)
 	}
+
+	// Fall-through: no dispatch PC matched. Return to Go for re-dispatch
+	// instead of silently executing from the wrong point in the function.
+	lc.emitMR(x86.AMOVQ, amd64Scratch1, amd64RegSret, 0)  // sret.PC = dispatch PC
+	lc.emitMR(x86.AMOVQ, amd64RegIC, amd64RegSret, 8)     // sret.IC
+	lc.emitMI(x86.AMOVQ, 0, amd64RegSret, 16)             // sret.Status = jitOK
+	lc.emitMI(x86.AMOVQ, 0, amd64RegSret, 24)             // sret.FaultAddr = 0
+	lc.emitEpilogue()
 }
 
 func (lc *lowerCtx) emitEpilogue() {
@@ -484,6 +492,11 @@ func (lc *lowerCtx) emitJmpReg(reg int16) {
 // lowerChainExit emits a chain exit sequence: dealloc spill frame,
 // MOVABS R10 with a sentinel (to be backpatched), JMP R10.
 func (lc *lowerCtx) lowerChainExit(ins *IRInstr) {
+	// Write target guest PC to sret[120] so the target block's
+	// dispatch table routes to the correct label on chained entry.
+	lc.loadImm64(ins.Imm, amd64Scratch2)
+	lc.emitMR(x86.AMOVQ, amd64Scratch2, amd64RegSret, SretPCOffset)
+
 	// Deallocate spill frame.
 	if lc.frameSize > 0 {
 		lc.emitRI(x86.AADDQ, lc.frameSize, goasm.REG_AMD64_SP)
@@ -589,7 +602,9 @@ func (lc *lowerCtx) lowerJalrIC(ins *IRInstr) {
 	jne1.To.Type = obj.TYPE_BRANCH
 	lc.c.Append(jne1)
 
-	// Hit-1 path (fall-through from stage 1): dealloc frame, load fn1, JMP R10.
+	// Hit-1 path (fall-through from stage 1): publish tgt to sret[120]
+	// so the target block's dispatch table routes correctly.
+	lc.emitMR(x86.AMOVQ, amd64Scratch2, amd64RegSret, SretPCOffset)
 	if lc.frameSize > 0 {
 		lc.emitRI(x86.AADDQ, lc.frameSize, goasm.REG_AMD64_SP)
 	}
@@ -600,7 +615,8 @@ func (lc *lowerCtx) lowerJalrIC(ins *IRInstr) {
 	hit0 := lc.emitNOP()
 	jeq0.To.SetTarget(hit0)
 
-	// Hit-0 path: dealloc frame, load fn0, JMP R10.
+	// Hit-0 path: publish tgt to sret[120], dealloc frame, load fn0, JMP R10.
+	lc.emitMR(x86.AMOVQ, amd64Scratch2, amd64RegSret, SretPCOffset)
 	if lc.frameSize > 0 {
 		lc.emitRI(x86.AADDQ, lc.frameSize, goasm.REG_AMD64_SP)
 	}
@@ -713,6 +729,9 @@ func emitDecoderCacheLookup(lc *lowerCtx, tgt int16) {
 	jz.As = x86.AJEQ
 	jz.To.Type = obj.TYPE_BRANCH
 	lc.c.Append(jz)
+
+	// Publish tgt to sret[120] for the target block's dispatch table.
+	lc.emitMR(x86.AMOVQ, tgt, amd64RegSret, SretPCOffset)
 
 	// ADDQ $frameSize, RSP         ; dealloc our spill frame (if any)
 	if lc.frameSize > 0 {

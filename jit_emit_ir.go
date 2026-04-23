@@ -999,6 +999,9 @@ func emitBlockRange(mem *GuestMemory, pc, endPC uint64) *emitResult {
 	targets, ecallConts := collectInternalTargets(mem, pc, endPC)
 	if len(targets) > 0 || len(ecallConts) > 0 {
 		dpcs := make(map[uint64]ir.Label)
+		// Include startPC so the dispatch table routes first entry and
+		// chain exits targeting the function start correctly.
+		dpcs[pc] = e.getOrCreateLabel(pc)
 		for t := range targets {
 			if t >= pc && t < endPC {
 				dpcs[t] = e.getOrCreateLabel(t)
