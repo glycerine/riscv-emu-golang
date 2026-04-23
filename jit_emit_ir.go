@@ -286,6 +286,56 @@ func (e *emitter) emitIC() {
 	e.irEm.AddImm(e.irEm.IC(), e.irEm.IC(), 1)
 }
 
+// peek32 fetches the 32-bit instruction at the given PC without
+// advancing state. Returns (insn, true) on success.
+func (e *emitter) peek32(pc uint64) (uint32, bool) {
+	if pc >= e.regionEnd {
+		return 0, false
+	}
+	insn, f := e.mem.Fetch32(pc)
+	if f != nil {
+		return 0, false
+	}
+	if insn&3 != 3 {
+		return 0, false // compressed instruction, not a 32-bit pair
+	}
+	return insn, true
+}
+
+// emitLoadFused emits a guest memory load for a fused AUIPC+LOAD.
+// The guest address is a compile-time constant.
+func (e *emitter) emitLoadFused(rd uint32, guestAddr int64, funct3 uint32) {
+	dst := e.xregDst(rd)
+	memBase := e.irEm.MemBase()
+	mask := e.irEm.MemMask()
+
+	var width int
+	var signed bool
+	switch funct3 {
+	case 0: // LB
+		width, signed = 1, true
+	case 1: // LH
+		width, signed = 2, true
+	case 2: // LW
+		width, signed = 4, true
+	case 3: // LD
+		width, signed = 8, false
+	case 4: // LBU
+		width, signed = 1, false
+	case 5: // LHU
+		width, signed = 2, false
+	case 6: // LWU
+		width, signed = 4, false
+	default:
+		width = 8
+	}
+
+	fl := e.allocFaultLabel(ir.VRegZero, jitLoadFault)
+	addr := e.irEm.Tmp()
+	e.irEm.Const(addr, guestAddr)
+	e.irEm.MaskedLoadAddr(dst, addr, memBase, mask, width, signed, fl)
+}
+
 func (e *emitter) advancePC(size uint64) {
 	e.numInsns++
 	e.pc += size
@@ -1001,8 +1051,42 @@ func (e *emitter) emit32(insn uint32) {
 
 	case 0x17: // AUIPC
 		uimm := int64(int32(insn & 0xFFFFF000))
+		addr := int64(e.pc) + uimm
+
+		// Macro-op fusion: peek at the next instruction for AUIPC+X pairs.
 		if rd != 0 {
-			e.irEm.Const(e.xregDst(rd), int64(e.pc)+uimm)
+			if next, ok := e.peek32(e.pc + 4); ok {
+				nextOp := next & 0x7F
+				nextRd := (next >> 7) & 0x1F
+				nextRs1 := (next >> 15) & 0x1F
+				nextImm := int64(int32(next)) >> 20
+
+				switch {
+				case nextOp == 0x13 && (next>>12)&7 == 0 && nextRd == rd && nextRs1 == rd:
+					// AUIPC+ADDI → la (load address): single Const.
+					e.irEm.Const(e.xregDst(rd), addr+nextImm)
+					e.advancePC(4)
+					e.advancePC(4)
+					return
+
+				case nextOp == 0x67 && nextRs1 == rd:
+					// AUIPC+JALR → direct call with known target.
+					target := addr + nextImm
+					e.irEm.Const(e.xregDst(rd), int64(e.pc)+4)
+					e.advancePC(4)
+					e.emitJALR(nextRd, rd, target-int64(e.pc), 4)
+					return
+
+				case nextOp == 0x03 && nextRs1 == rd && nextRd == rd:
+					// AUIPC+LOAD → load from absolute guest address.
+					e.advancePC(4)
+					e.advancePC(4)
+					funct3 := (next >> 12) & 7
+					e.emitLoadFused(rd, addr+nextImm, funct3)
+					return
+				}
+			}
+			e.irEm.Const(e.xregDst(rd), addr)
 		}
 		e.advancePC(4)
 
@@ -1143,6 +1227,23 @@ func (e *emitter) emitOpImm(rd, rs1 uint32, imm int64, funct3, funct7 uint32) {
 		funct6 := funct7 >> 1
 		switch funct6 {
 		case 0x00: // SLLI
+			// Fusion: SLLI rd, rs1, 32; SRLI rd, rd, 32 → zext.w
+			if shamt == 32 && rd == rs1 {
+				if next, ok := e.peek32(e.pc + 4); ok {
+					nOp := next & 0x7F
+					nRd := (next >> 7) & 0x1F
+					nRs1 := (next >> 15) & 0x1F
+					nF3 := (next >> 12) & 7
+					nF7 := next >> 25
+					nShamt := int64((next >> 20) & 0x3F)
+					if nOp == 0x13 && nF3 == 5 && nF7 == 0 && nShamt == 32 && nRd == rd && nRs1 == rd {
+						e.irEm.Zext(e.xregDst(rd), e.xreg(rs1), ir.I32)
+						e.advancePC(4)
+						e.advancePC(4)
+						return
+					}
+				}
+			}
 			src := e.xreg(rs1)
 			e.irEm.ShlImm(e.xregDst(rd), src, shamt)
 		case 0x0A: // BSETI
