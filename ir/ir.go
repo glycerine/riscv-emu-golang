@@ -378,7 +378,7 @@ func (ins IRInstr) String() string {
 	case IRCall:
 		return fmt.Sprintf("%s [%d]", ins.Op, ins.Imm)
 	case IRRet:
-		return fmt.Sprintf("%s pc=%d status=%d fault=%s", ins.Op, ins.Imm, ins.Imm2, ins.A)
+		return fmt.Sprintf("%s pc=0x%x status=%d fault=%s", ins.Op, uint64(ins.Imm), ins.Imm2, ins.A)
 	case IRRetDyn:
 		return fmt.Sprintf("%s pc=%s status=%d fault=%s", ins.Op, ins.A, ins.Imm, ins.B)
 	case IRJalrIC:
