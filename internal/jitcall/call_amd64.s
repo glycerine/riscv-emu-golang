@@ -43,19 +43,26 @@ TEXT ·Call(SB), $65536-80
 	MOVQ	R14, 64(SP)
 	MOVQ	R15, 72(SP)
 
-	// Publish fcsr pointer into the sret buffer at [SP+80] so callee code
-	// can reach it via [RBX+80] without depending on RCX surviving (chain
-	// entries skip the prologue that would otherwise stash RCX).
-	MOVQ	fcsr+24(FP), AX
-	MOVQ	AX,  80(SP)
-
-	// Zero decoder_cache slots [88..119] so rv8JalrIC's dcBase!=0 check
-	// correctly skips the cache lookup when no AOT segment is installed.
-	// CallAOT overwrites these with real values; Call must zero them.
+	// Zero the entire sret metadata region [80..143] before publishing
+	// known values. JIT code reads from various offsets in this range
+	// (fcsr, decoder_cache params, memBase/memMask). Zeroing everything
+	// prevents any offset from containing stack garbage, eliminating a
+	// class of non-deterministic crashes. CallAOT overwrites 88-119
+	// with real decoder_cache values; the JIT prologue overwrites
+	// 128-143 with memBase/memMask from R8/R9.
+	MOVQ	$0,  80(SP)
 	MOVQ	$0,  88(SP)
 	MOVQ	$0,  96(SP)
 	MOVQ	$0, 104(SP)
 	MOVQ	$0, 112(SP)
+	MOVQ	$0, 120(SP)
+	MOVQ	$0, 128(SP)
+	MOVQ	$0, 136(SP)
+	MOVQ	$0, 144(SP)
+
+	// Publish fcsr pointer into the sret buffer at [SP+80].
+	MOVQ	fcsr+24(FP), AX
+	MOVQ	AX,  80(SP)
 
 	// Set up System V calling convention arguments.
 	LEAQ	0(SP), DI           // RDI = hidden sret pointer (local Result buffer)
