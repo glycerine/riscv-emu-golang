@@ -1,11 +1,14 @@
 package ir
 
 import (
+	"syscall"
 	"testing"
+	"unsafe"
 
 	"riscv/goasm"
 	"riscv/goasm/obj"
 	"riscv/goasm/obj/x86"
+	"riscv/internal/jitcall"
 )
 
 // ── Test helpers ──
@@ -564,6 +567,592 @@ func TestParamVRegs_MatchEmitter(t *testing.T) {
 	if e.MemMask() != VRMemMask {
 		t.Errorf("MemMask = %v, want %v", e.MemMask(), VRMemMask)
 	}
+}
+
+// ── Phase: rv8 register layout (Stage 1) ──
+
+// ── Stage 3: rv8 prologue/epilogue ──
+
+func lowerBlockRV8(t *testing.T, b *Block) ([]byte, *Allocation) {
+	t.Helper()
+	pool := RV8Pool(b)
+	pinned := RV8Pinned()
+	alloc := helperTestAllocate(b, pool, pinned, nil)
+
+	ctx := goasm.New(goasm.AMD64)
+	ctx.Append(ctx.NewATEXT())
+	if _, err := LowerAMD64_RV8(ctx, b, alloc); err != nil {
+		t.Fatalf("LowerAMD64_RV8: %v", err)
+	}
+
+	bytes, err := ctx.Assemble()
+	if err != nil {
+		t.Fatalf("Assemble: %v", err)
+	}
+	return bytes, alloc
+}
+
+func TestRV8Prologue_SretOnStack(t *testing.T) {
+	b := NewBlock()
+	b.Instrs = []IRInstr{
+		{Op: IRRet, T: I64, Imm: 0x1000, Imm2: 0},
+	}
+	b.maxVreg = MaxVReg(b)
+
+	code, _ := lowerBlockRV8(t, b)
+	if len(code) == 0 {
+		t.Fatal("rv8 lowerer produced empty code")
+	}
+	t.Logf("rv8 trivial block: %d bytes", len(code))
+}
+
+func TestRV8Priority_Top12(t *testing.T) {
+	// With 12-reg pool, the first 12 in intPriority should be
+	// ra(1), sp(2), t0(5), t1(6), a0-a7(10-17) — matching rv8.
+	want := map[VReg]bool{
+		1: true, 2: true, 5: true, 6: true,
+		10: true, 11: true, 12: true, 13: true,
+		14: true, 15: true, 16: true, 17: true,
+	}
+	top12 := intPriority[:12]
+	for _, vr := range top12 {
+		if !want[vr] {
+			t.Errorf("unexpected VReg %d in top 12", vr)
+		}
+	}
+	got := make(map[VReg]bool)
+	for _, vr := range top12 {
+		got[vr] = true
+	}
+	for vr := range want {
+		if !got[vr] {
+			t.Errorf("missing VReg %d in top 12", vr)
+		}
+	}
+}
+
+func TestRV8Pool(t *testing.T) {
+	b := NewBlock()
+	b.Instrs = []IRInstr{
+		{Op: IRAdd, T: I64, Dst: VReg(1), A: VReg(2), B: VReg(3)},
+	}
+	b.maxVreg = MaxVReg(b)
+	pool := RV8Pool(b)
+
+	if len(pool.IntRegs) != 12 {
+		t.Fatalf("want 12 int regs, got %d", len(pool.IntRegs))
+	}
+	if len(pool.FPRegs) != 16 {
+		t.Errorf("want 16 FP regs, got %d", len(pool.FPRegs))
+	}
+
+	excluded := map[int16]string{
+		goasm.REG_AMD64_AX: "RAX",
+		goasm.REG_AMD64_CX: "RCX",
+		goasm.REG_AMD64_BP: "RBP",
+		goasm.REG_AMD64_SP: "RSP",
+	}
+	for _, r := range pool.IntRegs {
+		if name, bad := excluded[r]; bad {
+			t.Errorf("pool must not contain %s", name)
+		}
+	}
+
+	want := map[int16]bool{
+		goasm.REG_AMD64_DX:  true,
+		goasm.REG_AMD64_BX:  true,
+		goasm.REG_AMD64_SI:  true,
+		goasm.REG_AMD64_DI:  true,
+		goasm.REG_AMD64_R8:  true,
+		goasm.REG_AMD64_R9:  true,
+		goasm.REG_AMD64_R10: true,
+		goasm.REG_AMD64_R11: true,
+		goasm.REG_AMD64_R12: true,
+		goasm.REG_AMD64_R13: true,
+		goasm.REG_AMD64_R14: true,
+		goasm.REG_AMD64_R15: true,
+	}
+	for _, r := range pool.IntRegs {
+		if !want[r] {
+			t.Errorf("unexpected register %d in pool", r)
+		}
+	}
+}
+
+func TestRV8Pool_DivMulSameSize(t *testing.T) {
+	b := NewBlock()
+	b.Instrs = []IRInstr{
+		{Op: IRDivS, T: I64, Dst: VReg(1), A: VReg(2), B: VReg(3)},
+	}
+	b.maxVreg = MaxVReg(b)
+	pool := RV8Pool(b)
+	if len(pool.IntRegs) != 12 {
+		t.Fatalf("rv8 pool must stay 12 even with DIV/MUL (local save/restore), got %d", len(pool.IntRegs))
+	}
+}
+
+func TestRV8Pinned(t *testing.T) {
+	pinned := RV8Pinned()
+	if len(pinned) != 1 {
+		t.Fatalf("want 1 pinned VReg (VRRegFile→RBP), got %d", len(pinned))
+	}
+	got, ok := pinned[VRRegFile]
+	if !ok {
+		t.Fatal("VRRegFile not in pinned map")
+	}
+	if got != goasm.REG_AMD64_BP {
+		t.Errorf("VRRegFile pinned to %d, want RBP (%d)", got, goasm.REG_AMD64_BP)
+	}
+}
+
+func TestVRRegFile_Distinct(t *testing.T) {
+	seen := map[VReg]string{
+		VRXBase:   "VRXBase",
+		VRFBase:   "VRFBase",
+		VRIC:      "VRIC",
+		VRMemBase: "VRMemBase",
+		VRMemMask: "VRMemMask",
+	}
+	if name, dup := seen[VRRegFile]; dup {
+		t.Fatalf("VRRegFile (%d) collides with %s", VRRegFile, name)
+	}
+}
+
+// ── Stage 4: rv8 ALU ops ──
+
+func TestRV8Lower_Add(t *testing.T) {
+	e := NewEmitter()
+	e.Add(e.XReg(10), e.XReg(11), e.XReg(12))
+	e.Ret(0x1000, 0, VRegZero)
+	code, _ := lowerBlockRV8(t, e.Block)
+	if len(code) == 0 {
+		t.Fatal("empty")
+	}
+}
+
+func TestRV8Lower_Sub(t *testing.T) {
+	e := NewEmitter()
+	e.Sub(e.XReg(10), e.XReg(11), e.XReg(12))
+	e.Ret(0x1000, 0, VRegZero)
+	code, _ := lowerBlockRV8(t, e.Block)
+	if len(code) == 0 {
+		t.Fatal("empty")
+	}
+}
+
+func TestRV8Lower_Const(t *testing.T) {
+	e := NewEmitter()
+	e.Const(e.XReg(10), 42)
+	e.Ret(0x1000, 0, VRegZero)
+	code, _ := lowerBlockRV8(t, e.Block)
+	if len(code) == 0 {
+		t.Fatal("empty")
+	}
+}
+
+func TestRV8Lower_Mov(t *testing.T) {
+	e := NewEmitter()
+	e.Const(e.XReg(11), 99)
+	e.Mov(e.XReg(10), e.XReg(11))
+	e.Ret(0x1000, 0, VRegZero)
+	code, _ := lowerBlockRV8(t, e.Block)
+	if len(code) == 0 {
+		t.Fatal("empty")
+	}
+}
+
+func TestRV8Lower_Sext(t *testing.T) {
+	e := NewEmitter()
+	e.Const(e.XReg(11), -1)
+	e.Sext(e.XReg(10), e.XReg(11), I32)
+	e.Ret(0x1000, 0, VRegZero)
+	code, _ := lowerBlockRV8(t, e.Block)
+	if len(code) == 0 {
+		t.Fatal("empty")
+	}
+}
+
+func TestRV8Lower_Zext(t *testing.T) {
+	e := NewEmitter()
+	e.Const(e.XReg(11), 0xFFFF)
+	e.Zext(e.XReg(10), e.XReg(11), I16)
+	e.Ret(0x1000, 0, VRegZero)
+	code, _ := lowerBlockRV8(t, e.Block)
+	if len(code) == 0 {
+		t.Fatal("empty")
+	}
+}
+
+// ── Stage 5: rv8 memory, shifts, div ──
+
+func TestRV8Lower_Shl(t *testing.T) {
+	e := NewEmitter()
+	e.Const(e.XReg(10), 1)
+	e.Const(e.XReg(11), 5)
+	e.Shl(e.XReg(12), e.XReg(10), e.XReg(11))
+	e.Ret(0x1000, 0, VRegZero)
+	code, _ := lowerBlockRV8(t, e.Block)
+	if len(code) == 0 {
+		t.Fatal("empty")
+	}
+}
+
+func TestRV8Lower_Div(t *testing.T) {
+	e := NewEmitter()
+	e.Const(e.XReg(10), 100)
+	e.Const(e.XReg(11), 7)
+	e.DivS(e.XReg(12), e.XReg(10), e.XReg(11))
+	e.Ret(0x1000, 0, VRegZero)
+	code, _ := lowerBlockRV8(t, e.Block)
+	if len(code) == 0 {
+		t.Fatal("empty")
+	}
+}
+
+func TestRV8Lower_Rem(t *testing.T) {
+	e := NewEmitter()
+	e.Const(e.XReg(10), 100)
+	e.Const(e.XReg(11), 7)
+	e.Rem(e.XReg(12), e.XReg(10), e.XReg(11))
+	e.Ret(0x1000, 0, VRegZero)
+	code, _ := lowerBlockRV8(t, e.Block)
+	if len(code) == 0 {
+		t.Fatal("empty")
+	}
+}
+
+// ── Stage 6: rv8 FP, branch, set, ret ──
+
+func TestRV8Lower_FAdd(t *testing.T) {
+	e := NewEmitter()
+	fa0 := e.FRegV(10)
+	fa1 := e.FRegV(11)
+	fa2 := e.FRegV(12)
+	e.FAdd(fa2, fa0, fa1, F64)
+	e.Ret(0x1000, 0, VRegZero)
+	code, _ := lowerBlockRV8(t, e.Block)
+	if len(code) == 0 {
+		t.Fatal("empty")
+	}
+}
+
+func TestRV8Lower_Branch(t *testing.T) {
+	e := NewEmitter()
+	l := e.NewLabel()
+	e.Const(e.XReg(10), 1)
+	e.Const(e.XReg(11), 2)
+	e.Branch(e.XReg(10), e.XReg(11), EQ, l)
+	e.PlaceLabel(l)
+	e.Ret(0x1000, 0, VRegZero)
+	code, _ := lowerBlockRV8(t, e.Block)
+	if len(code) == 0 {
+		t.Fatal("empty")
+	}
+}
+
+func TestRV8Lower_Set(t *testing.T) {
+	e := NewEmitter()
+	e.Const(e.XReg(10), 1)
+	e.Const(e.XReg(11), 2)
+	e.Set(e.XReg(12), e.XReg(10), e.XReg(11), LT)
+	e.Ret(0x1000, 0, VRegZero)
+	code, _ := lowerBlockRV8(t, e.Block)
+	if len(code) == 0 {
+		t.Fatal("empty")
+	}
+}
+
+func TestRV8Lower_Ret(t *testing.T) {
+	e := NewEmitter()
+	e.Ret(0x2000, 0, VRegZero)
+	code, _ := lowerBlockRV8(t, e.Block)
+	if len(code) == 0 {
+		t.Fatal("empty")
+	}
+}
+
+func TestRV8Lower_RetDyn(t *testing.T) {
+	e := NewEmitter()
+	e.Const(e.XReg(1), 0x3000)
+	e.RetDyn(e.XReg(1), 0, VRegZero)
+	code, _ := lowerBlockRV8(t, e.Block)
+	if len(code) == 0 {
+		t.Fatal("empty")
+	}
+}
+
+// ── Stage 9: rv8 trampoline round-trip ──
+
+func execBlockRV8(t *testing.T, b *Block, x *[32]uint64) jitcall.Result {
+	t.Helper()
+	pool := RV8Pool(b)
+	pinned := RV8Pinned()
+	alloc := helperTestAllocate(b, pool, pinned, nil)
+
+	ctx := goasm.New(goasm.AMD64)
+	ctx.Append(ctx.NewATEXT())
+	_, err := LowerAMD64_RV8(ctx, b, alloc)
+	if err != nil {
+		t.Fatalf("LowerAMD64_RV8: %v", err)
+	}
+	code, err := ctx.Assemble()
+	if err != nil {
+		t.Fatalf("Assemble: %v", err)
+	}
+
+	ps := syscall.Getpagesize()
+	sz := ((len(code) + ps - 1) / ps) * ps
+	mem, err := syscall.Mmap(-1, 0, sz,
+		syscall.PROT_READ|syscall.PROT_WRITE|syscall.PROT_EXEC,
+		syscall.MAP_ANON|syscall.MAP_PRIVATE)
+	if err != nil {
+		t.Fatalf("mmap: %v", err)
+	}
+	defer syscall.Munmap(mem)
+	copy(mem, code)
+
+	var f [32]uint64
+	var fcsr uint32
+	return jitcall.Call(uintptr(unsafe.Pointer(&mem[0])), x, &f, &fcsr, 0, 0)
+}
+
+func TestRV8Trampoline_RoundTrip(t *testing.T) {
+	e := NewEmitter()
+	e.Ret(0x1000, 0, VRegZero)
+	var x [32]uint64
+	res := execBlockRV8(t, e.Block, &x)
+	if res.PC != 0x1000 {
+		t.Errorf("PC = 0x%x, want 0x1000", res.PC)
+	}
+	if res.Status != 0 {
+		t.Errorf("Status = %d, want 0", res.Status)
+	}
+}
+
+func TestRV8Trampoline_ConstAndRet(t *testing.T) {
+	e := NewEmitter()
+	e.Const(e.XReg(10), 42)
+	e.Ret(0x2000, 0, VRegZero)
+	var x [32]uint64
+	res := execBlockRV8(t, e.Block, &x)
+	if res.PC != 0x2000 {
+		t.Errorf("PC = 0x%x, want 0x2000", res.PC)
+	}
+	if x[10] != 42 {
+		t.Errorf("x[10] = %d, want 42", x[10])
+	}
+}
+
+func TestRV8Trampoline_AddRegs(t *testing.T) {
+	e := NewEmitter()
+	e.Add(e.XReg(12), e.XReg(10), e.XReg(11))
+	e.Ret(0x3000, 0, VRegZero)
+	var x [32]uint64
+	x[10] = 100
+	x[11] = 200
+	res := execBlockRV8(t, e.Block, &x)
+	if res.PC != 0x3000 {
+		t.Errorf("PC = 0x%x, want 0x3000", res.PC)
+	}
+	if x[12] != 300 {
+		t.Errorf("x[12] = %d, want 300", x[12])
+	}
+}
+
+func TestRV8Trampoline_ShiftRegs(t *testing.T) {
+	e := NewEmitter()
+	e.Const(e.XReg(10), 1)
+	e.Const(e.XReg(11), 10)
+	e.Shl(e.XReg(12), e.XReg(10), e.XReg(11))
+	e.Ret(0x4000, 0, VRegZero)
+	var x [32]uint64
+	res := execBlockRV8(t, e.Block, &x)
+	if res.PC != 0x4000 {
+		t.Errorf("PC = 0x%x, want 0x4000", res.PC)
+	}
+	if x[12] != 1024 {
+		t.Errorf("x[12] = %d, want 1024", x[12])
+	}
+}
+
+func TestRV8Trampoline_DivRegs(t *testing.T) {
+	e := NewEmitter()
+	e.Const(e.XReg(10), 100)
+	e.Const(e.XReg(11), 7)
+	e.DivS(e.XReg(12), e.XReg(10), e.XReg(11))
+	e.Ret(0x5000, 0, VRegZero)
+	var x [32]uint64
+	res := execBlockRV8(t, e.Block, &x)
+	if res.PC != 0x5000 {
+		t.Errorf("PC = 0x%x, want 0x5000", res.PC)
+	}
+	if x[12] != 14 {
+		t.Errorf("x[12] = %d, want 14 (100/7)", x[12])
+	}
+}
+
+// ── Stage 8: rv8 chain exit/entry ──
+
+func TestRV8Chain_ExitAssembles(t *testing.T) {
+	e := NewEmitter()
+	e.Const(e.XReg(10), 42)
+	e.ChainExit(0x2000, 0)
+	code, _ := lowerBlockRV8(t, e.Block)
+	if len(code) == 0 {
+		t.Fatal("empty")
+	}
+}
+
+func TestRV8Chain_HasChainEntryProg(t *testing.T) {
+	b := NewBlock()
+	b.Instrs = []IRInstr{
+		{Op: IRRet, T: I64, Imm: 0x1000, Imm2: 0},
+	}
+	b.maxVreg = MaxVReg(b)
+	pool := RV8Pool(b)
+	pinned := RV8Pinned()
+	alloc := helperTestAllocate(b, pool, pinned, nil)
+
+	ctx := goasm.New(goasm.AMD64)
+	ctx.Append(ctx.NewATEXT())
+	result, err := LowerAMD64_RV8(ctx, b, alloc)
+	if err != nil {
+		t.Fatalf("LowerAMD64_RV8: %v", err)
+	}
+	if result.ChainEntryProg == nil {
+		t.Fatal("chain entry prog is nil")
+	}
+}
+
+func TestRV8Chain_ExitHasDesc(t *testing.T) {
+	e := NewEmitter()
+	e.ChainExit(0x3000, 0)
+	b := e.Block
+	pool := RV8Pool(b)
+	pinned := RV8Pinned()
+	alloc := helperTestAllocate(b, pool, pinned, nil)
+
+	ctx := goasm.New(goasm.AMD64)
+	ctx.Append(ctx.NewATEXT())
+	result, err := LowerAMD64_RV8(ctx, b, alloc)
+	if err != nil {
+		t.Fatalf("LowerAMD64_RV8: %v", err)
+	}
+	if len(result.ChainExits) != 1 {
+		t.Fatalf("want 1 chain exit, got %d", len(result.ChainExits))
+	}
+	if result.ChainExits[0].TargetPC != 0x3000 {
+		t.Errorf("target PC = 0x%x, want 0x3000", result.ChainExits[0].TargetPC)
+	}
+}
+
+// ── Stage 7: rv8 exhaustive register-pair assembly tests ──
+
+func buildRV8SingleBlock(rd, ra, rb int, emitOp func(*Emitter, VReg, VReg, VReg)) *Block {
+	e := NewEmitter()
+	emitOp(e, VReg(rd), VReg(ra), VReg(rb))
+	e.Ret(0x1000, 0, VRegZero)
+	return e.Block
+}
+
+func runRV8ExhaustAssemble(t *testing.T, name string, emitOp func(*Emitter, VReg, VReg, VReg)) {
+	const N = 12
+	for rd := 1; rd <= N; rd++ {
+		for ra := 1; ra <= N; ra++ {
+			for rb := 1; rb <= N; rb++ {
+				blk := buildRV8SingleBlock(rd, ra, rb, emitOp)
+				pool := RV8Pool(blk)
+				pinned := RV8Pinned()
+				alloc := helperTestAllocate(blk, pool, pinned, nil)
+				ctx := goasm.New(goasm.AMD64)
+				ctx.Append(ctx.NewATEXT())
+				if _, err := LowerAMD64_RV8(ctx, blk, alloc); err != nil {
+					t.Fatalf("%s d=x%d a=x%d b=x%d: lower: %v", name, rd, ra, rb, err)
+				}
+				if _, err := ctx.Assemble(); err != nil {
+					t.Fatalf("%s d=x%d a=x%d b=x%d: assemble: %v", name, rd, ra, rb, err)
+				}
+			}
+		}
+	}
+}
+
+func runRV8ExhaustExec(t *testing.T, name string, emitOp func(*Emitter, VReg, VReg, VReg), ref func(uint64, uint64) uint64) {
+	const N = 7
+	valA := uint64(0xDEADBEEF12345678)
+	valB := uint64(4)
+
+	for rd := 1; rd <= N; rd++ {
+		for ra := 1; ra <= N; ra++ {
+			for rb := 1; rb <= N; rb++ {
+				e := NewEmitter()
+				emitOp(e, VReg(rd), VReg(ra), VReg(rb))
+				e.Ret(0x1000, 0, VRegZero)
+				blk := e.Block
+
+				effA, effB := valA, valB
+				if ra == rb {
+					effA = valB
+				}
+				want := ref(effA, effB)
+
+				var x [32]uint64
+				for i := 1; i <= N; i++ {
+					x[i] = uint64(i * 111)
+				}
+				x[ra] = valA
+				x[rb] = valB
+
+				res := execBlockRV8(t, blk, &x)
+				if res.PC != 0x1000 {
+					t.Fatalf("%s d=x%d a=x%d b=x%d: PC=0x%x want 0x1000", name, rd, ra, rb, res.PC)
+				}
+				if x[rd] != want {
+					t.Fatalf("%s d=x%d a=x%d b=x%d: got 0x%x want 0x%x", name, rd, ra, rb, x[rd], want)
+				}
+			}
+		}
+	}
+}
+
+func TestRV8ExhaustExec_ADD(t *testing.T) {
+	runRV8ExhaustExec(t, "ADD", (*Emitter).Add, func(a, b uint64) uint64 { return a + b })
+}
+
+func TestRV8ExhaustExec_SUB(t *testing.T) {
+	runRV8ExhaustExec(t, "SUB", (*Emitter).Sub, func(a, b uint64) uint64 { return a - b })
+}
+
+func TestRV8ExhaustExec_SHL(t *testing.T) {
+	runRV8ExhaustExec(t, "SHL", (*Emitter).Shl, func(a, b uint64) uint64 { return a << (b & 63) })
+}
+
+func TestRV8ExhaustExec_SHR(t *testing.T) {
+	runRV8ExhaustExec(t, "SHR", (*Emitter).Shr, func(a, b uint64) uint64 { return a >> (b & 63) })
+}
+
+func TestRV8ExhaustExec_XOR(t *testing.T) {
+	runRV8ExhaustExec(t, "XOR", (*Emitter).Xor, func(a, b uint64) uint64 { return a ^ b })
+}
+
+func TestRV8Exhaust_ADD(t *testing.T) {
+	runRV8ExhaustAssemble(t, "ADD", (*Emitter).Add)
+}
+
+func TestRV8Exhaust_SUB(t *testing.T) {
+	runRV8ExhaustAssemble(t, "SUB", (*Emitter).Sub)
+}
+
+func TestRV8Exhaust_SHL(t *testing.T) {
+	runRV8ExhaustAssemble(t, "SHL", (*Emitter).Shl)
+}
+
+func TestRV8Exhaust_SHR(t *testing.T) {
+	runRV8ExhaustAssemble(t, "SHR", (*Emitter).Shr)
+}
+
+func TestRV8Exhaust_XOR(t *testing.T) {
+	runRV8ExhaustAssemble(t, "XOR", (*Emitter).Xor)
 }
 
 // suppress unused import

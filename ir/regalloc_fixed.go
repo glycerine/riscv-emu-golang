@@ -14,14 +14,15 @@ func NewFixedStaticAllocator() *FixedStaticAllocator {
 }
 
 // intPriority is the RISC-V integer register priority order.
-// ABI-driven: argument/return registers first, then ABI-critical, then temps.
+// rv8-faithful: the first 12 entries match the rv8 static register mapping
+// (ra, sp, t0, t1, a0-a7). Remaining registers spill to [RBP+r*8].
 var intPriority = []VReg{
-	10, 11, 12, 13, 14, 15, // a0-a5: argument/return
-	2, 1, 8, 9, // sp, ra, s0/fp, s1
-	5, 6, 7, 28, // t0, t1, t2, t3
-	16, 17, 18, 19, 20, 21, 22, 23, // s2-s9
-	29, 30, 31, // t4, t5, t6
-	3, 4, 24, 25, 26, 27, // gp, tp, s8-s11
+	1, 2, 5, 6,                     // ra, sp, t0, t1
+	10, 11, 12, 13, 14, 15, 16, 17, // a0-a7
+	8, 9,                            // s0/fp, s1
+	7, 28, 29, 30, 31,               // t2-t6
+	3, 4,                            // gp, tp
+	18, 19, 20, 21, 22, 23, 24, 25, 26, 27, // s2-s11
 }
 
 // fpPriority is the RISC-V FP register priority order.

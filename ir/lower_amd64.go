@@ -100,6 +100,64 @@ func AMD64Pinned() map[VReg]int16 {
 	}
 }
 
+// ── rv8-faithful register layout ──
+//
+// rv8 (CARRV 2017) maps 12 RISC-V registers to x86-64 host registers:
+//   RBP  = register file base (&cpu.x[0])
+//   RAX  = translator temp (staging register A)
+//   RCX  = translator temp (staging register B)
+//   RSP  = host stack pointer
+//   Allocatable: RDX,RBX,RSI,RDI,R8,R9,R10,R11,R12,R13,R14,R15
+//
+// Sret pointer is stashed on the stack at [RSP+0], freeing RBX.
+
+// VRRegFile is the parameter VReg for the register file base pointer,
+// pinned to RBP in the rv8 layout.
+const VRRegFile = VReg(VRegTempStart + 5) // t69
+
+// rv8Scratch1 and rv8Scratch2 are the staging registers (RAX, RCX)
+// used by the rv8 lowerer for intermediate values.
+const (
+	rv8Scratch1 int16 = goasm.REG_AMD64_AX
+	rv8Scratch2 int16 = goasm.REG_AMD64_CX
+)
+
+// RV8Pool returns the 12-register integer allocation pool matching rv8's
+// Table 1. RAX, RCX, RBP, and RSP are excluded (reserved).
+// DIV/MUL is handled by local save/restore of RDX, not pool shrinking.
+func RV8Pool(_ *Block) RegPool {
+	intRegs := []int16{
+		goasm.REG_AMD64_DX,
+		goasm.REG_AMD64_BX,
+		goasm.REG_AMD64_SI,
+		goasm.REG_AMD64_DI,
+		goasm.REG_AMD64_R8,
+		goasm.REG_AMD64_R9,
+		goasm.REG_AMD64_R10,
+		goasm.REG_AMD64_R11,
+		goasm.REG_AMD64_R12,
+		goasm.REG_AMD64_R13,
+		goasm.REG_AMD64_R14,
+		goasm.REG_AMD64_R15,
+	}
+	fpRegs := []int16{
+		goasm.REG_AMD64_X0, goasm.REG_AMD64_X1, goasm.REG_AMD64_X2, goasm.REG_AMD64_X3,
+		goasm.REG_AMD64_X4, goasm.REG_AMD64_X5, goasm.REG_AMD64_X6, goasm.REG_AMD64_X7,
+		goasm.REG_AMD64_X8, goasm.REG_AMD64_X9, goasm.REG_AMD64_X10, goasm.REG_AMD64_X11,
+		goasm.REG_AMD64_X12, goasm.REG_AMD64_X13, goasm.REG_AMD64_X14, goasm.REG_AMD64_X15,
+	}
+	return RegPool{IntRegs: intRegs, FPRegs: fpRegs}
+}
+
+// RV8Pinned returns the pinned VReg → host register map for the rv8 layout.
+// Only VRRegFile → RBP is pinned; all other parameter VRegs are loaded
+// from [RBP+offset] by the prologue.
+func RV8Pinned() map[VReg]int16 {
+	return map[VReg]int16{
+		VRRegFile: goasm.REG_AMD64_BP,
+	}
+}
+
 // ── Per-VReg interval lookup (replaces linear IntervalMap scan) ──
 
 // regEntry is one interval's host register assignment, sorted by Start.

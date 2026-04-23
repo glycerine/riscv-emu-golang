@@ -3,9 +3,23 @@ package riscv
 import (
 	"errors"
 	"math/bits"
+	"unsafe"
 
 	"riscv/internal/fenv"
 )
+
+func init() {
+	var c CPU
+	xOff := unsafe.Offsetof(c.x)
+	fOff := unsafe.Offsetof(c.f)
+	fcsrOff := unsafe.Offsetof(c.fcsr)
+	if fOff-xOff != 256 {
+		panic("riscv: CPU.f must be at CPU.x + 256 for rv8 register file layout")
+	}
+	if fcsrOff-xOff != 512 {
+		panic("riscv: CPU.fcsr must be at CPU.x + 512 for rv8 register file layout")
+	}
+}
 
 var ErrEcall  = errors.New("ecall")
 var ErrEbreak = errors.New("ebreak")
