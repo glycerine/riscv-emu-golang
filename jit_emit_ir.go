@@ -80,8 +80,9 @@ type emitter struct {
 	icEmitted      bool
 	deferredExits  []deferredExit
 	deferredFaults []deferredFault
-	exitIdx        int // counter for chain exit indices
-	jalrSiteIdx    int // counter for JALR inline-cache site indices
+	exitIdx            int      // counter for chain exit indices
+	jalrSiteIdx        int      // counter for JALR inline-cache site indices
+	boundaryEcallConts []uint64 // ECALL continuations at regionEnd (need terminal bail labels)
 }
 
 // ── Register access helpers ────────────────────────────────────────────
@@ -677,6 +678,17 @@ func (e *emitter) finalize() *emitResult {
 		}
 	})
 
+	// ECALL continuations at the block boundary: the emitter loop
+	// didn't reach these PCs, so their labels are unplaced. Emit a
+	// terminal return (not chainable) so the dispatch table can route
+	// here and Go re-dispatches to a different block.
+	for _, c := range e.boundaryEcallConts {
+		if !e.visited[c] {
+			e.irEm.PlaceLabel(e.getOrCreateLabel(c))
+			e.emitReturn(c, jitOK)
+		}
+	}
+
 	// Deferred external exits.
 	for _, de := range e.deferredExits {
 		e.irEm.PlaceLabel(de.label)
@@ -998,12 +1010,12 @@ func emitBlockRange(mem *GuestMemory, pc, endPC uint64) *emitResult {
 	// emit a PC-based jump table in the prologue.
 	targets, ecallConts := collectInternalTargets(mem, pc, endPC)
 	// ECALL continuations at endPC were not visited by the emitter
-	// loop (it exits when pc >= regionEnd). Register them as goto
-	// targets so finalize() places their labels and emits terminal
-	// returns — otherwise the dispatch table entry has no target.
+	// loop (it exits when pc >= regionEnd). Record them so finalize()
+	// places their labels with terminal returns (not chainable — a
+	// chain_exit back to the same PC would be an infinite loop).
 	for _, c := range ecallConts {
 		if c == endPC {
-			e.gotoTargets.add(c)
+			e.boundaryEcallConts = append(e.boundaryEcallConts, c)
 		}
 	}
 	if len(targets) > 0 || len(ecallConts) > 0 {
