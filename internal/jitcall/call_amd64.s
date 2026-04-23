@@ -49,6 +49,14 @@ TEXT ·Call(SB), $65536-80
 	MOVQ	fcsr+24(FP), AX
 	MOVQ	AX,  80(SP)
 
+	// Zero decoder_cache slots [88..119] so rv8JalrIC's dcBase!=0 check
+	// correctly skips the cache lookup when no AOT segment is installed.
+	// CallAOT overwrites these with real values; Call must zero them.
+	MOVQ	$0,  88(SP)
+	MOVQ	$0,  96(SP)
+	MOVQ	$0, 104(SP)
+	MOVQ	$0, 112(SP)
+
 	// Set up System V calling convention arguments.
 	LEAQ	0(SP), DI           // RDI = hidden sret pointer (local Result buffer)
 	MOVQ	x+8(FP), SI        // RSI = x
