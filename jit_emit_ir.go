@@ -997,6 +997,15 @@ func emitBlockRange(mem *GuestMemory, pc, endPC uint64) *emitResult {
 	// their IR labels in Block.DispatchPCs. The lowerer reads this to
 	// emit a PC-based jump table in the prologue.
 	targets, ecallConts := collectInternalTargets(mem, pc, endPC)
+	// ECALL continuations at endPC were not visited by the emitter
+	// loop (it exits when pc >= regionEnd). Register them as goto
+	// targets so finalize() places their labels and emits terminal
+	// returns — otherwise the dispatch table entry has no target.
+	for _, c := range ecallConts {
+		if c == endPC {
+			e.gotoTargets.add(c)
+		}
+	}
 	if len(targets) > 0 || len(ecallConts) > 0 {
 		dpcs := make(map[uint64]ir.Label)
 		// Include startPC so the dispatch table routes first entry and
@@ -1008,7 +1017,7 @@ func emitBlockRange(mem *GuestMemory, pc, endPC uint64) *emitResult {
 			}
 		}
 		for _, c := range ecallConts {
-			if c >= pc && c < endPC {
+			if c >= pc && c <= endPC {
 				dpcs[c] = e.getOrCreateLabel(c)
 			}
 		}
