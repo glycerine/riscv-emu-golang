@@ -452,6 +452,36 @@ func (lc *lowerCtxRV8) lowerInstr(ins *IRInstr) error {
 	return nil
 }
 
+// regFileOff returns the register-file offset relative to RBP for
+// RISC-V integer (VReg 1-31) and FP (VReg 32-63) registers.
+// Returns -1 for VRegZero, parameter VRegs, and temps.
+func regFileOff(v VReg) int64 {
+	if v >= 1 && v < 32 {
+		return int64(v) * 8
+	}
+	if v >= 32 && v < 64 {
+		return int64(rv8FPRegOffset) + int64(v-32)*8
+	}
+	return -1
+}
+
+// spilledRegFileOff returns the register-file offset for a VReg that
+// is a spilled RISC-V register (not allocated to a host register).
+// Returns -1 if the VReg is in a host register, is a temp, or is VRegZero.
+func (lc *lowerCtxRV8) spilledRegFileOff(v VReg) int64 {
+	if v == VRegZero {
+		return -1
+	}
+	off := regFileOff(v)
+	if off < 0 {
+		return -1
+	}
+	if int(v) < len(lc.alloc.Kind) && lc.alloc.Kind[v] == AllocStack {
+		return off
+	}
+	return -1
+}
+
 // ── Staging helpers ──
 
 func (lc *lowerCtxRV8) stageInt(v VReg, idx int) int16 {
@@ -488,7 +518,11 @@ func (lc *lowerCtxRV8) stageInt(v VReg, idx int) int16 {
 		return stg
 	}
 	if int(v) < len(lc.alloc.Kind) && lc.alloc.Kind[v] == AllocStack {
-		lc.loadSpill(lc.alloc.SpillSlot[v], stg)
+		if off := regFileOff(v); off >= 0 {
+			lc.emitRM(x86.AMOVQ, goasm.REG_AMD64_BP, off, stg)
+		} else {
+			lc.loadSpill(lc.alloc.SpillSlot[v], stg)
+		}
 		return stg
 	}
 	lc.emit2(x86.AXORQ, stg, stg)
@@ -510,7 +544,11 @@ func (lc *lowerCtxRV8) stageFP(v VReg, idx int) int16 {
 		return stg
 	}
 	if int(v) < len(lc.alloc.Kind) && lc.alloc.Kind[v] == AllocStack {
-		lc.loadFPSpill(lc.alloc.SpillSlot[v], stg)
+		if off := regFileOff(v); off >= 0 {
+			lc.emitRM(x86.AMOVSD, goasm.REG_AMD64_BP, off, stg)
+		} else {
+			lc.loadFPSpill(lc.alloc.SpillSlot[v], stg)
+		}
 		return stg
 	}
 	lc.emit2(x86.APXOR, stg, stg)
@@ -544,7 +582,13 @@ func (lc *lowerCtxRV8) commitDst(v VReg, hostReg int16) {
 		return
 	}
 	if int(v) < len(lc.alloc.Kind) && lc.alloc.Kind[v] == AllocStack {
-		if isXMMReg(hostReg) {
+		if off := regFileOff(v); off >= 0 {
+			if isXMMReg(hostReg) {
+				lc.emitMR(x86.AMOVSD, hostReg, goasm.REG_AMD64_BP, off)
+			} else {
+				lc.emitMR(x86.AMOVQ, hostReg, goasm.REG_AMD64_BP, off)
+			}
+		} else if isXMMReg(hostReg) {
 			lc.storeFPSpill(hostReg, lc.alloc.SpillSlot[v])
 		} else {
 			lc.storeSpill(hostReg, lc.alloc.SpillSlot[v])
@@ -781,8 +825,14 @@ func (lc *lowerCtxRV8) rv8Zext(ins *IRInstr) {
 
 func (lc *lowerCtxRV8) rv8Binop(ins *IRInstr, op obj.As) {
 	a := lc.stageInt(ins.A, 0)
-	b := lc.stageInt(ins.B, 1)
-	lc.emit2(op, b, a)
+	// CISC memory operand: if B is a spilled RISC-V register, use
+	// [RBP+offset] directly instead of staging through RCX.
+	if bOff := lc.spilledRegFileOff(ins.B); bOff >= 0 {
+		lc.emitRM(op, goasm.REG_AMD64_BP, bOff, a)
+	} else {
+		b := lc.stageInt(ins.B, 1)
+		lc.emit2(op, b, a)
+	}
 	dst := lc.writeDst(ins.Dst)
 	if dst != a {
 		lc.emit2(x86.AMOVQ, a, dst)
@@ -972,8 +1022,12 @@ func (lc *lowerCtxRV8) rv8MulHSU(ins *IRInstr) {
 
 func (lc *lowerCtxRV8) rv8Set(ins *IRInstr) {
 	a := lc.stageInt(ins.A, 0)
-	b := lc.stageInt(ins.B, 1)
-	lc.emit2(x86.ACMPQ, a, b)
+	if bOff := lc.spilledRegFileOff(ins.B); bOff >= 0 {
+		lc.emitRM(x86.ACMPQ, goasm.REG_AMD64_BP, bOff, a)
+	} else {
+		b := lc.stageInt(ins.B, 1)
+		lc.emit2(x86.ACMPQ, a, b)
+	}
 	dst := lc.writeDst(ins.Dst)
 	bReg := byteReg(dst)
 	setOp := predToSETcc(ins.Pred)
@@ -1076,8 +1130,12 @@ func (lc *lowerCtxRV8) rv8StoreX(ins *IRInstr) {
 
 func (lc *lowerCtxRV8) rv8Branch(ins *IRInstr) {
 	a := lc.stageInt(ins.A, 0)
-	b := lc.stageInt(ins.B, 1)
-	lc.emit2(x86.ACMPQ, a, b)
+	if bOff := lc.spilledRegFileOff(ins.B); bOff >= 0 {
+		lc.emitRM(x86.ACMPQ, goasm.REG_AMD64_BP, bOff, a)
+	} else {
+		b := lc.stageInt(ins.B, 1)
+		lc.emit2(x86.ACMPQ, a, b)
+	}
 	jOp := predToJcc(ins.Pred)
 	p := lc.c.NewProg()
 	p.As = jOp
