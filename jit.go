@@ -736,11 +736,13 @@ func (j *JIT) RunJIT(cpu *CPU) error {
 				// Fast path: single segment. Publish its decoder_cache
 				// params directly — no findSegment, no blk.segment deref,
 				// no null-chain.
+				//vv("about to jitcall.CallAOT() at blk.fn = 0x%x; chainEntry = 0x%x", blk.fn, blk.chainEntry)
 				res = jitcall.CallAOT(blk.fn, &cpu.x, &cpu.f, &cpu.fcsr,
 					cpu.mem.Base(), cpu.mem.Mask(),
 					seg.decoderCacheBase, seg.decoderCacheMask,
 					seg.vaddrBegin, seg.vaddrSize,
 					pc)
+				//vv("back from jitcall.CallAOT() with res = '%#v'", res)
 			} else if len(j.aotSegments) > 0 {
 				// Multi-segment path. Publish the containing segment's
 				// decoder_cache params to the sret extension. Lazy blocks
@@ -773,6 +775,12 @@ func (j *JIT) RunJIT(cpu *CPU) error {
 			switch int(res.Status) {
 			case jitOK:
 				j.DispatchOK++
+				if res.IC == 0 {
+					// Bail label hit — block had no code for this PC.
+					// Fall through to compilation/interpreter.
+					//vv("bail label hit - block had no code for this PC.")
+					break
+				}
 				// Patch this block's chain exit to jump directly to the target.
 				// When a chain exit isn't patched, the slow stub returns here.
 				// After patching, future executions jump directly — bypassing Go.
