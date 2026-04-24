@@ -2068,6 +2068,52 @@ func testNativeTraceW(t *testing.T, elfPath string, targetBlock int) {
 	_ = v2dbg
 }
 
+// TestFusion_SLLI_SRLI_ZextW verifies that SLLI rd,rd,32; SRLI rd,rd,32
+// fuses into a single Zext I32.
+func TestFusion_SLLI_SRLI_ZextW(t *testing.T) {
+	insns := []uint32{
+		ienc(opOPIMM, 1, 10, 10, 32), // SLLI x10, x10, 32
+		ienc(opOPIMM, 5, 10, 10, 32), // SRLI x10, x10, 32
+		instrECALL,
+	}
+
+	mem, err := NewGuestMemory(Size64MB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mem.Free()
+	storeInsns(mem, 0x1000, insns)
+
+	res := emitBlock(mem, 0x1000)
+	if res == nil {
+		t.Fatal("emitBlock returned nil")
+	}
+
+	foundZext := false
+	for _, ins := range res.block.Instrs {
+		if ins.Op == ir.IRZext && ins.T == ir.I32 {
+			foundZext = true
+		}
+	}
+	if !foundZext {
+		t.Error("expected IRZext I32 from SLLI+SRLI fusion, not found")
+	}
+
+	// End-to-end: 0xFFFFFFFF_12345678 → zero-extend lower 32 → 0x12345678
+	cpu, mem2 := newTestCPU(t, Size64MB, 0x1000, insns)
+	defer mem2.Free()
+	cpu.SetReg(10, 0xFFFFFFFF_12345678)
+	cpu.Notes.Push(ecallStop)
+	jit := NewJIT()
+	jit.RunJIT(cpu)
+
+	got := cpu.Reg(10)
+	want := uint64(0x12345678)
+	if got != want {
+		t.Errorf("x10 = 0x%x, want 0x%x", got, want)
+	}
+}
+
 // TestFusion_ADDIW_SLLI_SRLI_Addiwz verifies that ADDIW rd,rs1,imm followed
 // by SLLI rd,rd,32; SRLI rd,rd,32 fuses into a zero-extending add (addiwz).
 func TestFusion_ADDIW_SLLI_SRLI_Addiwz(t *testing.T) {
