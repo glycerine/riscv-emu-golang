@@ -489,6 +489,28 @@ func (lc *lowerCtxRV8) spilledRegFileOff(v VReg) int64 {
 	return -1
 }
 
+// spilledMemOp returns the base register and offset for any spilled
+// integer VReg: RISC-V int registers use [RBP+r*8], temps use [RSP+slot*8].
+// Excludes FP VRegs (32-63) and FP-typed temps.
+func (lc *lowerCtxRV8) spilledMemOp(v VReg) (base int16, off int64, ok bool) {
+	if v == VRegZero {
+		return 0, 0, false
+	}
+	if v >= 32 && v < 64 {
+		return 0, 0, false
+	}
+	if lc.isVRegFP(v) {
+		return 0, 0, false
+	}
+	if int(v) >= len(lc.alloc.Kind) || lc.alloc.Kind[v] != AllocStack {
+		return 0, 0, false
+	}
+	if rfOff := regFileOff(v); rfOff >= 0 {
+		return goasm.REG_AMD64_BP, rfOff, true
+	}
+	return goasm.REG_AMD64_SP, int64(lc.alloc.SpillSlot[v]) * 8, true
+}
+
 // ── Staging helpers ──
 
 func (lc *lowerCtxRV8) stageInt(v VReg, idx int) int16 {
@@ -637,15 +659,23 @@ func (lc *lowerCtxRV8) hostReg(v VReg) int16 {
 	return lc.rIdx.lookup(v, lc.idx)
 }
 
-// directReg returns the host register for v only if it's safe to use
-// directly (without staging). Parameter VRegs (VRXBase, VRFBase, etc.)
-// have special handling in stageInt that hostReg doesn't replicate, so
-// they must always go through stageInt.
+// directReg returns the host GPR for v only if it's safe to use
+// directly (without staging). Excludes parameter VRegs (which have
+// special handling in stageInt) and XMM registers (which need FP
+// staging paths, not integer MOVQ).
 func (lc *lowerCtxRV8) directReg(v VReg) int16 {
-	if v >= 1 && v < 64 {
-		return lc.hostReg(v)
+	if v == VRegZero {
+		return -1
 	}
-	return -1
+	switch v {
+	case VRXBase, VRFBase, VRIC, VRMemBase, VRMemMask, VRRegFile:
+		return -1
+	}
+	hr := lc.hostReg(v)
+	if hr >= 0 && isXMMReg(hr) {
+		return -1
+	}
+	return hr
 }
 
 func (lc *lowerCtxRV8) isVRegFP(v VReg) bool {
@@ -876,8 +906,8 @@ func (lc *lowerCtxRV8) rv8Binop(ins *IRInstr, op obj.As) {
 		if dstHR != aHR {
 			lc.emit2(x86.AMOVQ, aHR, dstHR)
 		}
-		if bOff := lc.spilledRegFileOff(ins.B); bOff >= 0 {
-			lc.emitRM(op, goasm.REG_AMD64_BP, bOff, dstHR)
+		if bBase, bOff, ok := lc.spilledMemOp(ins.B); ok {
+			lc.emitRM(op, bBase, bOff, dstHR)
 		} else if bHR >= 0 {
 			lc.emit2(op, bHR, dstHR)
 		} else {
@@ -889,8 +919,8 @@ func (lc *lowerCtxRV8) rv8Binop(ins *IRInstr, op obj.As) {
 	}
 
 	a := lc.stageInt(ins.A, 0)
-	if bOff := lc.spilledRegFileOff(ins.B); bOff >= 0 {
-		lc.emitRM(op, goasm.REG_AMD64_BP, bOff, a)
+	if bBase, bOff, ok := lc.spilledMemOp(ins.B); ok {
+		lc.emitRM(op, bBase, bOff, a)
 	} else {
 		b := lc.stageInt(ins.B, 1)
 		lc.emit2(op, b, a)

@@ -35,11 +35,12 @@ func RV8Pool(_ *Block) RegPool {
 		goasm.REG_AMD64_R14,
 		goasm.REG_AMD64_R15,
 	}
+	// X14 (rv8StgFB) and X15 (rv8StgFA) reserved for FP staging.
 	fpRegs := []int16{
 		goasm.REG_AMD64_X0, goasm.REG_AMD64_X1, goasm.REG_AMD64_X2, goasm.REG_AMD64_X3,
 		goasm.REG_AMD64_X4, goasm.REG_AMD64_X5, goasm.REG_AMD64_X6, goasm.REG_AMD64_X7,
 		goasm.REG_AMD64_X8, goasm.REG_AMD64_X9, goasm.REG_AMD64_X10, goasm.REG_AMD64_X11,
-		goasm.REG_AMD64_X12, goasm.REG_AMD64_X13, goasm.REG_AMD64_X14, goasm.REG_AMD64_X15,
+		goasm.REG_AMD64_X12, goasm.REG_AMD64_X13,
 	}
 	return RegPool{IntRegs: intRegs, FPRegs: fpRegs}
 }

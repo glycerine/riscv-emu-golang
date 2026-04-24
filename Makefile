@@ -600,17 +600,17 @@ bench:
 	@echo ""
 	@printf "  %-44s %s\n" "Strategy" "MIPS"
 	@printf "  %-44s %s\n" "────────────────────────────────────────────" "──────────"
-	@printf "  %-44s " "Go interpreter (no JIT):"
-	@cd $(ROOT) && BENCH_ELF=$(GUEST_ELF) \
-	    $(GO) test $(PGO_FLAG) -count=1 -benchtime=1x -benchmem \
-	        -run='^$$' -bench='^BenchmarkCPU_FullExecution$$' \
-	        ./bench/ 2>&1 \
-	    | awk '/MIPS/{for(i=1;i<=NF;i++){if($$i=="MIPS"){print p" MIPS";next}; p=$$i}}' \
-	    || echo "(failed)"
 	@printf "  %-44s " "Go JIT — Fixed Static Mapping (native):"
 	@cd $(ROOT) && BENCH_ELF=$(GUEST_ELF) \
 	    $(GO) test $(PGO_FLAG) -count=1 -benchtime=1x -benchmem \
 	        -run='^$$' -bench='^BenchmarkCPU_FullExecution_JIT_Fixed$$' \
+	        ./bench/ 2>&1 \
+	    | awk '/MIPS/{for(i=1;i<=NF;i++){if($$i=="MIPS"){print p" MIPS";next}; p=$$i}}' \
+	    || echo "(failed)"
+	@printf "  %-44s " "Go interpreter (no JIT):"
+	@cd $(ROOT) && BENCH_ELF=$(GUEST_ELF) \
+	    $(GO) test $(PGO_FLAG) -count=1 -benchtime=1x -benchmem \
+	        -run='^$$' -bench='^BenchmarkCPU_FullExecution$$' \
 	        ./bench/ 2>&1 \
 	    | awk '/MIPS/{for(i=1;i<=NF;i++){if($$i=="MIPS"){print p" MIPS";next}; p=$$i}}' \
 	    || echo "(failed)"

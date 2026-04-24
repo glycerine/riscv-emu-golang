@@ -536,8 +536,8 @@ func TestRV8Pool(t *testing.T) {
 	if len(pool.IntRegs) != 12 {
 		t.Fatalf("want 12 int regs, got %d", len(pool.IntRegs))
 	}
-	if len(pool.FPRegs) != 16 {
-		t.Errorf("want 16 FP regs, got %d", len(pool.FPRegs))
+	if len(pool.FPRegs) != 14 {
+		t.Errorf("want 14 FP regs (X14/X15 reserved for FP staging), got %d", len(pool.FPRegs))
 	}
 
 	excluded := map[int16]string{
