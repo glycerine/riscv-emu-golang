@@ -206,6 +206,26 @@ The single instruction wins
 This means the RMW approach is actually the correct optimization on AMD. It's only Intel Ice Lake that has the catastrophic forwarding stall. The fix we applied (restricting to RBP-only)
 is a workaround for an Intel-specific microarchitectural weakness, at the cost of leaving performance on the table for AMD.
 
+# assembly
+
+Q: what does this assembly instruction do? 
+
+> ADDQ  $1, (SP)           note: 6x SLOW-DOWN on Intel Ice Lake
+ 
+A: It adds the immediate value 1 to the 64-bit quadword stored at the memory address pointed to by RSP (the stack pointer).
+   
+In Go's Plan 9 assembly syntax, (SP) means [RSP+0] — the memory at the top of the stack. So this is a read-modify-write: read 8 bytes from [RSP], add 1, write 8 bytes back to [RSP]. It does not modify RSP itself. That would be ADDQ $1, SP (no parentheses).
+
+Q: what does this sequence of assmebly instruction do?
+
+> MOVQ  (SP), AX         note: normal speed on Intel Ice Lake.
+> ADDQ  $1, AX
+> MOVQ  AX, (SP)
+
+The same thing. Load the 8-byte value at [RSP+0] into RAX, add 1 to RAX, store RAX back to [RSP+0].
+  
+The difference is that the single-instruction ADDQ $1, (SP) does the read-modify-write internally as one x86 instruction, while this three-instruction sequence decomposes it into explicit load, operate, store steps — with the intermediate value visible in RAX between steps.
+
 # background
 
 Q: is there any discussion of this problem with 
