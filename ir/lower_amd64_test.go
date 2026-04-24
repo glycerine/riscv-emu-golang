@@ -756,6 +756,109 @@ func TestRV8Lower_Set(t *testing.T) {
 	}
 }
 
+func TestEmitMI_RSP_Encoding(t *testing.T) {
+	ctx := goasm.New(goasm.AMD64)
+	ctx.Append(ctx.NewATEXT())
+
+	// Emit: ADDQ $1, [RSP+8]
+	p := ctx.NewProg()
+	p.As = x86.AADDQ
+	p.From.Type = obj.TYPE_CONST
+	p.From.Offset = 1
+	p.To.Type = obj.TYPE_MEM
+	p.To.Reg = goasm.REG_AMD64_SP
+	p.To.Offset = 8
+	ctx.Append(p)
+
+	// Emit: ADDQ $1, [RBP+8] (known working, for comparison)
+	p2 := ctx.NewProg()
+	p2.As = x86.AADDQ
+	p2.From.Type = obj.TYPE_CONST
+	p2.From.Offset = 1
+	p2.To.Type = obj.TYPE_MEM
+	p2.To.Reg = goasm.REG_AMD64_BP
+	p2.To.Offset = 8
+	ctx.Append(p2)
+
+	code, err := ctx.Assemble()
+	if err != nil {
+		t.Fatalf("Assemble: %v", err)
+	}
+
+	// Expected: ADDQ $1, [RSP+8] = 48 83 44 24 08 01 (6 bytes)
+	//           ADDQ $1, [RBP+8] = 48 83 45 08 01    (5 bytes)
+	t.Logf("assembled %d bytes:", len(code))
+	for i, b := range code {
+		t.Logf("  [%d] %02x", i, b)
+	}
+
+	// RSP version must have SIB byte (0x24 after ModRM)
+	// Find the ADDQ $1,[RSP+8] instruction
+	// REX.W=48, opcode=83, ModRM=44, SIB=24, disp8=08, imm8=01
+	want := []byte{0x48, 0x83, 0x44, 0x24, 0x08, 0x01}
+	if len(code) < 6 {
+		t.Fatalf("code too short: %d bytes", len(code))
+	}
+	for i, w := range want {
+		if code[i] != w {
+			t.Errorf("byte[%d] = %02x, want %02x", i, code[i], w)
+		}
+	}
+}
+
+func TestEmitMI_RSP_Functional(t *testing.T) {
+	// Test: ADDQ $5, [RSP+off] actually adds 5 to the value at that location.
+	// Build a block where a temp gets spilled and AddImm operates on it.
+	e := NewEmitter()
+	// Use 20 regs to force temps to spill.
+	for i := 1; i <= 20; i++ {
+		e.Const(e.XReg(uint32(i)), int64(i*100))
+	}
+	// x21 = x10 (1000). x21 will be spilled (reg pressure).
+	e.Mov(e.XReg(21), e.XReg(10))
+	// x21 = x21 + 7 → should be 1007
+	e.AddImm(e.XReg(21), e.XReg(21), 7)
+	// Keep x1-x20 live.
+	e.Mov(e.XReg(25), e.XReg(1))
+	for i := 2; i <= 20; i++ {
+		e.Add(e.XReg(25), e.XReg(25), e.XReg(uint32(i)))
+	}
+	e.Ret(0x1000, 0, VRegZero)
+	var x [32]uint64
+	execBlockRV8(t, e.Block, &x)
+	if x[21] != 1007 {
+		t.Errorf("x21 = %d, want 1007", x[21])
+	}
+}
+
+func TestEmitMI_RSP_TempVReg(t *testing.T) {
+	// Same as above but using a TEMP VReg (≥70) that spills to [RSP+slot*8].
+	e := NewEmitter()
+	// Use 14 temps to exhaust pool (12 GPRs - parameter overhead).
+	temps := make([]VReg, 14)
+	for i := range temps {
+		temps[i] = e.Tmp()
+		e.Const(temps[i], int64((i+1)*100))
+	}
+	// t0 = t0 + 7: fires emitMI if t0 is spilled.
+	e.AddImm(temps[0], temps[0], 7)
+	// Write all temps back to RISC-V regs for checking.
+	for i := 0; i < 14 && i < 31; i++ {
+		e.Mov(e.XReg(uint32(i+1)), temps[i])
+	}
+	e.Ret(0x1000, 0, VRegZero)
+	var x [32]uint64
+	execBlockRV8(t, e.Block, &x)
+	// t0 was 100, +7 = 107
+	if x[1] != 107 {
+		t.Errorf("x1 (t0+7) = %d, want 107", x[1])
+	}
+	// t1 was 200, unchanged
+	if x[2] != 200 {
+		t.Errorf("x2 (t1) = %d, want 200", x[2])
+	}
+}
+
 func TestRV8Set_CmpDirection_RegReg(t *testing.T) {
 	e := NewEmitter()
 	e.Const(e.XReg(10), 3)
