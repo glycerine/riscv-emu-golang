@@ -240,11 +240,11 @@ func TestJIT_Fib(t *testing.T) {
 
 	codeVA := uint64(0x1000)
 	insns := []uint32{
-		renc(0x33, 0, 0x00, 5, 10, 11),              // ADD x5, x10, x11
-		ienc(opOPIMM, 0, 10, 11, 0),                  // MV x10, x11
-		ienc(opOPIMM, 0, 11, 5, 0),                   // MV x11, x5
-		ienc(opOPIMM, 0, 12, 12, 1),                  // ADDI x12, x12, 1
-		benc(opBRANCH, 4, 12, 13, -16),               // BLT x12, x13, -16
+		renc(0x33, 0, 0x00, 5, 10, 11), // ADD x5, x10, x11
+		ienc(opOPIMM, 0, 10, 11, 0),    // MV x10, x11
+		ienc(opOPIMM, 0, 11, 5, 0),     // MV x11, x5
+		ienc(opOPIMM, 0, 12, 12, 1),    // ADDI x12, x12, 1
+		benc(opBRANCH, 4, 12, 13, -16), // BLT x12, x13, -16
 		instrECALL,
 	}
 	storeInsns(mem, codeVA, insns)
@@ -321,11 +321,11 @@ func TestJIT_CycleCount(t *testing.T) {
 func TestJIT_CycleCount_Loop(t *testing.T) {
 	// Run same fib(5) program through both interpreter and JIT, compare cycle counts.
 	insns := []uint32{
-		renc(0x33, 0, 0x00, 5, 10, 11),  // ADD x5, x10, x11
-		ienc(opOPIMM, 0, 10, 11, 0),     // MV x10, x11
-		ienc(opOPIMM, 0, 11, 5, 0),      // MV x11, x5
-		ienc(opOPIMM, 0, 12, 12, 1),     // ADDI x12, x12, 1
-		benc(opBRANCH, 4, 12, 13, -16),  // BLT x12, x13, -16
+		renc(0x33, 0, 0x00, 5, 10, 11), // ADD x5, x10, x11
+		ienc(opOPIMM, 0, 10, 11, 0),    // MV x10, x11
+		ienc(opOPIMM, 0, 11, 5, 0),     // MV x11, x5
+		ienc(opOPIMM, 0, 12, 12, 1),    // ADDI x12, x12, 1
+		benc(opBRANCH, 4, 12, 13, -16), // BLT x12, x13, -16
 		instrECALL,
 	}
 	initRegs := func(cpu *CPU) {
@@ -362,10 +362,10 @@ func TestJIT_CycleCount_Loop(t *testing.T) {
 
 func TestJIT_LoadStore(t *testing.T) {
 	cpu, mem := newTestCPU(t, Size64MB, 0x1000, []uint32{
-		uenc(opLUI, 10, 0x2000),           // LUI x10, 0x2  → x10 = 0x2000
-		ienc(opOPIMM, 0, 11, 0, 42),       // ADDI x11, x0, 42
-		senc(opSTORE, 2, 10, 11, 0),       // SW x11, 0(x10)
-		ienc(opLOAD, 2, 12, 10, 0),        // LW x12, 0(x10)
+		uenc(opLUI, 10, 0x2000),     // LUI x10, 0x2  → x10 = 0x2000
+		ienc(opOPIMM, 0, 11, 0, 42), // ADDI x11, x0, 42
+		senc(opSTORE, 2, 10, 11, 0), // SW x11, 0(x10)
+		ienc(opLOAD, 2, 12, 10, 0),  // LW x12, 0(x10)
 		instrECALL,
 	})
 	defer mem.Free()
@@ -397,21 +397,21 @@ func TestJIT_LoadStore_AllWidths(t *testing.T) {
 		want     uint64
 	}{
 		{"SD_LD", 3, 3, 42, 42},
-		{"SW_LW", 2, 2, -1, 0xFFFFFFFFFFFFFFFF},   // sign-extends
-		{"SW_LWU", 2, 6, -1, 0x00000000FFFFFFFF},   // zero-extends
-		{"SH_LH", 1, 1, -1, 0xFFFFFFFFFFFFFFFF},    // sign-extends
-		{"SH_LHU", 1, 5, -1, 0x000000000000FFFF},   // zero-extends
-		{"SB_LB", 0, 0, -1, 0xFFFFFFFFFFFFFFFF},    // sign-extends
-		{"SB_LBU", 0, 4, -1, 0x00000000000000FF},   // zero-extends
+		{"SW_LW", 2, 2, -1, 0xFFFFFFFFFFFFFFFF},  // sign-extends
+		{"SW_LWU", 2, 6, -1, 0x00000000FFFFFFFF}, // zero-extends
+		{"SH_LH", 1, 1, -1, 0xFFFFFFFFFFFFFFFF},  // sign-extends
+		{"SH_LHU", 1, 5, -1, 0x000000000000FFFF}, // zero-extends
+		{"SB_LB", 0, 0, -1, 0xFFFFFFFFFFFFFFFF},  // sign-extends
+		{"SB_LBU", 0, 4, -1, 0x00000000000000FF}, // zero-extends
 		{"SB_42", 0, 4, 42, 42},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			cpu, mem := newTestCPU(t, Size64MB, 0x1000, []uint32{
-				uenc(opLUI, 10, 0x2000),                     // LUI x10, 0x2 → 0x2000
-				ienc(opOPIMM, 0, 11, 0, tc.storeVal),        // ADDI x11, x0, val
-				senc(opSTORE, tc.storeF3, 10, 11, 0),        // Sx x11, 0(x10)
-				ienc(opLOAD, tc.loadF3, 12, 10, 0),          // Lx x12, 0(x10)
+				uenc(opLUI, 10, 0x2000),              // LUI x10, 0x2 → 0x2000
+				ienc(opOPIMM, 0, 11, 0, tc.storeVal), // ADDI x11, x0, val
+				senc(opSTORE, tc.storeF3, 10, 11, 0), // Sx x11, 0(x10)
+				ienc(opLOAD, tc.loadF3, 12, 10, 0),   // Lx x12, 0(x10)
 				instrECALL,
 			})
 			defer mem.Free()
@@ -490,47 +490,47 @@ func TestJIT_vs_Interp_Registers(t *testing.T) {
 		{
 			name: "ALU_mix",
 			insns: []uint32{
-				ienc(opOPIMM, 0, 1, 0, 100),        // ADDI x1, x0, 100
-				ienc(opOPIMM, 0, 2, 0, 42),          // ADDI x2, x0, 42
-				renc(opOP, 0, 0x00, 3, 1, 2),        // ADD x3, x1, x2
-				renc(opOP, 0, 0x20, 4, 1, 2),        // SUB x4, x1, x2
-				renc(opOP, 4, 0x00, 6, 3, 4),        // XOR x6, x3, x4
+				ienc(opOPIMM, 0, 1, 0, 100),  // ADDI x1, x0, 100
+				ienc(opOPIMM, 0, 2, 0, 42),   // ADDI x2, x0, 42
+				renc(opOP, 0, 0x00, 3, 1, 2), // ADD x3, x1, x2
+				renc(opOP, 0, 0x20, 4, 1, 2), // SUB x4, x1, x2
+				renc(opOP, 4, 0x00, 6, 3, 4), // XOR x6, x3, x4
 				instrECALL,
 			},
 		},
 		{
 			name: "load_store",
 			insns: []uint32{
-				uenc(opLUI, 10, 0x2000),             // LUI x10, 0x2
-				ienc(opOPIMM, 0, 11, 0, 0x55),       // ADDI x11, x0, 0x55
-				senc(opSTORE, 2, 10, 11, 0),         // SW x11, 0(x10)
-				ienc(opLOAD, 2, 12, 10, 0),          // LW x12, 0(x10)
-				senc(opSTORE, 0, 10, 11, 8),         // SB x11, 8(x10)
-				ienc(opLOAD, 0, 13, 10, 8),          // LB x13, 8(x10)
-				ienc(opLOAD, 4, 14, 10, 8),          // LBU x14, 8(x10)
-				senc(opSTORE, 3, 10, 11, 16),        // SD x11, 16(x10)
-				ienc(opLOAD, 3, 15, 10, 16),         // LD x15, 16(x10)
+				uenc(opLUI, 10, 0x2000),       // LUI x10, 0x2
+				ienc(opOPIMM, 0, 11, 0, 0x55), // ADDI x11, x0, 0x55
+				senc(opSTORE, 2, 10, 11, 0),   // SW x11, 0(x10)
+				ienc(opLOAD, 2, 12, 10, 0),    // LW x12, 0(x10)
+				senc(opSTORE, 0, 10, 11, 8),   // SB x11, 8(x10)
+				ienc(opLOAD, 0, 13, 10, 8),    // LB x13, 8(x10)
+				ienc(opLOAD, 4, 14, 10, 8),    // LBU x14, 8(x10)
+				senc(opSTORE, 3, 10, 11, 16),  // SD x11, 16(x10)
+				ienc(opLOAD, 3, 15, 10, 16),   // LD x15, 16(x10)
 				instrECALL,
 			},
 		},
 		{
 			name: "branch_skip",
 			insns: []uint32{
-				ienc(opOPIMM, 0, 1, 0, 5),           // ADDI x1, x0, 5
-				ienc(opOPIMM, 0, 2, 0, 5),           // ADDI x2, x0, 5
-				benc(opBRANCH, 0, 1, 2, 8),          // BEQ x1, x2, +8
-				ienc(opOPIMM, 0, 3, 0, 999),         // ADDI x3, x0, 999 (skipped)
-				ienc(opOPIMM, 0, 3, 0, 42),          // ADDI x3, x0, 42
+				ienc(opOPIMM, 0, 1, 0, 5),   // ADDI x1, x0, 5
+				ienc(opOPIMM, 0, 2, 0, 5),   // ADDI x2, x0, 5
+				benc(opBRANCH, 0, 1, 2, 8),  // BEQ x1, x2, +8
+				ienc(opOPIMM, 0, 3, 0, 999), // ADDI x3, x0, 999 (skipped)
+				ienc(opOPIMM, 0, 3, 0, 42),  // ADDI x3, x0, 42
 				instrECALL,
 			},
 		},
 		{
 			name: "shifts",
 			insns: []uint32{
-				ienc(opOPIMM, 0, 1, 0, -1),          // ADDI x1, x0, -1 (all 1s)
-				ienc(opOPIMM, 1, 2, 1, 32),          // SLLI x2, x1, 32
-				ienc(opOPIMM, 5, 3, 1, 32),          // SRLI x3, x1, 32
-				ienc(opOPIMM, 5, 4, 1, 32|0x400),    // SRAI x4, x1, 32 (funct7 bit)
+				ienc(opOPIMM, 0, 1, 0, -1),       // ADDI x1, x0, -1 (all 1s)
+				ienc(opOPIMM, 1, 2, 1, 32),       // SLLI x2, x1, 32
+				ienc(opOPIMM, 5, 3, 1, 32),       // SRLI x3, x1, 32
+				ienc(opOPIMM, 5, 4, 1, 32|0x400), // SRAI x4, x1, 32 (funct7 bit)
 				instrECALL,
 			},
 		},
@@ -607,8 +607,8 @@ func TestJIT_MemConsistency_Interp_to_JIT(t *testing.T) {
 
 	// JIT block loads it
 	storeInsns(mem, 0x1000, []uint32{
-		uenc(opLUI, 10, 0x2000),       // LUI x10, 0x2
-		ienc(opLOAD, 2, 11, 10, 0),   // LW x11, 0(x10)
+		uenc(opLUI, 10, 0x2000),    // LUI x10, 0x2
+		ienc(opLOAD, 2, 11, 10, 0), // LW x11, 0(x10)
 		instrECALL,
 	})
 
@@ -632,11 +632,11 @@ func TestJIT_MemConsistency_JIT_to_Interp(t *testing.T) {
 	csrrs := ienc(opSYSTEM, 2, 3, 0, 0xC00) // CSRRS x3, cycle, x0
 
 	cpu, mem := newTestCPU(t, Size64MB, 0x1000, []uint32{
-		uenc(opLUI, 10, 0x2000),           // LUI x10, 0x2
-		ienc(opOPIMM, 0, 11, 0, 42),      // ADDI x11, x0, 42
-		senc(opSTORE, 2, 10, 11, 0),      // SW x11, 0(x10) — JIT store
-		csrrs,                              // untranslatable → interpreter
-		ienc(opLOAD, 2, 12, 10, 0),       // LW x12, 0(x10) — may be JIT or interp
+		uenc(opLUI, 10, 0x2000),     // LUI x10, 0x2
+		ienc(opOPIMM, 0, 11, 0, 42), // ADDI x11, x0, 42
+		senc(opSTORE, 2, 10, 11, 0), // SW x11, 0(x10) — JIT store
+		csrrs,                       // untranslatable → interpreter
+		ienc(opLOAD, 2, 12, 10, 0),  // LW x12, 0(x10) — may be JIT or interp
 		instrECALL,
 	})
 	defer mem.Free()
@@ -656,11 +656,11 @@ func TestJIT_MixedExecution(t *testing.T) {
 	csrrs := ienc(opSYSTEM, 2, 3, 0, 0xC00) // CSRRS x3, cycle, x0
 
 	cpu, mem := newTestCPU(t, Size64MB, 0x1000, []uint32{
-		ienc(opOPIMM, 0, 1, 0, 10),       // ADDI x1, x0, 10  (JIT'd)
-		ienc(opOPIMM, 0, 2, 0, 20),       // ADDI x2, x0, 20  (JIT'd)
-		csrrs,                              // NOT JIT'd — terminates block
-		ienc(opOPIMM, 0, 4, 0, 30),       // ADDI x4, x0, 30  (new JIT block)
-		renc(opOP, 0, 0x00, 5, 1, 2),     // ADD x5, x1, x2   (JIT'd)
+		ienc(opOPIMM, 0, 1, 0, 10),   // ADDI x1, x0, 10  (JIT'd)
+		ienc(opOPIMM, 0, 2, 0, 20),   // ADDI x2, x0, 20  (JIT'd)
+		csrrs,                        // NOT JIT'd — terminates block
+		ienc(opOPIMM, 0, 4, 0, 30),   // ADDI x4, x0, 30  (new JIT block)
+		renc(opOP, 0, 0x00, 5, 1, 2), // ADD x5, x1, x2   (JIT'd)
 		instrECALL,
 	})
 	defer mem.Free()
@@ -687,11 +687,11 @@ func TestJIT_MixedExecution(t *testing.T) {
 
 func TestJIT_ForwardBranch(t *testing.T) {
 	cpu, mem := newTestCPU(t, Size64MB, 0x1000, []uint32{
-		ienc(opOPIMM, 0, 1, 0, 1),        // ADDI x1, x0, 1
-		benc(opBRANCH, 0, 0, 0, 12),      // BEQ x0, x0, +12 (always taken → 0x1010)
-		ienc(opOPIMM, 0, 2, 0, 999),      // ADDI x2, x0, 999 (SKIPPED)
-		ienc(opOPIMM, 0, 3, 0, 999),      // ADDI x3, x0, 999 (SKIPPED)
-		ienc(opOPIMM, 0, 2, 0, 42),       // ADDI x2, x0, 42 (branch target)
+		ienc(opOPIMM, 0, 1, 0, 1),   // ADDI x1, x0, 1
+		benc(opBRANCH, 0, 0, 0, 12), // BEQ x0, x0, +12 (always taken → 0x1010)
+		ienc(opOPIMM, 0, 2, 0, 999), // ADDI x2, x0, 999 (SKIPPED)
+		ienc(opOPIMM, 0, 3, 0, 999), // ADDI x3, x0, 999 (SKIPPED)
+		ienc(opOPIMM, 0, 2, 0, 42),  // ADDI x2, x0, 42 (branch target)
 		instrECALL,
 	})
 	defer mem.Free()
@@ -713,10 +713,10 @@ func TestJIT_ForwardBranch(t *testing.T) {
 
 func TestJIT_ForwardBranch_NotTaken(t *testing.T) {
 	cpu, mem := newTestCPU(t, Size64MB, 0x1000, []uint32{
-		ienc(opOPIMM, 0, 1, 0, 1),        // ADDI x1, x0, 1
-		ienc(opOPIMM, 0, 2, 0, 2),        // ADDI x2, x0, 2
-		benc(opBRANCH, 1, 1, 1, 8),       // BNE x1, x1, +8 (never taken)
-		ienc(opOPIMM, 0, 3, 0, 42),       // ADDI x3, x0, 42 (falls through)
+		ienc(opOPIMM, 0, 1, 0, 1),  // ADDI x1, x0, 1
+		ienc(opOPIMM, 0, 2, 0, 2),  // ADDI x2, x0, 2
+		benc(opBRANCH, 1, 1, 1, 8), // BNE x1, x1, +8 (never taken)
+		ienc(opOPIMM, 0, 3, 0, 42), // ADDI x3, x0, 42 (falls through)
 		instrECALL,
 	})
 	defer mem.Free()
@@ -734,7 +734,7 @@ func TestJIT_ForwardBranch_NotTaken(t *testing.T) {
 
 func TestJIT_J_Forward(t *testing.T) {
 	cpu, mem := newTestCPU(t, Size64MB, 0x1000, []uint32{
-		ienc(opOPIMM, 0, 1, 0, 1),  // ADDI x1, x0, 1
+		ienc(opOPIMM, 0, 1, 0, 1),   // ADDI x1, x0, 1
 		jenc(0, 12),                 // JAL x0, +12 (jump to 0x1010)
 		ienc(opOPIMM, 0, 2, 0, 999), // ADDI x2, x0, 999 (SKIPPED)
 		ienc(opOPIMM, 0, 3, 0, 999), // ADDI x3, x0, 999 (SKIPPED)
@@ -764,11 +764,11 @@ func TestJIT_TwoBlockDispatch(t *testing.T) {
 	// Block A at 0x1000: set x1, then JAL ra, +16 → 0x1010
 	// Block B at 0x1010: set x2, ECALL
 	cpu, mem := newTestCPU(t, Size64MB, 0x1000, []uint32{
-		ienc(opOPIMM, 0, 3, 0, 10), // 0x1000: ADDI x3, x0, 10
+		ienc(opOPIMM, 0, 3, 0, 10),  // 0x1000: ADDI x3, x0, 10
 		jenc(1, 12),                 // 0x1004: JAL x1(ra), +12 → 0x1010
 		ienc(opOPIMM, 0, 4, 0, 999), // 0x1008: ADDI x4, x0, 999 (skipped)
 		ienc(opOPIMM, 0, 5, 0, 999), // 0x100C: skipped
-		ienc(opOPIMM, 0, 2, 0, 20), // 0x1010: ADDI x2, x0, 20
+		ienc(opOPIMM, 0, 2, 0, 20),  // 0x1010: ADDI x2, x0, 20
 		instrECALL,                  // 0x1014: ECALL
 	})
 	defer mem.Free()
@@ -793,16 +793,16 @@ func TestJIT_TwoBlockDispatch(t *testing.T) {
 
 func TestJIT_JALR_IndirectJump(t *testing.T) {
 	cpu, mem := newTestCPU(t, Size64MB, 0x1000, []uint32{
-		ienc(opOPIMM, 0, 1, 0, 10),    // 0x1000: ADDI x1, x0, 10
-		ienc(opOPIMM, 0, 5, 0, 0),     // 0x1004: ADDI x5, x0, 0
-		ienc(opOPIMM, 0, 5, 5, 0x10),  // 0x1008: ADDI x5, x5, 0x10 → x5=0x10
+		ienc(opOPIMM, 0, 1, 0, 10),   // 0x1000: ADDI x1, x0, 10
+		ienc(opOPIMM, 0, 5, 0, 0),    // 0x1004: ADDI x5, x0, 0
+		ienc(opOPIMM, 0, 5, 5, 0x10), // 0x1008: ADDI x5, x5, 0x10 → x5=0x10
 		// Need to add 0x1000 to get 0x1010. Use AUIPC.
-		uenc(opAUIPC, 6, 0),            // 0x100C: AUIPC x6, 0 → x6 = 0x100C
-		renc(opOP, 0, 0, 5, 6, 5),     // 0x1010: ADD x5, x6, x5 → x5 = 0x101C
-		ienc(opJALR, 0, 0, 5, 0),      // 0x1014: JALR x0, x5, 0 → jump to 0x101C
-		ienc(opOPIMM, 0, 7, 0, 999),   // 0x1018: ADDI x7, x0, 999 (skipped)
-		ienc(opOPIMM, 0, 2, 0, 20),    // 0x101C: ADDI x2, x0, 20
-		instrECALL,                     // 0x1020: ECALL
+		uenc(opAUIPC, 6, 0),         // 0x100C: AUIPC x6, 0 → x6 = 0x100C
+		renc(opOP, 0, 0, 5, 6, 5),   // 0x1010: ADD x5, x6, x5 → x5 = 0x101C
+		ienc(opJALR, 0, 0, 5, 0),    // 0x1014: JALR x0, x5, 0 → jump to 0x101C
+		ienc(opOPIMM, 0, 7, 0, 999), // 0x1018: ADDI x7, x0, 999 (skipped)
+		ienc(opOPIMM, 0, 2, 0, 20),  // 0x101C: ADDI x2, x0, 20
+		instrECALL,                  // 0x1020: ECALL
 	})
 	defer mem.Free()
 	cpu.Notes.Push(ecallStop)
@@ -827,7 +827,7 @@ func TestJIT_TranslationFailure(t *testing.T) {
 	csrrs := ienc(opSYSTEM, 2, 1, 0, 0xC00) // CSRRS x1, cycle, x0
 
 	cpu, mem := newTestCPU(t, Size64MB, 0x1000, []uint32{
-		csrrs,       // untranslatable
+		csrrs, // untranslatable
 		instrECALL,
 	})
 	defer mem.Free()
@@ -849,10 +849,10 @@ func TestJIT_BailLabel(t *testing.T) {
 	csrrs := ienc(opSYSTEM, 2, 3, 0, 0xC00) // CSRRS x3, cycle, x0
 
 	cpu, mem := newTestCPU(t, Size64MB, 0x1000, []uint32{
-		ienc(opOPIMM, 0, 1, 0, 1),    // ADDI x1, x0, 1
-		benc(opBRANCH, 0, 0, 0, 8),   // BEQ x0, x0, +8 → 0x100C
-		ienc(opOPIMM, 0, 2, 0, 999),  // ADDI x2, x0, 999 (skipped)
-		csrrs,                          // 0x100C: untranslatable → bail label
+		ienc(opOPIMM, 0, 1, 0, 1),   // ADDI x1, x0, 1
+		benc(opBRANCH, 0, 0, 0, 8),  // BEQ x0, x0, +8 → 0x100C
+		ienc(opOPIMM, 0, 2, 0, 999), // ADDI x2, x0, 999 (skipped)
+		csrrs,                       // 0x100C: untranslatable → bail label
 		instrECALL,
 	})
 	defer mem.Free()
@@ -900,12 +900,12 @@ func TestJIT_LastBlockCache(t *testing.T) {
 // ── Test 16: Instruction budget / semi-cooperative preemption ───────────
 
 // TestJIT_InstructionBudget verifies a loop that runs far more iterations than
-// the per-block instruction budget (maxIC=4096). The JIT block must exit at
+// the per-block instruction budget (ir/MaxIC=4096). The JIT block must exit at
 // the backward branch when the budget is exceeded, the dispatch loop re-enters
 // at the loop target, cached registers are re-read from x[], and execution
 // continues. The final result must be correct and the cycle count accurate.
 func TestJIT_InstructionBudget(t *testing.T) {
-	// Loop that iterates 100000 times — well above maxIC=4096.
+	// Loop that iterates 100000 times — well above ir/MaxIC=4096.
 	// Tests the backward-branch budget check path.
 	//
 	//   0x1000: ADDI x1, x1, 1          # counter++
@@ -947,7 +947,7 @@ func TestJIT_InstructionBudget_JForward_Loop(t *testing.T) {
 	cpu, mem := newTestCPU(t, Size64MB, 0x1000, []uint32{
 		ienc(opOPIMM, 0, 1, 1, 1),  // ADDI x1, x1, 1
 		benc(opBRANCH, 0, 1, 2, 8), // BEQ x1, x2, +8
-		jenc(0, -8),                 // JAL x0, -8
+		jenc(0, -8),                // JAL x0, -8
 		instrECALL,
 	})
 	defer mem.Free()
@@ -985,8 +985,8 @@ func TestJIT_FaultAddress(t *testing.T) {
 	defer mem.Free()
 
 	var (
-		gotCause uint64
-		gotTval  uint64
+		gotCause  uint64
+		gotTval   uint64
 		gotNotePC uint64
 	)
 	cpu.Notes.Push(func(cpu *CPU, n Note) NoteDisposition {
@@ -1028,10 +1028,10 @@ func TestJIT_StoreFaultAddress(t *testing.T) {
 	const expectFaultAddr = uint64(0x4000010)
 
 	cpu, mem := newTestCPU(t, Size64MB, entryPC, []uint32{
-		ienc(opOPIMM, 0, 10, 0, 1),     // ADDI x10, x0, 1
-		ienc(opOPIMM, 1, 10, 10, 26),   // SLLI x10, x10, 26 → 0x4000000
-		ienc(opOPIMM, 0, 10, 10, 16),   // ADDI x10, x10, 16 → 0x4000010
-		senc(opSTORE, 2, 10, 11, 0),    // SW x11, 0(x10) → fault at 0x4000010
+		ienc(opOPIMM, 0, 10, 0, 1),   // ADDI x10, x0, 1
+		ienc(opOPIMM, 1, 10, 10, 26), // SLLI x10, x10, 26 → 0x4000000
+		ienc(opOPIMM, 0, 10, 10, 16), // ADDI x10, x10, 16 → 0x4000010
+		senc(opSTORE, 2, 10, 11, 0),  // SW x11, 0(x10) → fault at 0x4000010
 		instrECALL,
 	})
 	defer mem.Free()
@@ -1228,10 +1228,10 @@ func TestJIT_NaNBoxF32_Roundtrip(t *testing.T) {
 	const dataAddr = uint64(0x2000)
 
 	cpu, mem := newTestCPU(t, Size64MB, entryPC, []uint32{
-		uenc(opLUI, 10, 0x2000),               // LUI x10, 0x2 → x10 = 0x2000
-		ienc(0x07, 2, 1, 10, 0),               // FLW f1, 0(x10)
-		ienc(0x07, 2, 2, 10, 4),               // FLW f2, 4(x10)
-		renc(0x53, 0x07, 0x00, 3, 1, 2),       // FADD.S f3, f1, f2 (DYN rounding)
+		uenc(opLUI, 10, 0x2000),         // LUI x10, 0x2 → x10 = 0x2000
+		ienc(0x07, 2, 1, 10, 0),         // FLW f1, 0(x10)
+		ienc(0x07, 2, 2, 10, 4),         // FLW f2, 4(x10)
+		renc(0x53, 0x07, 0x00, 3, 1, 2), // FADD.S f3, f1, f2 (DYN rounding)
 		instrECALL,
 	})
 	defer mem.Free()

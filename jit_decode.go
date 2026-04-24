@@ -3,14 +3,6 @@ package riscv
 // jit_decode.go — Decode-only helpers used by the IR JIT emission path.
 // No build tag — compiled unconditionally.
 
-// maxIC is the per-execution instruction budget. At every backward branch/jump
-// we check `ic < maxIC` before continuing the loop in native code. If the
-// budget is exceeded, the block exits with PC=loop_target and the Go dispatch
-// loop re-enters immediately (last-block cache hits). This bounds the worst-
-// case non-preemptible window so Go's GC and scheduler can preempt the
-// goroutine between block re-entries.
-const maxIC = 4096
-
 // ── Region pre-scan ─────────────────────────────────────────────────────
 
 type flowClass int
