@@ -828,6 +828,19 @@ func (lc *lowerCtxRV8) rv8Mov(ins *IRInstr) {
 		lc.commitDst(ins.Dst, dstHR)
 		return
 	}
+	if dstHR >= 0 {
+		if aBase, aOff, ok := lc.spilledMemOp(ins.A); ok {
+			lc.emitRM(x86.AMOVQ, aBase, aOff, dstHR)
+			lc.commitDst(ins.Dst, dstHR)
+			return
+		}
+	}
+	if aHR >= 0 {
+		if dBase, dOff, ok := lc.spilledMemOp(ins.Dst); ok {
+			lc.emitMR(x86.AMOVQ, aHR, dBase, dOff)
+			return
+		}
+	}
 
 	a := lc.stageInt(ins.A, 0)
 	dst := lc.writeDst(ins.Dst)
@@ -862,6 +875,13 @@ func (lc *lowerCtxRV8) rv8Sext(ins *IRInstr) {
 		lc.commitDst(ins.Dst, dstHR)
 		return
 	}
+	if dstHR >= 0 {
+		if aBase, aOff, ok := lc.spilledMemOp(ins.A); ok {
+			lc.emitRM(op, aBase, aOff, dstHR)
+			lc.commitDst(ins.Dst, dstHR)
+			return
+		}
+	}
 
 	a := lc.stageInt(ins.A, 0)
 	dst := lc.writeDst(ins.Dst)
@@ -888,6 +908,13 @@ func (lc *lowerCtxRV8) rv8Zext(ins *IRInstr) {
 		lc.commitDst(ins.Dst, dstHR)
 		return
 	}
+	if dstHR >= 0 {
+		if aBase, aOff, ok := lc.spilledMemOp(ins.A); ok {
+			lc.emitRM(op, aBase, aOff, dstHR)
+			lc.commitDst(ins.Dst, dstHR)
+			return
+		}
+	}
 
 	a := lc.stageInt(ins.A, 0)
 	dst := lc.writeDst(ins.Dst)
@@ -902,7 +929,7 @@ func (lc *lowerCtxRV8) rv8Binop(ins *IRInstr, op obj.As) {
 	aHR := lc.directReg(ins.A)
 	bHR := lc.directReg(ins.B)
 
-	if dstHR >= 0 && aHR >= 0 && dstHR != bHR {
+	if dstHR >= 0 && aHR >= 0 && (dstHR != bHR || dstHR == aHR) {
 		if dstHR != aHR {
 			lc.emit2(x86.AMOVQ, aHR, dstHR)
 		}
@@ -949,6 +976,31 @@ func (lc *lowerCtxRV8) rv8BinopImm(ins *IRInstr, op obj.As) {
 		}
 		lc.commitDst(ins.Dst, dstHR)
 		return
+	}
+
+	if ins.Dst == ins.A {
+		if base, off, ok := lc.spilledMemOp(ins.Dst); ok {
+			imm := ins.Imm
+			if imm >= -(1<<31) && imm < (1<<31) {
+				lc.emitMI(op, imm, base, off)
+				return
+			}
+		}
+	}
+
+	if dstHR >= 0 {
+		if aBase, aOff, ok := lc.spilledMemOp(ins.A); ok {
+			lc.emitRM(x86.AMOVQ, aBase, aOff, dstHR)
+			imm := ins.Imm
+			if imm >= -(1<<31) && imm < (1<<31) {
+				lc.emitRI(op, imm, dstHR)
+			} else {
+				lc.loadImm(imm, rv8StgB)
+				lc.emit2(op, rv8StgB, dstHR)
+			}
+			lc.commitDst(ins.Dst, dstHR)
+			return
+		}
 	}
 
 	a := lc.stageInt(ins.A, 0)
@@ -1023,6 +1075,21 @@ func (lc *lowerCtxRV8) rv8ShiftImm(ins *IRInstr, op obj.As) {
 		lc.emitRI(op, ins.Imm, dstHR)
 		lc.commitDst(ins.Dst, dstHR)
 		return
+	}
+
+	if ins.Dst == ins.A {
+		if base, off, ok := lc.spilledMemOp(ins.Dst); ok {
+			lc.emitMI(op, ins.Imm, base, off)
+			return
+		}
+	}
+	if dstHR >= 0 {
+		if aBase, aOff, ok := lc.spilledMemOp(ins.A); ok {
+			lc.emitRM(x86.AMOVQ, aBase, aOff, dstHR)
+			lc.emitRI(op, ins.Imm, dstHR)
+			lc.commitDst(ins.Dst, dstHR)
+			return
+		}
 	}
 
 	a := lc.stageInt(ins.A, 0)
@@ -1257,8 +1324,14 @@ func (lc *lowerCtxRV8) rv8Store(ins *IRInstr) {
 }
 
 func (lc *lowerCtxRV8) rv8LoadX(ins *IRInstr) {
-	base := lc.stageInt(ins.A, 0)
-	idx := lc.stageInt(ins.B, 1)
+	base := lc.directReg(ins.A)
+	if base < 0 {
+		base = lc.stageInt(ins.A, 0)
+	}
+	idx := lc.directReg(ins.B)
+	if idx < 0 {
+		idx = lc.stageInt(ins.B, 1)
+	}
 	dst := lc.writeDst(ins.Dst)
 	if lc.isVRegFP(ins.Dst) {
 		dst = lc.writeDstFP(ins.Dst)
@@ -1276,8 +1349,14 @@ func (lc *lowerCtxRV8) rv8LoadX(ins *IRInstr) {
 }
 
 func (lc *lowerCtxRV8) rv8StoreX(ins *IRInstr) {
-	base := lc.stageInt(ins.A, 0)
-	idx := lc.stageInt(ins.B, 1)
+	base := lc.directReg(ins.A)
+	if base < 0 {
+		base = lc.stageInt(ins.A, 0)
+	}
+	idx := lc.directReg(ins.B)
+	if idx < 0 {
+		idx = lc.stageInt(ins.B, 1)
+	}
 
 	p := lc.c.NewProg()
 	p.As = x86.ALEAQ
