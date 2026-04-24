@@ -959,6 +959,8 @@ func (lc *lowerCtxRV8) rv8Binop(ins *IRInstr, op obj.As) {
 	lc.commitDst(ins.Dst, dst)
 }
 
+const FAST = true // false // true
+
 func (lc *lowerCtxRV8) rv8BinopImm(ins *IRInstr, op obj.As) {
 	dstHR := lc.directReg(ins.Dst)
 	aHR := lc.directReg(ins.A)
@@ -979,11 +981,24 @@ func (lc *lowerCtxRV8) rv8BinopImm(ins *IRInstr, op obj.As) {
 	}
 
 	if ins.Dst == ins.A {
-		if off := lc.spilledRegFileOff(ins.Dst); off >= 0 {
-			imm := ins.Imm
-			if imm >= -(1<<31) && imm < (1<<31) {
-				lc.emitMI(op, imm, goasm.REG_AMD64_BP, off)
-				return
+		// this is the switch that really matters for performance.
+		//vv("rv8BinopImm: ins.Dst == ins.A") // seen about 155 times in "make bench"
+		if FAST { // FAST means 3516 MIPS on the "make bench" benchmark.
+			if off := lc.spilledRegFileOff(ins.Dst); off >= 0 { // FAST
+				imm := ins.Imm
+				if imm >= -(1<<31) && imm < (1<<31) {
+					lc.emitMI(op, imm, goasm.REG_AMD64_BP, off) // FAST
+					return
+				}
+			}
+		} else {
+			// !FAST, slow: 523.0 MIPS on the "make bench" benchmark.
+			if base, off, ok := lc.spilledMemOp(ins.Dst); ok {
+				imm := ins.Imm
+				if imm >= -(1<<31) && imm < (1<<31) {
+					lc.emitMI(op, imm, base, off)
+					return
+				}
 			}
 		}
 	}
@@ -1078,9 +1093,19 @@ func (lc *lowerCtxRV8) rv8ShiftImm(ins *IRInstr, op obj.As) {
 	}
 
 	if ins.Dst == ins.A {
-		if off := lc.spilledRegFileOff(ins.Dst); off >= 0 {
-			lc.emitMI(op, ins.Imm, goasm.REG_AMD64_BP, off)
-			return
+		if true { // FAST {
+			// is slow no matter what we set this to, if earlier one is on slow.
+			// => it is the other one that really matters.
+			if off := lc.spilledRegFileOff(ins.Dst); off >= 0 {
+				lc.emitMI(op, ins.Imm, goasm.REG_AMD64_BP, off)
+				return
+			}
+		} else {
+			// !FAST, slow.
+			if base, off, ok := lc.spilledMemOp(ins.Dst); ok {
+				lc.emitMI(op, ins.Imm, base, off)
+				return
+			}
 		}
 	}
 	if dstHR >= 0 {
@@ -1201,9 +1226,10 @@ func (lc *lowerCtxRV8) rv8MulHSU(ins *IRInstr) {
 
 	// Compute correction = (A < 0) ? B : 0 using RDX as temp.
 	// A is in RAX — keep it there for MULQ.
-	lc.emit2(x86.AMOVQ, a, goasm.REG_AMD64_DX)       // RDX = A
-	lc.emitRI(x86.ASARQ, 63, goasm.REG_AMD64_DX)      // RDX = sign(A)
-	lc.emit2(x86.AANDQ, b, goasm.REG_AMD64_DX)        // RDX = correction
+	lc.emit2(x86.AMOVQ, a, goasm.REG_AMD64_DX)   // RDX = A
+	lc.emitRI(x86.ASARQ, 63, goasm.REG_AMD64_DX) // RDX = sign(A)
+	lc.emit2(x86.AANDQ, b, goasm.REG_AMD64_DX)   // RDX = correction
+
 	lc.emitMR(x86.AMOVQ, goasm.REG_AMD64_DX, goasm.REG_AMD64_SP, lc.sretOffset+16) // save correction
 
 	// Unsigned multiply: RDX:RAX = A * B (A still in RAX).
@@ -1750,15 +1776,15 @@ func (lc *lowerCtxRV8) rv8Syscall(ins *IRInstr) {
 
 	lc.emitRM(x86.AMOVQ, goasm.REG_AMD64_SP, lc.sretOffset, rv8StgA)
 	lc.loadImm(ins.Imm, rv8StgB)
-	lc.emitMR(x86.AMOVQ, rv8StgB, rv8StgA, 0)  // Result.PC = resumePC
+	lc.emitMR(x86.AMOVQ, rv8StgB, rv8StgA, 0) // Result.PC = resumePC
 	if icStaged {
 		lc.emitRM(x86.AMOVQ, goasm.REG_AMD64_SP, lc.sretOffset+8, rv8StgB)
 		lc.emitMR(x86.AMOVQ, rv8StgB, rv8StgA, 8) // Result.IC = saved IC
 	} else {
 		lc.emitMI(x86.AMOVQ, 0, rv8StgA, 8)
 	}
-	lc.emitMI(x86.AMOVQ, 1, rv8StgA, 16)        // Result.Status = jitEcall
-	lc.emitMI(x86.AMOVQ, 0, rv8StgA, 24)        // Result.FaultAddr = 0
+	lc.emitMI(x86.AMOVQ, 1, rv8StgA, 16) // Result.Status = jitEcall
+	lc.emitMI(x86.AMOVQ, 0, rv8StgA, 24) // Result.FaultAddr = 0
 	lc.emitEpilogue()
 }
 
@@ -1823,9 +1849,9 @@ func (lc *lowerCtxRV8) rv8JalrIC(ins *IRInstr) {
 	// RCX = target, RAX = sret, DX = dcBase (will reload as needed).
 	lc.emit2(x86.AMOVQ, rv8StgB, goasm.REG_AMD64_DX) // DX = target (copy)
 	lc.emitRM(x86.AMOVQ, rv8StgA, 104, rv8StgB)      // RCX = vaddrBegin
-	lc.emit2(x86.ASUBQ, rv8StgB, goasm.REG_AMD64_DX)  // DX = target - vaddrBegin
-	lc.emitRM(x86.AMOVQ, rv8StgA, 112, rv8StgB)       // RCX = segSize
-	lc.emit2(x86.ACMPQ, goasm.REG_AMD64_DX, rv8StgB)  // cmp (target-vaddrBegin), segSize
+	lc.emit2(x86.ASUBQ, rv8StgB, goasm.REG_AMD64_DX) // DX = target - vaddrBegin
+	lc.emitRM(x86.AMOVQ, rv8StgA, 112, rv8StgB)      // RCX = segSize
+	lc.emit2(x86.ACMPQ, goasm.REG_AMD64_DX, rv8StgB) // cmp (target-vaddrBegin), segSize
 	missJmp2 := lc.c.NewProg()
 	missJmp2.As = x86.AJCC // JAE (unsigned >=) → out of bounds
 	missJmp2.To.Type = obj.TYPE_BRANCH
