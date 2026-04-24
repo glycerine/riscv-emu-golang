@@ -151,3 +151,10 @@ The libriscv dump facility is implemented and working end-to-end.
 
   Zero cost when LIBRISCV_DUMP_DIR is unset — TestLibriscvSmokeTest still passes unchanged.
 ~~~
+
+wedged. rolled back. on rv8inspired branch now, a bit slower
+after some of this. but tests were faster for a while; top level was 25 sec,
+now back to 67s.
+
+  Go JIT — Fixed Static Mapping (native):    3050 MIPS
+  
