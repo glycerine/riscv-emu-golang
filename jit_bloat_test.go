@@ -120,7 +120,7 @@ func TestBloat_BenchGuest_0x10de(t *testing.T) {
 			ir.VIZJIT_DIR = t.TempDir()
 			defer func() { ir.VIZJIT_DIR = savedDir }()
 		}
-		vizJitDump(res.startPC, res.endPC, mem, res.block, progs, hostBytes, 0)
+		vizJitDump(res.startPC, res.endPC, mem, res.block, progs, hostBytes, 0, alloc)
 		t.Logf("VizJit dump written under %s (set GOCPU_VIZJIT=<dir> to keep)", ir.VIZJIT_DIR)
 	}
 

@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 
+	"riscv/goasm"
 	"riscv/ir"
 )
 
@@ -209,6 +210,7 @@ func vizJitDump(
 	progs string,
 	codeLen int,
 	codeBase uintptr,
+	allocs ...*ir.Allocation,
 ) {
 	dir, ok := vizJitEnabled()
 	if !ok {
@@ -238,6 +240,36 @@ func vizJitDump(
 		sb.WriteString("(guest memory not available for this block)\n")
 	}
 	sb.WriteString("\n")
+
+	if len(allocs) > 0 && allocs[0] != nil {
+		alloc := allocs[0]
+		sb.WriteString("== Allocation ==\n")
+		for v := 0; v < len(alloc.Kind); v++ {
+			k := alloc.Kind[v]
+			if k == ir.AllocUnused {
+				continue
+			}
+			vr := ir.VReg(v)
+			switch k {
+			case ir.AllocReg:
+				host := int16(-1)
+				for _, ia := range alloc.IntervalMap {
+					if ia.Interval.VReg == vr {
+						host = ia.Host
+						break
+					}
+				}
+				fmt.Fprintf(&sb, "  %-5v → reg %s\n", vr, vizHostRegName(host))
+			case ir.AllocStack:
+				fmt.Fprintf(&sb, "  %-5v → stack slot=%d  [RSP+%d]\n",
+					vr, alloc.SpillSlot[v], int(alloc.SpillSlot[v])*8)
+			default:
+				fmt.Fprintf(&sb, "  %-5v → kind=%d\n", vr, k)
+			}
+		}
+		fmt.Fprintf(&sb, "  StackSlots=%d  frameSize=%d\n", alloc.StackSlots, alloc.StackSlots*8+24)
+		sb.WriteString("\n")
+	}
 
 	sb.WriteString("== IR ==\n")
 	if block != nil {
@@ -599,4 +631,30 @@ func disasmRVC(insn uint16) string {
 		return fmt.Sprintf("c.sdsp  %s, %d(sp)", rn(d.rs2), imm)
 	}
 	return fmt.Sprintf("??? c raw=0x%04x", insn)
+}
+
+var hostRegNames = map[int16]string{
+	goasm.REG_AMD64_AX: "RAX", goasm.REG_AMD64_CX: "RCX",
+	goasm.REG_AMD64_DX: "RDX", goasm.REG_AMD64_BX: "RBX",
+	goasm.REG_AMD64_SP: "RSP", goasm.REG_AMD64_BP: "RBP",
+	goasm.REG_AMD64_SI: "RSI", goasm.REG_AMD64_DI: "RDI",
+	goasm.REG_AMD64_R8: "R8", goasm.REG_AMD64_R9: "R9",
+	goasm.REG_AMD64_R10: "R10", goasm.REG_AMD64_R11: "R11",
+	goasm.REG_AMD64_R12: "R12", goasm.REG_AMD64_R13: "R13",
+	goasm.REG_AMD64_R14: "R14", goasm.REG_AMD64_R15: "R15",
+	goasm.REG_AMD64_X0: "X0", goasm.REG_AMD64_X1: "X1",
+	goasm.REG_AMD64_X2: "X2", goasm.REG_AMD64_X3: "X3",
+	goasm.REG_AMD64_X4: "X4", goasm.REG_AMD64_X5: "X5",
+	goasm.REG_AMD64_X6: "X6", goasm.REG_AMD64_X7: "X7",
+	goasm.REG_AMD64_X8: "X8", goasm.REG_AMD64_X9: "X9",
+	goasm.REG_AMD64_X10: "X10", goasm.REG_AMD64_X11: "X11",
+	goasm.REG_AMD64_X12: "X12", goasm.REG_AMD64_X13: "X13",
+	goasm.REG_AMD64_X14: "X14", goasm.REG_AMD64_X15: "X15",
+}
+
+func vizHostRegName(hr int16) string {
+	if name, ok := hostRegNames[hr]; ok {
+		return name
+	}
+	return fmt.Sprintf("?%d", hr)
 }
