@@ -2067,3 +2067,87 @@ func testNativeTraceW(t *testing.T, elfPath string, targetBlock int) {
 	}
 	_ = v2dbg
 }
+
+// TestFusion_ADDIW_SLLI_SRLI_Addiwz verifies that ADDIW rd,rs1,imm followed
+// by SLLI rd,rd,32; SRLI rd,rd,32 fuses into a zero-extending add (addiwz).
+func TestFusion_ADDIW_SLLI_SRLI_Addiwz(t *testing.T) {
+	const opOPIMM32 = uint32(0x1B)
+
+	// ADDIW x10, x10, 5; SLLI x10, x10, 32; SRLI x10, x10, 32; ECALL
+	insns := []uint32{
+		ienc(opOPIMM32, 0, 10, 10, 5), // ADDIW x10, x10, 5
+		ienc(opOPIMM, 1, 10, 10, 32),  // SLLI  x10, x10, 32
+		ienc(opOPIMM, 5, 10, 10, 32),  // SRLI  x10, x10, 32
+		instrECALL,
+	}
+
+	// --- IR-level check: should contain Zext (not Sext) and consume 3 insns ---
+	mem, err := NewGuestMemory(Size64MB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mem.Free()
+	storeInsns(mem, 0x1000, insns)
+
+	res := emitBlock(mem, 0x1000)
+	if res == nil {
+		t.Fatal("emitBlock returned nil")
+	}
+
+	foundZext := false
+	foundSext := false
+	for _, ins := range res.block.Instrs {
+		if ins.Op == ir.IRZext && ins.T == ir.I32 {
+			foundZext = true
+		}
+		if ins.Op == ir.IRSext && ins.T == ir.I32 {
+			foundSext = true
+		}
+	}
+	if !foundZext {
+		t.Error("expected IRZext I32 from addiwz fusion, not found")
+	}
+	if foundSext {
+		t.Error("found IRSext I32 — fusion did not fire, ADDIW emitted unfused")
+	}
+
+	// --- End-to-end execution: 0xFFFFFFFF + 5 = 0x100000004, zero-ext → 4 ---
+	cpu, mem2 := newTestCPU(t, Size64MB, 0x1000, insns)
+	defer mem2.Free()
+	cpu.SetReg(10, 0xFFFFFFFF) // -1 as uint32
+	cpu.Notes.Push(ecallStop)
+	jit := NewJIT()
+	jit.RunJIT(cpu)
+
+	got := cpu.Reg(10)
+	want := uint64(4) // (0xFFFFFFFF + 5) & 0xFFFFFFFF = 4, zero-extended
+	if got != want {
+		t.Errorf("x10 = 0x%x, want 0x%x", got, want)
+	}
+}
+
+// TestFusion_ADDIW_SLLI_SRLI_Imm0 verifies the imm==0 special case
+// (SEXT.W + shift pair → plain Zext).
+func TestFusion_ADDIW_SLLI_SRLI_Imm0(t *testing.T) {
+	const opOPIMM32 = uint32(0x1B)
+
+	insns := []uint32{
+		ienc(opOPIMM32, 0, 10, 10, 0), // ADDIW x10, x10, 0 (SEXT.W)
+		ienc(opOPIMM, 1, 10, 10, 32),  // SLLI  x10, x10, 32
+		ienc(opOPIMM, 5, 10, 10, 32),  // SRLI  x10, x10, 32
+		instrECALL,
+	}
+
+	cpu, mem := newTestCPU(t, Size64MB, 0x1000, insns)
+	defer mem.Free()
+	cpu.SetReg(10, 0x00000000_80000001) // high bits set, bit 31 set
+	cpu.Notes.Push(ecallStop)
+	jit := NewJIT()
+	jit.RunJIT(cpu)
+
+	got := cpu.Reg(10)
+	want := uint64(0x80000001) // zero-extended, NOT sign-extended
+	if got != want {
+		t.Errorf("x10 = 0x%x, want 0x%x", got, want)
+	}
+}

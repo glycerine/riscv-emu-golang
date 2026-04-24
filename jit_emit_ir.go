@@ -1358,6 +1358,35 @@ func (e *emitter) emitOpImm32(rd, rs1 uint32, imm int64, funct3, funct7 uint32) 
 
 	switch funct3 {
 	case 0: // ADDIW
+		// Fusion: ADDIW rd,rs1,imm; SLLI rd,rd,32; SRLI rd,rd,32 → addiwz
+		// (32-bit add with zero-extension instead of sign-extension)
+		if n1, ok1 := e.peek32(e.pc + 4); ok1 {
+			if n2, ok2 := e.peek32(e.pc + 8); ok2 {
+				n1Op, n1Rd, n1Rs1 := n1&0x7F, (n1>>7)&0x1F, (n1>>15)&0x1F
+				n1F3, n1F7 := (n1>>12)&7, n1>>25
+				n1Shamt := int64((n1 >> 20) & 0x3F)
+				n2Op, n2Rd, n2Rs1 := n2&0x7F, (n2>>7)&0x1F, (n2>>15)&0x1F
+				n2F3, n2F7 := (n2>>12)&7, n2>>25
+				n2Shamt := int64((n2 >> 20) & 0x3F)
+				if n1Op == 0x13 && n1F3 == 1 && n1F7 == 0 && n1Shamt == 32 &&
+					n1Rd == rd && n1Rs1 == rd &&
+					n2Op == 0x13 && n2F3 == 5 && n2F7 == 0 && n2Shamt == 32 &&
+					n2Rd == rd && n2Rs1 == rd {
+					src := e.xreg(rs1)
+					dst := e.xregDst(rd)
+					if imm == 0 {
+						e.irEm.Zext(dst, src, ir.I32)
+					} else {
+						t := e.irEm.Tmp()
+						e.irEm.AddImm(t, src, imm)
+						e.irEm.Zext(dst, t, ir.I32)
+					}
+					e.advancePC(4) // consumed SLLI
+					e.advancePC(4) // consumed SRLI
+					return
+				}
+			}
+		}
 		src := e.xreg(rs1)
 		dst := e.xregDst(rd)
 		if imm == 0 {
