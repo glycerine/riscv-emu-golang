@@ -959,7 +959,7 @@ func (lc *lowerCtxRV8) rv8Binop(ins *IRInstr, op obj.As) {
 	lc.commitDst(ins.Dst, dst)
 }
 
-const FAST = true // false // true
+const FAST = false // true
 
 func (lc *lowerCtxRV8) rv8BinopImm(ins *IRInstr, op obj.As) {
 	dstHR := lc.directReg(ins.Dst)
