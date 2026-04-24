@@ -756,6 +756,79 @@ func TestRV8Lower_Set(t *testing.T) {
 	}
 }
 
+func TestRV8Set_CmpDirection_RegReg(t *testing.T) {
+	e := NewEmitter()
+	e.Const(e.XReg(10), 3)
+	e.Const(e.XReg(11), 7)
+	e.Set(e.XReg(12), e.XReg(10), e.XReg(11), LT) // 3 < 7 → 1
+	e.Set(e.XReg(13), e.XReg(11), e.XReg(10), LT) // 7 < 3 → 0
+	e.Ret(0x1000, 0, VRegZero)
+	var x [32]uint64
+	execBlockRV8(t, e.Block, &x)
+	if x[12] != 1 {
+		t.Errorf("Set(3 LT 7) = %d, want 1", x[12])
+	}
+	if x[13] != 0 {
+		t.Errorf("Set(7 LT 3) = %d, want 0", x[13])
+	}
+}
+
+func TestRV8Set_CmpDirection_SpilledB(t *testing.T) {
+	e := NewEmitter()
+	for i := 1; i <= 20; i++ {
+		e.Const(e.XReg(uint32(i)), int64(i*100))
+	}
+	// x10 is in register, x20 is spilled → triggers emitRM CMP path.
+	e.Set(e.XReg(21), e.XReg(10), e.XReg(20), LT) // 1000 < 2000 → 1
+	e.Set(e.XReg(22), e.XReg(20), e.XReg(10), LT) // 2000 < 1000 → 0
+	e.Mov(e.XReg(25), e.XReg(1))
+	for i := 2; i <= 20; i++ {
+		e.Add(e.XReg(25), e.XReg(25), e.XReg(uint32(i)))
+	}
+	e.Ret(0x1000, 0, VRegZero)
+	var x [32]uint64
+	execBlockRV8(t, e.Block, &x)
+	if x[21] != 1 {
+		t.Errorf("Set(x10=1000 LT x20=2000) = %d, want 1", x[21])
+	}
+	if x[22] != 0 {
+		t.Errorf("Set(x20=2000 LT x10=1000) = %d, want 0", x[22])
+	}
+	var expectedSum uint64
+	for i := 1; i <= 20; i++ {
+		expectedSum += uint64(i * 100)
+	}
+	if x[25] != expectedSum {
+		t.Errorf("sum = %d, want %d", x[25], expectedSum)
+	}
+}
+
+func TestRV8Branch_CmpDirection_SpilledB(t *testing.T) {
+	e := NewEmitter()
+	for i := 1; i <= 20; i++ {
+		e.Const(e.XReg(uint32(i)), int64(i*100))
+	}
+	trueLabel := e.NewLabel()
+	endLabel := e.NewLabel()
+	// x10 is in register, x20 is spilled → triggers emitRM CMP path.
+	e.Branch(e.XReg(10), e.XReg(20), LT, trueLabel)
+	e.Const(e.XReg(21), 0)
+	e.Jump(endLabel)
+	e.PlaceLabel(trueLabel)
+	e.Const(e.XReg(21), 1)
+	e.PlaceLabel(endLabel)
+	e.Mov(e.XReg(25), e.XReg(1))
+	for i := 2; i <= 20; i++ {
+		e.Add(e.XReg(25), e.XReg(25), e.XReg(uint32(i)))
+	}
+	e.Ret(0x1000, 0, VRegZero)
+	var x [32]uint64
+	execBlockRV8(t, e.Block, &x)
+	if x[21] != 1 {
+		t.Errorf("Branch(1000 LT 2000) took false path, x21=%d want 1", x[21])
+	}
+}
+
 func TestRV8Lower_Ret(t *testing.T) {
 	e := NewEmitter()
 	e.Ret(0x2000, 0, VRegZero)

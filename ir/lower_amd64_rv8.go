@@ -1167,8 +1167,8 @@ func (lc *lowerCtxRV8) rv8Set(ins *IRInstr) {
 	aHR := lc.directReg(ins.A)
 	bHR := lc.directReg(ins.B)
 	if aHR >= 0 {
-		if bOff := lc.spilledRegFileOff(ins.B); bOff >= 0 {
-			lc.emitRM(x86.ACMPQ, goasm.REG_AMD64_BP, bOff, aHR)
+		if bBase, bOff, ok := lc.spilledMemOp(ins.B); ok {
+			lc.emitMR(x86.ACMPQ, aHR, bBase, bOff)
 		} else if bHR >= 0 {
 			lc.emit2(x86.ACMPQ, aHR, bHR)
 		} else {
@@ -1177,8 +1177,8 @@ func (lc *lowerCtxRV8) rv8Set(ins *IRInstr) {
 		}
 	} else {
 		a := lc.stageInt(ins.A, 0)
-		if bOff := lc.spilledRegFileOff(ins.B); bOff >= 0 {
-			lc.emitRM(x86.ACMPQ, goasm.REG_AMD64_BP, bOff, a)
+		if bBase, bOff, ok := lc.spilledMemOp(ins.B); ok {
+			lc.emitMR(x86.ACMPQ, a, bBase, bOff)
 		} else {
 			b := lc.stageInt(ins.B, 1)
 			lc.emit2(x86.ACMPQ, a, b)
@@ -1305,8 +1305,8 @@ func (lc *lowerCtxRV8) rv8Branch(ins *IRInstr) {
 	aHR := lc.directReg(ins.A)
 	bHR := lc.directReg(ins.B)
 	if aHR >= 0 {
-		if bOff := lc.spilledRegFileOff(ins.B); bOff >= 0 {
-			lc.emitRM(x86.ACMPQ, goasm.REG_AMD64_BP, bOff, aHR)
+		if bBase, bOff, ok := lc.spilledMemOp(ins.B); ok {
+			lc.emitMR(x86.ACMPQ, aHR, bBase, bOff)
 		} else if bHR >= 0 {
 			lc.emit2(x86.ACMPQ, aHR, bHR)
 		} else {
@@ -1315,8 +1315,8 @@ func (lc *lowerCtxRV8) rv8Branch(ins *IRInstr) {
 		}
 	} else {
 		a := lc.stageInt(ins.A, 0)
-		if bOff := lc.spilledRegFileOff(ins.B); bOff >= 0 {
-			lc.emitRM(x86.ACMPQ, goasm.REG_AMD64_BP, bOff, a)
+		if bBase, bOff, ok := lc.spilledMemOp(ins.B); ok {
+			lc.emitMR(x86.ACMPQ, a, bBase, bOff)
 		} else {
 			b := lc.stageInt(ins.B, 1)
 			lc.emit2(x86.ACMPQ, a, b)
