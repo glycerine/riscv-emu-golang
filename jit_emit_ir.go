@@ -13,6 +13,8 @@ import (
 // Zero means normal sorted order. Non-zero rotates by this offset.
 //var testIterStart int
 
+const rasEnabled = true
+
 // maxBlockInsns limits the number of RISC-V instructions per JIT block.
 // Variable so tests can adjust it without recompilation.
 var maxBlockInsns = 2048
@@ -2488,7 +2490,7 @@ func (e *emitter) emitJAL(rd uint32, offset int64, insnSize uint64) {
 	// RAS: for JAL ra, try to inline the callee. The return address
 	// is already stored in rd above; push it so emitJALR can predict
 	// the return and avoid the decoder_cache lookup.
-	if rd == 1 && len(e.callStack) < 4 &&
+	if rasEnabled && rd == 1 && len(e.callStack) < 4 &&
 		target < e.regionEnd && !e.visited[target] {
 		e.callStack = append(e.callStack, e.pc)
 		e.pc = target

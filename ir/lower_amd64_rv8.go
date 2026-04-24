@@ -778,6 +778,16 @@ func (lc *lowerCtxRV8) bindLabel(l Label, branch *obj.Prog) {
 // ── Data movement ──
 
 func (lc *lowerCtxRV8) rv8Mov(ins *IRInstr) {
+	dstHR := lc.hostReg(ins.Dst)
+	aHR := lc.hostReg(ins.A)
+	if dstHR >= 0 && aHR >= 0 {
+		if dstHR != aHR {
+			lc.emit2(x86.AMOVQ, aHR, dstHR)
+		}
+		lc.commitDst(ins.Dst, dstHR)
+		return
+	}
+
 	a := lc.stageInt(ins.A, 0)
 	dst := lc.writeDst(ins.Dst)
 	if dst != a {
@@ -793,8 +803,6 @@ func (lc *lowerCtxRV8) rv8Const(ins *IRInstr) {
 }
 
 func (lc *lowerCtxRV8) rv8Sext(ins *IRInstr) {
-	a := lc.stageInt(ins.A, 0)
-	dst := lc.writeDst(ins.Dst)
 	var op obj.As
 	switch ins.T {
 	case I8:
@@ -806,13 +814,21 @@ func (lc *lowerCtxRV8) rv8Sext(ins *IRInstr) {
 	default:
 		op = x86.AMOVQ
 	}
+	dstHR := lc.hostReg(ins.Dst)
+	aHR := lc.hostReg(ins.A)
+	if dstHR >= 0 && aHR >= 0 {
+		lc.emit2(op, aHR, dstHR)
+		lc.commitDst(ins.Dst, dstHR)
+		return
+	}
+
+	a := lc.stageInt(ins.A, 0)
+	dst := lc.writeDst(ins.Dst)
 	lc.emit2(op, a, dst)
 	lc.commitDst(ins.Dst, dst)
 }
 
 func (lc *lowerCtxRV8) rv8Zext(ins *IRInstr) {
-	a := lc.stageInt(ins.A, 0)
-	dst := lc.writeDst(ins.Dst)
 	var op obj.As
 	switch ins.T {
 	case I8:
@@ -824,6 +840,16 @@ func (lc *lowerCtxRV8) rv8Zext(ins *IRInstr) {
 	default:
 		op = x86.AMOVQ
 	}
+	dstHR := lc.hostReg(ins.Dst)
+	aHR := lc.hostReg(ins.A)
+	if dstHR >= 0 && aHR >= 0 {
+		lc.emit2(op, aHR, dstHR)
+		lc.commitDst(ins.Dst, dstHR)
+		return
+	}
+
+	a := lc.stageInt(ins.A, 0)
+	dst := lc.writeDst(ins.Dst)
 	lc.emit2(op, a, dst)
 	lc.commitDst(ins.Dst, dst)
 }
@@ -831,9 +857,27 @@ func (lc *lowerCtxRV8) rv8Zext(ins *IRInstr) {
 // ── Integer ALU ──
 
 func (lc *lowerCtxRV8) rv8Binop(ins *IRInstr, op obj.As) {
+	dstHR := lc.hostReg(ins.Dst)
+	aHR := lc.hostReg(ins.A)
+	bHR := lc.hostReg(ins.B)
+
+	if dstHR >= 0 && aHR >= 0 && dstHR != bHR {
+		if dstHR != aHR {
+			lc.emit2(x86.AMOVQ, aHR, dstHR)
+		}
+		if bOff := lc.spilledRegFileOff(ins.B); bOff >= 0 {
+			lc.emitRM(op, goasm.REG_AMD64_BP, bOff, dstHR)
+		} else if bHR >= 0 {
+			lc.emit2(op, bHR, dstHR)
+		} else {
+			b := lc.stageInt(ins.B, 1)
+			lc.emit2(op, b, dstHR)
+		}
+		lc.commitDst(ins.Dst, dstHR)
+		return
+	}
+
 	a := lc.stageInt(ins.A, 0)
-	// CISC memory operand: if B is a spilled RISC-V register, use
-	// [RBP+offset] directly instead of staging through RCX.
 	if bOff := lc.spilledRegFileOff(ins.B); bOff >= 0 {
 		lc.emitRM(op, goasm.REG_AMD64_BP, bOff, a)
 	} else {
@@ -848,6 +892,24 @@ func (lc *lowerCtxRV8) rv8Binop(ins *IRInstr, op obj.As) {
 }
 
 func (lc *lowerCtxRV8) rv8BinopImm(ins *IRInstr, op obj.As) {
+	dstHR := lc.hostReg(ins.Dst)
+	aHR := lc.hostReg(ins.A)
+
+	if dstHR >= 0 && aHR >= 0 {
+		if dstHR != aHR {
+			lc.emit2(x86.AMOVQ, aHR, dstHR)
+		}
+		imm := ins.Imm
+		if imm >= -(1<<31) && imm < (1<<31) {
+			lc.emitRI(op, imm, dstHR)
+		} else {
+			lc.loadImm(imm, rv8StgB)
+			lc.emit2(op, rv8StgB, dstHR)
+		}
+		lc.commitDst(ins.Dst, dstHR)
+		return
+	}
+
 	a := lc.stageInt(ins.A, 0)
 	imm := ins.Imm
 	if imm >= -(1<<31) && imm < (1<<31) {
@@ -864,6 +926,17 @@ func (lc *lowerCtxRV8) rv8BinopImm(ins *IRInstr, op obj.As) {
 }
 
 func (lc *lowerCtxRV8) rv8Unary(ins *IRInstr, op obj.As) {
+	dstHR := lc.hostReg(ins.Dst)
+	aHR := lc.hostReg(ins.A)
+	if dstHR >= 0 && aHR >= 0 {
+		if dstHR != aHR {
+			lc.emit2(x86.AMOVQ, aHR, dstHR)
+		}
+		lc.emitUnary(op, dstHR)
+		lc.commitDst(ins.Dst, dstHR)
+		return
+	}
+
 	a := lc.stageInt(ins.A, 0)
 	lc.emitUnary(op, a)
 	dst := lc.writeDst(ins.Dst)
@@ -877,10 +950,21 @@ func (lc *lowerCtxRV8) rv8Unary(ins *IRInstr, op obj.As) {
 // CX is a staging reg in rv8, so it's always available for shifts — no save needed.
 
 func (lc *lowerCtxRV8) rv8Shift(ins *IRInstr, op obj.As) {
-	a := lc.stageInt(ins.A, 0) // RAX = value
-	b := lc.stageInt(ins.B, 1) // RCX = count (already in CX!)
+	dstHR := lc.hostReg(ins.Dst)
+	aHR := lc.hostReg(ins.A)
+	if dstHR >= 0 && aHR >= 0 {
+		lc.stageInt(ins.B, 1) // B → RCX (before MOV A→Dst to avoid clobber)
+		if dstHR != aHR {
+			lc.emit2(x86.AMOVQ, aHR, dstHR)
+		}
+		lc.emit2(op, goasm.REG_AMD64_CX, dstHR)
+		lc.commitDst(ins.Dst, dstHR)
+		return
+	}
+
+	a := lc.stageInt(ins.A, 0)
+	lc.stageInt(ins.B, 1)
 	lc.emit2(op, goasm.REG_AMD64_CX, a)
-	_ = b // stageInt(_, 1) returns RCX
 	dst := lc.writeDst(ins.Dst)
 	if dst != a {
 		lc.emit2(x86.AMOVQ, a, dst)
@@ -889,6 +973,17 @@ func (lc *lowerCtxRV8) rv8Shift(ins *IRInstr, op obj.As) {
 }
 
 func (lc *lowerCtxRV8) rv8ShiftImm(ins *IRInstr, op obj.As) {
+	dstHR := lc.hostReg(ins.Dst)
+	aHR := lc.hostReg(ins.A)
+	if dstHR >= 0 && aHR >= 0 {
+		if dstHR != aHR {
+			lc.emit2(x86.AMOVQ, aHR, dstHR)
+		}
+		lc.emitRI(op, ins.Imm, dstHR)
+		lc.commitDst(ins.Dst, dstHR)
+		return
+	}
+
 	a := lc.stageInt(ins.A, 0)
 	lc.emitRI(op, ins.Imm, a)
 	dst := lc.writeDst(ins.Dst)
@@ -1028,12 +1123,25 @@ func (lc *lowerCtxRV8) rv8MulHSU(ins *IRInstr) {
 // ── Comparison ──
 
 func (lc *lowerCtxRV8) rv8Set(ins *IRInstr) {
-	a := lc.stageInt(ins.A, 0)
-	if bOff := lc.spilledRegFileOff(ins.B); bOff >= 0 {
-		lc.emitRM(x86.ACMPQ, goasm.REG_AMD64_BP, bOff, a)
+	aHR := lc.hostReg(ins.A)
+	bHR := lc.hostReg(ins.B)
+	if aHR >= 0 {
+		if bOff := lc.spilledRegFileOff(ins.B); bOff >= 0 {
+			lc.emitRM(x86.ACMPQ, goasm.REG_AMD64_BP, bOff, aHR)
+		} else if bHR >= 0 {
+			lc.emit2(x86.ACMPQ, aHR, bHR)
+		} else {
+			b := lc.stageInt(ins.B, 1)
+			lc.emit2(x86.ACMPQ, aHR, b)
+		}
 	} else {
-		b := lc.stageInt(ins.B, 1)
-		lc.emit2(x86.ACMPQ, a, b)
+		a := lc.stageInt(ins.A, 0)
+		if bOff := lc.spilledRegFileOff(ins.B); bOff >= 0 {
+			lc.emitRM(x86.ACMPQ, goasm.REG_AMD64_BP, bOff, a)
+		} else {
+			b := lc.stageInt(ins.B, 1)
+			lc.emit2(x86.ACMPQ, a, b)
+		}
 	}
 	dst := lc.writeDst(ins.Dst)
 	bReg := byteReg(dst)
@@ -1048,7 +1156,11 @@ func (lc *lowerCtxRV8) rv8Set(ins *IRInstr) {
 }
 
 func (lc *lowerCtxRV8) rv8SetImm(ins *IRInstr) {
-	a := lc.stageInt(ins.A, 0)
+	aHR := lc.hostReg(ins.A)
+	a := aHR
+	if a < 0 {
+		a = lc.stageInt(ins.A, 0)
+	}
 	if ins.Imm >= -(1<<31) && ins.Imm < (1<<31) {
 		lc.emitCmpRI(a, ins.Imm)
 	} else {
