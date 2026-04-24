@@ -637,6 +637,17 @@ func (lc *lowerCtxRV8) hostReg(v VReg) int16 {
 	return lc.rIdx.lookup(v, lc.idx)
 }
 
+// directReg returns the host register for v only if it's safe to use
+// directly (without staging). Parameter VRegs (VRXBase, VRFBase, etc.)
+// have special handling in stageInt that hostReg doesn't replicate, so
+// they must always go through stageInt.
+func (lc *lowerCtxRV8) directReg(v VReg) int16 {
+	if v >= 1 && v < 64 {
+		return lc.hostReg(v)
+	}
+	return -1
+}
+
 func (lc *lowerCtxRV8) isVRegFP(v VReg) bool {
 	if v == VRegZero {
 		return false
@@ -778,8 +789,8 @@ func (lc *lowerCtxRV8) bindLabel(l Label, branch *obj.Prog) {
 // ── Data movement ──
 
 func (lc *lowerCtxRV8) rv8Mov(ins *IRInstr) {
-	dstHR := lc.hostReg(ins.Dst)
-	aHR := lc.hostReg(ins.A)
+	dstHR := lc.directReg(ins.Dst)
+	aHR := lc.directReg(ins.A)
 	if dstHR >= 0 && aHR >= 0 {
 		if dstHR != aHR {
 			lc.emit2(x86.AMOVQ, aHR, dstHR)
@@ -814,8 +825,8 @@ func (lc *lowerCtxRV8) rv8Sext(ins *IRInstr) {
 	default:
 		op = x86.AMOVQ
 	}
-	dstHR := lc.hostReg(ins.Dst)
-	aHR := lc.hostReg(ins.A)
+	dstHR := lc.directReg(ins.Dst)
+	aHR := lc.directReg(ins.A)
 	if dstHR >= 0 && aHR >= 0 {
 		lc.emit2(op, aHR, dstHR)
 		lc.commitDst(ins.Dst, dstHR)
@@ -840,8 +851,8 @@ func (lc *lowerCtxRV8) rv8Zext(ins *IRInstr) {
 	default:
 		op = x86.AMOVQ
 	}
-	dstHR := lc.hostReg(ins.Dst)
-	aHR := lc.hostReg(ins.A)
+	dstHR := lc.directReg(ins.Dst)
+	aHR := lc.directReg(ins.A)
 	if dstHR >= 0 && aHR >= 0 {
 		lc.emit2(op, aHR, dstHR)
 		lc.commitDst(ins.Dst, dstHR)
@@ -857,9 +868,9 @@ func (lc *lowerCtxRV8) rv8Zext(ins *IRInstr) {
 // ── Integer ALU ──
 
 func (lc *lowerCtxRV8) rv8Binop(ins *IRInstr, op obj.As) {
-	dstHR := lc.hostReg(ins.Dst)
-	aHR := lc.hostReg(ins.A)
-	bHR := lc.hostReg(ins.B)
+	dstHR := lc.directReg(ins.Dst)
+	aHR := lc.directReg(ins.A)
+	bHR := lc.directReg(ins.B)
 
 	if dstHR >= 0 && aHR >= 0 && dstHR != bHR {
 		if dstHR != aHR {
@@ -892,8 +903,8 @@ func (lc *lowerCtxRV8) rv8Binop(ins *IRInstr, op obj.As) {
 }
 
 func (lc *lowerCtxRV8) rv8BinopImm(ins *IRInstr, op obj.As) {
-	dstHR := lc.hostReg(ins.Dst)
-	aHR := lc.hostReg(ins.A)
+	dstHR := lc.directReg(ins.Dst)
+	aHR := lc.directReg(ins.A)
 
 	if dstHR >= 0 && aHR >= 0 {
 		if dstHR != aHR {
@@ -926,8 +937,8 @@ func (lc *lowerCtxRV8) rv8BinopImm(ins *IRInstr, op obj.As) {
 }
 
 func (lc *lowerCtxRV8) rv8Unary(ins *IRInstr, op obj.As) {
-	dstHR := lc.hostReg(ins.Dst)
-	aHR := lc.hostReg(ins.A)
+	dstHR := lc.directReg(ins.Dst)
+	aHR := lc.directReg(ins.A)
 	if dstHR >= 0 && aHR >= 0 {
 		if dstHR != aHR {
 			lc.emit2(x86.AMOVQ, aHR, dstHR)
@@ -950,8 +961,8 @@ func (lc *lowerCtxRV8) rv8Unary(ins *IRInstr, op obj.As) {
 // CX is a staging reg in rv8, so it's always available for shifts — no save needed.
 
 func (lc *lowerCtxRV8) rv8Shift(ins *IRInstr, op obj.As) {
-	dstHR := lc.hostReg(ins.Dst)
-	aHR := lc.hostReg(ins.A)
+	dstHR := lc.directReg(ins.Dst)
+	aHR := lc.directReg(ins.A)
 	if dstHR >= 0 && aHR >= 0 {
 		lc.stageInt(ins.B, 1) // B → RCX (before MOV A→Dst to avoid clobber)
 		if dstHR != aHR {
@@ -973,8 +984,8 @@ func (lc *lowerCtxRV8) rv8Shift(ins *IRInstr, op obj.As) {
 }
 
 func (lc *lowerCtxRV8) rv8ShiftImm(ins *IRInstr, op obj.As) {
-	dstHR := lc.hostReg(ins.Dst)
-	aHR := lc.hostReg(ins.A)
+	dstHR := lc.directReg(ins.Dst)
+	aHR := lc.directReg(ins.A)
 	if dstHR >= 0 && aHR >= 0 {
 		if dstHR != aHR {
 			lc.emit2(x86.AMOVQ, aHR, dstHR)
@@ -1123,8 +1134,8 @@ func (lc *lowerCtxRV8) rv8MulHSU(ins *IRInstr) {
 // ── Comparison ──
 
 func (lc *lowerCtxRV8) rv8Set(ins *IRInstr) {
-	aHR := lc.hostReg(ins.A)
-	bHR := lc.hostReg(ins.B)
+	aHR := lc.directReg(ins.A)
+	bHR := lc.directReg(ins.B)
 	if aHR >= 0 {
 		if bOff := lc.spilledRegFileOff(ins.B); bOff >= 0 {
 			lc.emitRM(x86.ACMPQ, goasm.REG_AMD64_BP, bOff, aHR)
@@ -1156,7 +1167,7 @@ func (lc *lowerCtxRV8) rv8Set(ins *IRInstr) {
 }
 
 func (lc *lowerCtxRV8) rv8SetImm(ins *IRInstr) {
-	aHR := lc.hostReg(ins.A)
+	aHR := lc.directReg(ins.A)
 	a := aHR
 	if a < 0 {
 		a = lc.stageInt(ins.A, 0)
@@ -1182,7 +1193,11 @@ func (lc *lowerCtxRV8) rv8SetImm(ins *IRInstr) {
 // ── Memory ──
 
 func (lc *lowerCtxRV8) rv8Load(ins *IRInstr) {
-	base := lc.stageInt(ins.A, 0)
+	aHR := lc.directReg(ins.A)
+	base := aHR
+	if base < 0 {
+		base = lc.stageInt(ins.A, 0)
+	}
 	dst := lc.writeDst(ins.Dst)
 	if lc.isVRegFP(ins.Dst) {
 		dst = lc.writeDstFP(ins.Dst)
@@ -1192,13 +1207,22 @@ func (lc *lowerCtxRV8) rv8Load(ins *IRInstr) {
 }
 
 func (lc *lowerCtxRV8) rv8Store(ins *IRInstr) {
-	base := lc.stageInt(ins.A, 0)
+	aHR := lc.directReg(ins.A)
+	base := aHR
+	if base < 0 {
+		base = lc.stageInt(ins.A, 0)
+	}
 	if lc.isVRegFP(ins.B) {
 		src := lc.stageFP(ins.B, 1)
 		lc.emitMR(storeOp(ins.T), src, base, ins.Imm)
 	} else {
-		src := lc.stageInt(ins.B, 1)
-		lc.emitMR(storeOp(ins.T), src, base, ins.Imm)
+		bHR := lc.directReg(ins.B)
+		if bHR >= 0 && bHR != base {
+			lc.emitMR(storeOp(ins.T), bHR, base, ins.Imm)
+		} else {
+			src := lc.stageInt(ins.B, 1)
+			lc.emitMR(storeOp(ins.T), src, base, ins.Imm)
+		}
 	}
 }
 
@@ -1248,12 +1272,25 @@ func (lc *lowerCtxRV8) rv8StoreX(ins *IRInstr) {
 // ── Control flow ──
 
 func (lc *lowerCtxRV8) rv8Branch(ins *IRInstr) {
-	a := lc.stageInt(ins.A, 0)
-	if bOff := lc.spilledRegFileOff(ins.B); bOff >= 0 {
-		lc.emitRM(x86.ACMPQ, goasm.REG_AMD64_BP, bOff, a)
+	aHR := lc.directReg(ins.A)
+	bHR := lc.directReg(ins.B)
+	if aHR >= 0 {
+		if bOff := lc.spilledRegFileOff(ins.B); bOff >= 0 {
+			lc.emitRM(x86.ACMPQ, goasm.REG_AMD64_BP, bOff, aHR)
+		} else if bHR >= 0 {
+			lc.emit2(x86.ACMPQ, aHR, bHR)
+		} else {
+			b := lc.stageInt(ins.B, 1)
+			lc.emit2(x86.ACMPQ, aHR, b)
+		}
 	} else {
-		b := lc.stageInt(ins.B, 1)
-		lc.emit2(x86.ACMPQ, a, b)
+		a := lc.stageInt(ins.A, 0)
+		if bOff := lc.spilledRegFileOff(ins.B); bOff >= 0 {
+			lc.emitRM(x86.ACMPQ, goasm.REG_AMD64_BP, bOff, a)
+		} else {
+			b := lc.stageInt(ins.B, 1)
+			lc.emit2(x86.ACMPQ, a, b)
+		}
 	}
 	jOp := predToJcc(ins.Pred)
 	p := lc.c.NewProg()
@@ -1264,7 +1301,11 @@ func (lc *lowerCtxRV8) rv8Branch(ins *IRInstr) {
 }
 
 func (lc *lowerCtxRV8) rv8BranchImm(ins *IRInstr) {
-	a := lc.stageInt(ins.A, 0)
+	aHR := lc.directReg(ins.A)
+	a := aHR
+	if a < 0 {
+		a = lc.stageInt(ins.A, 0)
+	}
 	if ins.Imm2 >= -(1<<31) && ins.Imm2 < (1<<31) {
 		lc.emitCmpRI(a, ins.Imm2)
 	} else {
