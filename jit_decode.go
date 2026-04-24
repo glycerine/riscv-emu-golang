@@ -19,6 +19,7 @@ const (
 	flowSeq    flowClass = iota // sequential: next = pc + insnSize
 	flowBranch                  // conditional: next = {pc + insnSize, target}
 	flowJump                    // unconditional J/C.J rd==0: next = target only
+	flowCall                    // JAL ra: next = {pc + insnSize, target}
 	flowTerm                    // no successors (JALR, JAL rd!=0, ECALL, CSR)
 )
 
@@ -83,7 +84,10 @@ func classifyFlow(mem *GuestMemory, pc uint64) (flowClass, uint64, uint64) {
 		if rd == 0 {
 			return flowJump, pc + uint64(jImm(insn)), 4
 		}
-		return flowTerm, 0, 4 // function call
+		if rd == 1 {
+			return flowCall, pc + uint64(jImm(insn)), 4
+		}
+		return flowTerm, 0, 4
 	case 0x67: // JALR
 		return flowTerm, 0, 4
 	case 0x73: // SYSTEM (ECALL, EBREAK, CSR) — all terminate the block.
@@ -142,6 +146,11 @@ func scanRegion(mem *GuestMemory, entryPC uint64) regionInfo {
 				worklist = append(worklist, target)
 			}
 		case flowJump:
+			if target >= entryPC && target <= entryPC+maxRange {
+				worklist = append(worklist, target)
+			}
+		case flowCall:
+			worklist = append(worklist, pc+insnSize)
 			if target >= entryPC && target <= entryPC+maxRange {
 				worklist = append(worklist, target)
 			}

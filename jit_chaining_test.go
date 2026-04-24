@@ -2,6 +2,7 @@ package riscv
 
 import (
 	"encoding/binary"
+	"riscv/ir"
 	"testing"
 	"unsafe"
 )
@@ -114,10 +115,13 @@ func TestChaining_PatchPointsAtImm64_OfMovABS(t *testing.T) {
 // A call+return+loop achieves this:
 //
 //   0x1000  ADDI x12, x12, 1           ; block A: loop counter
-//   0x1004  JAL  x1, +12               ; block A: chain to 0x1010 (callee)
+//   0x1004  JAL  x5, +12               ; block A: chain to 0x1010 (callee)
 //   0x1008  BLT  x12, x13, -0x8        ; block C: branch back to 0x1000
 //   0x100C  ECALL                       ; block C: exit when done
-//   0x1010  JALR x0, 0(x1)             ; block B: return via x1 (=0x1008)
+//   0x1010  JALR x0, 0(x5)             ; block B: return via x5 (=0x1008)
+//
+// Uses x5 (not x1/ra) as link register to avoid RAS inlining — this
+// test verifies inter-block chain patching, not return prediction.
 //
 // Iteration 1: A runs, chain-exits to 0x1010 (stub, B not yet compiled)
 //              → B compiles → B runs, JALR to 0x1008 → C compiles →
@@ -127,10 +131,10 @@ func TestChaining_PatchPointsAtImm64_OfMovABS(t *testing.T) {
 func TestChaining_PatchedJumpReachesChainEntry(t *testing.T) {
 	insns := []uint32{
 		/* 0x1000 */ ienc(opOPIMM, 0, 12, 12, 1),    // ADDI x12, x12, 1
-		/* 0x1004 */ jenc(1, 0xC),                    // JAL  x1, +12
+		/* 0x1004 */ jenc(5, 0xC),                    // JAL  x5, +12
 		/* 0x1008 */ benc(opBRANCH, 4, 12, 13, -0x8), // BLT  x12, x13, -8
 		/* 0x100C */ instrECALL,
-		/* 0x1010 */ ienc(opJALR, 0, 0, 1, 0), // JALR x0, 0(x1)
+		/* 0x1010 */ ienc(opJALR, 0, 0, 5, 0), // JALR x0, 0(x5)
 	}
 	cpu, mem := newTestCPU(t, Size64MB, 0x1000, insns)
 	defer mem.Free()
@@ -267,5 +271,114 @@ func TestChaining_IndirectBranch_NoChain(t *testing.T) {
 				"is the JALR dynamic target and must not be chained "+
 				"(chainExits=%+v)", blkA.chainExits)
 		}
+	}
+}
+
+// TestRAS_InlinesCalleeAndPredictsReturn verifies the return address
+// stack optimization (rv8 §3.6): JAL ra inlines the callee into the
+// caller's block, and JALR zero,ra emits a BranchImm prediction
+// that jumps directly to the return site on match.
+//
+//	0x1000  ADDI x10, x0,  42       ; set up arg
+//	0x1004  JAL  x1, +16            ; call callee at 0x1014
+//	0x1008  ADDI x11, x10, 0        ; return site: copy result
+//	0x100C  ECALL                    ; exit
+//	0x1010  NOP                      ; padding (not reached)
+//	0x1014  ADDI x10, x10, 1        ; callee: x10 = 43
+//	0x1018  JALR x0, 0(x1)          ; return
+func TestRAS_InlinesCalleeAndPredictsReturn(t *testing.T) {
+	insns := []uint32{
+		/* 0x1000 */ ienc(opOPIMM, 0, 10, 0, 42),   // ADDI x10, x0, 42
+		/* 0x1004 */ jenc(1, 16),                    // JAL  x1, +16
+		/* 0x1008 */ ienc(opOPIMM, 0, 11, 10, 0),   // ADDI x11, x10, 0
+		/* 0x100C */ instrECALL,                     // ECALL
+		/* 0x1010 */ ienc(opOPIMM, 0, 0, 0, 0),     // NOP (padding)
+		/* 0x1014 */ ienc(opOPIMM, 0, 10, 10, 1),   // ADDI x10, x10, 1
+		/* 0x1018 */ ienc(opJALR, 0, 0, 1, 0),      // JALR x0, 0(x1)
+	}
+
+	// --- IR-level check: the block should contain a BranchImm EQ
+	// comparing ra against the return address (0x1008). ---
+	mem, err := NewGuestMemory(Size64MB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mem.Free()
+	for i, insn := range insns {
+		mem.Store32(0x1000+uint64(i)*4, insn)
+	}
+	res := emitBlock(mem, 0x1000)
+	if res == nil {
+		t.Fatal("emitBlock returned nil")
+	}
+
+	foundPrediction := false
+	for _, ins := range res.block.Instrs {
+		if ins.Op == ir.IRBranchImm && ins.Pred == ir.EQ && ins.Imm2 == 0x1008 {
+			foundPrediction = true
+			break
+		}
+	}
+	if !foundPrediction {
+		t.Error("no BranchImm EQ with expected return address 0x1008 found in IR — RAS prediction not emitted")
+	}
+
+	// Verify the block emitted instructions from both caller and callee.
+	// Without RAS: 2 insns (ADDI + JAL terminates). With RAS inlining:
+	// ADDI + JAL(inline) + ADDI(callee) + JALR(predict) + ADDI(return) + ECALL = 6.
+	if res.numInsns < 5 {
+		t.Errorf("numInsns = %d, want >= 5 (callee not inlined)", res.numInsns)
+	}
+
+	// --- End-to-end execution check ---
+	cpu, mem2 := newTestCPU(t, Size64MB, 0x1000, insns)
+	defer mem2.Free()
+	cpu.Notes.Push(ecallStop)
+	jit := NewJIT()
+	jit.RunJIT(cpu)
+
+	if cpu.Reg(10) != 43 {
+		t.Errorf("x10 = %d, want 43 (callee should have added 1)", cpu.Reg(10))
+	}
+	if cpu.Reg(11) != 43 {
+		t.Errorf("x11 = %d, want 43 (return site should have copied x10)", cpu.Reg(11))
+	}
+
+	// Only one block should be compiled — the callee is inlined.
+	if jit.lookupBlock(0x1014) != nil {
+		t.Error("callee at 0x1014 compiled as separate block — RAS should have inlined it")
+	}
+}
+
+// TestRAS_MismatchFallsBackToJalrIC verifies that when ra doesn't
+// match the predicted return address, the JALR IC slow path handles
+// the return correctly.
+func TestRAS_MismatchFallsBackToJalrIC(t *testing.T) {
+	insns := []uint32{
+		/* 0x1000 */ ienc(opOPIMM, 0, 10, 0, 42),   // ADDI x10, x0, 42
+		/* 0x1004 */ jenc(1, 16),                    // JAL  x1, +16
+		/* 0x1008 */ ienc(opOPIMM, 0, 11, 10, 0),   // ADDI x11, x10, 0
+		/* 0x100C */ instrECALL,                     // ECALL
+		/* 0x1010 */ ienc(opOPIMM, 0, 0, 0, 0),     // NOP
+		/* 0x1014 */ ienc(opOPIMM, 0, 1, 0, 0x50),  // LI x1, 0x50 (corrupt ra)
+		/* 0x1018 */ ienc(opJALR, 0, 0, 1, 0),      // JALR x0, 0(x1)
+	}
+	cpu, mem := newTestCPU(t, Size64MB, 0x1000, insns)
+	defer mem.Free()
+
+	// Place a landing pad at 0x50 that the corrupted ra points to.
+	mem.Store32(0x50, instrECALL)
+
+	cpu.Notes.Push(ecallStop)
+	jit := NewJIT()
+	jit.RunJIT(cpu)
+
+	// The callee overwrites ra with 0x50, so the return goes to 0x50
+	// (ECALL) instead of 0x1008. x11 should NOT be set.
+	if cpu.Reg(10) != 42 {
+		t.Errorf("x10 = %d, want 42", cpu.Reg(10))
+	}
+	if cpu.Reg(11) != 0 {
+		t.Errorf("x11 = %d, want 0 (return site should not have executed)", cpu.Reg(11))
 	}
 }

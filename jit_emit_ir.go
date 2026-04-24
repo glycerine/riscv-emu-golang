@@ -83,6 +83,7 @@ type emitter struct {
 	deferredFaults []deferredFault
 	exitIdx        int // counter for chain exit indices
 	jalrSiteIdx    int // counter for JALR inline-cache site indices
+	callStack      []uint64 // RAS: expected return addresses for inlined calls
 }
 
 // ── Register access helpers ────────────────────────────────────────────
@@ -2483,11 +2484,46 @@ func (e *emitter) emitJAL(rd uint32, offset int64, insnSize uint64) {
 		e.pc = target
 		return
 	}
+
+	// RAS: for JAL ra, try to inline the callee. The return address
+	// is already stored in rd above; push it so emitJALR can predict
+	// the return and avoid the decoder_cache lookup.
+	if rd == 1 && len(e.callStack) < 4 &&
+		target < e.regionEnd && !e.visited[target] {
+		e.callStack = append(e.callStack, e.pc)
+		e.pc = target
+		return
+	}
+
 	e.emitChainableReturn(target)
 	e.terminated = true
 }
 
 func (e *emitter) emitJALR(rd, rs1 uint32, imm int64, insnSize uint64) {
+	// RAS: if this is JALR zero, 0(ra) and we have a predicted return
+	// address from a prior inlined JAL ra, emit a fast-path comparison.
+	// On match, jump directly to the return site (already in this block).
+	// On mismatch, fall through to the decoder_cache JALR IC.
+	if rd == 0 && rs1 == 1 && imm == 0 && len(e.callStack) > 0 {
+		expectedAddr := e.callStack[len(e.callStack)-1]
+		e.callStack = e.callStack[:len(e.callStack)-1]
+
+		returnLabel := e.getOrCreateLabel(expectedAddr)
+		e.irEm.BranchImm(e.xreg(rs1), int64(expectedAddr), ir.EQ, returnLabel)
+
+		// Mismatch: fall through to JALR IC (terminal).
+		tgt := e.irEm.Tmp()
+		e.irEm.AddImm(tgt, e.xreg(rs1), 0)
+		e.irEm.AndImm(tgt, tgt, ^int64(1))
+		e.advancePC(insnSize)
+		e.irEm.DynChainableRet(tgt, e.jalrSiteIdx)
+		e.jalrSiteIdx++
+
+		// Continue emitting at the predicted return site.
+		e.pc = expectedAddr
+		return
+	}
+
 	tgt := e.irEm.Tmp()
 	e.irEm.AddImm(tgt, e.xreg(rs1), imm)
 	e.irEm.AndImm(tgt, tgt, ^int64(1))
@@ -2495,11 +2531,6 @@ func (e *emitter) emitJALR(rd, rs1 uint32, imm int64, insnSize uint64) {
 		e.irEm.Const(e.xregDst(rd), int64(e.pc+insnSize))
 	}
 	e.advancePC(insnSize)
-	// Emit a 2-way inline-cache dispatch (Phase 1.5). On hit the site's
-	// direct JMP skips the Go round-trip; on miss the stub returns with
-	// Status=jitOKJalrMiss so the dispatcher can shift-patch the cache.
-	// Sites that thrash across ≥jalrICDeoptThreshold distinct targets
-	// are frozen to prevent SMC stalls.
 	e.irEm.DynChainableRet(tgt, e.jalrSiteIdx)
 	e.jalrSiteIdx++
 	e.terminated = true
