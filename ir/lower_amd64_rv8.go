@@ -979,10 +979,10 @@ func (lc *lowerCtxRV8) rv8BinopImm(ins *IRInstr, op obj.As) {
 	}
 
 	if ins.Dst == ins.A {
-		if base, off, ok := lc.spilledMemOp(ins.Dst); ok {
+		if off := lc.spilledRegFileOff(ins.Dst); off >= 0 {
 			imm := ins.Imm
 			if imm >= -(1<<31) && imm < (1<<31) {
-				lc.emitMI(op, imm, base, off)
+				lc.emitMI(op, imm, goasm.REG_AMD64_BP, off)
 				return
 			}
 		}
@@ -1078,8 +1078,8 @@ func (lc *lowerCtxRV8) rv8ShiftImm(ins *IRInstr, op obj.As) {
 	}
 
 	if ins.Dst == ins.A {
-		if base, off, ok := lc.spilledMemOp(ins.Dst); ok {
-			lc.emitMI(op, ins.Imm, base, off)
+		if off := lc.spilledRegFileOff(ins.Dst); off >= 0 {
+			lc.emitMI(op, ins.Imm, goasm.REG_AMD64_BP, off)
 			return
 		}
 	}
