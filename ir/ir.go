@@ -7,18 +7,12 @@ import (
 
 // VIZJIT_DIR is a debug facility for viewing the assembly output.
 // It is a directory path where disassembly will be dumped.
-var VIZJIT_DIR string = "/Users/jaten/go/src/github.com/glycerine/riscv-emu-golang/debug_vizjit_dir"
-
-// InlineSyscall gates lowerSyscall's inline fast path. When true, a
-// successful dispatcher return (RAX==0) chains directly to the
-// post-ECALL block via the existing chain-exit machinery; a non-zero
-// return falls through to the cold-path sret write + RET (today's
-// behavior). When false, lowerSyscall unconditionally takes the
-// cold path after the dispatcher CALL (bit-identical to pre-Step-5).
-// Set from the root package's SetInlineEcallEnabled.
-var InlineSyscall bool
+var VIZJIT_DIR string
 
 func init() {
+	home := os.Getenv("HOME")
+	VIZJIT_DIR = home + "/go/src/github.com/glycerine/riscv-emu-golang/debug_vizjit_dir"
+
 	off := os.Getenv("GOCPU_VIZJIT_OFF")
 	if off != "" {
 		VIZJIT_DIR = ""
@@ -30,6 +24,15 @@ func init() {
 		fmt.Fprintf(os.Stderr, "env var GOCPU_VIZJIT was set: writing disassembly to dir: '%v'\n", viz)
 	}
 }
+
+// InlineSyscall gates lowerSyscall's inline fast path. When true, a
+// successful dispatcher return (RAX==0) chains directly to the
+// post-ECALL block via the existing chain-exit machinery; a non-zero
+// return falls through to the cold-path sret write + RET (today's
+// behavior). When false, lowerSyscall unconditionally takes the
+// cold path after the dispatcher CALL (bit-identical to pre-Step-5).
+// Set from the root package's SetInlineEcallEnabled.
+var InlineSyscall bool
 
 // VReg is a virtual register index. 0 is reserved for "discard" (sink writes,
 // zero reads — mirrors RISC-V's x0). Emitter allocates fresh VRegs via Tmp()
