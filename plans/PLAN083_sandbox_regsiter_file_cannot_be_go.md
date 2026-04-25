@@ -1,148 +1,256 @@
-# Plan: Isolate JIT native code from Go heap via shadow register file
+# Plan: Fully sandbox JIT — register file + stack in C mmap
 
 ## Context
 
-The JIT trampoline (`internal/jitcall/call_amd64.s`) currently passes Go heap pointers directly to JIT-compiled native code:
+The JIT trampoline currently passes Go heap pointers (`&cpu.x`, `&cpu.f`, `&cpu.fcsr`) to native code, and the JIT code's stack (spill slots, sret stash, scratch) runs on the Go goroutine stack. Both are sandbox violations: guest code must only touch C mmap memory. This plan moves the register file backing store AND the JIT call stack into the guest memory mmap.
 
-- `RSI = &cpu.x` — pointer into heap-allocated CPU struct
-- `RDX = &cpu.f` — same struct, offset 256
-- `RCX = &cpu.fcsr` — same struct, offset 512
-- `sret[80] = &cpu.fcsr` — stashed for chained blocks
+## Guest memory layout
 
-This breaks the sandbox invariant: JIT guest code must never hold a pointer to Go heap memory. A buggy or malicious JIT block could corrupt the CPU struct or adjacent heap objects.
+Using the C mmap allocation (`guest_alloc`), with 4096-byte pages:
 
-The fix: the trampoline copies cpu.x/f/fcsr into a **shadow register file** on its own 65536-byte stack frame, passes shadow pointers to native code, and copies back after the block returns. No changes to the IR lowerer — JIT code accesses registers as `[RBP+r*8]` via an opaque base pointer set from RSI.
+```
+Page 1  (0x0000-0x0FFF):  Guard — null pointer segfault catching
+Page 2  (0x1000-0x1FFF):  Host reply (tohost/fromhost)
+Page 3  (0x2000-0x2FFF):  Shadow register file (520 bytes used, rest reserved)
+Page 4+ (0x3000+):        Heap, grows up — ELF code + data loaded here
+...
+Top of mmap:              Stack, grows down
+```
+
+### Shadow register file layout (at guest offset 0x2000)
+
+```
++0     x[0..31]    256 bytes  (32 × uint64)
++256   f[0..31]    256 bytes  (32 × uint64)
++512   fcsr        8 bytes    (uint32, 8-byte aligned)
+```
+
+### Sandbox stack
+
+Starts at the top of the mmap, grows downward. The trampoline switches RSP to this address before `CALL AX` and restores the Go RSP after return.
 
 ## Files to modify
 
-| File | Change |
-|------|--------|
-| `internal/jitcall/call_amd64.s` | Add copy-in/copy-out to both `Call` and `CallAOT` |
-| `internal/jitcall/call.go` | Update doc comments to describe shadow copy semantics |
+### 1. `guestmem.go` — add constants and accessors
 
-No changes to: `ir/lower_amd64_rv8.go`, `jit.go`, `jit_native.go`, or any other Go code. The JIT lowerer accesses registers as `[RBP+offset]` via an opaque base — it doesn't know or care whether RBP points to the CPU struct or a shadow.
+```go
+const (
+    GuestPageSize       = 4096
+    GuestGuardOffset    = 0x0000  // page 1: null guard
+    GuestTohostOffset   = 0x1000  // page 2: tohost/fromhost
+    GuestRegFileOffset  = 0x2000  // page 3: shadow register file
+    GuestHeapOffset     = 0x3000  // page 4+: heap start
+)
 
-## New stack frame layout
+func (m *GuestMemory) RegFileBase() uintptr {
+    return m.base + GuestRegFileOffset
+}
 
-The trampoline's existing 65536-byte local frame has ~144 bytes used. The shadow fits easily.
-
-```
-[SP+0,   SP+32)    Result struct (PC, IC, Status, FaultAddr)         — unchanged
-[SP+32,  SP+80)    Callee-saved regs (BX, BP, R12-R15)              — unchanged
-[SP+80,  SP+88)    shadow fcsr ptr (→ SP+768)                       — CHANGED target
-[SP+88,  SP+120)   decoder_cache params (AOT only)                  — unchanged
-[SP+120, SP+128)   (unused)
-[SP+128, SP+144)   memBase, memMask (published by JIT prologue)     — unchanged
-[SP+144, SP+152)   saved original x pointer (for copy-back)         — NEW
-[SP+152, SP+160)   saved original f pointer (for copy-back)         — NEW
-[SP+160, SP+168)   saved original fcsr pointer (for copy-back)      — NEW
-  ...
-[SP+256, SP+512)   shadow x[0..31]  (256 bytes = 32 × uint64)      — NEW
-[SP+512, SP+768)   shadow f[0..31]  (256 bytes = 32 × uint64)      — NEW
-[SP+768, SP+776)   shadow fcsr      (4 bytes, 8-byte aligned)      — NEW
+func (m *GuestMemory) StackTop() uintptr {
+    return m.base + m.guestSize  // top of mmap, stack grows down
+}
 ```
 
-Total new usage: ~776 bytes. Well within the 65536-byte frame.
+No change to allocation size — these pages are already within the existing mmap. Code/data loading must respect `GuestHeapOffset` as the minimum VA (existing ELFs may need adjustment; see verification section).
 
-## Trampoline changes (both `Call` and `CallAOT`)
+### 2. `internal/jitcall/call.go` — add regFile and stackTop parameters
 
-### Pre-call: copy IN
+```go
+func Call(fn uintptr, x *[32]uint64, f *[32]uint64, fcsr *uint32,
+    memBase uintptr, memMask uint64,
+    regFile uintptr, sandboxStack uintptr) Result
 
-After saving callee-saved registers and zeroing the metadata region (existing code), add:
+func CallAOT(fn uintptr, x *[32]uint64, f *[32]uint64, fcsr *uint32,
+    memBase uintptr, memMask uint64,
+    decoderCacheBase uintptr, decoderCacheMask uint64,
+    vaddrBegin uint64, segSize uint64,
+    regFile uintptr, sandboxStack uintptr) Result
+```
+
+### 3. `internal/jitcall/call_amd64.s` — full sandbox isolation
+
+The trampoline does three new things:
+1. **Copy-in**: cpu.x/f/fcsr → shadow register file (C mmap)
+2. **Switch RSP**: Go stack → sandbox stack (C mmap)
+3. **Copy-out + restore**: after return, copy shadow → cpu.x/f/fcsr, restore Go RSP
+
+Pseudocode for `Call`:
 
 ```asm
-// ── Save original Go heap pointers for post-call copy-back ──
-MOVQ    x+8(FP), AX
-MOVQ    AX, 144(SP)
-MOVQ    f+16(FP), AX
-MOVQ    AX, 152(SP)
-MOVQ    fcsr+24(FP), AX
-MOVQ    AX, 160(SP)
+TEXT ·Call(SB), $65536-??
+    // ── Save callee-saved registers (on Go stack) ──
+    MOVQ    BX,  32(SP)
+    MOVQ    BP,  40(SP)
+    MOVQ    R12, 48(SP)
+    MOVQ    R13, 56(SP)
+    MOVQ    R14, 64(SP)
+    MOVQ    R15, 72(SP)
 
-// ── Copy x[32] to shadow (256 bytes = 32 qwords) ──
-MOVQ    x+8(FP), SI          // source: Go heap x array
-LEAQ    256(SP), DI           // dest: shadow x
-MOVQ    $32, CX
-REP; MOVSQ
+    // ── Save original Go pointers for copy-back ──
+    MOVQ    x+8(FP), AX
+    MOVQ    AX, 80(SP)             // stash &cpu.x
+    MOVQ    f+16(FP), AX
+    MOVQ    AX, 88(SP)             // stash &cpu.f
+    MOVQ    fcsr+24(FP), AX
+    MOVQ    AX, 96(SP)             // stash &cpu.fcsr
 
-// ── Copy f[32] to shadow (256 bytes = 32 qwords) ──
-MOVQ    f+16(FP), SI          // source: Go heap f array
-LEAQ    512(SP), DI           // dest: shadow f
-MOVQ    $32, CX
-REP; MOVSQ
+    // ── Copy cpu.x → shadow x (256 bytes) ──
+    MOVQ    x+8(FP), SI
+    MOVQ    regFile+??(FP), DI
+    MOVQ    $32, CX
+    REP; MOVSQ
 
-// ── Copy fcsr to shadow (4 bytes) ──
-MOVQ    fcsr+24(FP), AX
-MOVL    (AX), AX
-MOVL    AX, 768(SP)
+    // ── Copy cpu.f → shadow f (256 bytes) ──
+    MOVQ    f+16(FP), SI
+    MOVQ    regFile+??(FP), DI
+    ADDQ    $256, DI
+    MOVQ    $32, CX
+    REP; MOVSQ
+
+    // ── Copy fcsr → shadow (4 bytes) ──
+    MOVQ    fcsr+24(FP), AX
+    MOVL    (AX), AX
+    MOVQ    regFile+??(FP), DI
+    MOVL    AX, 512(DI)
+
+    // ── Save Go RSP, switch to sandbox stack ──
+    MOVQ    SP, 104(SP)            // stash Go SP (must be before switch!)
+    // Actually: save Go SP to a callee-saved register since SP is about to change
+    MOVQ    SP, R12                // R12 = Go SP (callee-saved, restored later)
+    MOVQ    sandboxStack+??(FP), SP  // RSP = top of sandbox stack (C mmap)
+
+    // ── Build sret buffer on sandbox stack ──
+    SUBQ    $144, SP               // allocate sret area on sandbox stack
+    MOVQ    $0, 0(SP)              // zero Result area
+    MOVQ    $0, 8(SP)
+    MOVQ    $0, 16(SP)
+    MOVQ    $0, 24(SP)
+
+    // Publish fcsr pointer (shadow, in C mmap)
+    MOVQ    regFile+??(R12), AX    // read regFile from Go stack via saved R12
+    ADDQ    $512, AX
+    MOVQ    AX, 80(SP)
+
+    // Publish memBase/memMask (zeroed; JIT prologue will fill from R8/R9)
+    MOVQ    $0, 128(SP)
+    MOVQ    $0, 136(SP)
+
+    // ── Set up System V ABI ──
+    LEAQ    0(SP), DI              // RDI = sret (on sandbox stack)
+    MOVQ    regFile+??(R12), SI    // RSI = shadow register file (C mmap)
+    MOVQ    memBase+32(R12), R8    // R8 = memBase (read from Go stack via R12)
+    MOVQ    memMask+40(R12), R9    // R9 = memMask
+
+    MOVQ    fn+0(R12), AX          // fn (read from Go stack via R12)
+    CALL    AX
+
+    // ── Read Result from sandbox stack ──
+    MOVQ    0(SP), AX              // Result.PC
+    MOVQ    8(SP), CX              // Result.IC
+    MOVQ    16(SP), DX             // Result.Status
+    MOVQ    24(SP), SI             // Result.FaultAddr
+
+    // ── Restore Go RSP ──
+    MOVQ    R12, SP
+
+    // ── Write Result to Go return area ──
+    MOVQ    AX, ret_PC+??(FP)
+    MOVQ    CX, ret_IC+??(FP)
+    MOVQ    DX, ret_Status+??(FP)
+    MOVQ    SI, ret_FaultAddr+??(FP)
+
+    // ── Copy shadow x → cpu.x ──
+    MOVQ    regFile+??(FP), SI
+    MOVQ    80(SP), DI             // original &cpu.x
+    MOVQ    $32, CX
+    REP; MOVSQ
+
+    // ── Copy shadow f → cpu.f ──
+    MOVQ    regFile+??(FP), SI
+    ADDQ    $256, SI
+    MOVQ    88(SP), DI             // original &cpu.f
+    MOVQ    $32, CX
+    REP; MOVSQ
+
+    // ── Copy shadow fcsr → cpu.fcsr ──
+    MOVQ    regFile+??(FP), AX
+    MOVL    512(AX), AX
+    MOVQ    96(SP), CX
+    MOVL    AX, (CX)
+
+    // ── Restore callee-saved registers ──
+    MOVQ    32(SP), BX
+    MOVQ    40(SP), BP
+    MOVQ    48(SP), R12
+    MOVQ    56(SP), R13
+    MOVQ    64(SP), R14
+    MOVQ    72(SP), R15
+    RET
 ```
 
-Then set up System V ABI registers using **shadow** pointers instead of originals:
+`CallAOT` is identical but also publishes decoder_cache params to sret[88..112] on the sandbox stack.
 
-```asm
-LEAQ    0(SP), DI             // RDI = sret pointer (unchanged)
-LEAQ    256(SP), SI           // RSI = shadow x  (NOT &cpu.x)
-LEAQ    512(SP), DX           // RDX = shadow f  (NOT &cpu.f)
-LEAQ    768(SP), CX           // RCX = shadow fcsr (NOT &cpu.fcsr)
-MOVQ    memBase+32(FP), R8    // R8 = memBase (C mmap, already safe)
-MOVQ    memMask+40(FP), R9    // R9 = memMask
+**Note**: The exact FP offsets (`??`) depend on the final argument layout and will be computed during implementation. R12 is used to access Go stack arguments after the RSP switch because FP-relative addressing uses RSP internally — after switching RSP to the sandbox stack, FP offsets no longer work. This needs careful attention; an alternative is to load all Go arguments into callee-saved registers before the switch.
 
-// Publish shadow fcsr pointer into sret[80]
-LEAQ    768(SP), AX
-MOVQ    AX, 80(SP)
+### 4. `jit.go` — pass regFile and sandboxStack
+
+All Call/CallAOT sites in `RunJIT` and `StepBlock`:
+
+```go
+res = jitcall.Call(blk.fn, &cpu.x, &cpu.f, &cpu.fcsr,
+    cpu.mem.Base(), cpu.mem.Mask(),
+    cpu.mem.RegFileBase(), cpu.mem.StackTop())
 ```
 
-### Post-call: copy OUT
+Same pattern for CallAOT with the additional decoder_cache args.
 
-After the native code returns (before copying Result to Go return area):
+### 5. `ir/lower_amd64_rv8.go` — sret buffer is now on sandbox stack
 
-```asm
-// ── Copy shadow x back to Go heap ──
-LEAQ    256(SP), SI           // source: shadow x
-MOVQ    144(SP), DI           // dest: original x (saved earlier)
-MOVQ    $32, CX
-REP; MOVSQ
+The sret buffer layout is the same, but it lives on the sandbox stack instead of the Go stack. The JIT prologue and block code access sret via the stashed pointer (from RDI), so no offset changes. The key invariant — `[sret+80]` = fcsr pointer, `[sret+128]` = memBase, etc. — is preserved.
 
-// ── Copy shadow f back to Go heap ──
-LEAQ    512(SP), SI           // source: shadow f
-MOVQ    152(SP), DI           // dest: original f (saved earlier)
-MOVQ    $32, CX
-REP; MOVSQ
+The prologue still does `RBP = RSI` where RSI now points to guest offset 0x2000 (the shadow register file in C mmap). No lowerer changes needed.
 
-// ── Copy shadow fcsr back to Go heap ──
-MOVL    768(SP), AX
-MOVQ    160(SP), CX
-MOVL    AX, (CX)
+### 6. ELF loading — enforce minimum VA
+
+ELF code must load at guest VA >= `GuestHeapOffset` (0x3000). The ELF loader should validate this:
+
+```go
+// In LoadELFBytes or equivalent:
+if segVA < GuestHeapOffset {
+    return 0, fmt.Errorf("ELF segment VA 0x%x below reserved area 0x%x", segVA, GuestHeapOffset)
+}
 ```
 
-Then proceed with existing Result copy and callee-saved register restore.
+Existing riscv-tests ELFs use VAs starting at ~0x0000. These will need relinking with a higher base address, or the `BuildELF` helper updated to default to VA >= 0x3000.
 
-## Why no lowerer changes are needed
+### 7. Test updates
 
-1. **Register file access**: JIT prologue does `RBP = RSI` (line 152 of `lower_amd64_rv8.go`). All register reads/writes use `[RBP+r*8]`. RBP is an opaque base pointer — shadow at SP+256 has the exact same layout as cpu.x/cpu.f.
+Tests that use `codeVA = 0x1000` or similar low addresses need to be bumped to `0x3000` or higher. Affected patterns:
+- `cpu_test.go:187`: `const codeVA = uint64(0x1000)` → `0x3000`
+- `jit_emit_ir_test.go`: `pc := uint64(0x1000)` → `0x3000`
+- `BuildELF` default VA in tests
+- Riscv-tests ELFs in `riscv-elf-tests/` — may need relinking
 
-2. **Chain entry**: Chained blocks inherit RBP from the previous block. Since RBP was set from the shadow RSI, all chained blocks use the shadow. No RSI re-setup occurs at chain entry.
+## What does NOT change
 
-3. **FCSR access**: JIT code reads sret[80] to get the fcsr pointer. We publish the shadow fcsr address there. JIT code reads/writes through it unchanged.
-
-4. **memBase/memMask**: These are `uintptr` values pointing to C mmap memory (not Go heap). They're passed via R8/R9 and published to sret[128..136]. No change needed.
-
-5. **decoder_cache**: Published by CallAOT into sret[88..112]. Points to mmap memory. No change needed.
+- **IR lowerer** (`lower_amd64_rv8.go`): `RBP = RSI`, register access at `[RBP+r*8]`, spill slots at `[RSP+slot*8]` — all unchanged. The only difference is WHERE RSI/RSP point (C mmap instead of Go memory).
+- **JIT compilation** (`jit_native.go`, `jit_aot.go`): No changes.
+- **Block chaining**: RBP persists across chain exits, pointing to guest offset 0x2000. Chain exits dealloc/realloc frames on the sandbox stack.
+- **Guest memory access**: Mask-bounded via R14/R15, unchanged.
 
 ## Performance impact
 
-Copy overhead per Call/CallAOT invocation:
-- Copy-in: 256 + 256 + 4 = 516 bytes (~8 cache lines)
-- Copy-out: same
-- Total: ~1032 bytes, both sequential memcpy via REP MOVSQ
-
-For a JIT block executing hundreds+ RISC-V instructions, this is negligible. For AOT chained execution (no round-trip to Go), there is zero overhead — the shadow is used continuously across chains; copying only happens at the Go↔JIT boundary.
+- Copy overhead: 516 bytes in + 516 bytes out per Call/CallAOT (~16 cache lines).
+- RSP switch: 2 MOVQs (save Go SP, load sandbox SP).
+- The register file (page 3) and sandbox stack (top of mmap) are both in the C mmap. During JIT execution, all accessed memory (registers, spills, guest memory) is in the same large allocation — good for TLB.
+- Zero overhead during AOT chaining (no Go round-trip).
 
 ## Verification
 
-1. `go test -v -run TestJIT_ADD .` — basic JIT correctness
+1. `go test -v -run TestJIT_ADD .` — basic JIT
 2. `go test -v -run TestJIT_vs_Interp_Registers .` — register writeback parity
-3. `go test -v -run TestRISCVTests_UI_JIT .` — full riscv-tests suite under JIT
+3. `go test -v -run TestRISCVTests_UI_JIT .` — riscv-tests suite under JIT
 4. `go test -v -run TestAOTInstall_RunDhrystone .` — AOT with chaining
-5. `go test -v .` — full unit test suite
-6. On remote Linux box: `make test` — verify GC crash is resolved
+5. `go test -v .` — full suite
+6. Remote Linux box: `make test` — verify GC crash is gone
+7. `go test -v -gcflags=all=-d=checkptr .` — verify no unsafe.Pointer violations remain
