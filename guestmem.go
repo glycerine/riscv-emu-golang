@@ -76,6 +76,7 @@ const (
 	Size128KB uint64 = 1 << 17
 
 	Size1MB   uint64 = 1 << 20
+	Size4MB   uint64 = 1 << 22
 	Size64MB  uint64 = 1 << 26
 	Size128MB uint64 = 1 << 27
 	Size256MB uint64 = 1 << 28

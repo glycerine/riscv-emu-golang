@@ -79,7 +79,7 @@ func TestInlineEcall_HelloEndToEnd(t *testing.T) {
 	defer SetInlineEcallEnabled(saved)
 	SetInlineEcallEnabled(true)
 
-	mem, err := NewGuestMemory(Size1MB)
+	mem, err := NewGuestMemory(Size64MB)
 	if err != nil {
 		t.Fatal(err)
 	}

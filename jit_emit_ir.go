@@ -1815,6 +1815,10 @@ func (e *emitter) emitLoad(rd, rs1 uint32, imm int64, funct3 uint32) {
 		alignBits := e.irEm.Tmp()
 		e.irEm.AndImm(alignBits, addr, int64(width-1))
 		e.irEm.Branch(alignBits, ir.VRegZero, ir.EQ, alignedLabel)
+		// OOB check for misaligned path (same as MaskedLoadAddr does for aligned).
+		if CheckSandboxBounds {
+			e.emitOOBCheck(addr, width, faultLabel)
+		}
 		t := ir.WidthToType(width)
 		e.irEm.MisalignedLoad(dst, addr, t)
 		if signed {
@@ -1832,6 +1836,23 @@ func (e *emitter) emitLoad(rd, rs1 uint32, imm int64, funct3 uint32) {
 	} else {
 		e.irEm.MaskedLoadAddr(dst, addr, e.irEm.MemBase(), e.irEm.MemMask(), width, signed, faultLabel)
 	}
+}
+
+// emitOOBCheck emits (addr | (addr+width-1)) & ~mask != 0 → goto faultLabel.
+// Only emitted when CheckSandboxBounds is on; the fast path skips this.
+func (e *emitter) emitOOBCheck(addr ir.VReg, width int, faultLabel ir.Label) {
+	mask := e.irEm.MemMask()
+	endAddr := addr
+	if width > 1 {
+		endAddr = e.irEm.Tmp()
+		e.irEm.AddImm(endAddr, addr, int64(width-1))
+		e.irEm.Or(endAddr, addr, endAddr)
+	}
+	maskNot := e.irEm.Tmp()
+	e.irEm.Not(maskNot, mask)
+	oob := e.irEm.Tmp()
+	e.irEm.And(oob, endAddr, maskNot)
+	e.irEm.Branch(oob, ir.VRegZero, ir.NE, faultLabel)
 }
 
 // emitMisalignedLoad emits byte-by-byte loads for a misaligned address.
@@ -1903,6 +1924,9 @@ func (e *emitter) emitStore(rs1, rs2 uint32, imm int64, funct3 uint32) {
 		alignBits := e.irEm.Tmp()
 		e.irEm.AndImm(alignBits, addr, int64(width-1))
 		e.irEm.Branch(alignBits, ir.VRegZero, ir.EQ, alignedLabel)
+		if CheckSandboxBounds {
+			e.emitOOBCheck(addr, width, faultLabel)
+		}
 		t := ir.WidthToType(width)
 		e.irEm.MisalignedStore(addr, src, t)
 		e.irEm.Jump(doneLabel)
@@ -1976,7 +2000,10 @@ func (e *emitter) emitFPLoad(rd, rs1 uint32, imm int64, funct3 uint32) {
 	e.irEm.AndImm(alignBits, addr, int64(width-1))
 	e.irEm.Branch(alignBits, ir.VRegZero, ir.EQ, alignedLabel)
 
-	// Misaligned path: call native helper, then NaN-box if FLW.
+	// Misaligned path: OOB check, then byte-by-byte load, then NaN-box if FLW.
+	if CheckSandboxBounds {
+			e.emitOOBCheck(addr, width, faultLabel)
+		}
 	t := ir.WidthToType(width)
 	tmp := e.irEm.Tmp()
 	e.irEm.MisalignedLoad(tmp, addr, t)
@@ -2036,7 +2063,10 @@ func (e *emitter) emitFPStore(rs1, rs2 uint32, imm int64, funct3 uint32) {
 	e.irEm.AndImm(alignBits, addr, int64(width-1))
 	e.irEm.Branch(alignBits, ir.VRegZero, ir.EQ, alignedLabel)
 
-	// Misaligned path.
+	// Misaligned path: OOB check first.
+	if CheckSandboxBounds {
+			e.emitOOBCheck(addr, width, faultLabel)
+		}
 	t := ir.WidthToType(width)
 	if funct3 == 2 {
 		tmp := e.irEm.Tmp()
