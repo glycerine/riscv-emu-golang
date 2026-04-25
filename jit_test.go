@@ -1160,7 +1160,6 @@ func TestJIT_FLD_Misaligned(t *testing.T) {
 
 // TestJIT_FSD_Misaligned exercises the byte-by-byte misaligned store path.
 func TestJIT_FSD_Misaligned(t *testing.T) {
-	t.Skip("misaligned native now traps out for interp to handle, because was taking too much codegen: 35:1 IR:original instructions.")
 	const entryPC = 0x1000
 	const dataAddr = uint64(0x4001) // deliberately misaligned
 
