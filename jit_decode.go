@@ -1,7 +1,6 @@
 package riscv
 
 // jit_decode.go — Decode-only helpers used by the IR JIT emission path.
-// No build tag — compiled unconditionally.
 
 // ── Region pre-scan ─────────────────────────────────────────────────────
 
@@ -101,21 +100,18 @@ type regionInfo struct {
 // scanRegion does a BFS over the control flow graph starting at entryPC
 // to determine the region of code that should be emitted as a single block.
 func scanRegion(mem *GuestMemory, entryPC uint64) regionInfo {
-	const maxInsns = 2048
-	const maxRange = 16384
-
-	visited := newU64setSized(maxInsns)
+	visited := newU64setSized(256)
 	worklist := []uint64{entryPC}
 	maxEnd := entryPC
 
-	for len(worklist) > 0 && visited.len() < maxInsns {
+	for len(worklist) > 0 {
 		pc := worklist[0]
 		worklist = worklist[1:]
 
 		if visited.has(pc) {
 			continue
 		}
-		if pc < entryPC || pc > entryPC+maxRange {
+		if pc < entryPC {
 			continue
 		}
 
@@ -134,18 +130,15 @@ func scanRegion(mem *GuestMemory, entryPC uint64) regionInfo {
 			worklist = append(worklist, pc+insnSize)
 		case flowBranch:
 			worklist = append(worklist, pc+insnSize)
-			if target >= entryPC && target <= entryPC+maxRange {
+			if target >= entryPC {
 				worklist = append(worklist, target)
 			}
 		case flowJump:
-			if target >= entryPC && target <= entryPC+maxRange {
+			if target >= entryPC {
 				worklist = append(worklist, target)
 			}
 		case flowCall:
 			worklist = append(worklist, pc+insnSize)
-			if target >= entryPC && target <= entryPC+maxRange {
-				worklist = append(worklist, target)
-			}
 		case flowTerm:
 			// no successors
 		}
