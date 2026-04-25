@@ -277,6 +277,14 @@ func BenchmarkRoundTripParallel(b *testing.B) {
 	})
 }
 
+// BenchmarkCGO measures a plain CGO call for comparison with the ring path.
+func BenchmarkCGO(b *testing.B) {
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		CgoAdd(uint64(i), 1)
+	}
+}
+
 // ----------------------------------------------------------------------------
 // TestMain
 // ----------------------------------------------------------------------------

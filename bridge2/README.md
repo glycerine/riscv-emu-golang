@@ -111,3 +111,24 @@ executable.
 Pin your Go toolchain (`go.toolchain` in `go.mod`) if you access `g` struct
 fields directly — their offsets are runtime-internal and not stable across
 versions. `GetG()` returns R14 (amd64) or R28 (arm64), valid for Go ≥ 1.17.
+
+## Measurement
+
+~~~
+go test -run=xxx -bench='BenchmarkRoundTrip$|BenchmarkCGO$' -benchtime=3s
+~~~
+
+The story thus far:
+
+CGO is 34 ns, ring round-trip is 188 ns. CGO is 5.6x 
+faster for a simple call. The ring's cross-thread wake 
+latency dominates — even with pure atomic spin, the 
+producer stores to head and the consumer's cache line 
+has to see it, plus the consumer writes the result back.
+      
+The ring approach only wins when you're amortizing 
+the CGO entry/exit across many batched
+operations, or when the C-side work is substantial 
+enough to overlap with the cross-thread
+transit. For a single trivial call, CGO's same-thread 
+function call can't be beat.

@@ -115,3 +115,5 @@ void          sandbox_mem_destroy(sandbox_mem_t* m);
 void          sandbox_seal_code(sandbox_mem_t* m);
 
 void          interpreter_thread_main(spsc_ring_t* ring);  // never returns
+
+uint64_t      cgo_add(uint64_t a, uint64_t b);

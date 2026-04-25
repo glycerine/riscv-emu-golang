@@ -163,6 +163,8 @@ void sandbox_mem_destroy(sandbox_mem_t* m) {
 // Interpreter thread — parked here permanently after CGo handoff
 // ----------------------------------------------------------------------------
 
+uint64_t cgo_add(uint64_t a, uint64_t b) { return a + b; }
+
 // Returns false for OPCODE_SHUTDOWN, true otherwise.
 static bool dispatch(work_item_t* item) {
     switch (item->opcode) {

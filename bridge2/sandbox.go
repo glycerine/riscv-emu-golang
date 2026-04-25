@@ -184,3 +184,8 @@ func (ring *Ring) WaitResult(slotIdx uint64) uint64 {
 func (ring *Ring) ClearSlot(slotIdx uint64) {
 	ring.slot(slotIdx).state = 0
 }
+
+// CgoAdd calls a trivial C function through CGO, for benchmarking CGO overhead.
+func CgoAdd(a, b uint64) uint64 {
+	return uint64(C.cgo_add(C.uint64_t(a), C.uint64_t(b)))
+}
