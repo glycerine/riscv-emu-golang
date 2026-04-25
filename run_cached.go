@@ -9,18 +9,114 @@ import (
 // PC so each instruction pays for fetch + decode only once (on first visit)
 // and subsequent visits dispatch straight from pre-decoded fields.
 //
-// Phase-C megaswitch: both RV32 and RVC opcode bodies live inline here under
-// a single switch over slot.op. This eliminates the per-instruction method
-// call into exec*Slot that was visible in the Phase-B profile.
-//
-// The interpreter-cached executors execRVCSlot / exec32Slot are still
-// compiled and used by slowStep for cases the megaswitch defers (uncached
-// first visit, sentinel slot for OOB PCs, FP/AMO/SYSTEM).
+// Flat megaswitch: every instruction handler is a top-level case in a single
+// switch on slot.op — no nested switches on funct3/funct7. The flat opcode
+// is resolved at decode time (flattenSlotOp) so dispatch is one indirect
+// branch per instruction.
 //
 // pollBatch is how many instructions run between watchAddr polls. 1024 is
 // ~4 µs at 250 MIPS — negligible latency for tohost-style exit, while
 // removing per-instruction polling from the hot loop.
 const pollBatch = 10240
+
+// Flat dispatch opcodes for the RunCached megaswitch. Each constant
+// uniquely identifies one instruction handler. Assigned at decode time
+// by flattenSlotOp so the megaswitch is a single-level jump table —
+// one indirect branch per dispatch, zero nesting.
+//
+// RVC synthetic classes (opC_* at 0x80+) are defined in decode.go and
+// remain unchanged — they were already flat. Only opC_MISC_ALU gets
+// split into 9 separate opcodes here.
+const (
+	// 0 = sentinel (uninitialized or OOB slot)
+
+	opLB  uint8 = 1
+	opLH  uint8 = 2
+	opLW  uint8 = 3
+	opLD  uint8 = 4
+	opLBU uint8 = 5
+	opLHU uint8 = 6
+	opLWU uint8 = 7
+
+	opSB uint8 = 8
+	opSH uint8 = 9
+	opSW uint8 = 10
+	opSD uint8 = 11
+
+	opBEQ  uint8 = 12
+	opBNE  uint8 = 13
+	opBLT  uint8 = 14
+	opBGE  uint8 = 15
+	opBLTU uint8 = 16
+	opBGEU uint8 = 17
+
+	opADDI  uint8 = 18
+	opSLTI  uint8 = 19
+	opSLTIU uint8 = 20
+	opXORI  uint8 = 21
+	opORI   uint8 = 22
+	opANDI  uint8 = 23
+	opSLLI  uint8 = 24
+	opSRLI  uint8 = 25
+	opSRAI  uint8 = 26
+
+	opADDIW uint8 = 27
+	opSLLIW uint8 = 28
+	opSRLIW uint8 = 29
+	opSRAIW uint8 = 30
+
+	opADD  uint8 = 31
+	opSLL  uint8 = 32
+	opSLT  uint8 = 33
+	opSLTU uint8 = 34
+	opXOR  uint8 = 35
+	opSRL  uint8 = 36
+	opOR   uint8 = 37
+	opAND  uint8 = 38
+
+	opSUB uint8 = 39
+	opSRA uint8 = 40
+
+	opMUL    uint8 = 41
+	opMULH   uint8 = 42
+	opMULHSU uint8 = 43
+	opMULHU  uint8 = 44
+	opDIV    uint8 = 45
+	opDIVU   uint8 = 46
+	opREM    uint8 = 47
+	opREMU   uint8 = 48
+
+	opADDW uint8 = 49
+	opSLLW uint8 = 50
+	opSRLW uint8 = 51
+
+	opSUBW uint8 = 52
+	opSRAW uint8 = 53
+
+	opMULW  uint8 = 54
+	opDIVW  uint8 = 55
+	opDIVUW uint8 = 56
+	opREMW  uint8 = 57
+	opREMUW uint8 = 58
+
+	opFENCE uint8 = 59
+	opIAUIPC uint8 = 60
+	opILUI   uint8 = 61
+	opIJAL   uint8 = 62
+	opIJALR  uint8 = 63
+
+	opCaSRLI uint8 = 64
+	opCaSRAI uint8 = 65
+	opCaANDI uint8 = 66
+	opCaSUB  uint8 = 67
+	opCaXOR  uint8 = 68
+	opCaOR   uint8 = 69
+	opCaAND  uint8 = 70
+	opCaSUBW uint8 = 71
+	opCaADDW uint8 = 72
+
+	opDelegate uint8 = 73
+)
 
 // RunDefault is the "just run the guest" entry point used by cpu.Run().
 // It allocates a fresh 256 KB decoder cache based at the current PC and
@@ -84,191 +180,207 @@ func RunCached(cpu *CPU, cache *DecoderCache, nc *NoteChain) error {
 
 			// ── case 0 ────────────────────────────────────────────────────
 			// Sentinel slot (PC outside cache range) or uninitialized slot
-			// (first visit within cache). All valid RV32 opcodes are ≥ 0x03
-			// and all RVC classes are ≥ 0x80, so op==0 uniquely identifies
-			// these cases.
+			// (first visit within cache). For first-visit slots, slowStep
+			// populates with a flat opcode and returns (pc, nil). The
+			// continue re-dispatches through the megaswitch at no runtime
+			// cost since it only happens once per instruction.
 			case 0:
 				pc, err = slowStep(cpu, cache, slot, pc)
+				if err == nil && slot.op != 0 {
+					continue
+				}
 
 			// ══════════════════════════════════════════════════════════════
-			//   RV32 opcodes (slot.len == 4)
+			//   RV32 flat opcodes (slot.len == 4)
 			// ══════════════════════════════════════════════════════════════
 
-			case 0x03: // LOAD
+			case opLB:
 				addr := cpu.x[slot.rs1] + uint64(int64(slot.imm))
-				var v uint64
-				var f *MemFault
-				switch slot.funct3 {
-				case 0x0: // LB
-					var u uint8
-					u, f = (&cpu.mem).Load8(addr)
-					v = uint64(int64(int8(u)))
-				case 0x1: // LH
-					var u uint16
-					u, f = (&cpu.mem).Load16(addr)
-					if f != nil && f.Kind == FaultMisalign {
-						u, f = (&cpu.mem).Load16U(addr)
-					}
-					v = uint64(int64(int16(u)))
-				case 0x2: // LW
-					var u uint32
-					u, f = (&cpu.mem).Load32(addr)
-					if f != nil && f.Kind == FaultMisalign {
-						u, f = (&cpu.mem).Load32U(addr)
-					}
-					v = uint64(int64(int32(u)))
-				case 0x3: // LD — aligned fast path via unsafe, OOB/misalign to Load64U
-					if addr&7 == 0 && (addr|(addr+7))&^cpu.mem.mask == 0 {
-						v = *(*uint64)(unsafe.Pointer(cpu.mem.base + uintptr(addr&cpu.mem.mask)))
-					} else {
-						v, f = (&cpu.mem).Load64U(addr)
-					}
-				case 0x4: // LBU
-					var u uint8
-					u, f = (&cpu.mem).Load8(addr)
-					v = uint64(u)
-				case 0x5: // LHU
-					var u uint16
-					u, f = (&cpu.mem).Load16(addr)
-					if f != nil && f.Kind == FaultMisalign {
-						u, f = (&cpu.mem).Load16U(addr)
-					}
-					v = uint64(u)
-				case 0x6: // LWU
-					var u uint32
-					u, f = (&cpu.mem).Load32(addr)
-					if f != nil && f.Kind == FaultMisalign {
-						u, f = (&cpu.mem).Load32U(addr)
-					}
-					v = uint64(u)
-				default:
-					err = ErrIllegalInstruction
+				u, f := (&cpu.mem).Load8(addr)
+				if f != nil {
+					err = f
 					break inner
+				}
+				cpu.x[slot.rd] = uint64(int64(int8(u)))
+				cpu.x[0] = 0
+				pc += 4
+
+			case opLH:
+				addr := cpu.x[slot.rs1] + uint64(int64(slot.imm))
+				u, f := (&cpu.mem).Load16(addr)
+				if f != nil && f.Kind == FaultMisalign {
+					u, f = (&cpu.mem).Load16U(addr)
 				}
 				if f != nil {
 					err = f
 					break inner
 				}
-				cpu.x[slot.rd] = v
+				cpu.x[slot.rd] = uint64(int64(int16(u)))
 				cpu.x[0] = 0
 				pc += 4
 
-			case 0x0F: // MISC-MEM (FENCE / FENCE.I) — no-op for single-hart interp
+			case opLW:
+				addr := cpu.x[slot.rs1] + uint64(int64(slot.imm))
+				u, f := (&cpu.mem).Load32(addr)
+				if f != nil && f.Kind == FaultMisalign {
+					u, f = (&cpu.mem).Load32U(addr)
+				}
+				if f != nil {
+					err = f
+					break inner
+				}
+				cpu.x[slot.rd] = uint64(int64(int32(u)))
+				cpu.x[0] = 0
 				pc += 4
 
-			case 0x13: // OP-IMM (I-type)
-				a := cpu.x[slot.rs1]
-				imm := uint64(int64(slot.imm))
-				delegate := false
-				switch slot.funct3 {
-				case 0x0: // ADDI
-					cpu.x[slot.rd] = a + imm
-				case 0x2: // SLTI
-					if int64(a) < int64(slot.imm) {
-						cpu.x[slot.rd] = 1
-					} else {
-						cpu.x[slot.rd] = 0
-					}
-				case 0x3: // SLTIU
-					if a < imm {
-						cpu.x[slot.rd] = 1
-					} else {
-						cpu.x[slot.rd] = 0
-					}
-				case 0x4: // XORI
-					cpu.x[slot.rd] = a ^ imm
-				case 0x6: // ORI
-					cpu.x[slot.rd] = a | imm
-				case 0x7: // ANDI
-					cpu.x[slot.rd] = a & imm
-				case 0x1: // SLLI
-					if slot.funct7&^1 == 0 {
-						cpu.x[slot.rd] = a << (uint(slot.insn>>20) & 0x3F)
-					} else {
-						delegate = true
-					}
-				case 0x5: // SRLI/SRAI
-					shamt := uint(slot.insn>>20) & 0x3F
-					switch slot.funct7 &^ 1 {
-					case 0x00:
-						cpu.x[slot.rd] = a >> shamt
-					case 0x20:
-						cpu.x[slot.rd] = uint64(int64(a) >> shamt)
-					default:
-						delegate = true
-					}
-				default:
-					delegate = true
-				}
-				if delegate {
-					pc, err = cpu.delegateInsn(slot, pc)
+			case opLD:
+				addr := cpu.x[slot.rs1] + uint64(int64(slot.imm))
+				if addr&7 == 0 && (addr|(addr+7))&^cpu.mem.mask == 0 {
+					cpu.x[slot.rd] = *(*uint64)(unsafe.Pointer(cpu.mem.base + uintptr(addr&cpu.mem.mask)))
 				} else {
-					cpu.x[0] = 0
-					pc += 4
+					v, f := (&cpu.mem).Load64U(addr)
+					if f != nil {
+						err = f
+						break inner
+					}
+					cpu.x[slot.rd] = v
 				}
+				cpu.x[0] = 0
+				pc += 4
 
-			case 0x17: // AUIPC
+			case opLBU:
+				addr := cpu.x[slot.rs1] + uint64(int64(slot.imm))
+				u, f := (&cpu.mem).Load8(addr)
+				if f != nil {
+					err = f
+					break inner
+				}
+				cpu.x[slot.rd] = uint64(u)
+				cpu.x[0] = 0
+				pc += 4
+
+			case opLHU:
+				addr := cpu.x[slot.rs1] + uint64(int64(slot.imm))
+				u, f := (&cpu.mem).Load16(addr)
+				if f != nil && f.Kind == FaultMisalign {
+					u, f = (&cpu.mem).Load16U(addr)
+				}
+				if f != nil {
+					err = f
+					break inner
+				}
+				cpu.x[slot.rd] = uint64(u)
+				cpu.x[0] = 0
+				pc += 4
+
+			case opLWU:
+				addr := cpu.x[slot.rs1] + uint64(int64(slot.imm))
+				u, f := (&cpu.mem).Load32(addr)
+				if f != nil && f.Kind == FaultMisalign {
+					u, f = (&cpu.mem).Load32U(addr)
+				}
+				if f != nil {
+					err = f
+					break inner
+				}
+				cpu.x[slot.rd] = uint64(u)
+				cpu.x[0] = 0
+				pc += 4
+
+			case opFENCE:
+				pc += 4
+
+			case opADDI:
+				cpu.x[slot.rd] = cpu.x[slot.rs1] + uint64(int64(slot.imm))
+				cpu.x[0] = 0
+				pc += 4
+
+			case opSLTI:
+				if int64(cpu.x[slot.rs1]) < int64(slot.imm) {
+					cpu.x[slot.rd] = 1
+				} else {
+					cpu.x[slot.rd] = 0
+				}
+				cpu.x[0] = 0
+				pc += 4
+
+			case opSLTIU:
+				if cpu.x[slot.rs1] < uint64(int64(slot.imm)) {
+					cpu.x[slot.rd] = 1
+				} else {
+					cpu.x[slot.rd] = 0
+				}
+				cpu.x[0] = 0
+				pc += 4
+
+			case opXORI:
+				cpu.x[slot.rd] = cpu.x[slot.rs1] ^ uint64(int64(slot.imm))
+				cpu.x[0] = 0
+				pc += 4
+
+			case opORI:
+				cpu.x[slot.rd] = cpu.x[slot.rs1] | uint64(int64(slot.imm))
+				cpu.x[0] = 0
+				pc += 4
+
+			case opANDI:
+				cpu.x[slot.rd] = cpu.x[slot.rs1] & uint64(int64(slot.imm))
+				cpu.x[0] = 0
+				pc += 4
+
+			case opSLLI:
+				cpu.x[slot.rd] = cpu.x[slot.rs1] << (uint(slot.insn>>20) & 0x3F)
+				cpu.x[0] = 0
+				pc += 4
+
+			case opSRLI:
+				cpu.x[slot.rd] = cpu.x[slot.rs1] >> (uint(slot.insn>>20) & 0x3F)
+				cpu.x[0] = 0
+				pc += 4
+
+			case opSRAI:
+				cpu.x[slot.rd] = uint64(int64(cpu.x[slot.rs1]) >> (uint(slot.insn>>20) & 0x3F))
+				cpu.x[0] = 0
+				pc += 4
+
+			case opIAUIPC:
 				cpu.x[slot.rd] = pc + uint64(int64(slot.imm))
 				cpu.x[0] = 0
 				pc += 4
 
-			case 0x1B: // OP-IMM-32
-				a := uint32(cpu.x[slot.rs1])
-				delegate := false
-				switch slot.funct3 {
-				case 0x0: // ADDIW
-					cpu.x[slot.rd] = uint64(int64(int32(a) + slot.imm))
-				case 0x1: // SLLIW
-					if slot.funct7 == 0 {
-						cpu.x[slot.rd] = uint64(int64(int32(a << (uint(slot.insn>>20) & 0x1F))))
-					} else {
-						delegate = true
-					}
-				case 0x5: // SRLIW/SRAIW
-					shamt := uint(slot.insn>>20) & 0x1F
-					switch slot.funct7 {
-					case 0x00:
-						cpu.x[slot.rd] = uint64(int64(int32(a >> shamt)))
-					case 0x20:
-						cpu.x[slot.rd] = uint64(int64(int32(a) >> shamt))
-					default:
-						delegate = true
-					}
-				default:
-					delegate = true
-				}
-				if delegate {
-					pc, err = cpu.delegateInsn(slot, pc)
-				} else {
-					cpu.x[0] = 0
-					pc += 4
-				}
+			case opADDIW:
+				cpu.x[slot.rd] = uint64(int64(int32(cpu.x[slot.rs1]) + slot.imm))
+				cpu.x[0] = 0
+				pc += 4
 
-			case 0x23: // STORE (S-type)
+			case opSLLIW:
+				cpu.x[slot.rd] = uint64(int64(int32(uint32(cpu.x[slot.rs1]) << (uint(slot.insn>>20) & 0x1F))))
+				cpu.x[0] = 0
+				pc += 4
+
+			case opSRLIW:
+				cpu.x[slot.rd] = uint64(int64(int32(uint32(cpu.x[slot.rs1]) >> (uint(slot.insn>>20) & 0x1F))))
+				cpu.x[0] = 0
+				pc += 4
+
+			case opSRAIW:
+				cpu.x[slot.rd] = uint64(int64(int32(cpu.x[slot.rs1]) >> (uint(slot.insn>>20) & 0x1F)))
+				cpu.x[0] = 0
+				pc += 4
+
+			case opSB:
 				addr := cpu.x[slot.rs1] + uint64(int64(slot.imm))
-				var f *MemFault
-				switch slot.funct3 {
-				case 0x0: // SB
-					f = (&cpu.mem).Store8(addr, uint8(cpu.x[slot.rs2]))
-				case 0x1: // SH
-					f = (&cpu.mem).Store16(addr, uint16(cpu.x[slot.rs2]))
-					if f != nil && f.Kind == FaultMisalign {
-						f = (&cpu.mem).Store16U(addr, uint16(cpu.x[slot.rs2]))
-					}
-				case 0x2: // SW
-					f = (&cpu.mem).Store32(addr, uint32(cpu.x[slot.rs2]))
-					if f != nil && f.Kind == FaultMisalign {
-						f = (&cpu.mem).Store32U(addr, uint32(cpu.x[slot.rs2]))
-					}
-				case 0x3: // SD — aligned fast path
-					if addr&7 == 0 && (addr|(addr+7))&^cpu.mem.mask == 0 {
-						*(*uint64)(unsafe.Pointer(cpu.mem.base + uintptr(addr&cpu.mem.mask))) = cpu.x[slot.rs2]
-					} else {
-						f = (&cpu.mem).Store64U(addr, cpu.x[slot.rs2])
-					}
-				default:
-					err = ErrIllegalInstruction
+				if f := (&cpu.mem).Store8(addr, uint8(cpu.x[slot.rs2])); f != nil {
+					err = f
 					break inner
+				}
+				pc += 4
+
+			case opSH:
+				addr := cpu.x[slot.rs1] + uint64(int64(slot.imm))
+				f := (&cpu.mem).Store16(addr, uint16(cpu.x[slot.rs2]))
+				if f != nil && f.Kind == FaultMisalign {
+					f = (&cpu.mem).Store16U(addr, uint16(cpu.x[slot.rs2]))
 				}
 				if f != nil {
 					err = f
@@ -276,217 +388,267 @@ func RunCached(cpu *CPU, cache *DecoderCache, nc *NoteChain) error {
 				}
 				pc += 4
 
-			case 0x33: // OP (R-type)
-				a := cpu.x[slot.rs1]
-				b := cpu.x[slot.rs2]
-				delegate := false
-				switch slot.funct7 {
-				case 0x00: // ADD / SLL / SLT / SLTU / XOR / SRL / OR / AND
-					switch slot.funct3 {
-					case 0x0:
-						cpu.x[slot.rd] = a + b
-					case 0x1:
-						cpu.x[slot.rd] = a << (b & 0x3F)
-					case 0x2:
-						if int64(a) < int64(b) {
-							cpu.x[slot.rd] = 1
-						} else {
-							cpu.x[slot.rd] = 0
-						}
-					case 0x3:
-						if a < b {
-							cpu.x[slot.rd] = 1
-						} else {
-							cpu.x[slot.rd] = 0
-						}
-					case 0x4:
-						cpu.x[slot.rd] = a ^ b
-					case 0x5:
-						cpu.x[slot.rd] = a >> (b & 0x3F)
-					case 0x6:
-						cpu.x[slot.rd] = a | b
-					case 0x7:
-						cpu.x[slot.rd] = a & b
-					}
-				case 0x20: // SUB / SRA
-					switch slot.funct3 {
-					case 0x0:
-						cpu.x[slot.rd] = a - b
-					case 0x5:
-						cpu.x[slot.rd] = uint64(int64(a) >> (b & 0x3F))
-					default:
-						delegate = true
-					}
-				case 0x01: // RV64M
-					switch slot.funct3 {
-					case 0x0:
-						cpu.x[slot.rd] = a * b
-					case 0x1:
-						hi, _ := bits.Mul64(a, b)
-						if int64(a) < 0 {
-							hi -= b
-						}
-						if int64(b) < 0 {
-							hi -= a
-						}
-						cpu.x[slot.rd] = hi
-					case 0x2:
-						hi, _ := bits.Mul64(a, b)
-						if int64(a) < 0 {
-							hi -= b
-						}
-						cpu.x[slot.rd] = hi
-					case 0x3:
-						hi, _ := bits.Mul64(a, b)
-						cpu.x[slot.rd] = hi
-					case 0x4:
-						if b == 0 {
-							cpu.x[slot.rd] = ^uint64(0)
-						} else if a == 0x8000000000000000 && b == ^uint64(0) {
-							cpu.x[slot.rd] = a
-						} else {
-							cpu.x[slot.rd] = uint64(int64(a) / int64(b))
-						}
-					case 0x5:
-						if b == 0 {
-							cpu.x[slot.rd] = ^uint64(0)
-						} else {
-							cpu.x[slot.rd] = a / b
-						}
-					case 0x6:
-						if b == 0 {
-							cpu.x[slot.rd] = a
-						} else if a == 0x8000000000000000 && b == ^uint64(0) {
-							cpu.x[slot.rd] = 0
-						} else {
-							cpu.x[slot.rd] = uint64(int64(a) % int64(b))
-						}
-					case 0x7:
-						if b == 0 {
-							cpu.x[slot.rd] = a
-						} else {
-							cpu.x[slot.rd] = a % b
-						}
-					}
-				default:
-					delegate = true
+			case opSW:
+				addr := cpu.x[slot.rs1] + uint64(int64(slot.imm))
+				f := (&cpu.mem).Store32(addr, uint32(cpu.x[slot.rs2]))
+				if f != nil && f.Kind == FaultMisalign {
+					f = (&cpu.mem).Store32U(addr, uint32(cpu.x[slot.rs2]))
 				}
-				if delegate {
-					pc, err = cpu.delegateInsn(slot, pc)
-				} else {
-					cpu.x[0] = 0
-					pc += 4
+				if f != nil {
+					err = f
+					break inner
 				}
+				pc += 4
 
-			case 0x37: // LUI
+			case opSD:
+				addr := cpu.x[slot.rs1] + uint64(int64(slot.imm))
+				if addr&7 == 0 && (addr|(addr+7))&^cpu.mem.mask == 0 {
+					*(*uint64)(unsafe.Pointer(cpu.mem.base + uintptr(addr&cpu.mem.mask))) = cpu.x[slot.rs2]
+				} else {
+					if f := (&cpu.mem).Store64U(addr, cpu.x[slot.rs2]); f != nil {
+						err = f
+						break inner
+					}
+				}
+				pc += 4
+
+			case opADD:
+				cpu.x[slot.rd] = cpu.x[slot.rs1] + cpu.x[slot.rs2]
+				cpu.x[0] = 0
+				pc += 4
+			case opSLL:
+				cpu.x[slot.rd] = cpu.x[slot.rs1] << (cpu.x[slot.rs2] & 0x3F)
+				cpu.x[0] = 0
+				pc += 4
+			case opSLT:
+				if int64(cpu.x[slot.rs1]) < int64(cpu.x[slot.rs2]) {
+					cpu.x[slot.rd] = 1
+				} else {
+					cpu.x[slot.rd] = 0
+				}
+				cpu.x[0] = 0
+				pc += 4
+			case opSLTU:
+				if cpu.x[slot.rs1] < cpu.x[slot.rs2] {
+					cpu.x[slot.rd] = 1
+				} else {
+					cpu.x[slot.rd] = 0
+				}
+				cpu.x[0] = 0
+				pc += 4
+			case opXOR:
+				cpu.x[slot.rd] = cpu.x[slot.rs1] ^ cpu.x[slot.rs2]
+				cpu.x[0] = 0
+				pc += 4
+			case opSRL:
+				cpu.x[slot.rd] = cpu.x[slot.rs1] >> (cpu.x[slot.rs2] & 0x3F)
+				cpu.x[0] = 0
+				pc += 4
+			case opOR:
+				cpu.x[slot.rd] = cpu.x[slot.rs1] | cpu.x[slot.rs2]
+				cpu.x[0] = 0
+				pc += 4
+			case opAND:
+				cpu.x[slot.rd] = cpu.x[slot.rs1] & cpu.x[slot.rs2]
+				cpu.x[0] = 0
+				pc += 4
+
+			case opSUB:
+				cpu.x[slot.rd] = cpu.x[slot.rs1] - cpu.x[slot.rs2]
+				cpu.x[0] = 0
+				pc += 4
+			case opSRA:
+				cpu.x[slot.rd] = uint64(int64(cpu.x[slot.rs1]) >> (cpu.x[slot.rs2] & 0x3F))
+				cpu.x[0] = 0
+				pc += 4
+
+			case opMUL:
+				cpu.x[slot.rd] = cpu.x[slot.rs1] * cpu.x[slot.rs2]
+				cpu.x[0] = 0
+				pc += 4
+			case opMULH:
+				a, b := cpu.x[slot.rs1], cpu.x[slot.rs2]
+				hi, _ := bits.Mul64(a, b)
+				if int64(a) < 0 {
+					hi -= b
+				}
+				if int64(b) < 0 {
+					hi -= a
+				}
+				cpu.x[slot.rd] = hi
+				cpu.x[0] = 0
+				pc += 4
+			case opMULHSU:
+				a, b := cpu.x[slot.rs1], cpu.x[slot.rs2]
+				hi, _ := bits.Mul64(a, b)
+				if int64(a) < 0 {
+					hi -= b
+				}
+				cpu.x[slot.rd] = hi
+				cpu.x[0] = 0
+				pc += 4
+			case opMULHU:
+				hi, _ := bits.Mul64(cpu.x[slot.rs1], cpu.x[slot.rs2])
+				cpu.x[slot.rd] = hi
+				cpu.x[0] = 0
+				pc += 4
+			case opDIV:
+				a, b := cpu.x[slot.rs1], cpu.x[slot.rs2]
+				if b == 0 {
+					cpu.x[slot.rd] = ^uint64(0)
+				} else if a == 0x8000000000000000 && b == ^uint64(0) {
+					cpu.x[slot.rd] = a
+				} else {
+					cpu.x[slot.rd] = uint64(int64(a) / int64(b))
+				}
+				cpu.x[0] = 0
+				pc += 4
+			case opDIVU:
+				a, b := cpu.x[slot.rs1], cpu.x[slot.rs2]
+				if b == 0 {
+					cpu.x[slot.rd] = ^uint64(0)
+				} else {
+					cpu.x[slot.rd] = a / b
+				}
+				cpu.x[0] = 0
+				pc += 4
+			case opREM:
+				a, b := cpu.x[slot.rs1], cpu.x[slot.rs2]
+				if b == 0 {
+					cpu.x[slot.rd] = a
+				} else if a == 0x8000000000000000 && b == ^uint64(0) {
+					cpu.x[slot.rd] = 0
+				} else {
+					cpu.x[slot.rd] = uint64(int64(a) % int64(b))
+				}
+				cpu.x[0] = 0
+				pc += 4
+			case opREMU:
+				a, b := cpu.x[slot.rs1], cpu.x[slot.rs2]
+				if b == 0 {
+					cpu.x[slot.rd] = a
+				} else {
+					cpu.x[slot.rd] = a % b
+				}
+				cpu.x[0] = 0
+				pc += 4
+
+			case opILUI:
 				cpu.x[slot.rd] = uint64(int64(slot.imm))
 				cpu.x[0] = 0
 				pc += 4
 
-			case 0x3B: // OP-32 (RV64I word ops + RV64M word ops)
-				a32 := uint32(cpu.x[slot.rs1])
-				b32 := uint32(cpu.x[slot.rs2])
-				delegate := false
-				switch slot.funct7 {
-				case 0x00:
-					switch slot.funct3 {
-					case 0x0: // ADDW
-						cpu.x[slot.rd] = uint64(int64(int32(a32 + b32)))
-					case 0x1: // SLLW
-						cpu.x[slot.rd] = uint64(int64(int32(a32 << (b32 & 0x1F))))
-					case 0x5: // SRLW
-						cpu.x[slot.rd] = uint64(int64(int32(a32 >> (b32 & 0x1F))))
-					default:
-						delegate = true
-					}
-				case 0x20:
-					switch slot.funct3 {
-					case 0x0: // SUBW
-						cpu.x[slot.rd] = uint64(int64(int32(a32 - b32)))
-					case 0x5: // SRAW
-						cpu.x[slot.rd] = uint64(int64(int32(a32) >> (b32 & 0x1F)))
-					default:
-						delegate = true
-					}
-				case 0x01:
-					switch slot.funct3 {
-					case 0x0: // MULW
-						cpu.x[slot.rd] = uint64(int64(int32(a32 * b32)))
-					case 0x4: // DIVW
-						if b32 == 0 {
-							cpu.x[slot.rd] = ^uint64(0)
-						} else if a32 == 0x80000000 && b32 == 0xFFFFFFFF {
-							cpu.x[slot.rd] = uint64(int64(int32(a32)))
-						} else {
-							cpu.x[slot.rd] = uint64(int64(int32(a32) / int32(b32)))
-						}
-					case 0x5: // DIVUW
-						if b32 == 0 {
-							cpu.x[slot.rd] = ^uint64(0)
-						} else {
-							cpu.x[slot.rd] = uint64(int64(int32(a32 / b32)))
-						}
-					case 0x6: // REMW
-						if b32 == 0 {
-							cpu.x[slot.rd] = uint64(int64(int32(a32)))
-						} else if a32 == 0x80000000 && b32 == 0xFFFFFFFF {
-							cpu.x[slot.rd] = 0
-						} else {
-							cpu.x[slot.rd] = uint64(int64(int32(a32) % int32(b32)))
-						}
-					case 0x7: // REMUW
-						if b32 == 0 {
-							cpu.x[slot.rd] = uint64(int64(int32(a32)))
-						} else {
-							cpu.x[slot.rd] = uint64(int64(int32(a32 % b32)))
-						}
-					default:
-						delegate = true
-					}
-				default:
-					delegate = true
-				}
-				if delegate {
-					pc, err = cpu.delegateInsn(slot, pc)
+			case opADDW:
+				cpu.x[slot.rd] = uint64(int64(int32(uint32(cpu.x[slot.rs1]) + uint32(cpu.x[slot.rs2]))))
+				cpu.x[0] = 0
+				pc += 4
+			case opSLLW:
+				cpu.x[slot.rd] = uint64(int64(int32(uint32(cpu.x[slot.rs1]) << (uint32(cpu.x[slot.rs2]) & 0x1F))))
+				cpu.x[0] = 0
+				pc += 4
+			case opSRLW:
+				cpu.x[slot.rd] = uint64(int64(int32(uint32(cpu.x[slot.rs1]) >> (uint32(cpu.x[slot.rs2]) & 0x1F))))
+				cpu.x[0] = 0
+				pc += 4
+
+			case opSUBW:
+				cpu.x[slot.rd] = uint64(int64(int32(uint32(cpu.x[slot.rs1]) - uint32(cpu.x[slot.rs2]))))
+				cpu.x[0] = 0
+				pc += 4
+			case opSRAW:
+				cpu.x[slot.rd] = uint64(int64(int32(cpu.x[slot.rs1]) >> (uint32(cpu.x[slot.rs2]) & 0x1F)))
+				cpu.x[0] = 0
+				pc += 4
+
+			case opMULW:
+				cpu.x[slot.rd] = uint64(int64(int32(uint32(cpu.x[slot.rs1]) * uint32(cpu.x[slot.rs2]))))
+				cpu.x[0] = 0
+				pc += 4
+			case opDIVW:
+				a32, b32 := uint32(cpu.x[slot.rs1]), uint32(cpu.x[slot.rs2])
+				if b32 == 0 {
+					cpu.x[slot.rd] = ^uint64(0)
+				} else if a32 == 0x80000000 && b32 == 0xFFFFFFFF {
+					cpu.x[slot.rd] = uint64(int64(int32(a32)))
 				} else {
-					cpu.x[0] = 0
+					cpu.x[slot.rd] = uint64(int64(int32(a32) / int32(b32)))
+				}
+				cpu.x[0] = 0
+				pc += 4
+			case opDIVUW:
+				a32, b32 := uint32(cpu.x[slot.rs1]), uint32(cpu.x[slot.rs2])
+				if b32 == 0 {
+					cpu.x[slot.rd] = ^uint64(0)
+				} else {
+					cpu.x[slot.rd] = uint64(int64(int32(a32 / b32)))
+				}
+				cpu.x[0] = 0
+				pc += 4
+			case opREMW:
+				a32, b32 := uint32(cpu.x[slot.rs1]), uint32(cpu.x[slot.rs2])
+				if b32 == 0 {
+					cpu.x[slot.rd] = uint64(int64(int32(a32)))
+				} else if a32 == 0x80000000 && b32 == 0xFFFFFFFF {
+					cpu.x[slot.rd] = 0
+				} else {
+					cpu.x[slot.rd] = uint64(int64(int32(a32) % int32(b32)))
+				}
+				cpu.x[0] = 0
+				pc += 4
+			case opREMUW:
+				a32, b32 := uint32(cpu.x[slot.rs1]), uint32(cpu.x[slot.rs2])
+				if b32 == 0 {
+					cpu.x[slot.rd] = uint64(int64(int32(a32)))
+				} else {
+					cpu.x[slot.rd] = uint64(int64(int32(a32 % b32)))
+				}
+				cpu.x[0] = 0
+				pc += 4
+
+			case opBEQ:
+				if cpu.x[slot.rs1] == cpu.x[slot.rs2] {
+					pc = pc + uint64(int64(slot.imm))
+				} else {
 					pc += 4
 				}
-
-			case 0x63: // BRANCH (B-type)
-				a := cpu.x[slot.rs1]
-				b := cpu.x[slot.rs2]
-				taken := false
-				switch slot.funct3 {
-				case 0x0:
-					taken = a == b
-				case 0x1:
-					taken = a != b
-				case 0x4:
-					taken = int64(a) < int64(b)
-				case 0x5:
-					taken = int64(a) >= int64(b)
-				case 0x6:
-					taken = a < b
-				case 0x7:
-					taken = a >= b
-				default:
-					err = ErrIllegalInstruction
-					break inner
+			case opBNE:
+				if cpu.x[slot.rs1] != cpu.x[slot.rs2] {
+					pc = pc + uint64(int64(slot.imm))
+				} else {
+					pc += 4
 				}
-				if taken {
+			case opBLT:
+				if int64(cpu.x[slot.rs1]) < int64(cpu.x[slot.rs2]) {
+					pc = pc + uint64(int64(slot.imm))
+				} else {
+					pc += 4
+				}
+			case opBGE:
+				if int64(cpu.x[slot.rs1]) >= int64(cpu.x[slot.rs2]) {
+					pc = pc + uint64(int64(slot.imm))
+				} else {
+					pc += 4
+				}
+			case opBLTU:
+				if cpu.x[slot.rs1] < cpu.x[slot.rs2] {
+					pc = pc + uint64(int64(slot.imm))
+				} else {
+					pc += 4
+				}
+			case opBGEU:
+				if cpu.x[slot.rs1] >= cpu.x[slot.rs2] {
 					pc = pc + uint64(int64(slot.imm))
 				} else {
 					pc += 4
 				}
 
-			case 0x67: // JALR
+			case opIJALR:
 				target := (cpu.x[slot.rs1] + uint64(int64(slot.imm))) &^ 1
 				cpu.x[slot.rd] = pc + 4
 				cpu.x[0] = 0
 				pc = target
 
-			case 0x6F: // JAL
+			case opIJAL:
 				cpu.x[slot.rd] = pc + 4
 				cpu.x[0] = 0
 				pc = pc + uint64(int64(slot.imm))
@@ -579,54 +741,32 @@ func RunCached(cpu *CPU, cache *DecoderCache, nc *NoteChain) error {
 				}
 				pc += 2
 
-			case opC_MISC_ALU: // funct3=100 q1: SRLI / SRAI / ANDI / SUB / XOR / OR / AND / SUBW / ADDW
-				insn := uint16(slot.insn)
-				funct2 := (insn >> 10) & 3
-				rs1p := 8 + uint8((insn>>7)&7)
-				rs2p := 8 + uint8((insn>>2)&7)
-				bit12 := (insn >> 12) & 1
-				bad := false
-				switch funct2 {
-				case 0b00: // C.SRLI
-					shamt := uint8(bit12<<5 | (insn>>2)&0x1F)
-					cpu.x[rs1p] = cpu.x[rs1p] >> shamt
-				case 0b01: // C.SRAI
-					shamt := uint8(bit12<<5 | (insn>>2)&0x1F)
-					cpu.x[rs1p] = uint64(int64(cpu.x[rs1p]) >> shamt)
-				case 0b10: // C.ANDI
-					imm6 := int32((insn >> 2) & 0x1F)
-					if bit12 != 0 {
-						imm6 |= ^0x1F
-					}
-					cpu.x[rs1p] = cpu.x[rs1p] & uint64(int64(imm6))
-				case 0b11:
-					op := (insn >> 5) & 3
-					if bit12 == 0 {
-						switch op {
-						case 0b00:
-							cpu.x[rs1p] = cpu.x[rs1p] - cpu.x[rs2p]
-						case 0b01:
-							cpu.x[rs1p] = cpu.x[rs1p] ^ cpu.x[rs2p]
-						case 0b10:
-							cpu.x[rs1p] = cpu.x[rs1p] | cpu.x[rs2p]
-						case 0b11:
-							cpu.x[rs1p] = cpu.x[rs1p] & cpu.x[rs2p]
-						}
-					} else {
-						switch op {
-						case 0b00:
-							cpu.x[rs1p] = uint64(int64(int32(cpu.x[rs1p]) - int32(cpu.x[rs2p])))
-						case 0b01:
-							cpu.x[rs1p] = uint64(int64(int32(cpu.x[rs1p]) + int32(cpu.x[rs2p])))
-						default:
-							bad = true
-						}
-					}
-				}
-				if bad {
-					err = ErrIllegalInstruction
-					break inner
-				}
+			case opCaSRLI:
+				cpu.x[slot.rd] >>= uint(slot.imm)
+				pc += 2
+			case opCaSRAI:
+				cpu.x[slot.rd] = uint64(int64(cpu.x[slot.rd]) >> uint(slot.imm))
+				pc += 2
+			case opCaANDI:
+				cpu.x[slot.rd] &= uint64(int64(slot.imm))
+				pc += 2
+			case opCaSUB:
+				cpu.x[slot.rd] -= cpu.x[slot.rs2]
+				pc += 2
+			case opCaXOR:
+				cpu.x[slot.rd] ^= cpu.x[slot.rs2]
+				pc += 2
+			case opCaOR:
+				cpu.x[slot.rd] |= cpu.x[slot.rs2]
+				pc += 2
+			case opCaAND:
+				cpu.x[slot.rd] &= cpu.x[slot.rs2]
+				pc += 2
+			case opCaSUBW:
+				cpu.x[slot.rd] = uint64(int64(int32(cpu.x[slot.rd]) - int32(cpu.x[slot.rs2])))
+				pc += 2
+			case opCaADDW:
+				cpu.x[slot.rd] = uint64(int64(int32(cpu.x[slot.rd]) + int32(cpu.x[slot.rs2])))
 				pc += 2
 
 			case opC_J:
@@ -725,10 +865,7 @@ func RunCached(cpu *CPU, cache *DecoderCache, nc *NoteChain) error {
 				pc += 2
 
 			// ══════════════════════════════════════════════════════════════
-			//   Default: populated slot with an opcode we don't inline
-			//   (SYSTEM 0x73, AMO 0x2F, LOAD-FP 0x07, STORE-FP 0x27, FMA
-			//   family, OP-FP 0x53, RVC FP classes, opFallback). Delegate
-			//   to the full interpreter.
+			//   Default: opDelegate (FP/AMO/SYSTEM/Zb*) or RVC FP classes.
 			// ══════════════════════════════════════════════════════════════
 			default:
 				pc, err = cpu.delegateInsn(slot, pc)
@@ -791,28 +928,24 @@ func (c *CPU) delegateInsn(slot *DecodedInsn, pc uint64) (uint64, error) {
 }
 
 // slowStep handles cold paths: PCs outside the cache range (sentinel slot)
-// or slots that haven't been decoded yet. Returns the new pc in addition to
-// the error so the caller can keep pc in a local.
+// or slots that haven't been decoded yet. For sentinel slots, falls back to
+// cpu.step(). For first-visit slots, populates and returns (pc, nil) so the
+// megaswitch can re-dispatch via the now-flat opcode.
 //
 //go:noinline
 func slowStep(cpu *CPU, cache *DecoderCache, slot *DecodedInsn, pc uint64) (uint64, error) {
-	// Sentinel slot: pc is outside the cache range. Fall back to cpu.step().
 	if slot == &cache.sentinel {
 		cpu.pc = pc
 		err := cpu.step()
 		return cpu.pc, err
 	}
-	// slot.len == 0 (not yet decoded) — populate and dispatch.
 	populateSlot(cpu, cache, slot, pc)
 	if slot.len == 0 {
 		cpu.pc = pc
 		err := cpu.step()
 		return cpu.pc, err
 	}
-	if slot.len == 2 {
-		return cpu.execRVCSlot(slot, pc)
-	}
-	return cpu.exec32Slot(slot, pc)
+	return pc, nil
 }
 
 // populateSlot fetches and records the instruction at pc. Leaves slot.len
@@ -844,10 +977,12 @@ func populateSlot(cpu *CPU, cache *DecoderCache, slot *DecodedInsn, pc uint64) {
 		}
 		decodeInsn32(slot, w)
 		// FENCE.I is not caught by decodeInsn32's opcode-level flagging — do it here.
+		// Must check raw opcode (0x0F) before flattenSlotOp converts it.
 		if slot.op == 0x0F && slot.funct3 == 0x1 {
 			slot.flags |= flagBlockEnd
 		}
 	}
+	flattenSlotOp(slot)
 	// Wire up slot.next for non-block-end successors whose PC is in-range.
 	// Block-ending insns normally leave next==nil so RunCached does a
 	// cache.lookup after they execute — but for unconditional direct-target
@@ -863,13 +998,250 @@ func populateSlot(cpu *CPU, cache *DecoderCache, slot *DecodedInsn, pc uint64) {
 		}
 		return
 	}
-	// Block-ending, but JAL (0x6F) and C.J (opC_J) jump to pc+imm — known
-	// at decode time. If the target is inside the cache, wire next so the
-	// driver's fast chain absorbs the jump with zero lookups.
-	if slot.op == 0x6F || slot.op == opC_J {
+	// Block-ending, but JAL and C.J jump to pc+imm — known at decode time.
+	// If the target is inside the cache, wire next so the driver's fast
+	// chain absorbs the jump with zero lookups.
+	if slot.op == opIJAL || slot.op == opC_J {
 		tgtOff := pc + uint64(int64(slot.imm)) - cache.base
 		if tgtOff < cache.size {
 			slot.next = &cache.slots[tgtOff>>1]
+		}
+	}
+}
+
+// flattenSlotOp converts the raw opcode in slot.op to a flat dispatch ID.
+// Called once per instruction (at decode time in populateSlot). RVC opcodes
+// >= 0x80 are already flat except opC_MISC_ALU which is split into 9 IDs.
+//
+//go:nosplit
+func flattenSlotOp(slot *DecodedInsn) {
+	if slot.op >= 0x80 {
+		if slot.op == opC_MISC_ALU {
+			flattenMiscALU(slot)
+		}
+		return
+	}
+	switch slot.op {
+	case 0x03: // LOAD
+		switch slot.funct3 {
+		case 0x0:
+			slot.op = opLB
+		case 0x1:
+			slot.op = opLH
+		case 0x2:
+			slot.op = opLW
+		case 0x3:
+			slot.op = opLD
+		case 0x4:
+			slot.op = opLBU
+		case 0x5:
+			slot.op = opLHU
+		case 0x6:
+			slot.op = opLWU
+		default:
+			slot.op = opDelegate
+		}
+	case 0x23: // STORE
+		switch slot.funct3 {
+		case 0x0:
+			slot.op = opSB
+		case 0x1:
+			slot.op = opSH
+		case 0x2:
+			slot.op = opSW
+		case 0x3:
+			slot.op = opSD
+		default:
+			slot.op = opDelegate
+		}
+	case 0x63: // BRANCH
+		switch slot.funct3 {
+		case 0x0:
+			slot.op = opBEQ
+		case 0x1:
+			slot.op = opBNE
+		case 0x4:
+			slot.op = opBLT
+		case 0x5:
+			slot.op = opBGE
+		case 0x6:
+			slot.op = opBLTU
+		case 0x7:
+			slot.op = opBGEU
+		default:
+			slot.op = opDelegate
+		}
+	case 0x13: // OP-IMM
+		switch slot.funct3 {
+		case 0x0:
+			slot.op = opADDI
+		case 0x2:
+			slot.op = opSLTI
+		case 0x3:
+			slot.op = opSLTIU
+		case 0x4:
+			slot.op = opXORI
+		case 0x6:
+			slot.op = opORI
+		case 0x7:
+			slot.op = opANDI
+		case 0x1:
+			if slot.funct7&^1 == 0 {
+				slot.op = opSLLI
+			} else {
+				slot.op = opDelegate
+			}
+		case 0x5:
+			switch slot.funct7 &^ 1 {
+			case 0x00:
+				slot.op = opSRLI
+			case 0x20:
+				slot.op = opSRAI
+			default:
+				slot.op = opDelegate
+			}
+		default:
+			slot.op = opDelegate
+		}
+	case 0x1B: // OP-IMM-32
+		switch slot.funct3 {
+		case 0x0:
+			slot.op = opADDIW
+		case 0x1:
+			if slot.funct7 == 0 {
+				slot.op = opSLLIW
+			} else {
+				slot.op = opDelegate
+			}
+		case 0x5:
+			switch slot.funct7 {
+			case 0x00:
+				slot.op = opSRLIW
+			case 0x20:
+				slot.op = opSRAIW
+			default:
+				slot.op = opDelegate
+			}
+		default:
+			slot.op = opDelegate
+		}
+	case 0x33: // OP (R-type)
+		switch slot.funct7 {
+		case 0x00:
+			slot.op = opADD + slot.funct3
+		case 0x20:
+			switch slot.funct3 {
+			case 0x0:
+				slot.op = opSUB
+			case 0x5:
+				slot.op = opSRA
+			default:
+				slot.op = opDelegate
+			}
+		case 0x01:
+			slot.op = opMUL + slot.funct3
+		default:
+			slot.op = opDelegate
+		}
+	case 0x3B: // OP-32
+		switch slot.funct7 {
+		case 0x00:
+			switch slot.funct3 {
+			case 0x0:
+				slot.op = opADDW
+			case 0x1:
+				slot.op = opSLLW
+			case 0x5:
+				slot.op = opSRLW
+			default:
+				slot.op = opDelegate
+			}
+		case 0x20:
+			switch slot.funct3 {
+			case 0x0:
+				slot.op = opSUBW
+			case 0x5:
+				slot.op = opSRAW
+			default:
+				slot.op = opDelegate
+			}
+		case 0x01:
+			switch slot.funct3 {
+			case 0x0:
+				slot.op = opMULW
+			case 0x4:
+				slot.op = opDIVW
+			case 0x5:
+				slot.op = opDIVUW
+			case 0x6:
+				slot.op = opREMW
+			case 0x7:
+				slot.op = opREMUW
+			default:
+				slot.op = opDelegate
+			}
+		default:
+			slot.op = opDelegate
+		}
+	case 0x0F:
+		slot.op = opFENCE
+	case 0x17:
+		slot.op = opIAUIPC
+	case 0x37:
+		slot.op = opILUI
+	case 0x6F:
+		slot.op = opIJAL
+	case 0x67:
+		slot.op = opIJALR
+	default:
+		slot.op = opDelegate
+	}
+}
+
+//go:nosplit
+func flattenMiscALU(slot *DecodedInsn) {
+	insn := uint16(slot.insn)
+	slot.rs1 = 8 + uint8((insn>>7)&7)
+	slot.rd = slot.rs1
+	slot.rs2 = 8 + uint8((insn>>2)&7)
+	funct2 := (insn >> 10) & 3
+	bit12 := (insn >> 12) & 1
+	switch funct2 {
+	case 0b00:
+		slot.op = opCaSRLI
+		slot.imm = int32(bit12<<5 | (insn>>2)&0x1F)
+	case 0b01:
+		slot.op = opCaSRAI
+		slot.imm = int32(bit12<<5 | (insn>>2)&0x1F)
+	case 0b10:
+		imm6 := int32((insn >> 2) & 0x1F)
+		if bit12 != 0 {
+			imm6 |= ^0x1F
+		}
+		slot.op = opCaANDI
+		slot.imm = imm6
+	case 0b11:
+		op := (insn >> 5) & 3
+		if bit12 == 0 {
+			switch op {
+			case 0b00:
+				slot.op = opCaSUB
+			case 0b01:
+				slot.op = opCaXOR
+			case 0b10:
+				slot.op = opCaOR
+			case 0b11:
+				slot.op = opCaAND
+			}
+		} else {
+			switch op {
+			case 0b00:
+				slot.op = opCaSUBW
+			case 0b01:
+				slot.op = opCaADDW
+			default:
+				slot.op = opDelegate
+			}
 		}
 	}
 }
