@@ -156,10 +156,16 @@ wedged. rolled back. on rv8inspired branch now, a bit slower
 after some of this. but tests were faster for a while; top level was 25 sec,
 now back to 67s.
   
-----
-with cgo, now at:
+~~~
+with cgo, on darwin now:
 
-ok  	riscv	119.905s
+ok  	riscv	119.905s  (about 2x slow down from pre-CGO and smaller memory sizes)
 ok  	riscv/ir	0.323s
 ok  	riscv/bench	18.235s
----
+
+darwin benchmarks:
+
+  Go JIT — Fixed Static Mapping (native):    3172 MIPS
+  Go interpreter (no JIT):                    427 MIPS
+
+~~~
