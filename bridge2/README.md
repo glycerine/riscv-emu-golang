@@ -116,11 +116,22 @@ versions. `GetG()` returns R14 (amd64) or R28 (arm64), valid for Go ≥ 1.17.
 
 ~~~
 go test -run=xxx -bench='BenchmarkRoundTrip$|BenchmarkCGO$' -benchtime=3s
+
+=== JIT Sandbox IPC Tests  (GOMAXPROCS=8) ===
+
+goos: darwin
+goarch: amd64
+pkg: riscv/bridge2
+cpu: Intel(R) Core(TM) i7-1068NG7 CPU @ 2.30GHz
+
+BenchmarkRoundTrip-8   	20427336	       169.4 ns/op	       0 B/op	       0 allocs/op
+BenchmarkCGO-8         	124573912	        30.48 ns/op	       0 B/op	       0 allocs/op
+PASS
 ~~~
 
 The story thus far:
 
-CGO is 34 ns, ring round-trip is 188 ns. CGO is 5.6x 
+CGO is 30.5 ns, ring round-trip is 169.4 ns. CGO is 5.6x 
 faster for a simple call. The ring's cross-thread wake 
 latency dominates — even with pure atomic spin, the 
 producer stores to head and the consumer's cache line 
