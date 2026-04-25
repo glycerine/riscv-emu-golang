@@ -1242,13 +1242,16 @@ func TestSRL_Block39_Alloc(t *testing.T) {
 // TestDebugV1V2_SRL runs the srl ELF test with the V1-vs-V2 debug machine
 // to find the exact block and registers where V1 diverges from V2.
 func TestDebugV1V2_SRL(t *testing.T) {
-	t.Skip("hangs, what else?") // page0 guaded=>faults. else hangs!
+	data, derr := os.ReadFile("riscv-elf-tests/rv64ui-p-srl")
+	if derr != nil {
+		t.Skipf("ELF not found: %v", derr)
+	}
 	mem, err := NewGuestMemory(Size1MB)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer mem.Free()
-	_, err = LoadELF(mem, "riscv-elf-tests/rv64ui-p-srl")
+	_, err = LoadELFBytes(mem, data)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1256,6 +1259,11 @@ func TestDebugV1V2_SRL(t *testing.T) {
 	cpu := NewCPU(*mem)
 	cpu.SetPC(0)
 	cpu.Notes.Push(func(c *CPU, n Note) NoteDisposition { return NoteHandled })
+
+	var watchAddr uint64
+	if addr, ok := FindSymbolAddr(data, "tohost"); ok {
+		watchAddr = addr
+	}
 
 	jit := NewJIT()
 
@@ -1268,11 +1276,14 @@ func TestDebugV1V2_SRL(t *testing.T) {
 	for i := 0; i < 500; i++ {
 		_, err := jit.StepBlock(cpu)
 		if err != nil {
-			//t.Logf("exit at block %d pc=0x%x: %v", i, cpu.PC(), err)
 			return
 		}
+		if watchAddr != 0 {
+			if v, _ := cpu.mem.Load64(watchAddr); v != 0 {
+				return
+			}
+		}
 	}
-	//t.Logf("passed %d blocks, pc=0x%x", 500, cpu.PC())
 }
 
 func TestDebugV1V2_SRL_DumpAlloc(t *testing.T) {
