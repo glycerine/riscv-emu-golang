@@ -249,10 +249,22 @@ func (m *GuestMemory) Free() {
 // The child inherits m's size, mask, and a copy of its execRegions.
 // The child's scratch MemFault is fresh (zero value).
 func (m *GuestMemory) CowClone() (*GuestMemory, error) {
+	// Temporarily unguard so COWRemap can read the entire mmap.
+	guardOff := uintptr(m.size) - 2*GuestPageSize
+	C.guest_unguard(unsafe.Pointer(m.base+guardOff), C.size_t(GuestPageSize))
+
 	newBase, err := ir.COWRemap(m.size, m.base)
+
+	// Re-guard the parent.
+	C.guest_guard(unsafe.Pointer(m.base+guardOff), C.size_t(GuestPageSize))
+
 	if err != nil {
 		return nil, fmt.Errorf("guestmem: CowClone: %w", err)
 	}
+
+	// Guard the child's stack/regfile page too.
+	C.guest_guard(unsafe.Pointer(newBase+guardOff), C.size_t(GuestPageSize))
+
 	var execRegionsCopy []ExecRegion
 	if len(m.execRegions) > 0 {
 		execRegionsCopy = append(execRegionsCopy, m.execRegions...)
