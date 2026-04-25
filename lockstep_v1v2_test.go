@@ -3,7 +3,6 @@ package riscv
 import (
 	"math/rand"
 	"riscv/goasm"
-	"riscv/internal/jitcall"
 	"riscv/ir"
 	"syscall"
 	"testing"
@@ -89,7 +88,7 @@ func TestRV8_RandomBlocks(t *testing.T) {
 			x[j] = rng.Uint64()
 		}
 
-		res := jitcall.Call(exec, &x, &f, &fcsr, mem.Base(), mem.Mask())
+		res := jitcallCall(exec, &x, &f, &fcsr, mem.Base(), mem.Mask())
 		if res.PC != 0x1000 {
 			t.Fatalf("block %d: PC=0x%x want 0x1000 (%d instrs)", i, res.PC, len(blk.Instrs))
 		}

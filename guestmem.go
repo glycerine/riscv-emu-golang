@@ -58,11 +58,11 @@ import (
 )
 
 // Guest memory size constants — all powers of two.
+// Minimum is 64 MB: the last 3 pages of the mmap are reserved for
+// the shadow register file, guard page, and sandbox stack. Smaller
+// allocations would put the reserved area too close to guest code/data.
 const (
-	Size16KB  uint64 = 1 << 14
-	Size32KB  uint64 = 1 << 15
-	Size64KB  uint64 = 1 << 16
-	Size64MB  uint64 = 1 << 26
+	Size64MB uint64 = 1 << 26
 	Size128MB uint64 = 1 << 27
 	Size256MB uint64 = 1 << 28
 	Size512MB uint64 = 1 << 29
@@ -80,6 +80,14 @@ const (
 	// MaxGuestMemory caps a single guest at 512 GB. The host user virtual
 	// address space on Linux/amd64 is 128 TB, so many guests can coexist.
 	MaxGuestMemory = Size512GB
+
+	// Guest memory layout — top-of-mmap reservations.
+	// For a guest mmap [base, base+guestSize):
+	//   [b-4096, b)        shadow register file (520 bytes)
+	//   [b-8192, b-4096)   guard page (catches stack underflow)
+	//   [b-8192 ... down)  sandbox stack, grows downward
+	// where b = base + guestSize.
+	GuestPageSize = 4096
 )
 
 // FaultKind classifies a MemFault.
@@ -240,8 +248,11 @@ func (m *GuestMemory) Size() uint64 { return m.size }
 // Mask returns size-1. ANDing any uint64 address with Mask() produces a
 // valid in-bounds guest address by construction — the same guarantee the
 // memory system uses internally for its containment invariant.
-func (m *GuestMemory) Mask() uint64 { return m.mask }
+func (m *GuestMemory) Mask() uint64  { return m.mask }
 func (m *GuestMemory) Base() uintptr { return m.base }
+
+func (m *GuestMemory) RegFileBase() uintptr { return m.base + uintptr(m.size) - GuestPageSize }
+func (m *GuestMemory) StackTop() uintptr    { return m.base + uintptr(m.size) - 2*GuestPageSize }
 
 // RawSlice returns a zero-copy byte slice over the entire guest memory slab.
 func (m *GuestMemory) RawSlice() []byte {

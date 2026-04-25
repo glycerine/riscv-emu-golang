@@ -526,8 +526,9 @@ func (j *JIT) StepBlock(cpu *CPU) (ic uint64, err error) {
 
 	blk := j.lookupBlock(pc)
 	if blk != nil {
-		res := jitcall.Call(blk.fn, &cpu.x, &cpu.f, &cpu.fcsr,
-			cpu.mem.Base(), cpu.mem.Mask())
+		res := sandboxCall(blk.fn, cpu,
+			cpu.mem.RegFileBase(), cpu.mem.StackTop(),
+			0, 0, 0, 0)
 		if j.trace {
 			fmt.Fprintf(os.Stderr, "JIT pc=0x%x -> PC=0x%x IC=%d status=%d\n",
 				pc, res.PC, res.IC, res.Status)
@@ -630,21 +631,13 @@ func (j *JIT) RunJIT(cpu *CPU) error {
 		blk := j.lookupBlock(pc)
 		if blk != nil {
 			var res jitcall.Result
+			regFile := cpu.mem.RegFileBase()
+			stackTop := cpu.mem.StackTop()
 			if seg := j.soleSegment; seg != nil {
-				// Fast path: single segment. Publish its decoder_cache
-				// params directly — no findSegment, no blk.segment deref,
-				// no null-chain.
-				res = jitcall.CallAOT(blk.fn, &cpu.x, &cpu.f, &cpu.fcsr,
-					cpu.mem.Base(), cpu.mem.Mask(),
+				res = sandboxCall(blk.fn, cpu, regFile, stackTop,
 					seg.decoderCacheBase, seg.decoderCacheMask,
 					seg.vaddrBegin, seg.vaddrSize)
 			} else if len(j.aotSegments) > 0 {
-				// Multi-segment path. Publish the containing segment's
-				// decoder_cache params to the sret extension. Lazy blocks
-				// don't have an owning segment; fall back to the hot
-				// segment (or any segment) — lazy blocks don't read these
-				// slots, so any valid pointer works, but we must publish
-				// *something* non-garbage.
 				seg := blk.segment
 				if seg == nil {
 					seg = j.hotSegment
@@ -652,13 +645,12 @@ func (j *JIT) RunJIT(cpu *CPU) error {
 						seg = j.aotSegments[0]
 					}
 				}
-				res = jitcall.CallAOT(blk.fn, &cpu.x, &cpu.f, &cpu.fcsr,
-					cpu.mem.Base(), cpu.mem.Mask(),
+				res = sandboxCall(blk.fn, cpu, regFile, stackTop,
 					seg.decoderCacheBase, seg.decoderCacheMask,
 					seg.vaddrBegin, seg.vaddrSize)
 			} else {
-				res = jitcall.Call(blk.fn, &cpu.x, &cpu.f, &cpu.fcsr,
-					cpu.mem.Base(), cpu.mem.Mask())
+				res = sandboxCall(blk.fn, cpu, regFile, stackTop,
+					0, 0, 0, 0)
 			}
 			cpu.pc = res.PC
 			cpu.cycle += res.IC

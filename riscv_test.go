@@ -262,7 +262,7 @@ func runRISCVTestJIT(t *testing.T, elfPath string) {
 		return
 	}
 
-	mem, merr := NewGuestMemory(Size32KB)
+	mem, merr := NewGuestMemory(Size64MB)
 	if merr != nil {
 		t.Fatal(merr)
 	}
@@ -275,7 +275,6 @@ func runRISCVTestJIT(t *testing.T, elfPath string) {
 
 	cpu := NewCPU(*mem)
 	cpu.SetPC(entry)
-	// Standard tohost exit detection: poll this address for non-zero writes.
 	if addr, ok := FindSymbolAddr(data, "tohost"); ok {
 		cpu.SetWatchAddr(addr)
 	}
@@ -366,7 +365,7 @@ func TestRISCVTests_UC_JIT(t *testing.T) {
 // LOCKSTEP: per-block JIT vs interpreter with full register + memory compare
 // ══════════════════════════════════════════════════════════════════════════
 
-const lockstepMemSize = Size32KB
+const lockstepMemSize = Size64MB
 
 func runLockstep(t *testing.T, elfPath string) {
 	t.Helper()

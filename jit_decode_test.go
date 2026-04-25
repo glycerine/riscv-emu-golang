@@ -14,7 +14,7 @@ import (
 // pc+4 as a new block entry, which lowerSyscall then targets with a
 // chain exit when the flag is on.
 func TestClassifyFlow_EcallNotGated(t *testing.T) {
-	mem, err := NewGuestMemory(Size64KB)
+	mem, err := NewGuestMemory(Size64MB)
 	if err != nil {
 		t.Fatalf("NewGuestMemory: %v", err)
 	}

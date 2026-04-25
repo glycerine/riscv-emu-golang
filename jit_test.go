@@ -362,7 +362,7 @@ func TestJIT_CycleCount_Loop(t *testing.T) {
 
 func TestJIT_LoadStore(t *testing.T) {
 	cpu, mem := newTestCPU(t, Size64MB, 0x1000, []uint32{
-		uenc(opLUI, 10, 0x2000),     // LUI x10, 0x2  → x10 = 0x2000
+		uenc(opLUI, 10, 0x4000),     // LUI x10, 0x2  → x10 = 0x4000
 		ienc(opOPIMM, 0, 11, 0, 42), // ADDI x11, x0, 42
 		senc(opSTORE, 2, 10, 11, 0), // SW x11, 0(x10)
 		ienc(opLOAD, 2, 12, 10, 0),  // LW x12, 0(x10)
@@ -379,12 +379,12 @@ func TestJIT_LoadStore(t *testing.T) {
 		t.Errorf("x12 = %d, want 42", cpu.Reg(12))
 	}
 	// Verify memory was actually written
-	v, f := mem.Load32(0x2000)
+	v, f := mem.Load32(0x4000)
 	if f != nil {
 		t.Fatalf("Load32 fault: %v", f)
 	}
 	if v != 42 {
-		t.Errorf("mem[0x2000] = %d, want 42", v)
+		t.Errorf("mem[0x4000] = %d, want 42", v)
 	}
 }
 
@@ -408,7 +408,7 @@ func TestJIT_LoadStore_AllWidths(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			cpu, mem := newTestCPU(t, Size64MB, 0x1000, []uint32{
-				uenc(opLUI, 10, 0x2000),              // LUI x10, 0x2 → 0x2000
+				uenc(opLUI, 10, 0x4000),              // LUI x10, 0x2 → 0x4000
 				ienc(opOPIMM, 0, 11, 0, tc.storeVal), // ADDI x11, x0, val
 				senc(opSTORE, tc.storeF3, 10, 11, 0), // Sx x11, 0(x10)
 				ienc(opLOAD, tc.loadF3, 12, 10, 0),   // Lx x12, 0(x10)
@@ -501,7 +501,7 @@ func TestJIT_vs_Interp_Registers(t *testing.T) {
 		{
 			name: "load_store",
 			insns: []uint32{
-				uenc(opLUI, 10, 0x2000),       // LUI x10, 0x2
+				uenc(opLUI, 10, 0x4000),       // LUI x10, 0x2
 				ienc(opOPIMM, 0, 11, 0, 0x55), // ADDI x11, x0, 0x55
 				senc(opSTORE, 2, 10, 11, 0),   // SW x11, 0(x10)
 				ienc(opLOAD, 2, 12, 10, 0),    // LW x12, 0(x10)
@@ -603,11 +603,11 @@ func TestJIT_MemConsistency_Interp_to_JIT(t *testing.T) {
 	defer mem.Free()
 
 	// Pre-store via host
-	mem.Store32(0x2000, 0xCAFEBABE)
+	mem.Store32(0x4000, 0xCAFEBABE)
 
 	// JIT block loads it
 	storeInsns(mem, 0x1000, []uint32{
-		uenc(opLUI, 10, 0x2000),    // LUI x10, 0x2
+		uenc(opLUI, 10, 0x4000),    // LUI x10, 0x2
 		ienc(opLOAD, 2, 11, 10, 0), // LW x11, 0(x10)
 		instrECALL,
 	})
@@ -632,7 +632,7 @@ func TestJIT_MemConsistency_JIT_to_Interp(t *testing.T) {
 	csrrs := ienc(opSYSTEM, 2, 3, 0, 0xC00) // CSRRS x3, cycle, x0
 
 	cpu, mem := newTestCPU(t, Size64MB, 0x1000, []uint32{
-		uenc(opLUI, 10, 0x2000),     // LUI x10, 0x2
+		uenc(opLUI, 10, 0x4000),     // LUI x10, 0x2
 		ienc(opOPIMM, 0, 11, 0, 42), // ADDI x11, x0, 42
 		senc(opSTORE, 2, 10, 11, 0), // SW x11, 0(x10) — JIT store
 		csrrs,                       // untranslatable → interpreter
@@ -1074,10 +1074,10 @@ func TestJIT_StoreFaultAddress(t *testing.T) {
 // a correctly NaN-boxed 32-bit value via byte-by-byte reads.
 func TestJIT_FLW_Misaligned(t *testing.T) {
 	const entryPC = 0x1000
-	const dataAddr = uint64(0x2001) // deliberately misaligned
+	const dataAddr = uint64(0x4001) // deliberately misaligned
 
 	cpu, mem := newTestCPU(t, Size64MB, entryPC, []uint32{
-		uenc(opLUI, 10, 0x2000),
+		uenc(opLUI, 10, 0x4000),
 		ienc(opOPIMM, 0, 10, 10, 1),
 		ienc(0x07, 2, 1, 10, 0), // FLW f1, 0(x10) — funct3=2
 		instrECALL,
@@ -1118,11 +1118,11 @@ func TestJIT_FLW_Misaligned(t *testing.T) {
 // emitMisalignedFPLoad which does a byte-by-byte read.
 func TestJIT_FLD_Misaligned(t *testing.T) {
 	const entryPC = 0x1000
-	const dataAddr = uint64(0x2001) // deliberately misaligned (low 3 bits != 0)
+	const dataAddr = uint64(0x4001) // deliberately misaligned (low 3 bits != 0)
 
 	cpu, mem := newTestCPU(t, Size64MB, entryPC, []uint32{
-		uenc(opLUI, 10, 0x2000),     // LUI x10, 0x2 → x10 = 0x2000
-		ienc(opOPIMM, 0, 10, 10, 1), // ADDI x10, x10, 1 → x10 = 0x2001
+		uenc(opLUI, 10, 0x4000),     // LUI x10, 0x4 → x10 = 0x4000
+		ienc(opOPIMM, 0, 10, 10, 1), // ADDI x10, x10, 1 → x10 = 0x4001
 		ienc(0x07, 3, 1, 10, 0),     // FLD f1, 0(x10) — funct3=3
 		instrECALL,
 	})
@@ -1156,13 +1156,13 @@ func TestJIT_FLD_Misaligned(t *testing.T) {
 // TestJIT_FSD_Misaligned exercises the byte-by-byte misaligned store path.
 func TestJIT_FSD_Misaligned(t *testing.T) {
 	const entryPC = 0x1000
-	const dataAddr = uint64(0x2001) // deliberately misaligned
+	const dataAddr = uint64(0x4001) // deliberately misaligned
 
 	// Pre-fill f1 via FLD from an aligned address, then FSD to a misaligned one.
 	cpu, mem := newTestCPU(t, Size64MB, entryPC, []uint32{
 		uenc(opLUI, 10, 0x3000),     // x10 = 0x3000 (aligned source)
-		uenc(opLUI, 11, 0x2000),     // x11 = 0x2000
-		ienc(opOPIMM, 0, 11, 11, 1), // x11 = 0x2001 (misaligned dest)
+		uenc(opLUI, 11, 0x4000),     // x11 = 0x4000
+		ienc(opOPIMM, 0, 11, 11, 1), // x11 = 0x4001 (misaligned dest)
 		ienc(0x07, 3, 1, 10, 0),     // FLD f1, 0(x10) — from aligned
 		senc(0x27, 3, 11, 1, 0),     // FSD f1, 0(x11) — to misaligned
 		instrECALL,
@@ -1209,7 +1209,7 @@ func TestJIT_FSD_Misaligned(t *testing.T) {
 // boxF32 on the loaded value) feed a FADD.S (which unboxF32's both operands
 // and boxF32's the result). The block ends with ECALL for a clean exit.
 //
-//	x10 = 0x2000                     ; aligned data buffer
+//	x10 = 0x4000                     ; aligned data buffer
 //	FLW  f1, 0(x10)                  ; f1 = NaN-boxed 1.5     (uses boxF32)
 //	FLW  f2, 4(x10)                  ; f2 = NaN-boxed 2.5     (uses boxF32)
 //	FADD.S f3, f1, f2                ; f3 = 1.5 + 2.5 = 4.0   (uses unboxF32 ×2 + boxF32)
@@ -1225,10 +1225,10 @@ func TestJIT_FSD_Misaligned(t *testing.T) {
 //  3. f3 holds the correct NaN-boxed Float32(4.0).
 func TestJIT_NaNBoxF32_Roundtrip(t *testing.T) {
 	const entryPC = 0x1000
-	const dataAddr = uint64(0x2000)
+	const dataAddr = uint64(0x4000)
 
 	cpu, mem := newTestCPU(t, Size64MB, entryPC, []uint32{
-		uenc(opLUI, 10, 0x2000),         // LUI x10, 0x2 → x10 = 0x2000
+		uenc(opLUI, 10, 0x4000),         // LUI x10, 0x2 → x10 = 0x4000
 		ienc(0x07, 2, 1, 10, 0),         // FLW f1, 0(x10)
 		ienc(0x07, 2, 2, 10, 4),         // FLW f2, 4(x10)
 		renc(0x53, 0x07, 0x00, 3, 1, 2), // FADD.S f3, f1, f2 (DYN rounding)

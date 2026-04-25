@@ -11,7 +11,16 @@ import (
 
 func jitcallCall(fn uintptr, x *[32]uint64, f *[32]uint64, fcsr *uint32,
 	memBase uintptr, memMask uint64) jitcall.Result {
-	return jitcall.Call(fn, x, f, fcsr, memBase, memMask)
+	gm := GuestMemory{base: memBase, mask: memMask, size: memMask + 1}
+	cpu := &CPU{mem: gm}
+	cpu.x = *x
+	cpu.f = *f
+	cpu.fcsr = *fcsr
+	res := sandboxCall(fn, cpu, gm.RegFileBase(), gm.StackTop(), 0, 0, 0, 0)
+	*x = cpu.x
+	*f = cpu.f
+	*fcsr = cpu.fcsr
+	return res
 }
 
 // ── scanUsedRegs unit tests ────────────────────────────────────────────
@@ -1472,7 +1481,7 @@ func TestDispatchTrace_sraw(t *testing.T) {
 	if err != nil {
 		t.Skip("ELF not found")
 	}
-	mem, merr := NewGuestMemory(Size32KB)
+	mem, merr := NewGuestMemory(Size64MB)
 	if merr != nil {
 		t.Fatal(merr)
 	}
