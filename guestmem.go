@@ -72,8 +72,8 @@ import (
 // highest ELF VA (~0x10000 for riscv-tests). The last 3 pages are
 // reserved for the shadow register file, guard page, and sandbox stack.
 const (
-	Size1MB  uint64 = 1 << 20
-	Size64MB uint64 = 1 << 26
+	Size1MB   uint64 = 1 << 20
+	Size64MB  uint64 = 1 << 26
 	Size128MB uint64 = 1 << 27
 	Size256MB uint64 = 1 << 28
 	Size512MB uint64 = 1 << 29
@@ -99,18 +99,17 @@ const (
 	//   [b-8192 ... down)  sandbox stack, grows downward
 	// where b = base + guestSize.
 	GuestPageSize = 4096
-
 )
 
 // FaultKind classifies a MemFault.
 type FaultKind uint8
 
 const (
-	FaultLoad           FaultKind = iota // guest attempted an out-of-bounds load
-	FaultStore                           // guest attempted an out-of-bounds store
-	FaultFetch                           // guest PC pointed outside memory
-	FaultMisalign                        // access was not naturally aligned
-	FaultSandboxEscape                   // address was truncated by the sandbox mask
+	FaultLoad          FaultKind = iota // guest attempted an out-of-bounds load
+	FaultStore                          // guest attempted an out-of-bounds store
+	FaultFetch                          // guest PC pointed outside memory
+	FaultMisalign                       // access was not naturally aligned
+	FaultSandboxEscape                  // address was truncated by the sandbox mask
 )
 
 // CheckSandboxBounds enables strict address checking. When true, any
@@ -216,6 +215,7 @@ func NewGuestMemory(size uint64) (*GuestMemory, error) {
 	// The mask already contains all guest accesses, so a guest null
 	// dereference just hits offset 0 of the mmap (harmless to the host).
 	pg := C.size_t(GuestPageSize)
+	//C.guest_guard(ptr, pg)
 	C.guest_guard(unsafe.Pointer(uintptr(ptr)+uintptr(size/2)), pg)             // midpoint
 	C.guest_guard(unsafe.Pointer(uintptr(ptr)+uintptr(size)-2*uintptr(pg)), pg) // stack/regfile
 
@@ -310,14 +310,16 @@ func (m *GuestMemory) ZeroRange(addr, length uint64) *MemFault {
 // nonzero otherwise. Single expression combining both checks; no branch.
 //
 // Term 1: addr & (width-1)
-//   Zero iff addr is a multiple of width (natural alignment).
-//   Nonzero iff misaligned.
+//
+//	Zero iff addr is a multiple of width (natural alignment).
+//	Nonzero iff misaligned.
 //
 // Term 2: (addr | (addr+width-1)) & ^mask
-//   addr+width-1 is the address of the last byte of the access.
-//   OR-ing with addr propagates any out-of-range high bits from either end.
-//   ANDing with ^mask isolates bits above the address space.
-//   Zero iff both addr and addr+width-1 are within [0, size).
+//
+//	addr+width-1 is the address of the last byte of the access.
+//	OR-ing with addr propagates any out-of-range high bits from either end.
+//	ANDing with ^mask isolates bits above the address space.
+//	Zero iff both addr and addr+width-1 are within [0, size).
 //
 // Combined with OR: zero iff aligned AND in-bounds.
 //
@@ -488,9 +490,13 @@ func (m *GuestMemory) Store64(addr uint64, v uint64) *MemFault {
 // Load16U loads a 16-bit value from an unaligned address.
 func (m *GuestMemory) Load16U(addr uint64) (uint16, *MemFault) {
 	b0, f := m.Load8(addr)
-	if f != nil { return 0, f }
+	if f != nil {
+		return 0, f
+	}
 	b1, f := m.Load8(addr + 1)
-	if f != nil { return 0, f }
+	if f != nil {
+		return 0, f
+	}
 	return uint16(b0) | uint16(b1)<<8, nil
 }
 
@@ -499,7 +505,9 @@ func (m *GuestMemory) Load32U(addr uint64) (uint32, *MemFault) {
 	v := uint32(0)
 	for i := uint64(0); i < 4; i++ {
 		b, f := m.Load8(addr + i)
-		if f != nil { return 0, f }
+		if f != nil {
+			return 0, f
+		}
 		v |= uint32(b) << (i * 8)
 	}
 	return v, nil
@@ -510,7 +518,9 @@ func (m *GuestMemory) Load64U(addr uint64) (uint64, *MemFault) {
 	v := uint64(0)
 	for i := uint64(0); i < 8; i++ {
 		b, f := m.Load8(addr + i)
-		if f != nil { return 0, f }
+		if f != nil {
+			return 0, f
+		}
 		v |= uint64(b) << (i * 8)
 	}
 	return v, nil
@@ -518,14 +528,18 @@ func (m *GuestMemory) Load64U(addr uint64) (uint64, *MemFault) {
 
 // Store16U stores a 16-bit value at an unaligned address.
 func (m *GuestMemory) Store16U(addr uint64, v uint16) *MemFault {
-	if f := m.Store8(addr, uint8(v)); f != nil { return f }
+	if f := m.Store8(addr, uint8(v)); f != nil {
+		return f
+	}
 	return m.Store8(addr+1, uint8(v>>8))
 }
 
 // Store32U stores a 32-bit value at an unaligned address.
 func (m *GuestMemory) Store32U(addr uint64, v uint32) *MemFault {
 	for i := uint64(0); i < 4; i++ {
-		if f := m.Store8(addr+i, uint8(v>>(i*8))); f != nil { return f }
+		if f := m.Store8(addr+i, uint8(v>>(i*8))); f != nil {
+			return f
+		}
 	}
 	return nil
 }
@@ -533,7 +547,9 @@ func (m *GuestMemory) Store32U(addr uint64, v uint32) *MemFault {
 // Store64U stores a 64-bit value at an unaligned address.
 func (m *GuestMemory) Store64U(addr uint64, v uint64) *MemFault {
 	for i := uint64(0); i < 8; i++ {
-		if f := m.Store8(addr+i, uint8(v>>(i*8))); f != nil { return f }
+		if f := m.Store8(addr+i, uint8(v>>(i*8))); f != nil {
+			return f
+		}
 	}
 	return nil
 }
@@ -569,9 +585,13 @@ func (m *GuestMemory) Fetch32(addr uint64) (uint32, *MemFault) {
 //go:nosplit
 func (m *GuestMemory) Fetch32U(addr uint64) (uint32, *MemFault) {
 	lo, f := m.Fetch16(addr)
-	if f != nil { return 0, f }
+	if f != nil {
+		return 0, f
+	}
 	hi, f := m.Fetch16(addr + 2)
-	if f != nil { return 0, f }
+	if f != nil {
+		return 0, f
+	}
 	return uint32(lo) | uint32(hi)<<16, nil
 }
 
