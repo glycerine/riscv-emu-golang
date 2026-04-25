@@ -227,6 +227,9 @@ const (
 	// Calls the SysV-ABI dispatcher with (xBase, memBase, memMask), writes sret with
 	// Status=RAX (0=jitOK, 1=jitEcall), and returns. Terminator. WriteBackAll must precede.
 
+	IRMisalignLoad  // Dst = byte-by-byte load(addr=A, width=T). Lowerer inlines using [RBP+520/528] for memBase/memMask.
+	IRMisalignStore // byte-by-byte store(addr=A, value=B, width=T). Lowerer inlines using [RBP+520/528].
+
 	// Floating point
 	IRFAdd      // Dst = A + B       (FP, type T)
 	IRFSub      // Dst = A - B       (FP)
@@ -440,8 +443,24 @@ type VRegLiveness struct {
 	Start, End int
 }
 
-// widthToType converts a byte width (1, 2, 4, 8) to the corresponding integer Type.
-func widthToType(width int) Type {
+// typeWidth converts a Type to its byte width.
+func typeWidth(t Type) int {
+	switch t {
+	case I8:
+		return 1
+	case I16:
+		return 2
+	case I32, F32:
+		return 4
+	case I64, F64:
+		return 8
+	default:
+		return 8
+	}
+}
+
+// WidthToType converts a byte width (1, 2, 4, 8) to the corresponding integer Type.
+func WidthToType(width int) Type {
 	switch width {
 	case 1:
 		return I8
@@ -452,6 +471,6 @@ func widthToType(width int) Type {
 	case 8:
 		return I64
 	default:
-		panic(fmt.Sprintf("ir.widthToType: unsupported width %d", width))
+		panic(fmt.Sprintf("ir.WidthToType: unsupported width %d", width))
 	}
 }

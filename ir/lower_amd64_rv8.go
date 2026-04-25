@@ -418,6 +418,10 @@ func (lc *lowerCtxRV8) lowerInstr(ins *IRInstr) error {
 		lc.rv8Call(ins)
 	case IRSyscall:
 		lc.rv8Syscall(ins)
+	case IRMisalignLoad:
+		lc.rv8MisalignLoad(ins)
+	case IRMisalignStore:
+		lc.rv8MisalignStore(ins)
 
 	// FP arithmetic
 	case IRFAdd:
@@ -1688,6 +1692,92 @@ func (lc *lowerCtxRV8) rv8Call(ins *IRInstr) {
 	if saveSize > 0 {
 		lc.emitRI(x86.AADDQ, saveSize, goasm.REG_AMD64_SP)
 	}
+}
+
+// ── Misaligned access (inline expansion) ──
+//
+// The lowerer expands IRMisalignLoad/IRMisalignStore into inline
+// byte-by-byte access using two scratch registers (rv8StgA = RAX,
+// rv8StgB = RCX). memBase and memMask are read from [RBP+520] and
+// [RBP+528] respectively (stored there by jit_sandbox.c before entry).
+
+const (
+	rfMemBaseOff = 520
+	rfMemMaskOff = 528
+)
+
+func (lc *lowerCtxRV8) rv8MisalignLoad(ins *IRInstr) {
+	width := typeWidth(ins.T)
+	addrReg := lc.stageInt(ins.A, 0)
+	dstReg := lc.writeDst(ins.Dst)
+	scrA := rv8StgA // RAX
+	scrB := rv8StgB // RCX
+
+	// byte 0: dst = zero-extend byte [memBase + ((addr+0) & mask)]
+	lc.emit2(x86.AMOVQ, addrReg, scrA)
+	lc.emitRM(x86.AANDQ, goasm.REG_AMD64_BP, rfMemMaskOff, scrA)
+	lc.emitRM(x86.AADDQ, goasm.REG_AMD64_BP, rfMemBaseOff, scrA)
+	lc.emitRMMovzx(scrA, 0, dstReg)
+
+	for i := 1; i < width; i++ {
+		lc.emit2(x86.AMOVQ, addrReg, scrA)
+		lc.emitRI(x86.AADDQ, int64(i), scrA)
+		lc.emitRM(x86.AANDQ, goasm.REG_AMD64_BP, rfMemMaskOff, scrA)
+		lc.emitRM(x86.AADDQ, goasm.REG_AMD64_BP, rfMemBaseOff, scrA)
+		lc.emitRMMovzx(scrA, 0, scrB)
+		lc.emitRI(x86.ASHLQ, int64(i*8), scrB)
+		lc.emit2(x86.AORQ, scrB, dstReg)
+	}
+
+	lc.commitDst(ins.Dst, dstReg)
+}
+
+func (lc *lowerCtxRV8) rv8MisalignStore(ins *IRInstr) {
+	width := typeWidth(ins.T)
+	addrReg := lc.stageInt(ins.A, 0)
+	valReg := lc.stageInt(ins.B, 1)
+	scrA := rv8StgA // RAX
+	scrB := rv8StgB // RCX
+
+	for i := 0; i < width; i++ {
+		lc.emit2(x86.AMOVQ, valReg, scrB)
+		if i > 0 {
+			lc.emitRI(x86.ASHRQ, int64(i*8), scrB)
+		}
+
+		lc.emit2(x86.AMOVQ, addrReg, scrA)
+		if i > 0 {
+			lc.emitRI(x86.AADDQ, int64(i), scrA)
+		}
+		lc.emitRM(x86.AANDQ, goasm.REG_AMD64_BP, rfMemMaskOff, scrA)
+		lc.emitRM(x86.AADDQ, goasm.REG_AMD64_BP, rfMemBaseOff, scrA)
+
+		lc.emitMRByte(scrB, scrA, 0)
+	}
+}
+
+// emitRMMovzx emits MOVZX dst, byte [base+off].
+func (lc *lowerCtxRV8) emitRMMovzx(base int16, off int64, dst int16) {
+	p := lc.c.NewProg()
+	p.As = x86.AMOVBQZX
+	p.From.Type = obj.TYPE_MEM
+	p.From.Reg = base
+	p.From.Offset = off
+	p.To.Type = obj.TYPE_REG
+	p.To.Reg = dst
+	lc.c.Append(p)
+}
+
+// emitMRByte emits MOV byte [base+off], src (8-bit store).
+func (lc *lowerCtxRV8) emitMRByte(src, base int16, off int64) {
+	p := lc.c.NewProg()
+	p.As = x86.AMOVB
+	p.From.Type = obj.TYPE_REG
+	p.From.Reg = src
+	p.To.Type = obj.TYPE_MEM
+	p.To.Reg = base
+	p.To.Offset = off
+	lc.c.Append(p)
 }
 
 // ── Syscall ──

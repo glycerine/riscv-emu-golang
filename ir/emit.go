@@ -230,6 +230,18 @@ func (e *Emitter) Call(sym string, addr uintptr) int {
 	return idx
 }
 
+// MisalignedLoad emits a byte-by-byte load for a misaligned guest address.
+// The lowerer expands inline using [RBP+520]/[RBP+528] for memBase/memMask.
+func (e *Emitter) MisalignedLoad(dst, addr VReg, t Type) {
+	e.emit(IRInstr{Op: IRMisalignLoad, T: t, Dst: dst, A: addr})
+	e.MarkDirty(dst)
+}
+
+// MisalignedStore emits a byte-by-byte store for a misaligned guest address.
+func (e *Emitter) MisalignedStore(addr, value VReg, t Type) {
+	e.emit(IRInstr{Op: IRMisalignStore, T: t, A: addr, B: value})
+}
+
 // Ret emits a block return: {pc=pc, status=status, faultAddr=faultAddr}.
 func (e *Emitter) Ret(pc uint64, status int, faultAddr VReg) {
 	e.emit(IRInstr{Op: IRRet, Imm: int64(pc), Imm2: int64(status), A: faultAddr})

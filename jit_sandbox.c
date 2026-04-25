@@ -1,7 +1,9 @@
 #include "jit_sandbox.h"
 #include <string.h>
 
-#define SHADOW_REG_SIZE 520
+#define SHADOW_REG_SIZE 536
+#define RF_MEMBASE_OFF  520
+#define RF_MEMMASK_OFF  528
 
 extern void jit_trampoline_asm(
 	void *fn, void *sret, void *regfile,
@@ -26,6 +28,8 @@ JitResult jit_sandbox_call(
 	memcpy(rf, go_x, 256);
 	memcpy(rf + 256, go_f, 256);
 	*(uint32_t*)(rf + 512) = *go_fcsr;
+	*(uintptr_t*)(rf + RF_MEMBASE_OFF) = mem_base;
+	*(uint64_t*)(rf + RF_MEMMASK_OFF) = mem_mask;
 
 	/* 144-byte sret buffer at top of sandbox stack. */
 	char *sret = (char*)sandbox_stack_top - 144;
@@ -55,3 +59,4 @@ JitResult jit_sandbox_call(
 
 	return result;
 }
+

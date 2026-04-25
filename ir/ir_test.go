@@ -241,8 +241,8 @@ func TestWidthToType(t *testing.T) {
 		{1, I8}, {2, I16}, {4, I32}, {8, I64},
 	}
 	for _, tt := range tests {
-		if got := widthToType(tt.width); got != tt.want {
-			t.Errorf("widthToType(%d) = %v, want %v", tt.width, got, tt.want)
+		if got := WidthToType(tt.width); got != tt.want {
+			t.Errorf("WidthToType(%d) = %v, want %v", tt.width, got, tt.want)
 		}
 	}
 }
@@ -250,10 +250,10 @@ func TestWidthToType(t *testing.T) {
 func TestWidthToType_Panics(t *testing.T) {
 	defer func() {
 		if r := recover(); r == nil {
-			t.Error("widthToType(3) should panic")
+			t.Error("WidthToType(3) should panic")
 		}
 	}()
-	widthToType(3)
+	WidthToType(3)
 }
 
 func TestCSym(t *testing.T) {

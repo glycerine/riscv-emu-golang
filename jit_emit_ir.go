@@ -1810,12 +1810,28 @@ func (e *emitter) emitLoad(rd, rs1 uint32, imm int64, funct3 uint32) {
 	e.irEm.AddImm(addr, base, imm)
 	faultLabel := e.allocFaultLabel(addr, jitLoadFault)
 	if width > 1 {
-		misalignLabel := e.allocFaultLabel(addr, jitMisalign)
+		alignedLabel := e.irEm.NewLabel()
+		doneLabel := e.irEm.NewLabel()
 		alignBits := e.irEm.Tmp()
 		e.irEm.AndImm(alignBits, addr, int64(width-1))
-		e.irEm.Branch(alignBits, ir.VRegZero, ir.NE, misalignLabel)
+		e.irEm.Branch(alignBits, ir.VRegZero, ir.EQ, alignedLabel)
+		t := ir.WidthToType(width)
+		e.irEm.MisalignedLoad(dst, addr, t)
+		if signed {
+			switch width {
+			case 2:
+				e.irEm.Sext(dst, dst, ir.I16)
+			case 4:
+				e.irEm.Sext(dst, dst, ir.I32)
+			}
+		}
+		e.irEm.Jump(doneLabel)
+		e.irEm.PlaceLabel(alignedLabel)
+		e.irEm.MaskedLoadAddr(dst, addr, e.irEm.MemBase(), e.irEm.MemMask(), width, signed, faultLabel)
+		e.irEm.PlaceLabel(doneLabel)
+	} else {
+		e.irEm.MaskedLoadAddr(dst, addr, e.irEm.MemBase(), e.irEm.MemMask(), width, signed, faultLabel)
 	}
-	e.irEm.MaskedLoadAddr(dst, addr, e.irEm.MemBase(), e.irEm.MemMask(), width, signed, faultLabel)
 }
 
 // emitMisalignedLoad emits byte-by-byte loads for a misaligned address.
@@ -1882,12 +1898,20 @@ func (e *emitter) emitStore(rs1, rs2 uint32, imm int64, funct3 uint32) {
 	e.irEm.AddImm(addr, base, imm)
 	faultLabel := e.allocFaultLabel(addr, jitStoreFault)
 	if width > 1 {
-		misalignLabel := e.allocFaultLabel(addr, jitMisalign)
+		alignedLabel := e.irEm.NewLabel()
+		doneLabel := e.irEm.NewLabel()
 		alignBits := e.irEm.Tmp()
 		e.irEm.AndImm(alignBits, addr, int64(width-1))
-		e.irEm.Branch(alignBits, ir.VRegZero, ir.NE, misalignLabel)
+		e.irEm.Branch(alignBits, ir.VRegZero, ir.EQ, alignedLabel)
+		t := ir.WidthToType(width)
+		e.irEm.MisalignedStore(addr, src, t)
+		e.irEm.Jump(doneLabel)
+		e.irEm.PlaceLabel(alignedLabel)
+		e.irEm.GuestStoreAddr(addr, e.irEm.MemBase(), e.irEm.MemMask(), src, width, faultLabel)
+		e.irEm.PlaceLabel(doneLabel)
+	} else {
+		e.irEm.GuestStoreAddr(addr, e.irEm.MemBase(), e.irEm.MemMask(), src, width, faultLabel)
 	}
-	e.irEm.GuestStoreAddr(addr, e.irEm.MemBase(), e.irEm.MemMask(), src, width, faultLabel)
 }
 
 // emitMisalignedStore emits byte-by-byte stores for a misaligned address.
@@ -1945,18 +1969,34 @@ func (e *emitter) emitFPLoad(rd, rs1 uint32, imm int64, funct3 uint32) {
 	addr := e.irEm.Tmp()
 	e.irEm.AddImm(addr, base, imm)
 	faultLabel := e.allocFaultLabel(addr, jitLoadFault)
-	misalignLabel := e.allocFaultLabel(addr, jitMisalign)
+
+	alignedLabel := e.irEm.NewLabel()
+	doneLabel := e.irEm.NewLabel()
 	alignBits := e.irEm.Tmp()
 	e.irEm.AndImm(alignBits, addr, int64(width-1))
-	e.irEm.Branch(alignBits, ir.VRegZero, ir.NE, misalignLabel)
+	e.irEm.Branch(alignBits, ir.VRegZero, ir.EQ, alignedLabel)
 
-	if funct3 == 2 { // FLW — load 32 bits, NaN-box
-		tmp := e.irEm.Tmp()
-		e.irEm.MaskedLoadAddr(tmp, addr, e.irEm.MemBase(), e.irEm.MemMask(), 4, false, faultLabel)
+	// Misaligned path: call native helper, then NaN-box if FLW.
+	t := ir.WidthToType(width)
+	tmp := e.irEm.Tmp()
+	e.irEm.MisalignedLoad(tmp, addr, t)
+	if funct3 == 2 {
 		e.boxF32(rd, tmp)
-	} else { // FLD
+	} else {
+		e.irEm.Mov(e.fregDst(rd), tmp)
+	}
+	e.irEm.Jump(doneLabel)
+
+	// Aligned path.
+	e.irEm.PlaceLabel(alignedLabel)
+	if funct3 == 2 {
+		tmp2 := e.irEm.Tmp()
+		e.irEm.MaskedLoadAddr(tmp2, addr, e.irEm.MemBase(), e.irEm.MemMask(), 4, false, faultLabel)
+		e.boxF32(rd, tmp2)
+	} else {
 		e.irEm.MaskedLoadAddr(e.fregDst(rd), addr, e.irEm.MemBase(), e.irEm.MemMask(), 8, false, faultLabel)
 	}
+	e.irEm.PlaceLabel(doneLabel)
 }
 
 // emitMisalignedFPLoad emits a byte-by-byte FP load (FLW or FLD) at a
@@ -1989,18 +2029,34 @@ func (e *emitter) emitFPStore(rs1, rs2 uint32, imm int64, funct3 uint32) {
 	addr := e.irEm.Tmp()
 	e.irEm.AddImm(addr, base, imm)
 	faultLabel := e.allocFaultLabel(addr, jitStoreFault)
-	misalignLabel := e.allocFaultLabel(addr, jitMisalign)
+
+	alignedLabel := e.irEm.NewLabel()
+	doneLabel := e.irEm.NewLabel()
 	alignBits := e.irEm.Tmp()
 	e.irEm.AndImm(alignBits, addr, int64(width-1))
-	e.irEm.Branch(alignBits, ir.VRegZero, ir.NE, misalignLabel)
+	e.irEm.Branch(alignBits, ir.VRegZero, ir.EQ, alignedLabel)
 
-	if funct3 == 2 { // FSW — extract low 32 bits
+	// Misaligned path.
+	t := ir.WidthToType(width)
+	if funct3 == 2 {
+		tmp := e.irEm.Tmp()
+		e.irEm.Zext(tmp, e.freg(rs2), ir.I32)
+		e.irEm.MisalignedStore(addr, tmp, t)
+	} else {
+		e.irEm.MisalignedStore(addr, e.freg(rs2), t)
+	}
+	e.irEm.Jump(doneLabel)
+
+	// Aligned path.
+	e.irEm.PlaceLabel(alignedLabel)
+	if funct3 == 2 {
 		tmp := e.irEm.Tmp()
 		e.irEm.Zext(tmp, e.freg(rs2), ir.I32)
 		e.irEm.GuestStoreAddr(addr, e.irEm.MemBase(), e.irEm.MemMask(), tmp, 4, faultLabel)
-	} else { // FSD
+	} else {
 		e.irEm.GuestStoreAddr(addr, e.irEm.MemBase(), e.irEm.MemMask(), e.freg(rs2), 8, faultLabel)
 	}
+	e.irEm.PlaceLabel(doneLabel)
 }
 
 // emitMisalignedFPStore emits a byte-by-byte FP store (FSW or FSD) at a

@@ -447,7 +447,7 @@ func FuzzHighLevelHelpers(f *testing.F) {
 			t.Fatalf("expected 1 Branch NE (OOB check), got %d", branchCount)
 		}
 
-		expectedT := widthToType(width)
+		expectedT := WidthToType(width)
 
 		if doStore {
 			// ── Invariant 2a: GuestStore produces exactly one Store at correct width ──

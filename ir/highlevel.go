@@ -62,7 +62,7 @@ func (e *Emitter) MaskedLoadAddr(dst, addr, memBase, mask VReg, width int, signe
 	e.And(masked, addr, mask)
 	host := e.Tmp()
 	e.Add(host, memBase, masked)
-	t := widthToType(width)
+	t := WidthToType(width)
 	e.Load(dst, host, 0, t, signed)
 }
 
@@ -100,7 +100,7 @@ func (e *Emitter) GuestStoreAddr(addr, memBase, mask, src VReg, width int, fault
 	e.And(masked, addr, mask)
 	host := e.Tmp()
 	e.Add(host, memBase, masked)
-	t := widthToType(width)
+	t := WidthToType(width)
 	e.Store(host, 0, src, t)
 }
 

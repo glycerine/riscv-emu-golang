@@ -365,7 +365,8 @@ func TestRISCVTests_UC_JIT(t *testing.T) {
 // LOCKSTEP: per-block JIT vs interpreter with full register + memory compare
 // ══════════════════════════════════════════════════════════════════════════
 
-const lockstepMemSize = Size1MB
+// const lockstepMemSize = Size1MB
+const lockstepMemSize = Size32KB
 
 func runLockstep(t *testing.T, elfPath string) {
 	//t.Helper()
