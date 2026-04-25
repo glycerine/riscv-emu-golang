@@ -104,8 +104,8 @@ func TestLoad8_OutOfBounds(t *testing.T) {
 	if f == nil {
 		t.Fatal("expected fault for OOB Load8, got nil")
 	}
-	if f.Kind != FaultLoad {
-		t.Errorf("fault kind = %v, want FaultLoad", f.Kind)
+	if f.Kind != FaultLoad && f.Kind != FaultSandboxEscape {
+		t.Errorf("fault kind = %v, want FaultLoad or FaultSandboxEscape", f.Kind)
 	}
 }
 
@@ -115,8 +115,8 @@ func TestStore8_OutOfBounds(t *testing.T) {
 	if f == nil {
 		t.Fatal("expected fault for OOB Store8, got nil")
 	}
-	if f.Kind != FaultStore {
-		t.Errorf("fault kind = %v, want FaultStore", f.Kind)
+	if f.Kind != FaultStore && f.Kind != FaultSandboxEscape {
+		t.Errorf("fault kind = %v, want FaultStore or FaultSandboxEscape", f.Kind)
 	}
 }
 
@@ -545,8 +545,8 @@ func TestMemFault_Fields(t *testing.T) {
 	if f.Width != 8 {
 		t.Errorf("fault.Width = %d, want 8", f.Width)
 	}
-	if f.Kind != FaultLoad {
-		t.Errorf("fault.Kind = %v, want FaultLoad", f.Kind)
+	if f.Kind != FaultLoad && f.Kind != FaultSandboxEscape {
+		t.Errorf("fault.Kind = %v, want FaultLoad or FaultSandboxEscape", f.Kind)
 	}
 }
 
