@@ -162,6 +162,10 @@ const (
 	// dispatcher patches the site's IC slots, then dispatch continues.
 	// Must agree with ir.JitOKJalrMiss.
 	jitOKJalrMiss = ir.JitOKJalrMiss
+	// jitMisalign: JIT block hit a misaligned memory access it can't handle
+	// inline. sret.PC = faulting instruction's PC. Dispatcher re-executes
+	// via the interpreter (which does byte-by-byte), then continues.
+	jitMisalign = ir.JitMisalign
 )
 
 // Block cache: direct-mapped array replaces map[uint64]*compiledBlock.
@@ -540,10 +544,13 @@ func (j *JIT) StepBlock(cpu *CPU) (ic uint64, err error) {
 		case jitOK:
 			return res.IC, nil
 		case jitOKJalrMiss:
-			// Same as jitOK — state is valid, PC points at target. The
-			// site patch in RunJIT is a performance optimization; StepBlock
-			// skips it and simply returns.
 			return res.IC, nil
+		case jitMisalign:
+			if err := cpu.step(); err != nil {
+				return res.IC + 1, err
+			}
+			cpu.cycle++
+			return res.IC + 1, nil
 		case jitEcall:
 			if cpu.mtvec != 0 {
 				cpu.mepc = cpu.pc
@@ -673,6 +680,16 @@ func (j *JIT) RunJIT(cpu *CPU) error {
 				// direct-jump path, then continue dispatch.
 				j.JalrICMisses++
 				j.tryPatchJalrIC(blk, int(res.FaultAddr), cpu.pc)
+				continue
+
+			case jitMisalign:
+				// Misaligned access: re-execute the faulting instruction via
+				// the interpreter (which handles misalignment with byte-by-byte
+				// reads/writes), then continue JIT dispatch.
+				if err := cpu.step(); err != nil {
+					return err
+				}
+				cpu.cycle++
 				continue
 
 			case jitEcall:

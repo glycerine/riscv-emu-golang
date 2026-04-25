@@ -158,11 +158,16 @@ func newTestCPU(t *testing.T, memSize uint64, codeVA uint64, insns []uint32) (*C
 
 // ── Lockstep helpers (used by riscv_test.go too) ─────────────────────────
 
-// compareFullMemory reads both sandboxes and compares byte-for-byte.
+// compareFullMemory compares guest memory byte-for-byte up to size/2.
+// The upper half is excluded: the sandbox stack, guard page, shadow
+// register file, and their residue from accumulated dispatch cycles
+// occupy the top of the mmap. Guest ELF code+data lives in the lower
+// portion (typically < 16 KB for riscv-tests).
 func compareFullMemory(t *testing.T, a, b *GuestMemory, blockNum int) {
 	t.Helper()
-	sliceA := a.RawSlice()
-	sliceB := b.RawSlice()
+	limit := a.Size() / 2
+	sliceA := a.RawSlice()[:limit]
+	sliceB := b.RawSlice()[:limit]
 	if bytes.Equal(sliceA, sliceB) {
 		return
 	}

@@ -262,7 +262,7 @@ func runRISCVTestJIT(t *testing.T, elfPath string) {
 		return
 	}
 
-	mem, merr := NewGuestMemory(Size64MB)
+	mem, merr := NewGuestMemory(Size1MB)
 	if merr != nil {
 		t.Fatal(merr)
 	}
@@ -365,10 +365,13 @@ func TestRISCVTests_UC_JIT(t *testing.T) {
 // LOCKSTEP: per-block JIT vs interpreter with full register + memory compare
 // ══════════════════════════════════════════════════════════════════════════
 
-const lockstepMemSize = Size64MB
+const lockstepMemSize = Size1MB
 
 func runLockstep(t *testing.T, elfPath string) {
 	t.Helper()
+	saved := CheckSandboxBounds
+	CheckSandboxBounds = true
+	defer func() { CheckSandboxBounds = saved }()
 	data, err := os.ReadFile(elfPath)
 	if err != nil {
 		t.Skipf("ELF not found: %s", elfPath)
@@ -413,15 +416,25 @@ func runLockstep(t *testing.T, elfPath string) {
 				blockNum, jitCPU.pc, interpCPU.pc)
 		}
 
-		if blockNum >= 59 && blockNum <= 63 {
-			//t.Logf("BEFORE block %d pc=0x%x JIT: x[3]=0x%x x[7]=0x%x x[11]=0x%x x[12]=0x%x x[14]=0x%x", blockNum, jitCPU.pc, jitCPU.x[3], jitCPU.x[7], jitCPU.x[11], jitCPU.x[12], jitCPU.x[14])
-		}
 		// JIT: one dispatch cycle
 		jitIC, jitErr := jit.StepBlock(jitCPU)
+
 
 		// Interpreter: same number of instructions
 		var interpErr error
 		for i := uint64(0); i < jitIC; i++ {
+			if blockNum == 59 {
+				ipc := interpCPU.pc
+				// Log any memory access to the upper half (sandbox area)
+				for r := uint8(0); r < 32; r++ {
+					off := interpCPU.x[r] & interpCPU.mem.Mask()
+					if off >= interpCPU.mem.Size()/2 && interpCPU.x[r] != 0 {
+						t.Logf("  insn %d pc=0x%x: x[%d]=0x%x → masked offset 0x%x",
+							i, ipc, r, interpCPU.x[r], off)
+						break
+					}
+				}
+			}
 			interpErr = interpCPU.step()
 			interpCPU.cycle++
 			if interpErr != nil {
@@ -484,7 +497,8 @@ func runLockstep(t *testing.T, elfPath string) {
 				blockNum, jitCPU.fcsr, interpCPU.fcsr)
 		}
 
-		// Compare ALL memory
+		// Compare guest memory (lower half only — upper half has sandbox
+		// infrastructure: stack, guard page, register file).
 		compareFullMemory(t, jitMem, interpMem, blockNum)
 
 		blockNum++

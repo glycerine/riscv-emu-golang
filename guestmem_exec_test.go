@@ -6,7 +6,7 @@ import "testing"
 // irrelevant for the table; we use the smallest power-of-two we have).
 func execMem(t *testing.T) *GuestMemory {
 	t.Helper()
-	mem, err := NewGuestMemory(Size64MB)
+	mem, err := NewGuestMemory(Size1MB)
 	if err != nil {
 		t.Fatalf("NewGuestMemory: %v", err)
 	}

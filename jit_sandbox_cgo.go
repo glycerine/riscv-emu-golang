@@ -9,9 +9,18 @@ import (
 	"unsafe"
 )
 
+// TEMPORARY: bypass sandbox to isolate old-vs-new divergence.
+// Set to true to use the CGO sandbox trampoline; false uses the old Go asm trampoline.
+const useSandboxTrampoline = true
+
 func sandboxCall(fn uintptr, cpu *CPU,
 	regFile, stackTop uintptr,
 	dcBase uintptr, dcMask, vBegin, segSize uint64) jitcall.Result {
+
+	if !useSandboxTrampoline {
+		return jitcall.Call(fn, &cpu.x, &cpu.f, &cpu.fcsr,
+			cpu.mem.Base(), cpu.mem.Mask())
+	}
 
 	r := C.jit_sandbox_call(
 		C.uintptr_t(fn),

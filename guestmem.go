@@ -47,6 +47,16 @@ static void guest_free(void* p, size_t size) {
 static void guest_zero_range(void* p, size_t size) {
     madvise(p, size, MADV_DONTNEED);
 }
+
+// guest_guard marks a page as PROT_NONE so any access triggers SIGSEGV.
+static int guest_guard(void* p, size_t size) {
+    return mprotect(p, size, PROT_NONE);
+}
+
+// guest_unguard restores read/write access to a previously guarded page.
+static int guest_unguard(void* p, size_t size) {
+    return mprotect(p, size, PROT_READ | PROT_WRITE);
+}
 */
 import "C"
 
@@ -58,10 +68,11 @@ import (
 )
 
 // Guest memory size constants — all powers of two.
-// Minimum is 64 MB: the last 3 pages of the mmap are reserved for
-// the shadow register file, guard page, and sandbox stack. Smaller
-// allocations would put the reserved area too close to guest code/data.
+// Minimum is 1 MB: the midpoint guard page must be well above the
+// highest ELF VA (~0x10000 for riscv-tests). The last 3 pages are
+// reserved for the shadow register file, guard page, and sandbox stack.
 const (
+	Size1MB  uint64 = 1 << 20
 	Size64MB uint64 = 1 << 26
 	Size128MB uint64 = 1 << 27
 	Size256MB uint64 = 1 << 28
@@ -88,17 +99,29 @@ const (
 	//   [b-8192 ... down)  sandbox stack, grows downward
 	// where b = base + guestSize.
 	GuestPageSize = 4096
+
+	// GuestLoadBias is added to every ELF segment VA during loading.
+	// Shifts code/data above page 0 (null guard) so the guard page
+	// is never blocked by loaded segments.
+	GuestLoadBias uint64 = 0x10000
 )
 
 // FaultKind classifies a MemFault.
 type FaultKind uint8
 
 const (
-	FaultLoad     FaultKind = iota // guest attempted an out-of-bounds load
-	FaultStore                     // guest attempted an out-of-bounds store
-	FaultFetch                     // guest PC pointed outside memory
-	FaultMisalign                  // access was not naturally aligned
+	FaultLoad           FaultKind = iota // guest attempted an out-of-bounds load
+	FaultStore                           // guest attempted an out-of-bounds store
+	FaultFetch                           // guest PC pointed outside memory
+	FaultMisalign                        // access was not naturally aligned
+	FaultSandboxEscape                   // address was truncated by the sandbox mask
 )
+
+// CheckSandboxBounds enables strict address checking. When true, any
+// load/store where the mask changes the address (addr != addr & mask)
+// returns FaultSandboxEscape instead of silently wrapping. Use for
+// debugging aliasing bugs.
+var CheckSandboxBounds bool
 
 func (k FaultKind) String() string {
 	switch k {
@@ -110,6 +133,8 @@ func (k FaultKind) String() string {
 		return "fetch"
 	case FaultMisalign:
 		return "misalign"
+	case FaultSandboxEscape:
+		return "sandbox_escape"
 	default:
 		return "unknown"
 	}
@@ -187,6 +212,17 @@ func NewGuestMemory(size uint64) (*GuestMemory, error) {
 		mask: size - 1,
 		size: size,
 	}
+
+	// Install guard pages (PROT_NONE):
+	//   1. Page 0: catches null-pointer dereferences
+	//   2. Midpoint: divides heap (grows up) from stack (grows down)
+	//   3. Between sandbox stack and register file: catches stack underflow
+	// The ELF loader applies a load bias (GuestLoadBias) to place all
+	// segments above page 0, so the null guard never blocks loading.
+	pg := C.size_t(GuestPageSize)
+	C.guest_guard(ptr, pg)                                                      // page 0
+	C.guest_guard(unsafe.Pointer(uintptr(ptr)+uintptr(size/2)), pg)             // midpoint
+	C.guest_guard(unsafe.Pointer(uintptr(ptr)+uintptr(size)-2*uintptr(pg)), pg) // stack/regfile
 
 	// Finalizer ensures the C slab is released if the caller forgets
 	// to call Free(). Explicit Free() is preferred in production code.
@@ -296,6 +332,17 @@ func (m *GuestMemory) check(addr, width uint64) uint64 {
 		((addr | (addr + width - 1)) & ^m.mask)
 }
 
+// checkSandboxEscape returns a non-nil MemFault if CheckSandboxBounds is
+// enabled and the sandbox mask would change the address (addr != addr & mask).
+// This detects addresses that would segfault on real hardware but silently
+// wrap in the emulator.
+func (m *GuestMemory) checkSandboxEscape(addr, width uint64, kind FaultKind) *MemFault {
+	if CheckSandboxBounds && (addr & ^m.mask) != 0 {
+		return &MemFault{Addr: addr, Width: width, Kind: FaultSandboxEscape}
+	}
+	return nil
+}
+
 // hostPtr returns a host pointer to guest address addr.
 // The mask guarantees the result is always within [base, base+size):
 //
@@ -330,6 +377,9 @@ func (m *GuestMemory) fault(addr, width uint64, defaultKind FaultKind) *MemFault
 //
 //go:nosplit
 func (m *GuestMemory) Load8(addr uint64) (uint8, *MemFault) {
+	if f := m.checkSandboxEscape(addr, 1, FaultLoad); f != nil {
+		return 0, f
+	}
 	if m.check(addr, 1) != 0 {
 		return 0, m.fault(addr, 1, FaultLoad)
 	}
@@ -340,6 +390,9 @@ func (m *GuestMemory) Load8(addr uint64) (uint8, *MemFault) {
 //
 //go:nosplit
 func (m *GuestMemory) Load16(addr uint64) (uint16, *MemFault) {
+	if f := m.checkSandboxEscape(addr, 2, FaultLoad); f != nil {
+		return 0, f
+	}
 	if m.check(addr, 2) != 0 {
 		return 0, m.fault(addr, 2, FaultLoad)
 	}
@@ -350,6 +403,9 @@ func (m *GuestMemory) Load16(addr uint64) (uint16, *MemFault) {
 //
 //go:nosplit
 func (m *GuestMemory) Load32(addr uint64) (uint32, *MemFault) {
+	if f := m.checkSandboxEscape(addr, 4, FaultLoad); f != nil {
+		return 0, f
+	}
 	if m.check(addr, 4) != 0 {
 		return 0, m.fault(addr, 4, FaultLoad)
 	}
@@ -360,6 +416,9 @@ func (m *GuestMemory) Load32(addr uint64) (uint32, *MemFault) {
 //
 //go:nosplit
 func (m *GuestMemory) Load64(addr uint64) (uint64, *MemFault) {
+	if f := m.checkSandboxEscape(addr, 8, FaultLoad); f != nil {
+		return 0, f
+	}
 	if m.check(addr, 8) != 0 {
 		return 0, m.fault(addr, 8, FaultLoad)
 	}
@@ -374,6 +433,9 @@ func (m *GuestMemory) Load64(addr uint64) (uint64, *MemFault) {
 //
 //go:nosplit
 func (m *GuestMemory) Store8(addr uint64, v uint8) *MemFault {
+	if f := m.checkSandboxEscape(addr, 1, FaultStore); f != nil {
+		return f
+	}
 	if m.check(addr, 1) != 0 {
 		return m.fault(addr, 1, FaultStore)
 	}
@@ -385,6 +447,9 @@ func (m *GuestMemory) Store8(addr uint64, v uint8) *MemFault {
 //
 //go:nosplit
 func (m *GuestMemory) Store16(addr uint64, v uint16) *MemFault {
+	if f := m.checkSandboxEscape(addr, 2, FaultStore); f != nil {
+		return f
+	}
 	if m.check(addr, 2) != 0 {
 		return m.fault(addr, 2, FaultStore)
 	}
@@ -396,6 +461,9 @@ func (m *GuestMemory) Store16(addr uint64, v uint16) *MemFault {
 //
 //go:nosplit
 func (m *GuestMemory) Store32(addr uint64, v uint32) *MemFault {
+	if f := m.checkSandboxEscape(addr, 4, FaultStore); f != nil {
+		return f
+	}
 	if m.check(addr, 4) != 0 {
 		return m.fault(addr, 4, FaultStore)
 	}
@@ -407,6 +475,9 @@ func (m *GuestMemory) Store32(addr uint64, v uint32) *MemFault {
 //
 //go:nosplit
 func (m *GuestMemory) Store64(addr uint64, v uint64) *MemFault {
+	if f := m.checkSandboxEscape(addr, 8, FaultStore); f != nil {
+		return f
+	}
 	if m.check(addr, 8) != 0 {
 		return m.fault(addr, 8, FaultStore)
 	}

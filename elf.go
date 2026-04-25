@@ -147,7 +147,9 @@ func loadELFReader(mem *GuestMemory, r io.ReadSeeker) (uint64, error) {
 			continue
 		}
 
-		// Copy file bytes into guest memory
+		loadAddr := ph.VAddr + GuestLoadBias
+
+		// Copy file bytes into guest memory (biased)
 		if ph.FileSz > 0 {
 			if _, err := r.Seek(int64(ph.Offset), io.SeekStart); err != nil {
 				return 0, fmt.Errorf("elf: seek to segment %d data: %w", i, err)
@@ -156,26 +158,24 @@ func loadELFReader(mem *GuestMemory, r io.ReadSeeker) (uint64, error) {
 			if _, err := io.ReadFull(r, buf); err != nil {
 				return 0, fmt.Errorf("elf: read segment %d: %w", i, err)
 			}
-			if f := mem.WriteBytes(ph.VAddr, buf); f != nil {
-				return 0, fmt.Errorf("elf: write segment %d to 0x%x: %v", i, ph.VAddr, f)
+			if f := mem.WriteBytes(loadAddr, buf); f != nil {
+				return 0, fmt.Errorf("elf: write segment %d to 0x%x (bias 0x%x + VA 0x%x): %v",
+					i, loadAddr, GuestLoadBias, ph.VAddr, f)
 			}
 		}
 
 		// Zero-fill BSS (MemSz > FileSz)
 		if ph.MemSz > ph.FileSz {
-			bssStart := ph.VAddr + ph.FileSz
+			bssStart := loadAddr + ph.FileSz
 			bssSize  := ph.MemSz - ph.FileSz
 			if f := mem.ZeroRange(bssStart, bssSize); f != nil {
 				return 0, fmt.Errorf("elf: zero BSS for segment %d: %v", i, f)
 			}
 		}
 
-		// Record executable extents so the JIT can auto-install AOT on
-		// first RunJIT. isJIT=true for RW+X (self-modifying code), so
-		// the segment-level flag propagates correctly — matches what
-		// InstallAOT(mem, elfBytes) does for itself.
+		// Record executable extents (biased)
 		if ph.Flags&pfX != 0 {
-			mem.AddExecRegion(ph.VAddr, ph.VAddr+ph.MemSz, ph.Flags&pfW != 0)
+			mem.AddExecRegion(loadAddr, loadAddr+ph.MemSz, ph.Flags&pfW != 0)
 		}
 
 		loaded++
@@ -184,7 +184,7 @@ func loadELFReader(mem *GuestMemory, r io.ReadSeeker) (uint64, error) {
 	if loaded == 0 {
 		return 0, errors.New("elf: no PT_LOAD segments found")
 	}
-	return hdr.Entry, nil
+	return hdr.Entry + GuestLoadBias, nil
 }
 
 // byteReader wraps a byte slice as an io.ReadSeeker.

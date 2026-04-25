@@ -1,6 +1,8 @@
 #include "jit_sandbox.h"
 #include <string.h>
 
+#define SHADOW_REG_SIZE 520
+
 extern void jit_trampoline_asm(
 	void *fn, void *sret, void *regfile,
 	uintptr_t memBase, uint64_t memMask,
@@ -16,6 +18,11 @@ JitResult jit_sandbox_call(
 {
 	char *rf = (char*)reg_file;
 
+	/* Save guest memory under the shadow before overwriting. */
+	char saved[SHADOW_REG_SIZE];
+	memcpy(saved, rf, SHADOW_REG_SIZE);
+
+	/* Copy Go registers → shadow register file. */
 	memcpy(rf, go_x, 256);
 	memcpy(rf + 256, go_f, 256);
 	*(uint32_t*)(rf + 512) = *go_fcsr;
@@ -23,9 +30,7 @@ JitResult jit_sandbox_call(
 	/* 144-byte sret buffer at top of sandbox stack. */
 	char *sret = (char*)sandbox_stack_top - 144;
 	memset(sret, 0, 144);
-	/* [80] = fcsr pointer (shadow, in C mmap) */
 	*(uint64_t*)(sret + 80) = reg_file + 512;
-	/* [88..112] = decoder_cache params */
 	*(uint64_t*)(sret + 88)  = dc_base;
 	*(uint64_t*)(sret + 96)  = dc_mask;
 	*(uint64_t*)(sret + 104) = vaddr_begin;
@@ -40,9 +45,13 @@ JitResult jit_sandbox_call(
 	result.status     = *(uint64_t*)(sret + 16);
 	result.fault_addr = *(uint64_t*)(sret + 24);
 
+	/* Copy shadow register file → Go registers. */
 	memcpy(go_x, rf, 256);
 	memcpy(go_f, rf + 256, 256);
 	*go_fcsr = *(uint32_t*)(rf + 512);
+
+	/* Restore guest memory that was under the shadow. */
+	memcpy(rf, saved, SHADOW_REG_SIZE);
 
 	return result;
 }

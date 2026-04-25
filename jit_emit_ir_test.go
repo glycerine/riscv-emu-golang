@@ -26,7 +26,7 @@ func jitcallCall(fn uintptr, x *[32]uint64, f *[32]uint64, fcsr *uint32,
 // ── scanUsedRegs unit tests ────────────────────────────────────────────
 
 func TestScanUsedRegs_ADD(t *testing.T) {
-	mem, err := NewGuestMemory(Size64MB)
+	mem, err := NewGuestMemory(Size1MB)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,7 +57,7 @@ func TestScanUsedRegs_ADD(t *testing.T) {
 }
 
 func TestScanUsedRegs_ADDI(t *testing.T) {
-	mem, err := NewGuestMemory(Size64MB)
+	mem, err := NewGuestMemory(Size1MB)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +80,7 @@ func TestScanUsedRegs_ADDI(t *testing.T) {
 }
 
 func TestScanUsedRegs_Branch(t *testing.T) {
-	mem, err := NewGuestMemory(Size64MB)
+	mem, err := NewGuestMemory(Size1MB)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,7 +103,7 @@ func TestScanUsedRegs_Branch(t *testing.T) {
 }
 
 func TestScanUsedRegs_Store(t *testing.T) {
-	mem, err := NewGuestMemory(Size64MB)
+	mem, err := NewGuestMemory(Size1MB)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +125,7 @@ func TestScanUsedRegs_Store(t *testing.T) {
 }
 
 func TestScanUsedRegs_FibLoop(t *testing.T) {
-	mem, err := NewGuestMemory(Size64MB)
+	mem, err := NewGuestMemory(Size1MB)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -166,7 +166,7 @@ func TestScanUsedRegs_FibLoop(t *testing.T) {
 
 func TestScanUsedRegs_NoX0(t *testing.T) {
 	// x0 should never be in the used set regardless of encoding.
-	mem, err := NewGuestMemory(Size64MB)
+	mem, err := NewGuestMemory(Size1MB)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -191,7 +191,7 @@ func TestScanUsedRegs_NoX0(t *testing.T) {
 }
 
 func TestScanUsedRegs_LUI_AUIPC(t *testing.T) {
-	mem, err := NewGuestMemory(Size64MB)
+	mem, err := NewGuestMemory(Size1MB)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -216,7 +216,7 @@ func TestScanUsedRegs_LUI_AUIPC(t *testing.T) {
 
 // TestScanUsedRegs_MixedBlock2 reproduces the second block from TestJIT_MixedExecution.
 func TestScanUsedRegs_MixedBlock2(t *testing.T) {
-	mem, err := NewGuestMemory(Size64MB)
+	mem, err := NewGuestMemory(Size1MB)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -240,7 +240,7 @@ func TestScanUsedRegs_MixedBlock2(t *testing.T) {
 // TestMixedExecution_Block2_Compile tests that the second block from
 // TestJIT_MixedExecution compiles and runs without crashing.
 func TestMixedExecution_Block2_Compile(t *testing.T) {
-	mem, err := NewGuestMemory(Size64MB)
+	mem, err := NewGuestMemory(Size1MB)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -290,7 +290,7 @@ func TestMixedExecution_Block2_Compile(t *testing.T) {
 
 // TestMixedExecution_Block1_Dump compiles block 1 and dumps the native bytes.
 func TestMixedExecution_Block1_Dump(t *testing.T) {
-	mem, err := NewGuestMemory(Size64MB)
+	mem, err := NewGuestMemory(Size1MB)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -383,7 +383,7 @@ func TestSrc1EqDest(t *testing.T) {
 
 // TestSubELF_Block39 runs the sub ELF to block 39 and checks what happens.
 func TestSubELF_Block39(t *testing.T) {
-	mem, err := NewGuestMemory(Size64MB)
+	mem, err := NewGuestMemory(Size1MB)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -441,7 +441,7 @@ func TestSubELF_Block39(t *testing.T) {
 
 // TestCLI_NoCorruption verifies C.LI x7, 3 doesn't corrupt other registers.
 func TestCLI_NoCorruption(t *testing.T) {
-	mem, err := NewGuestMemory(Size64MB)
+	mem, err := NewGuestMemory(Size1MB)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -540,7 +540,7 @@ func TestSRL_Src1EqDest(t *testing.T) {
 
 // TestLW_ELF_Block39 traces the lw ELF test around the divergence.
 func TestLW_ELF_Block39(t *testing.T) {
-	mem, err := NewGuestMemory(Size64MB)
+	mem, err := NewGuestMemory(Size1MB)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -592,7 +592,7 @@ func TestSRL_ZeroSrc(t *testing.T) {
 // TestLUI_SRLI_TwoInsn verifies LUI + SRLI in a 2-instruction block.
 // Regression: MarkDirty was missing, causing writeback to skip modified regs.
 func TestLUI_SRLI_TwoInsn(t *testing.T) {
-	mem, err := NewGuestMemory(Size64MB)
+	mem, err := NewGuestMemory(Size1MB)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -623,7 +623,7 @@ func TestLUI_SRLI_TwoInsn(t *testing.T) {
 
 // TestSRL_LargeValue_Block verifies SRL with 0xFFFFFFFF80000000 >> 0 in a block.
 func TestSRL_LargeValue_Block(t *testing.T) {
-	mem, err := NewGuestMemory(Size64MB)
+	mem, err := NewGuestMemory(Size1MB)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -657,7 +657,7 @@ func TestSRL_LargeValue_Block(t *testing.T) {
 // TestSRL_CrossBlock_Writeback verifies that x[11] written in block 1
 // is correctly read in block 2.
 func TestSRL_CrossBlock_Writeback(t *testing.T) {
-	mem, err := NewGuestMemory(Size64MB)
+	mem, err := NewGuestMemory(Size1MB)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -705,7 +705,7 @@ func TestSRL_CrossBlock_Writeback(t *testing.T) {
 
 // TestSRL_ExactIR reproduces the exact IR from the failing srl ELF block.
 func TestSRL_ExactIR(t *testing.T) {
-	mem, err := NewGuestMemory(Size64MB)
+	mem, err := NewGuestMemory(Size1MB)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -782,7 +782,7 @@ func TestSRL_ExactIR(t *testing.T) {
 }
 
 func TestSRL_ExactIR_V2(t *testing.T) {
-	mem, err := NewGuestMemory(Size64MB)
+	mem, err := NewGuestMemory(Size1MB)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -882,7 +882,7 @@ func TestSRL_ExactIR_DumpAlloc(t *testing.T) {
 // TestSRL_Block61_V1vV2 reproduces the exact IR from the failing srl ELF block 61
 // and compares V1 vs V2 results.
 func TestSRL_Block61_V1vV2(t *testing.T) {
-	mem, err := NewGuestMemory(Size64MB)
+	mem, err := NewGuestMemory(Size1MB)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1013,7 +1013,7 @@ func TestSRL_Block61_V1vV2(t *testing.T) {
 // TestSRL_Block61_V1vV2b reproduces the exact IR from the failing srl block 61
 // with writeback helper.
 func TestSRL_Block61_V1vV2b(t *testing.T) {
-	mem, err := NewGuestMemory(Size64MB)
+	mem, err := NewGuestMemory(Size1MB)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1126,7 +1126,7 @@ func TestSRL_Block61_V1vV2b(t *testing.T) {
 // TestSRL_RealBlock_V1vV2 uses the real emitBlock on the srl ELF binary,
 // then compiles the resulting IR block with both V1 and V2 to find divergences.
 func TestSRL_RealBlock_V1vV2(t *testing.T) {
-	mem, err := NewGuestMemory(Size64MB)
+	mem, err := NewGuestMemory(Size1MB)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1184,7 +1184,7 @@ func TestSRL_RealBlock_V1vV2(t *testing.T) {
 
 // TestSRL_Block39_Alloc dumps the register allocation for the real block 39.
 func TestSRL_Block39_Alloc(t *testing.T) {
-	mem, err := NewGuestMemory(Size64MB)
+	mem, err := NewGuestMemory(Size1MB)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1234,7 +1234,7 @@ func TestSRL_Block39_Alloc(t *testing.T) {
 // TestDebugV1V2_SRL runs the srl ELF test with the V1-vs-V2 debug machine
 // to find the exact block and registers where V1 diverges from V2.
 func TestDebugV1V2_SRL(t *testing.T) {
-	mem, err := NewGuestMemory(Size64MB)
+	mem, err := NewGuestMemory(Size1MB)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1267,7 +1267,7 @@ func TestDebugV1V2_SRL(t *testing.T) {
 }
 
 func TestDebugV1V2_SRL_DumpAlloc(t *testing.T) {
-	mem, err := NewGuestMemory(Size64MB)
+	mem, err := NewGuestMemory(Size1MB)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1312,7 +1312,7 @@ func TestDebugV1V2_SRL_DumpAlloc(t *testing.T) {
 // order-dependent lowerer bugs that a single sorted order might hide.
 func TestMetaIterOrder_SRL(t *testing.T) {
 	t.Skip("too slow for normal test runs.")
-	mem, err := NewGuestMemory(Size64MB)
+	mem, err := NewGuestMemory(Size1MB)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1360,7 +1360,7 @@ func TestMetaIterOrder_AllUI(t *testing.T) {
 			for _, path := range entries {
 				name := strings.TrimPrefix(filepath.Base(path), "rv64ui-p-")
 				t.Run(name, func(t *testing.T) {
-					mem, err := NewGuestMemory(Size64MB)
+					mem, err := NewGuestMemory(Size1MB)
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -1397,7 +1397,7 @@ func TestMetaIterOrder_AllUI(t *testing.T) {
 // for the block at pc=0x1a0 in rv64ui-p-ld_st. We look for backward branches
 // that lack BudgetCheck, which would cause an infinite loop in native code.
 func TestDumpBlock_ld_st_0x1a0(t *testing.T) {
-	mem, err := NewGuestMemory(Size64MB)
+	mem, err := NewGuestMemory(Size1MB)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1481,7 +1481,7 @@ func TestDispatchTrace_sraw(t *testing.T) {
 	if err != nil {
 		t.Skip("ELF not found")
 	}
-	mem, merr := NewGuestMemory(Size64MB)
+	mem, merr := NewGuestMemory(Size1MB)
 	if merr != nil {
 		t.Fatal(merr)
 	}
@@ -1533,7 +1533,7 @@ func TestNativeTrace_sllw(t *testing.T) {
 }
 
 func testNativeTraceW(t *testing.T, elfPath string, targetBlock int) {
-	mem, err := NewGuestMemory(Size64MB)
+	mem, err := NewGuestMemory(Size1MB)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1667,7 +1667,7 @@ func TestFusion_SLLI_SRLI_ZextW(t *testing.T) {
 		instrECALL,
 	}
 
-	mem, err := NewGuestMemory(Size64MB)
+	mem, err := NewGuestMemory(Size1MB)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1718,7 +1718,7 @@ func TestFusion_ADDIW_SLLI_SRLI_Addiwz(t *testing.T) {
 	}
 
 	// --- IR-level check: should contain Zext (not Sext) and consume 3 insns ---
-	mem, err := NewGuestMemory(Size64MB)
+	mem, err := NewGuestMemory(Size1MB)
 	if err != nil {
 		t.Fatal(err)
 	}
