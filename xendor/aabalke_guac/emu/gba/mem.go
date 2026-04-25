@@ -1,0 +1,970 @@
+package gba
+
+import (
+	"encoding/binary"
+	"math/bits"
+	"time"
+	"unsafe"
+
+	"github.com/aabalke/guac/config"
+)
+
+type Memory struct {
+	GBA   *GBA
+	BIOS  [0x4000]uint8
+	WRAM1 [0x40000]uint8
+	WRAM2 [0x8000]uint8
+
+	PRAM [0x200]uint16
+	VRAM [0x18001]uint8
+	OAM  [0x400]uint8
+	IO   [0x400]uint8
+
+	BIOS_MODE uint32
+	Dispstat  Dispstat
+
+	readRegions  [0x100]func(m *Memory, addr uint32) uint8
+	writeRegions [0x100]func(m *Memory, addr uint32, v uint8, byteWrite bool)
+}
+
+func NewMemory(gba *GBA) Memory {
+	m := Memory{GBA: gba}
+
+	m.initReadRegions()
+	m.initWriteRegions()
+
+	m.Write32(0x4000000, 0x80, false)
+	m.Write32(0x4000134, 0x800F, false) // IR requires bit 3 on. I believe this is auth check (sonic adv)
+
+	//m.BIOS_MODE = BIOS_STARTUP
+
+	m.InitSaveLoop()
+
+	return m
+}
+
+func (m *Memory) InitSaveLoop() {
+
+	if config.Conf.Gba.DisableSaves {
+		return
+	}
+
+	saveTicker := time.Tick(time.Second)
+
+	go func() {
+		for range saveTicker {
+			if m.GBA.Save {
+				m.GBA.Cartridge.Save()
+				m.GBA.Save = false
+			}
+		}
+	}()
+}
+
+func (m *Memory) initWriteRegions() {
+
+	for i := range len(m.writeRegions) {
+		m.writeRegions[i] = func(m *Memory, addr uint32, v uint8, byteWrite bool) {
+		}
+	}
+
+	m.writeRegions[0x2] = func(m *Memory, addr uint32, v uint8, byteWrite bool) {
+		m.WRAM1[addr&0x3_FFFF] = v
+	}
+
+	m.writeRegions[0x3] = func(m *Memory, addr uint32, v uint8, byteWrite bool) {
+		m.WRAM2[addr&0x7FFF] = v
+	}
+
+	m.writeRegions[0x4] = func(m *Memory, addr uint32, v uint8, byteWrite bool) {
+		if addr < 0x0400_0400 {
+			m.WriteIO(addr&0x3FF, v)
+		}
+	}
+
+	m.writeRegions[0x5] = func(m *Memory, addr uint32, v uint8, byteWrite bool) {
+
+		relative := addr & (0x3FF)
+
+		if relative&1 == 1 {
+			m.PRAM[relative>>1] &= 0xFF
+			m.PRAM[relative>>1] |= uint16(v) << 8
+
+			return
+		}
+
+		if byteWrite {
+			m.PRAM[relative>>1] &^= 0xFF
+			m.PRAM[relative>>1] |= uint16(v)
+
+			m.PRAM[relative>>1] &= 0xFF
+			m.PRAM[relative>>1] |= uint16(v) << 8
+			return
+		}
+
+		m.PRAM[relative>>1] &^= 0xFF
+		m.PRAM[relative>>1] |= uint16(v)
+	}
+
+	m.writeRegions[0x6] = func(m *Memory, addr uint32, v uint8, byteWrite bool) {
+		addr &= 0x1FFFF
+		if addr >= 0x1_8000 {
+			addr -= 0x8000 // 32k internal mirror
+		}
+
+		if !byteWrite {
+			m.VRAM[addr] = v
+			return
+		}
+
+		if bgVRAM := addr < 0x1_0000; bgVRAM {
+
+			m.VRAM[addr] = v
+
+			if addr+1 >= uint32(len(m.VRAM)) {
+				return
+			}
+
+			m.VRAM[addr+1] = v
+
+			return
+		}
+	}
+
+	m.writeRegions[0x7] = func(m *Memory, addr uint32, v uint8, byteWrite bool) {
+		if byteWrite {
+			return
+		}
+		rel := addr & (0x3FF)
+		m.OAM[rel] = v
+		m.GBA.PPU.UpdateOAM(rel)
+	}
+
+	m.writeRegions[0xE] = func(m *Memory, addr uint32, v uint8, byteWrite bool) {
+
+		m.GBA.Save = true
+
+		cartridge := &m.GBA.Cartridge
+		relative := addr & (0xFFFF)
+
+		cartridge.Write(relative, v)
+	}
+
+	m.writeRegions[0xF] = func(m *Memory, addr uint32, v uint8, byteWrite bool) {
+
+		m.GBA.Save = true
+
+		cartridge := &m.GBA.Cartridge
+		relative := addr & (0xFFFF)
+
+		cartridge.Write(relative, v)
+	}
+}
+
+func (m *Memory) initReadRegions() {
+
+	for i := range len(m.readRegions) {
+		m.readRegions[i] = func(m *Memory, addr uint32) uint8 {
+
+			if m.GBA.Cpu.Reg.R[PC] < 0x4000 {
+				return 0
+			}
+			return m.ReadOpenBus(addr)
+		}
+	}
+
+	m.readRegions[0x0] = func(m *Memory, addr uint32) uint8 {
+
+		if addr < 0x4000 {
+			if m.GBA.Cpu.Reg.R[PC] >= 0x4000 {
+				return m.ReadBios(addr)
+			}
+			return m.BIOS[addr]
+		}
+
+		return m.ReadOpenBus(addr)
+	}
+
+	m.readRegions[0x2] = func(m *Memory, addr uint32) uint8 {
+		return m.WRAM1[addr&0x3FFFF]
+	}
+
+	m.readRegions[0x3] = func(m *Memory, addr uint32) uint8 {
+		return m.WRAM2[addr&0x7FFF]
+	}
+
+	m.readRegions[0x4] = func(m *Memory, addr uint32) uint8 {
+		if addr < 0x0400_0400 {
+			return m.ReadIO(addr & 0x3FF)
+		}
+		return m.ReadOpenBus(addr)
+	}
+
+	m.readRegions[0x5] = func(m *Memory, addr uint32) uint8 {
+
+		if addr&1 == 1 {
+			return uint8(m.PRAM[addr&0x3FF>>1] >> 8)
+		}
+
+		return uint8(m.PRAM[addr&0x3FF>>1])
+	}
+
+	m.readRegions[0x6] = func(m *Memory, addr uint32) uint8 {
+		addr &= 0x1FFFF
+		if addr >= 0x18000 {
+			addr -= 0x8000
+		}
+		return m.VRAM[addr]
+	}
+
+	m.readRegions[0x7] = func(m *Memory, addr uint32) uint8 {
+		return m.OAM[addr&0x3FF]
+	}
+
+	for i := 0x8; i < 0xE; i++ {
+		m.readRegions[i] = func(m *Memory, addr uint32) uint8 {
+			return m.GBA.Cartridge.Rom[addr&0x1FFFFFF]
+		}
+	}
+
+	m.readRegions[0xE] = func(m *Memory, addr uint32) uint8 {
+		return m.GBA.Cartridge.Read(addr & 0xFFFF)
+	}
+
+	m.readRegions[0xF] = func(m *Memory, addr uint32) uint8 {
+		return m.GBA.Cartridge.Read(addr & 0xFFFF)
+	}
+}
+
+func (m *Memory) ReadPtr(addr uint32, _ bool) (unsafe.Pointer, bool) {
+
+	switch regions := addr >> 24; regions {
+	case 0x2:
+		return unsafe.Add(
+			unsafe.Pointer(&m.WRAM1), addr&0x3FFFF), true
+	case 0x3:
+		return unsafe.Add(
+			unsafe.Pointer(&m.WRAM2), addr&0x7FFF), true
+	case 0x6:
+		addr &= 0x1FFFF
+		if addr >= 0x18000 {
+			addr -= 0x8000
+		}
+		return unsafe.Add(
+			unsafe.Pointer(&m.VRAM), addr), true
+
+	case 0x7:
+		return unsafe.Add(
+			unsafe.Pointer(&m.OAM), addr&0x3FF), true
+
+	case 0x8, 0x9, 0xA, 0xB, 0xC, 0xD:
+		return unsafe.Add(
+			unsafe.Pointer(&m.GBA.Cartridge.Rom), addr&0x1FF_FFFF), true
+	default:
+		return nil, false
+	}
+}
+
+func (m *Memory) Read(addr uint32) uint8 {
+	return m.readRegions[addr>>24](m, addr)
+}
+
+func (m *Memory) ReadBios(addr uint32) uint8 {
+
+	// temp handler
+	//nAddr, ok := BIOS_ADDR[m.BIOS_MODE]
+	var nAddr uint32
+	ok := false
+	if !ok {
+		nAddr = 0xE129F000
+	}
+
+	switch addr & 0b11 {
+	case 0:
+		return uint8(nAddr)
+	case 1:
+		return uint8(nAddr >> 8)
+	case 2:
+		return uint8(nAddr >> 16)
+	case 3:
+		return uint8(nAddr >> 24)
+	default:
+		panic("THIS IS IMPOSSIBLE")
+	}
+}
+
+func (m *Memory) ReadOpenBus(addr uint32) uint8 {
+
+	pc := m.GBA.Cpu.Reg.R[PC]
+
+	if m.GBA.Cpu.Reg.CPSR.T {
+
+		//if m.GBA.Cpu.Reg.isThumb {
+
+		// region based thumb openbus behavior has not been implimented
+
+		//For THUMB code in Main RAM, Palette Memory, VRAM, and Cartridge ROM this is:
+		//LSW = [$+4], MSW = [$+4]
+
+		//For THUMB code in BIOS or OAM
+		//LSW = [$+4], MSW = [$+6]   ;for opcodes at 4-byte aligned locations
+		//LSW = [$+2], MSW = [$+4]   ;for opcodes at non-4-byte aligned locations
+
+		//For THUMB code in 32K-WRAM
+		//LSW = [$+4], MSW = OldHI   ;for opcodes at 4-byte aligned locations
+		//LSW = OldLO, MSW = [$+4]   ;for opcodes at non-4-byte aligned locations
+		//Whereas OldLO/OldHI are usually:
+		//OldLO=[$+2], OldHI=[$+2]
+		//Unless the previous opcode's prefetch was overwritten;
+		//that can happen if the previous opcode was itself an LDR opcode, ie.
+		//if it was itself reading data:
+
+		//OldLO=LSW(data), OldHI=MSW(data)
+		//Theoretically, this might also change if a DMA transfer occurs.
+
+		return uint8(m.Read32((pc&^1)+4, false) >> ((addr & 1) << 3))
+	}
+
+	return uint8(m.Read32((pc&^3)+8, false) >> ((addr & 3) << 3))
+}
+
+func (m *Memory) ReadIO(addr uint32) uint8 {
+
+	// this addr is relative. - 0x400000
+
+	switch {
+	case addr >= 0x10 && addr < 0x48,
+		addr >= 0x4C && addr < 0x50,
+		addr >= 0x54 && addr < 0x60,
+		addr >= 0xB0 && addr < 0xB8,
+		addr >= 0xBC && addr < 0xC4,
+		addr >= 0xC8 && addr < 0xD0,
+		addr >= 0xD4 && addr < 0xDC,
+		addr >= 0xE0 && addr < 0x100:
+		return m.ReadOpenBus(addr)
+	case addr >= 0x60 && addr < 0xB0:
+		return m.ReadSoundIO(addr)
+	}
+
+	switch addr {
+	case 0x0004:
+		return uint8(m.Dispstat)
+	case 0x0005:
+		return uint8(m.Dispstat >> 8)
+	case 0x0007:
+		return 0
+	case 0x00B8:
+		return 0
+	case 0x00B9:
+		return 0
+	case 0x00BA:
+		return m.GBA.Dma[0].ReadControl(false)
+	case 0x00BB:
+		return m.GBA.Dma[0].ReadControl(true)
+	case 0x00C4:
+		return 0
+	case 0x00C5:
+		return 0
+	case 0x00C6:
+		return m.GBA.Dma[1].ReadControl(false)
+	case 0x00C7:
+		return m.GBA.Dma[1].ReadControl(true)
+	case 0x00D0:
+		return 0
+	case 0x00D1:
+		return 0
+	case 0x00D2:
+		return m.GBA.Dma[2].ReadControl(false)
+	case 0x00D3:
+		return m.GBA.Dma[2].ReadControl(true)
+	case 0x00DC:
+		return 0
+	case 0x00DD:
+		return 0
+	case 0x00DE:
+		return m.GBA.Dma[3].ReadControl(false)
+	case 0x00DF:
+		return m.GBA.Dma[3].ReadControl(true)
+
+	case 0x100:
+		return m.GBA.Timers[0].ReadD(false)
+	case 0x101:
+		return m.GBA.Timers[0].ReadD(true)
+	case 0x102:
+		return m.GBA.Timers[0].ReadCnt(false)
+	case 0x103:
+		return m.GBA.Timers[0].ReadCnt(true)
+	case 0x104:
+		return m.GBA.Timers[1].ReadD(false)
+	case 0x105:
+		return m.GBA.Timers[1].ReadD(true)
+	case 0x106:
+		return m.GBA.Timers[1].ReadCnt(false)
+	case 0x107:
+		return m.GBA.Timers[1].ReadCnt(true)
+	case 0x108:
+		return m.GBA.Timers[2].ReadD(false)
+	case 0x109:
+		return m.GBA.Timers[2].ReadD(true)
+	case 0x10A:
+		return m.GBA.Timers[2].ReadCnt(false)
+	case 0x10B:
+		return m.GBA.Timers[2].ReadCnt(true)
+	case 0x10C:
+		return m.GBA.Timers[3].ReadD(false)
+	case 0x10D:
+		return m.GBA.Timers[3].ReadD(true)
+	case 0x10E:
+		return m.GBA.Timers[3].ReadCnt(false)
+	case 0x10F:
+		return m.GBA.Timers[3].ReadCnt(true)
+
+	case 0x130:
+		return m.GBA.Keypad.readINPUT(false)
+	case 0x131:
+		return m.GBA.Keypad.readINPUT(true)
+	case 0x132:
+		return m.GBA.Keypad.readCNT(false)
+	case 0x133:
+		return m.GBA.Keypad.readCNT(true)
+
+	case 0x136:
+		return 0
+	case 0x137:
+		return 0
+	case 0x138:
+		return 0
+	case 0x139:
+		return 0
+
+	case 0x142:
+		return 0
+	case 0x143:
+		return 0
+
+	case 0x15A:
+		return 0
+	case 0x15B:
+		return 0
+
+	case 0x200:
+		return uint8(m.GBA.Irq.IE)
+	case 0x201:
+		return uint8(m.GBA.Irq.IE >> 8)
+	case 0x202:
+		return uint8(m.GBA.Irq.IF)
+	case 0x203:
+		return uint8(m.GBA.Irq.IF >> 8)
+
+	case 0x206:
+		return 0
+	case 0x207:
+		return 0
+	case 0x208:
+		return m.GBA.Irq.ReadIME()
+	case 0x209:
+		return 0
+
+	case 0x20A:
+		return 0
+	case 0x20B:
+		return 0
+
+	case 0x301:
+		return 0
+	case 0x302:
+		return 0
+	case 0x303:
+		return 0
+	case 0x304:
+		return 0
+	}
+
+	return m.IO[addr]
+}
+
+func (m *Memory) Read8(addr uint32, _ bool) uint32 {
+	if badRom := addr >= 0x800_0000 && addr < 0xE00_0000; badRom {
+		if addr&0x1FF_FFFF >= m.GBA.Cartridge.RomLength {
+			return m.ReadBadRom(addr, 1)
+		}
+	}
+
+	return uint32(m.Read(addr))
+}
+
+// Accessing SRAM Area by 16bit/32bit
+// Reading retrieves 8bit value from specified address, multiplied by 0101h (LDRH) or by 01010101h (LDR). Writing changes the 8bit value at the specified address only, being set to LSB of (source_data ROR (address*8)).
+func (m *Memory) Read16(addr uint32, _ bool) uint32 {
+
+	switch {
+	case addr >= 0xE00_0000:
+
+		//if m.GBA.Cpu.Reg.R[PC] < 0x4000 {
+		//    return uint32(m.Read(addr &^ 1)) * 0x0101
+		//}
+
+		return uint32(m.Read(addr)) * 0x0101
+
+	case addr >= 0xD00_0000:
+		if ok := CheckEeprom(m.GBA, addr); ok {
+			return uint32(m.GBA.Cartridge.EepromRead())
+		}
+
+		offset := (addr - 0x800_0000) & (0x200_0000 - 1)
+		if offset >= m.GBA.Cartridge.RomLength {
+			return m.ReadBadRom(addr, 2)
+		}
+
+	case addr >= 0x800_0000:
+		if addr&0x1FF_FFFF >= m.GBA.Cartridge.RomLength {
+			return m.ReadBadRom(addr, 2)
+		}
+	}
+
+	if ptr, ok := m.ReadPtr(addr, false); ok {
+		return uint32(binary.LittleEndian.Uint16((*[4]uint8)(ptr)[:]))
+	}
+
+	return uint32(m.Read(addr+1))<<8 | uint32(m.Read(addr))
+}
+
+func (m *Memory) Read32(addr uint32, _ bool) uint32 {
+
+	switch {
+	case addr >= 0xE00_0000:
+
+		//if m.GBA.Cpu.Reg.R[PC] < 0x4000 {
+
+		//    return uint32(m.Read(addr &^ 3)) * 0x01010101
+		//}
+
+		return uint32(m.Read(addr)) * 0x01010101
+	case addr >= 0x800_0000:
+		if addr&0x1FF_FFFF >= m.GBA.Cartridge.RomLength {
+			return m.ReadBadRom(addr, 4)
+		}
+	}
+
+	if ptr, ok := m.ReadPtr(addr, false); ok {
+		return binary.LittleEndian.Uint32((*[4]uint8)(ptr)[:])
+	}
+
+	a := uint32(m.Read(addr+3))<<8 | uint32(m.Read(addr+2))
+	b := uint32(m.Read(addr+1))<<8 | uint32(m.Read(addr))
+	return (a << 16) + b
+}
+
+func (m *Memory) ReadBadRom(addr uint32, bytesRead uint8) uint32 {
+
+	switch bytesRead {
+	case 1:
+		v := ((addr >> 1) >> ((addr & 1) * 8)) & 0xFF
+		return uint32(uint8(v))
+	case 2:
+
+		v := (addr >> 1) & 0xFFFF
+		if addr&1 == 1 {
+			v = ((addr >> 1) >> ((addr & 1) * 8)) & 0xFF
+		}
+
+		return uint32(uint16(v))
+
+	case 4:
+		v := ((addr &^ 3) >> 1) & 0xFFFF
+		v |= (((addr &^ 3) + 2) >> 1) << 16
+		return uint32(v)
+	default:
+		panic("BAD ROM READ USING BYTES READ NOT VALID (1, 2, 4)")
+	}
+}
+
+func (m *Memory) Write(addr uint32, v uint8, byteWrite bool) {
+
+	//if addr < 0x1000 {
+	//    fmt.Printf("WRITE TO BIOS AT PC %08X and CURR %d ADDR %08X V %02X\n", m.GBA.Cpu.Reg.R[PC], CURR_INST, addr, v)
+	//}
+
+	m.writeRegions[addr>>24](m, addr, v, byteWrite)
+}
+
+func (m *Memory) WriteIO(addr uint32, v uint8) {
+
+	// this addr should be relative. - 0x400000
+	// do not make bg control addrs special, unless you know what the f you are doing
+	// VCOUNT is not writable, no touchy
+	if sound := addr >= 0x60 && addr < 0xB0; sound {
+		WriteSound(addr, v, m.GBA.Apu)
+		return
+	}
+
+	switch addr {
+	case 0x004:
+		m.Dispstat.Write(v, false)
+	case 0x005:
+		m.Dispstat.Write(v, true)
+	case 0x006:
+		return
+	case 0x007:
+		return
+	case 0x0009:
+		m.IO[addr] = v &^ 0b0010_0000 // BG0CNT mask
+	case 0x000B:
+		m.IO[addr] = v &^ 0b0010_0000 // BG1CNT mask
+
+	case 0x0011:
+		m.IO[addr] = v &^ 0b1111_1110 // BG0HOFS mask
+	case 0x0013:
+		m.IO[addr] = v &^ 0b1111_1110 // BG0VOFS mask
+	case 0x0015:
+		m.IO[addr] = v &^ 0b1111_1110 // BG1HOFS mask
+	case 0x0017:
+		m.IO[addr] = v &^ 0b1111_1110 // BG1VOFS mask
+	case 0x0019:
+		m.IO[addr] = v &^ 0b1111_1110 // BG2HOFS mask
+	case 0x001B:
+		m.IO[addr] = v &^ 0b1111_1110 // BG2VOFS mask
+	case 0x001D:
+		m.IO[addr] = v &^ 0b1111_1110 // BG3HOFS mask
+	case 0x001F:
+		m.IO[addr] = v &^ 0b1111_1110 // BG3VOFS mask
+
+	case 0x0048:
+		m.IO[addr] = v & 0x3F //winin
+	case 0x0049:
+		m.IO[addr] = v & 0x3F //winin
+	case 0x004A:
+		m.IO[addr] = v & 0x3F //winout
+	case 0x004B:
+		m.IO[addr] = v & 0x3F //winout
+
+	case 0x0050:
+		m.IO[addr] = v // bldcnt
+	case 0x0051:
+		m.IO[addr] = v &^ 0b1100_0000 // bldcnt
+	case 0x0052:
+		m.IO[addr] = v &^ 0b1110_0000 // bldalpha
+	case 0x0053:
+		m.IO[addr] = v &^ 0b1110_0000 // bldalpha
+
+	case 0x00B0:
+		m.GBA.Dma[0].WriteSrc(v, 0)
+		m.IO[addr] = v
+	case 0x00B1:
+		m.GBA.Dma[0].WriteSrc(v, 1)
+		m.IO[addr] = v
+	case 0x00B2:
+		m.GBA.Dma[0].WriteSrc(v, 2)
+		m.IO[addr] = v
+	case 0x00B3:
+		m.GBA.Dma[0].WriteSrc(v, 3)
+		m.IO[addr] = v
+	case 0x00B4:
+		m.GBA.Dma[0].WriteDst(v, 0)
+	case 0x00B5:
+		m.GBA.Dma[0].WriteDst(v, 1)
+	case 0x00B6:
+		m.GBA.Dma[0].WriteDst(v, 2)
+	case 0x00B7:
+		m.GBA.Dma[0].WriteDst(v, 3)
+	case 0x00B8:
+		m.GBA.Dma[0].WriteCount(v, false)
+	case 0x00B9:
+		m.GBA.Dma[0].WriteCount(v, true)
+	case 0x00BA:
+		m.GBA.Dma[0].WriteControl(v, false)
+	case 0x00BB:
+		m.GBA.Dma[0].WriteControl(v, true)
+	case 0x00BC:
+		m.GBA.Dma[1].WriteSrc(v, 0)
+	case 0x00BD:
+		m.GBA.Dma[1].WriteSrc(v, 1)
+	case 0x00BE:
+		m.GBA.Dma[1].WriteSrc(v, 2)
+	case 0x00BF:
+		m.GBA.Dma[1].WriteSrc(v, 3)
+	case 0x00C0:
+		m.GBA.Dma[1].WriteDst(v, 0)
+	case 0x00C1:
+		m.GBA.Dma[1].WriteDst(v, 1)
+	case 0x00C2:
+		m.GBA.Dma[1].WriteDst(v, 2)
+	case 0x00C3:
+		m.GBA.Dma[1].WriteDst(v, 3)
+	case 0x00C4:
+		m.GBA.Dma[1].WriteCount(v, false)
+	case 0x00C5:
+		m.GBA.Dma[1].WriteCount(v, true)
+	case 0x00C6:
+		m.GBA.Dma[1].WriteControl(v, false)
+	case 0x00C7:
+		m.GBA.Dma[1].WriteControl(v, true)
+	case 0x00C8:
+		m.GBA.Dma[2].WriteSrc(v, 0)
+	case 0x00C9:
+		m.GBA.Dma[2].WriteSrc(v, 1)
+	case 0x00CA:
+		m.GBA.Dma[2].WriteSrc(v, 2)
+	case 0x00CB:
+		m.GBA.Dma[2].WriteSrc(v, 3)
+	case 0x00CC:
+		m.GBA.Dma[2].WriteDst(v, 0)
+	case 0x00CD:
+		m.GBA.Dma[2].WriteDst(v, 1)
+	case 0x00CE:
+		m.GBA.Dma[2].WriteDst(v, 2)
+	case 0x00CF:
+		m.GBA.Dma[2].WriteDst(v, 3)
+	case 0x00D0:
+		m.GBA.Dma[2].WriteCount(v, false)
+	case 0x00D1:
+		m.GBA.Dma[2].WriteCount(v, true)
+	case 0x00D2:
+		m.GBA.Dma[2].WriteControl(v, false)
+	case 0x00D3:
+		m.GBA.Dma[2].WriteControl(v, true)
+	case 0x00D4:
+		m.GBA.Dma[3].WriteSrc(v, 0)
+	case 0x00D5:
+		m.GBA.Dma[3].WriteSrc(v, 1)
+	case 0x00D6:
+		m.GBA.Dma[3].WriteSrc(v, 2)
+	case 0x00D7:
+		m.GBA.Dma[3].WriteSrc(v, 3)
+	case 0x00D8:
+		m.GBA.Dma[3].WriteDst(v, 0)
+	case 0x00D9:
+		m.GBA.Dma[3].WriteDst(v, 1)
+	case 0x00DA:
+		m.GBA.Dma[3].WriteDst(v, 2)
+	case 0x00DB:
+		m.GBA.Dma[3].WriteDst(v, 3)
+	case 0x00DC:
+		m.GBA.Dma[3].WriteCount(v, false)
+	case 0x00DD:
+		m.GBA.Dma[3].WriteCount(v, true)
+	case 0x00DE:
+		m.GBA.Dma[3].WriteControl(v, false)
+	case 0x00DF:
+		m.GBA.Dma[3].WriteControl(v, true)
+
+	case 0x100:
+		m.GBA.Timers[0].WriteD(v, false)
+	case 0x101:
+		m.GBA.Timers[0].WriteD(v, true)
+	case 0x102:
+		m.GBA.Timers[0].WriteCnt(v, false)
+	case 0x103:
+		m.GBA.Timers[0].WriteCnt(v, true)
+	case 0x104:
+		m.GBA.Timers[1].WriteD(v, false)
+	case 0x105:
+		m.GBA.Timers[1].WriteD(v, true)
+	case 0x106:
+		m.GBA.Timers[1].WriteCnt(v, false)
+	case 0x107:
+		m.GBA.Timers[1].WriteCnt(v, true)
+	case 0x108:
+		m.GBA.Timers[2].WriteD(v, false)
+	case 0x109:
+		m.GBA.Timers[2].WriteD(v, true)
+	case 0x10A:
+		m.GBA.Timers[2].WriteCnt(v, false)
+	case 0x10B:
+		m.GBA.Timers[2].WriteCnt(v, true)
+	case 0x10C:
+		m.GBA.Timers[3].WriteD(v, false)
+	case 0x10D:
+		m.GBA.Timers[3].WriteD(v, true)
+	case 0x10E:
+		m.GBA.Timers[3].WriteCnt(v, false)
+	case 0x10F:
+		m.GBA.Timers[3].WriteCnt(v, true)
+
+	case 0x130:
+		return
+	case 0x131:
+		return
+	case 0x132:
+		m.GBA.Keypad.writeCNT(v, false)
+	case 0x133:
+		m.GBA.Keypad.writeCNT(v, true)
+
+	case 0x200:
+		m.GBA.Irq.WriteIE(v, 0)
+	case 0x201:
+		m.GBA.Irq.WriteIE(v, 1)
+	case 0x202:
+		m.GBA.Irq.WriteIF(v, 0)
+	case 0x203:
+		m.GBA.Irq.WriteIF(v, 1)
+
+	case 0x204:
+		m.IO[addr] = v
+	case 0x205:
+		m.IO[addr] = (m.IO[addr] & 0x80) | (v & 0x5F)
+	case 0x206:
+		return
+	case 0x207:
+		return
+
+	// IME
+	case 0x208:
+		m.GBA.Irq.WriteIME(v)
+		m.IO[addr] = v
+	case 0x209:
+		return
+	case 0x20A:
+		return
+	case 0x20B:
+		return
+
+	case 0x301:
+		m.IO[addr] = v & 0x80
+		m.GBA.Cpu.Halted = true
+
+	default:
+		m.IO[addr] = v
+	}
+
+	if addr == 0x0 || addr == 0x1 || (addr >= 0x8 && addr < 0x55) {
+		m.GBA.PPU.UpdatePPU(addr, uint32(v))
+	}
+}
+
+func (m *Memory) Write8(addr uint32, v uint8, _ bool) {
+	m.Write(addr, v, true)
+}
+
+func (m *Memory) Write16(addr uint32, v uint16, _ bool) {
+
+	switch {
+	case addr >= 0xE00_0000:
+		if addr&1 == 1 {
+			v >>= 8
+		}
+
+		m.Write(addr, uint8(v), true)
+		return
+	case addr >= 0xD00_0000:
+		if ok := CheckEeprom(m.GBA, addr); ok {
+			m.GBA.Save = true
+			m.GBA.Cartridge.EepromWrite(v)
+			return
+		}
+	}
+
+	m.Write(addr, uint8(v), false)
+	m.Write(addr+1, uint8(v>>8), false)
+}
+
+func (m *Memory) Write32(addr uint32, v uint32, _ bool) {
+
+	if sram := addr >= 0xE00_0000; sram {
+		is := (addr << 3) & 0x1F
+		v = bits.RotateLeft32(v, -int(is))
+		m.Write(addr, uint8(v), false)
+		return
+	}
+
+	m.Write(addr, uint8(v), false)
+	m.Write(addr+1, uint8(v>>8), false)
+	m.Write(addr+2, uint8(v>>16), false)
+	m.Write(addr+3, uint8(v>>24), false)
+}
+
+func CheckEeprom(gba *GBA, addr uint32) bool {
+
+	if gba.Cartridge.Id != 1 {
+		return false
+	}
+
+	if addr < 0xD00_0000 || addr >= 0xE00_0000 {
+		return false
+	}
+
+	if gba.Cartridge.RomLength > 0x1000_0000 && addr < 0xDFF_FF00 {
+		return false
+	}
+
+	return true
+}
+
+func (m *Memory) ReadSoundIO(addr uint32) uint8 {
+
+	switch addr &^ 0b1 {
+	case 0x8C:
+		return m.ReadOpenBus(addr)
+	case 0x8E:
+		return m.ReadOpenBus(addr)
+	case 0xA0:
+		return m.ReadOpenBus(addr)
+	case 0xA2:
+		return m.ReadOpenBus(addr)
+	case 0xA4:
+		return m.ReadOpenBus(addr)
+	case 0xA6:
+		return m.ReadOpenBus(addr)
+	case 0xA8:
+		return m.ReadOpenBus(addr)
+	case 0xAA:
+		return m.ReadOpenBus(addr)
+	case 0xAC:
+		return m.ReadOpenBus(addr)
+	case 0xAE:
+		return m.ReadOpenBus(addr)
+	default:
+		return ReadSound(addr, m.GBA.Apu)
+	}
+}
+func (m *Memory) ReadIODirect(addr uint32, size uint32) uint32 {
+
+	switch size {
+	case 1:
+		return m.ReadIODirectByte(addr)
+
+	case 2:
+		return m.ReadIODirectByte(addr+1)<<8 | m.ReadIODirectByte(addr)
+	case 4:
+		a := m.ReadIODirectByte(addr+3)<<8 | m.ReadIODirectByte(addr+2)
+		b := m.ReadIODirectByte(addr+1)<<8 | m.ReadIODirectByte(addr)
+
+		return (a << 16) | b
+
+	default:
+		panic("UNKOWN READ IO DIRECT SIZE")
+	}
+}
+
+func (m *Memory) ReadIODirectByte(addr uint32) uint32 {
+	switch addr {
+	case 0x4:
+		return uint32(m.Dispstat)
+	case 0x5:
+		return uint32(m.Dispstat >> 8)
+	default:
+		return uint32(m.IO[addr])
+	}
+}
+
+func (m *Memory) WritePtr(addr uint32, _ bool) (unsafe.Pointer, bool) {
+
+	switch regions := addr >> 24; regions {
+	case 0x2:
+		return unsafe.Add(
+			unsafe.Pointer(&m.WRAM1), addr&0x3FFFF), true
+	case 0x3:
+		return unsafe.Add(
+			unsafe.Pointer(&m.WRAM2), addr&0x7FFF), true
+	case 0x6:
+		addr &= 0x1FFFF
+		if addr >= 0x18000 {
+			addr -= 0x8000
+		}
+		return unsafe.Add(
+			unsafe.Pointer(&m.VRAM), addr), true
+
+	default:
+		return nil, false
+	}
+}
