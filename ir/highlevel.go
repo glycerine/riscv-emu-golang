@@ -11,7 +11,7 @@ const JitOKJalrMiss = 6
 // MaxIC is the maximum instruction count before a backward branch forces
 // a block exit. This ensures GC preemption windows and prevents infinite loops
 // inside a single JIT block.
-const MaxIC = 4096
+const MaxIC = 1 << 16 // 1<<16 is the sweetspot: almost no SIGURG, 3628 MIPS on darwin.
 
 // MaskedLoad performs a bounds-checked guest memory load:
 //
