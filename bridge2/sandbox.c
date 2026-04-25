@@ -215,12 +215,11 @@ void interpreter_thread_main(spsc_ring_t* ring) {
         // ── Ring is empty ────────────────────────────────────────────────────
 
         if (sleeping) {
-            // Already past the deadline — sleep indefinitely until woken.
-            // futex_wait returns immediately if head changed since we read it,
-            // so there is no race between the producer's store and our sleep.
             uint32_t h32 = (uint32_t)atomic_load_explicit(
                                &ring->head, memory_order_relaxed);
+            atomic_store_explicit(&ring->sleeping, 1, memory_order_release);
             futex_wait((uint32_t*)&ring->head, h32);
+            atomic_store_explicit(&ring->sleeping, 0, memory_order_relaxed);
             last_head = atomic_load_explicit(&ring->head, memory_order_relaxed);
             continue;
         }

@@ -81,7 +81,8 @@ typedef struct {
     _Atomic uint64_t head;           // written by producer (Go side)
     uint8_t          _pad0[56];
     _Atomic uint64_t tail;           // written by consumer (C side)
-    uint8_t          _pad1[56];
+    _Atomic uint32_t sleeping;       // 1 when C thread is in futex sleep
+    uint8_t          _pad1[52];
     uint32_t         capacity;
     uint8_t          _pad2[60];
     work_item_t      items[RING_CAPACITY];

@@ -113,14 +113,16 @@ type cWorkItem struct {
 //	head     @   0  (8 bytes)
 //	_pad0    @   8  (56 bytes)
 //	tail     @  64  (8 bytes)
-//	_pad1    @  72  (56 bytes)
+//	sleeping @  72  (4 bytes)
+//	_pad1    @  76  (52 bytes)
 //	capacity @ 128  (4 bytes)
 //	_pad2    @ 132  (60 bytes)
 //	items    @ 192  (64 bytes each)
 const (
-	ringOffHead  = 0
-	ringOffTail  = 64
-	ringOffItems = 192
+	ringOffHead     = 0
+	ringOffTail     = 64
+	ringOffSleeping = 72
+	ringOffItems    = 192
 )
 
 func (ring *Ring) headPtr() *uint64 {
@@ -129,6 +131,10 @@ func (ring *Ring) headPtr() *uint64 {
 
 func (ring *Ring) tailPtr() *uint64 {
 	return (*uint64)(unsafe.Pointer(uintptr(unsafe.Pointer(ring.r)) + ringOffTail))
+}
+
+func (ring *Ring) sleepingPtr() *uint32 {
+	return (*uint32)(unsafe.Pointer(uintptr(unsafe.Pointer(ring.r)) + ringOffSleeping))
 }
 
 func (ring *Ring) slot(i uint64) *cWorkItem {
@@ -157,21 +163,18 @@ func (ring *Ring) Push(opcode uint32, arg0, arg1, arg2 uint64) (slotIdx uint64, 
 
 	atomic.StoreUint64(hp, head+1) // release — makes item visible to C thread
 
-	// Wake the C thread if it has crossed the 100 ms idle deadline and is
-	// sleeping on the futex. This is a no-op (~10 ns) when it is spinning.
-	C.futex_wake((*C.uint32_t)(unsafe.Pointer(hp)))
+	if atomic.LoadUint32(ring.sleepingPtr()) != 0 {
+		C.futex_wake((*C.uint32_t)(unsafe.Pointer(hp)))
+	}
 
 	return head, true
 }
 
 // WaitResult spins until the slot at slotIdx reports WORK_STATE_DONE,
-// then returns the result. Uses runtime.Gosched() rather than a raw spin
-// so the Go scheduler can make progress on other goroutines while waiting.
+// then returns the result.
 func (ring *Ring) WaitResult(slotIdx uint64) uint64 {
 	s := ring.slot(slotIdx)
-	for atomic.LoadUint32(&s.state) != 2 { // WORK_STATE_DONE
-		runtime.Gosched()
-	}
+	for atomic.LoadUint32(&s.state) != 2 {} // WORK_STATE_DONE
 	return s.result
 }
 
