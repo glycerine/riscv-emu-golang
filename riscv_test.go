@@ -368,7 +368,7 @@ func TestRISCVTests_UC_JIT(t *testing.T) {
 const lockstepMemSize = Size1MB
 
 func runLockstep(t *testing.T, elfPath string) {
-	t.Helper()
+	//t.Helper()
 	saved := CheckSandboxBounds
 	CheckSandboxBounds = true
 	defer func() { CheckSandboxBounds = saved }()
@@ -419,7 +419,6 @@ func runLockstep(t *testing.T, elfPath string) {
 		// JIT: one dispatch cycle
 		jitIC, jitErr := jit.StepBlock(jitCPU)
 
-
 		// Interpreter: same number of instructions
 		var interpErr error
 		for i := uint64(0); i < jitIC; i++ {
@@ -429,8 +428,32 @@ func runLockstep(t *testing.T, elfPath string) {
 				for r := uint8(0); r < 32; r++ {
 					off := interpCPU.x[r] & interpCPU.mem.Mask()
 					if off >= interpCPU.mem.Size()/2 && interpCPU.x[r] != 0 {
-						t.Logf("  insn %d pc=0x%x: x[%d]=0x%x → masked offset 0x%x",
-							i, ipc, r, interpCPU.x[r], off)
+
+						// note that this next Logf fires for any register that
+						// contains a value mapping to the
+						// upper half — but it runs before step(),
+						// regardless of whether that register is used as an
+						// address. CheckSandboxBounds only triggers when
+						// a value is actually passed to Load*/Store* as
+						// an address. The ELF tests false alarm on this:
+						// There it is. Looking at the disassembly around PC 0x64a:
+						//
+						//  0x00646: lui x1, 0xaabbd000 # x1 = 0xffffffffaabbd000 (sign-ext)
+						//  0x0064a: addi x1, x1, -803  # x1 = 0xffffffffaabbccdd (test value)
+						//  0x0064e: c.swsp x1, 0(sp)   # STORE x1 to memory at sp
+						//  0x00650: c.lwsp x14, 0(sp)  # LOAD back from sp
+						//
+						//  x[1] is DATA, not an ADDRESS. It's a test pattern being
+						// round-tripped through memory. The  actual memory address
+						// used for the store/load is sp (x2), not x1.
+						// CheckSandboxBounds only fires when a value is
+						// passed as an address to
+						// Load*/Store* — it doesn't inspect register contents.
+						//
+						// hence commented out:
+						//t.Logf("  insn %d pc=0x%x: x[%d]=0x%x → masked offset 0x%x",
+						//	i, ipc, r, interpCPU.x[r], off)
+						_ = ipc
 						break
 					}
 				}

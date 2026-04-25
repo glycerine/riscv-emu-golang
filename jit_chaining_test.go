@@ -36,7 +36,8 @@ func runSimpleLoopJIT(t *testing.T, iters uint64) (*CPU, *JIT) {
 		benc(opBRANCH, 4, 12, 13, -12),
 		instrECALL,
 	}
-	cpu, _ := newTestCPU(t, Size64MB, 0x1000, insns)
+	cpu, mem := newTestCPU(t, Size64MB, 0x1000, insns)
+	t.Cleanup(mem.Free)
 	cpu.SetReg(12, 0)
 	cpu.SetReg(13, iters)
 	cpu.Notes.Push(ecallStop)

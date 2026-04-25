@@ -197,7 +197,7 @@ func TestOS_Exit0(t *testing.T) {
 }
 
 func TestOS_ExitNonzero(t *testing.T) {
-	//t.Skip("SIGBUS, what else?") // due to page guards
+	//t.Skip("SIGBUS, what else?") // was due to middle page guard
 	// li a7, 93; li a0, 42; ecall
 	insns := append(append(li32(17, 93), li32(10, 42)...), ecallInsn)
 	code, err := runOS(t, insns)
