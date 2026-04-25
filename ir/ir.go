@@ -151,7 +151,7 @@ func (p Pred) String() string {
 }
 
 // Label identifies a jump target within a block.
-type Label uint16
+type Label int64
 
 // IROp enumerates the IR operations.
 type IROp uint8
