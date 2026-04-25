@@ -9,8 +9,8 @@ prof_findings.md
 *test
 bench/libriscv_guest/bench_guest.native
 bench/libriscv_guest/bench_guest.elf
-bench/coremark.elf
-bench/dhrystone.elf
+#bench/coremark.elf
+#bench/dhrystone.elf
 xendor/tcc/libtcc.a
 darwin-perf
 hellobench
