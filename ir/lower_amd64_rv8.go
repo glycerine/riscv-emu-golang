@@ -1708,51 +1708,85 @@ const (
 
 func (lc *lowerCtxRV8) rv8MisalignLoad(ins *IRInstr) {
 	width := typeWidth(ins.T)
-	addrReg := lc.stageInt(ins.A, 0)
 	dstReg := lc.writeDst(ins.Dst)
-	scrA := rv8StgA // RAX
-	scrB := rv8StgB // RCX
 
-	// byte 0: dst = zero-extend byte [memBase + ((addr+0) & mask)]
-	lc.emit2(x86.AMOVQ, addrReg, scrA)
-	lc.emitRM(x86.AANDQ, goasm.REG_AMD64_BP, rfMemMaskOff, scrA)
-	lc.emitRM(x86.AADDQ, goasm.REG_AMD64_BP, rfMemBaseOff, scrA)
-	lc.emitRMMovzx(scrA, 0, dstReg)
+	// addr is either in a pool register (directReg) or spilled.
+	// RAX/RCX are never pool registers, so directReg never returns them.
+	// Strategy: accumulate in RAX, use CX as scratch. Final MOV RAX→dst.
+	accum := rv8StgA // RAX
+	scr := rv8StgB   // RCX
 
-	for i := 1; i < width; i++ {
-		lc.emit2(x86.AMOVQ, addrReg, scrA)
-		lc.emitRI(x86.AADDQ, int64(i), scrA)
-		lc.emitRM(x86.AANDQ, goasm.REG_AMD64_BP, rfMemMaskOff, scrA)
-		lc.emitRM(x86.AADDQ, goasm.REG_AMD64_BP, rfMemBaseOff, scrA)
-		lc.emitRMMovzx(scrA, 0, scrB)
-		lc.emitRI(x86.ASHLQ, int64(i*8), scrB)
-		lc.emit2(x86.AORQ, scrB, dstReg)
+	addrPool := lc.directReg(ins.A)
+	addrSpillBase, addrSpillOff, addrSpilled := lc.spilledMemOp(ins.A)
+
+	for i := 0; i < width; i++ {
+		// scr = addr + i
+		if addrPool >= 0 {
+			lc.emit2(x86.AMOVQ, addrPool, scr)
+		} else if addrSpilled {
+			lc.emitRM(x86.AMOVQ, addrSpillBase, addrSpillOff, scr)
+		} else {
+			lc.stageInt(ins.A, 1) // loads into CX
+		}
+		if i > 0 {
+			lc.emitRI(x86.AADDQ, int64(i), scr)
+		}
+		lc.emitRM(x86.AANDQ, goasm.REG_AMD64_BP, rfMemMaskOff, scr)
+		lc.emitRM(x86.AADDQ, goasm.REG_AMD64_BP, rfMemBaseOff, scr)
+		lc.emitRMMovzx(scr, 0, scr) // scr = byte
+		if i == 0 {
+			lc.emit2(x86.AMOVQ, scr, accum) // accum = byte0
+		} else {
+			lc.emitRI(x86.ASHLQ, int64(i*8), scr)
+			lc.emit2(x86.AORQ, scr, accum)
+		}
 	}
 
+	lc.emit2(x86.AMOVQ, accum, dstReg)
 	lc.commitDst(ins.Dst, dstReg)
 }
 
 func (lc *lowerCtxRV8) rv8MisalignStore(ins *IRInstr) {
 	width := typeWidth(ins.T)
-	addrReg := lc.stageInt(ins.A, 0)
-	valReg := lc.stageInt(ins.B, 1)
-	scrA := rv8StgA // RAX
-	scrB := rv8StgB // RCX
+
+	// addr and val are in pool registers or spilled.
+	// RAX/RCX are never pool regs, so we use them freely as scratch.
+	scrAddr := rv8StgA // RAX — host address
+	scrVal := rv8StgB  // RCX — byte value
+
+	addrPool := lc.directReg(ins.A)
+	addrSpillBase, addrSpillOff, addrSpilled := lc.spilledMemOp(ins.A)
+	valPool := lc.directReg(ins.B)
+	valSpillBase, valSpillOff, valSpilled := lc.spilledMemOp(ins.B)
 
 	for i := 0; i < width; i++ {
-		lc.emit2(x86.AMOVQ, valReg, scrB)
+		// scrVal = (value >> (i*8))
+		if valPool >= 0 {
+			lc.emit2(x86.AMOVQ, valPool, scrVal)
+		} else if valSpilled {
+			lc.emitRM(x86.AMOVQ, valSpillBase, valSpillOff, scrVal)
+		} else {
+			lc.stageInt(ins.B, 1)
+		}
 		if i > 0 {
-			lc.emitRI(x86.ASHRQ, int64(i*8), scrB)
+			lc.emitRI(x86.ASHRQ, int64(i*8), scrVal)
 		}
 
-		lc.emit2(x86.AMOVQ, addrReg, scrA)
-		if i > 0 {
-			lc.emitRI(x86.AADDQ, int64(i), scrA)
+		// scrAddr = memBase + ((addr + i) & mask)
+		if addrPool >= 0 {
+			lc.emit2(x86.AMOVQ, addrPool, scrAddr)
+		} else if addrSpilled {
+			lc.emitRM(x86.AMOVQ, addrSpillBase, addrSpillOff, scrAddr)
+		} else {
+			lc.stageInt(ins.A, 0)
 		}
-		lc.emitRM(x86.AANDQ, goasm.REG_AMD64_BP, rfMemMaskOff, scrA)
-		lc.emitRM(x86.AADDQ, goasm.REG_AMD64_BP, rfMemBaseOff, scrA)
+		if i > 0 {
+			lc.emitRI(x86.AADDQ, int64(i), scrAddr)
+		}
+		lc.emitRM(x86.AANDQ, goasm.REG_AMD64_BP, rfMemMaskOff, scrAddr)
+		lc.emitRM(x86.AADDQ, goasm.REG_AMD64_BP, rfMemBaseOff, scrAddr)
 
-		lc.emitMRByte(scrB, scrA, 0)
+		lc.emitMRByte(scrVal, scrAddr, 0)
 	}
 }
 
