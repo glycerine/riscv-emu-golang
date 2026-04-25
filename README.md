@@ -159,8 +159,3 @@ now back to 67s.
 ----
 with cgo, now at 389 sec
 
-and 2 hangs, skipped tests
-
-TestSRL_RealBlock_V1vV2
-
-TestDebugV1V2_SRL
