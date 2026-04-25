@@ -143,3 +143,33 @@ operations, or when the C-side work is substantial
 enough to overlap with the cross-thread
 transit. For a single trivial call, CGO's same-thread 
 function call can't be beat.
+
+# profile
+
+~~~
+go test -run=xxx -bench='BenchmarkRoundTrip$' -benchtime=3s -cpuprofile=cpu.prof
+
+┌────────────────────────────────┬────────┬───────────────────────────────────────┐
+│           Component            │  Time  │                   %                   │
+├────────────────────────────────┼────────┼───────────────────────────────────────┤
+│                                │ 2.53s  │ Spinning on atomic load waiting for C │
+│ WaitResult spin                │ (39%)  │  to write DONE — cross-core           │
+│                                │        │ cache-line transfer latency           │
+├────────────────────────────────┼────────┼───────────────────────────────────────┤
+│ C side (cgocall for            │ 3.19s  │ C thread spinning on its side —       │
+│ interpreter_thread_main)       │ (49%)  │ ring_pop polling for new items        │
+├────────────────────────────────┼────────┼───────────────────────────────────────┤
+│ Push                           │ 0.59s  │ Writing the slot + the sleepingPtr()  │
+│                                │ (9%)   │ check                                 │
+├────────────────────────────────┼────────┼───────────────────────────────────────┤
+│ sleepingPtr                    │ 0.26s  │ Pointer arithmetic for the sleeping   │
+│                                │ (4%)   │ flag load                             │
+└────────────────────────────────┴────────┴───────────────────────────────────────┘
+
+The 188ns round-trip is fundamentally the cost of two cross-core 
+cache-line bounces: Go writes head → C sees it (~half), C writes 
+state=DONE → Go sees it (~half). That's the cost of inter-thread 
+communication on your i7. The sleepingPtr overhead (260ms / 4%)
+could be shaved by caching the pointer, but it's minor.
+ 
+~~~
