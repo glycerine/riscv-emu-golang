@@ -441,8 +441,8 @@ func TestSubELF_Block39(t *testing.T) {
 
 // TestCLI_NoCorruption verifies C.LI x7, 3 doesn't corrupt other registers.
 func TestCLI_NoCorruption(t *testing.T) {
-	t.Skip("SIGBUS, what else?")
-	mem, err := NewGuestMemory(Size64MB)
+	//mem, err := NewGuestMemory(Size64MB)
+	mem, err := NewGuestMemory(Size32KB)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1236,7 +1236,7 @@ func TestSRL_Block39_Alloc(t *testing.T) {
 // TestDebugV1V2_SRL runs the srl ELF test with the V1-vs-V2 debug machine
 // to find the exact block and registers where V1 diverges from V2.
 func TestDebugV1V2_SRL(t *testing.T) {
-	t.Skip("hangs, what else?")
+	t.Skip("hangs, what else?") // page0 guaded=>faults. else hangs!
 	mem, err := NewGuestMemory(Size1MB)
 	if err != nil {
 		t.Fatal(err)
@@ -1664,7 +1664,6 @@ func testNativeTraceW(t *testing.T, elfPath string, targetBlock int) {
 // TestFusion_SLLI_SRLI_ZextW verifies that SLLI rd,rd,32; SRLI rd,rd,32
 // fuses into a single Zext I32.
 func TestFusion_SLLI_SRLI_ZextW(t *testing.T) {
-	//t.Skip("SIGBUS, what else? due to the mid-point + page0 guards + last guard; WTF?") //
 	insns := []uint32{
 		ienc(opOPIMM, 1, 10, 10, 32), // SLLI x10, x10, 32
 		ienc(opOPIMM, 5, 10, 10, 32), // SRLI x10, x10, 32

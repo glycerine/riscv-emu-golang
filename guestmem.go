@@ -72,6 +72,10 @@ import (
 // highest ELF VA (~0x10000 for riscv-tests). The last 3 pages are
 // reserved for the shadow register file, guard page, and sandbox stack.
 const (
+	Size32KB  uint64 = 1 << 15
+	Size64KB  uint64 = 1 << 16
+	Size128KB uint64 = 1 << 17
+
 	Size1MB   uint64 = 1 << 20
 	Size64MB  uint64 = 1 << 26
 	Size128MB uint64 = 1 << 27
@@ -216,7 +220,7 @@ func NewGuestMemory(size uint64) (*GuestMemory, error) {
 	// dereference just hits offset 0 of the mmap (harmless to the host).
 	pg := C.size_t(GuestPageSize)
 	//C.guest_guard(ptr, pg)
-	//C.guest_guard(unsafe.Pointer(uintptr(ptr)+uintptr(size/2)), pg)             // midpoint
+	C.guest_guard(unsafe.Pointer(uintptr(ptr)+uintptr(size/2)), pg)             // midpoint
 	C.guest_guard(unsafe.Pointer(uintptr(ptr)+uintptr(size)-2*uintptr(pg)), pg) // stack/regfile // unexpected fault address 0x15783f000 on go test -v -run TestFusion_SLLI_SRLI_ZextW (intermittant).
 
 	// Finalizer ensures the C slab is released if the caller forgets
