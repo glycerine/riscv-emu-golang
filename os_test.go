@@ -184,7 +184,7 @@ func TestNoteText_MemFault(t *testing.T) {
 // ── OS personality — exit ─────────────────────────────────────────────────
 
 func TestOS_Exit0(t *testing.T) {
-	t.Skip("SIGBUS, what else?")
+	//t.Skip("SIGBUS, what else?") // middle guard page (only) cause sigbus
 	// li a7, 93; li a0, 0; ecall
 	insns := append(append(li32(17, 93), li32(10, 0)...), ecallInsn)
 	code, err := runOS(t, insns)
