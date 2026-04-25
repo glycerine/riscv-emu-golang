@@ -18,6 +18,10 @@ const (
 // Returns the flow class, branch/jump target (if any), and instruction size.
 // Only decodes enough to identify control flow — NOT full semantics.
 func classifyFlow(mem *GuestMemory, pc uint64) (flowClass, uint64, uint64) {
+
+	//if pc%0x100000 == 0 {
+	//	vv("classifyFlow on pc = 0x%x", pc) // seen green : 0x10000 up to 0x3ff0000, increments of 0x10000
+	//}
 	half, f := mem.Fetch16(pc)
 	if f != nil {
 		return flowTerm, 0, 0 // can't fetch — treat as terminator
@@ -25,6 +29,9 @@ func classifyFlow(mem *GuestMemory, pc uint64) (flowClass, uint64, uint64) {
 
 	if half&0x3 != 0x3 {
 		// 16-bit RVC
+		if half == 0x0000 {
+			return flowTerm, 0, 2 // illegal instruction (C.UNIMP / all-zeros)
+		}
 		insn := uint16(half)
 		quad := insn & 0x3
 		funct3 := insn >> 13
@@ -99,7 +106,15 @@ type regionInfo struct {
 
 // scanRegion does a BFS over the control flow graph starting at entryPC
 // to determine the region of code that should be emitted as a single block.
+// The scan is bounded by the exec region containing entryPC (if any).
+// If entryPC is not inside any registered exec region, the scan is
+// unbounded below but stops at the first flowTerm or fetch failure.
 func scanRegion(mem *GuestMemory, entryPC uint64) regionInfo {
+	regionEnd := uint64(0)
+	if r := mem.FindExecRegion(entryPC); r != nil {
+		regionEnd = r.VAddrEnd
+	}
+
 	visited := newU64setSized(256)
 	worklist := []uint64{entryPC}
 	maxEnd := entryPC
@@ -112,6 +127,9 @@ func scanRegion(mem *GuestMemory, entryPC uint64) regionInfo {
 			continue
 		}
 		if pc < entryPC {
+			continue
+		}
+		if regionEnd != 0 && pc >= regionEnd {
 			continue
 		}
 
