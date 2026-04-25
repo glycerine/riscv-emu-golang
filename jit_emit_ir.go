@@ -15,16 +15,6 @@ import (
 
 const rasEnabled = true
 
-// maxBlockInsns limits the number of RISC-V instructions per JIT block.
-// Variable so tests can adjust it without recompilation.
-var maxBlockInsns = 2048
-
-// maxBlockIRInsns limits the total IR instructions per block. Each RISC-V
-// instruction expands to ~5-10 IR ops; very large blocks hit O(N*L) in the
-// register allocator's spill phase where L is average interval length.
-// 4096 IR instructions covers ~500-800 RISC-V instructions — large enough
-// for good optimization, small enough for fast compilation.
-const maxBlockIRInsns = 2048
 
 // emitResult holds the generated IR block and metadata.
 type emitResult struct {
@@ -958,8 +948,7 @@ func emitBlockRange(mem *GuestMemory, pc, endPC uint64) *emitResult {
 	}
 
 	// Emit IR (populates regsUsed via xreg/xregDst calls).
-	for e.numInsns < maxBlockInsns && !e.terminated && e.pc < e.regionEnd &&
-		len(irEm.Block.Instrs) < maxBlockIRInsns {
+	for !e.terminated && e.pc < e.regionEnd {
 		if e.visited[e.pc] {
 			e.irEm.Jump(e.getOrCreateLabel(e.pc))
 			e.gotoTargets.add(e.pc)

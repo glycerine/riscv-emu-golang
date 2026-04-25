@@ -413,12 +413,6 @@ func TestReloadSyscallRegs_DoesNotAffectOtherRegs(t *testing.T) {
 	}
 }
 
-func TestMaxIC(t *testing.T) {
-	if MaxIC != 4096 {
-		t.Errorf("MaxIC = %d, want 4096", MaxIC)
-	}
-}
-
 // End-to-end: simulate ADDI x1, x0, 42 ; SW x1, 0(x2) ; ECALL
 func TestEndToEnd_SimpleBlock(t *testing.T) {
 	e := NewEmitter()

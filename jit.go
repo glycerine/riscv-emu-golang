@@ -239,11 +239,8 @@ func NewJIT() *JIT {
 	}
 }
 
-// SetAllocStrategy used to switch between Extended Linear Scan and Fixed
-// Static Mapping allocators; ELS has been removed. The method is retained
-// as a no-op that reinstalls the Fixed Static Mapping allocator and clears
-// cached blocks, so existing callers (passing any strategy name) continue
-// to work.
+// SetAllocStrategy reinstalls the Fixed Static Mapping allocator and clears
+// cached blocks, so existing callers continue to work.
 func (j *JIT) SetAllocStrategy(name string) {
 	j.irAlloc = ir.NewFixedStaticAllocator()
 	// Clear block cache — compiled blocks used the old allocator.
