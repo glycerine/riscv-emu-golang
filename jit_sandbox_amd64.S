@@ -87,3 +87,7 @@ jit_trampoline_asm:
 	retq
 
 #endif /* __x86_64__ */
+
+#if defined(__linux__) && defined(__ELF__)
+.section .note.GNU-stack,"",@progbits
+#endif
