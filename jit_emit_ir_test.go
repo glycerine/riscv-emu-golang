@@ -1127,7 +1127,7 @@ func TestSRL_Block61_V1vV2b(t *testing.T) {
 // TestSRL_RealBlock_V1vV2 uses the real emitBlock on the srl ELF binary,
 // then compiles the resulting IR block with both V1 and V2 to find divergences.
 func TestSRL_RealBlock_V1vV2(t *testing.T) {
-	t.Skip("hangs, what else?")
+	//t.Skip("hangs, what else?")
 	mem, err := NewGuestMemory(Size1MB)
 	if err != nil {
 		t.Fatal(err)
