@@ -2,6 +2,7 @@ package main
 
 /*
 #include <stdlib.h>
+#include <string.h>
 #include "bridge.h"
 #cgo LDFLAGS: -lpthread
 */
@@ -19,14 +20,14 @@ type GoRingBuffer struct {
 func NewRingBuffer() *GoRingBuffer {
 	// Allocate on C heap to ensure the pointer is stable for C-land
 	size := C.sizeof_RingBuffer
-	p := (*C.RingBuffer)(C.malloc(size))
-	
+	p := (*C.RingBuffer)(C.malloc(C.size_t(size)))
+
 	// Zero out memory
-	C.memset(unsafe.Pointer(p), 0, size)
-	
+	C.memset(unsafe.Pointer(p), 0, C.size_t(size))
+
 	C.pthread_mutex_init(&p.mutex, nil)
 	C.pthread_cond_init(&p.cond, nil)
-	
+
 	return &GoRingBuffer{ptr: p}
 }
 
@@ -41,7 +42,7 @@ func (rb *GoRingBuffer) Push(val uint64) {
 
 	slot := head % uint64(C.RING_SIZE)
 	rb.ptr.buffer[slot] = C.uint64_t(val)
-	
+
 	// Atomic Add serves as a Store-Release on most architectures
 	atomic.AddUint64((*uint64)(unsafe.Pointer(&rb.ptr.head)), 1)
 
