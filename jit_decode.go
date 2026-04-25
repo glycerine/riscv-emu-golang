@@ -139,6 +139,9 @@ func scanRegion(mem *GuestMemory, entryPC uint64) regionInfo {
 			}
 		case flowCall:
 			worklist = append(worklist, pc+insnSize)
+			if target >= entryPC {
+				worklist = append(worklist, target)
+			}
 		case flowTerm:
 			// no successors
 		}
