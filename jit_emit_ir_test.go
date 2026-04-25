@@ -1127,19 +1127,21 @@ func TestSRL_Block61_V1vV2b(t *testing.T) {
 // TestSRL_RealBlock_V1vV2 uses the real emitBlock on the srl ELF binary,
 // then compiles the resulting IR block with both V1 and V2 to find divergences.
 func TestSRL_RealBlock_V1vV2(t *testing.T) {
-	//t.Skip("hangs, what else?")
+	data, derr := os.ReadFile("riscv-elf-tests/rv64ui-p-srl")
+	if derr != nil {
+		t.Skipf("ELF not found: %v", derr)
+	}
 	mem, err := NewGuestMemory(Size1MB)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer mem.Free()
 
-	_, err = LoadELF(mem, "riscv-elf-tests/rv64ui-p-srl")
+	_, err = LoadELFBytes(mem, data)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	// Find the first failing block by running lockstep.
 	cpu1 := NewCPU(*mem)
 	cpu1.SetPC(0)
 	cpu1.Notes.Push(func(c *CPU, n Note) NoteDisposition { return NoteHandled })
@@ -1147,6 +1149,11 @@ func TestSRL_RealBlock_V1vV2(t *testing.T) {
 	cpu2 := NewCPU(*mem)
 	cpu2.SetPC(0)
 	cpu2.Notes.Push(func(c *CPU, n Note) NoteDisposition { return NoteHandled })
+
+	var watchAddr uint64
+	if addr, ok := FindSymbolAddr(data, "tohost"); ok {
+		watchAddr = addr
+	}
 
 	jitV1 := NewJIT()
 	jitV2 := NewJIT()
@@ -1159,13 +1166,9 @@ func TestSRL_RealBlock_V1vV2(t *testing.T) {
 		ic1, err1 := jitV1.StepBlock(cpu1)
 		ic2, err2 := jitV2.StepBlock(cpu2)
 		_, _ = ic2, err2
-
-		// Run interpreter for V2 CPU the same number of V1 steps
-		// Actually both should run independently via their own JIT.
 		_ = ic1
 		_ = err1
 
-		// Compare registers
 		for r := 0; r < 32; r++ {
 			if cpu1.x[r] != cpu2.x[r] {
 				t.Fatalf("block %d (pc=0x%x, ic1=%d): x[%d] V1=0x%x V2=0x%x",
@@ -1176,12 +1179,15 @@ func TestSRL_RealBlock_V1vV2(t *testing.T) {
 			t.Fatalf("block %d: PC after: V1=0x%x V2=0x%x", block, cpu1.pc, cpu2.pc)
 		}
 
-		// Check for exit
 		if err1 != nil || err2 != nil {
 			break
 		}
+		if watchAddr != 0 {
+			if v, _ := cpu1.mem.Load64(watchAddr); v != 0 {
+				break
+			}
+		}
 	}
-	//t.Logf("V1 vs V2 lockstep passed, pc=0x%x cycles=%d", cpu1.pc, cpu1.Cycle())
 }
 
 // TestSRL_Block39_Alloc dumps the register allocation for the real block 39.
