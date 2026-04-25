@@ -63,7 +63,6 @@ import "C"
 import (
 	"fmt"
 	"riscv/ir"
-	"runtime"
 	"unsafe"
 )
 
@@ -223,18 +222,7 @@ func NewGuestMemory(size uint64) (*GuestMemory, error) {
 	//C.guest_guard(unsafe.Pointer(uintptr(ptr)+uintptr(size/2)), pg)             // midpoint
 	C.guest_guard(unsafe.Pointer(uintptr(ptr)+uintptr(size)-2*uintptr(pg)), pg) // stack/regfile // unexpected fault address 0x15783f000 on go test -v -run TestFusion_SLLI_SRLI_ZextW (intermittant).
 
-	// Finalizer ensures the C slab is released if the caller forgets
-	// to call Free(). Explicit Free() is preferred in production code.
-	runtime.SetFinalizer(m, (*GuestMemory).finalize)
-
 	return m, nil
-}
-
-func (m *GuestMemory) finalize() {
-	if m.base != 0 {
-		C.guest_free(unsafe.Pointer(m.base), C.size_t(m.size))
-		m.base = 0
-	}
 }
 
 // Free releases the slab immediately. Safe to call multiple times.
@@ -243,7 +231,6 @@ func (m *GuestMemory) Free() {
 	if m.base != 0 {
 		C.guest_free(unsafe.Pointer(m.base), C.size_t(m.size))
 		m.base = 0
-		runtime.SetFinalizer(m, nil)
 	}
 }
 
