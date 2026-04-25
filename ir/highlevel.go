@@ -17,9 +17,9 @@ const JitMisalign = 7
 // MaxIC is the maximum instruction count before a backward branch forces
 // a block exit. This ensures GC preemption windows and prevents infinite loops
 // inside a single JIT block.
-// const MaxIC = 1 << 16 // 1<<16 is the sweetspot: almost no SIGURG, 3628 MIPS on darwin.
+const MaxIC = 1 << 16 // 1<<16 is the sweetspot: almost no SIGURG, 3628 MIPS on darwin.
 // const MaxIC = 1 << 24 // 2900 MIPS, CGO
-const MaxIC = 1 << 28 // 3087 MIPS, CGO
+//const MaxIC = 1 << 28 // 3087 MIPS, CGO
 
 // MaskedLoad performs a bounds-checked guest memory load:
 //
