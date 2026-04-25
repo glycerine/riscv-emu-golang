@@ -157,5 +157,9 @@ after some of this. but tests were faster for a while; top level was 25 sec,
 now back to 67s.
   
 ----
-with cgo, now at 389 sec
+with cgo, now at:
 
+ok  	riscv	119.905s
+ok  	riscv/ir	0.323s
+ok  	riscv/bench	18.235s
+---
