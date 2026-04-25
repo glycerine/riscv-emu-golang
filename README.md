@@ -169,3 +169,12 @@ darwin benchmarks:
   Go interpreter (no JIT):                    427 MIPS
 
 ~~~
+
+### performance note
+
+the main client caller should do
+
+`runtime.LockOSThread()` before invoking the emulator.
+This pins the goroutine to one thread and thus avoids
+re-scheduling and keep caches hot.
+
