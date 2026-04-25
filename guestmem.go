@@ -100,10 +100,6 @@ const (
 	// where b = base + guestSize.
 	GuestPageSize = 4096
 
-	// GuestLoadBias is added to every ELF segment VA during loading.
-	// Shifts code/data above page 0 (null guard) so the guard page
-	// is never blocked by loaded segments.
-	GuestLoadBias uint64 = 0x10000
 )
 
 // FaultKind classifies a MemFault.
@@ -214,13 +210,12 @@ func NewGuestMemory(size uint64) (*GuestMemory, error) {
 	}
 
 	// Install guard pages (PROT_NONE):
-	//   1. Page 0: catches null-pointer dereferences
-	//   2. Midpoint: divides heap (grows up) from stack (grows down)
-	//   3. Between sandbox stack and register file: catches stack underflow
-	// The ELF loader applies a load bias (GuestLoadBias) to place all
-	// segments above page 0, so the null guard never blocks loading.
+	//   1. Midpoint: divides heap (grows up) from stack (grows down)
+	//   2. Between sandbox stack and register file: catches stack underflow
+	// Page 0 is NOT guarded — riscv-tests ELFs load code at VA 0x0000.
+	// The mask already contains all guest accesses, so a guest null
+	// dereference just hits offset 0 of the mmap (harmless to the host).
 	pg := C.size_t(GuestPageSize)
-	C.guest_guard(ptr, pg)                                                      // page 0
 	C.guest_guard(unsafe.Pointer(uintptr(ptr)+uintptr(size/2)), pg)             // midpoint
 	C.guest_guard(unsafe.Pointer(uintptr(ptr)+uintptr(size)-2*uintptr(pg)), pg) // stack/regfile
 
