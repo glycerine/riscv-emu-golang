@@ -11,36 +11,9 @@ These cause heisenbugs: functions with >2048 reachable PCs or spanning >16KB are
 
 ## Approach
 
-Modify **one function** (`scanRegion` in `jit_decode.go`) to remove both limits. A prerequisite fix to `flowCall` handling is needed first.
+Modify **one function** (`scanRegion` in `jit_decode.go`) to remove both limits. `flowCall` continues to follow call targets (preserves RAS inlining). The BFS is naturally bounded by terminators and instruction encoding limits (JAL: ±1MB, BEQ: ±4KB).
 
-### Change 1: Stop following call targets in BFS
-
-**Why first:** `flowCall` (JAL rd=ra) currently follows call targets into other functions, bounded by `maxRange`. Removing `maxRange` without this fix would cause cross-function region expansion — `emitBlockRange` walks `[startPC, endPC)` sequentially, so a distant call target would force emission of all intervening code.
-
-**Precedent:** `collectBranchTargets` (aot.go:69-73) already does NOT follow `flowCall` — only `flowBranch` and `flowJump`.
-
-**File:** `jit_decode.go`, lines 144-148
-
-Before:
-```go
-case flowCall:
-    worklist = append(worklist, pc+insnSize)
-    if target >= entryPC && target <= entryPC+maxRange {
-        worklist = append(worklist, target)
-    }
-```
-
-After:
-```go
-case flowCall:
-    worklist = append(worklist, pc+insnSize)
-```
-
-**Downstream safety:**
-- RAS inlining (`jit_emit_ir.go:2511-2512`): checks `target < e.regionEnd`. Call targets now outside region, so RAS doesn't fire — falls through to `emitChainableReturn(target)` (line 2518), emitting a chain exit. Correct.
-- Branch classification (`jit_emit_ir.go:2569-2570`): checks `target >= e.startPC && target < e.regionEnd`. Unaffected — only classifies branch targets, not calls.
-
-### Change 2: Remove `maxInsns` limit
+### Change 1: Remove `maxInsns` limit
 
 **File:** `jit_decode.go`
 
@@ -48,65 +21,13 @@ case flowCall:
 - Change loop condition from `len(worklist) > 0 && visited.len() < maxInsns` to `len(worklist) > 0` (line 111)
 - Change `newU64setSized(maxInsns)` to `newU64setSized(256)` (line 107) — initial capacity hint only; map grows dynamically
 
-### Change 3: Remove `maxRange` limit
+### Change 2: Remove `maxRange` limit
 
 **File:** `jit_decode.go`
 
 - Delete `const maxRange = 16384` (line 105)
 - Line 118: change `if pc < entryPC || pc > entryPC+maxRange` to `if pc < entryPC` — keep backward-PC exclusion (emitter walks forward only)
-- Lines 137, 141: change `target >= entryPC && target <= entryPC+maxRange` to `target >= entryPC` — remove upper bound on branch/jump targets
-
-### Final `scanRegion` function
-
-```go
-func scanRegion(mem *GuestMemory, entryPC uint64) regionInfo {
-	visited := newU64setSized(256)
-	worklist := []uint64{entryPC}
-	maxEnd := entryPC
-
-	for len(worklist) > 0 {
-		pc := worklist[0]
-		worklist = worklist[1:]
-
-		if visited.has(pc) {
-			continue
-		}
-		if pc < entryPC {
-			continue
-		}
-
-		fc, target, insnSize := classifyFlow(mem, pc)
-		if insnSize == 0 {
-			continue
-		}
-
-		visited.add(pc)
-		if end := pc + insnSize; end > maxEnd {
-			maxEnd = end
-		}
-
-		switch fc {
-		case flowSeq:
-			worklist = append(worklist, pc+insnSize)
-		case flowBranch:
-			worklist = append(worklist, pc+insnSize)
-			if target >= entryPC {
-				worklist = append(worklist, target)
-			}
-		case flowJump:
-			if target >= entryPC {
-				worklist = append(worklist, target)
-			}
-		case flowCall:
-			worklist = append(worklist, pc+insnSize)
-		case flowTerm:
-			// no successors
-		}
-	}
-
-	return regionInfo{endPC: maxEnd, pcCount: visited.len()}
-}
-```
+- Lines 137, 141, 146: change `target >= entryPC && target <= entryPC+maxRange` to `target >= entryPC` — remove upper bound on all forward targets
 
 ## Other limits assessed — no changes needed
 
