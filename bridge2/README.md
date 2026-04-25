@@ -1,112 +1,113 @@
-# JIT Sandbox — Go/C Shared-Memory IPC, from Claude.
+# JIT Sandbox — Go/C Shared-Memory IPC. from claude.
 
-Zero-CGo-per-call interpreter dispatch for a JIT sandbox, communicating
-between a permanently-parked C thread and Go goroutines via a lock-free
-SPSC ring buffer backed by `mmap`.
+Zero-CGo-per-call interpreter dispatch. The CGo tax is paid **once** at
+`NewRing()`. After that, all Go↔C communication uses atomic operations on
+a lock-free SPSC ring buffer backed by `mmap` — no CGo, no syscall on the
+hot path.
 
-## Architecture
-
-```
-Go goroutine                         C interpreter thread
-     │                                       │
-     │  ring_push() — atomic store           │
-     │──────────────────────────────────────►│
-     │                                       │  dispatch(item)
-     │  poll state == DONE — atomic load     │
-     │◄──────────────────────────────────────│
-     │                                       │
-```
-
-The CGo tax is paid **exactly once** at startup (`Init()`), which locks
-an OS thread and hands it permanently to `interpreter_thread_main()`.
-All subsequent communication is via shared memory — no CGo, no syscall,
-no Go scheduler involvement on the hot path.
-
-## Files
+## Files (flat layout)
 
 ```
-c/
-  sandbox.h           — types, platform abstractions (futex, CPU_RELAX), API
-  sandbox.c           — ring buffer, guard-page mmap, interpreter loop
-
-go/
-  sandbox.go          — CGo bridge; Go-side Ring and SandboxMem handles;
-                        zero-CGo Call() using unsafe atomic ops on shared ring
-
-asm/
-  trampoline.go       — Go declarations for assembly functions (no body)
-  trampoline_amd64.s  — x86-64: SwitchStack, GetG, CPURelax, fences
-  trampoline_arm64.s  — arm64:  SwitchStack, GetG, CPURelax, fences
+sandbox.h             C types, futex abstraction (Linux/Darwin), API declarations
+sandbox.c             Ring buffer, guard-page mmap, interpreter loop w/ adaptive sleep
+sandbox.go            CGo bridge + Go-side Ring/SandboxMem API (owns all CGo)
+sandbox_test.go       Pure-Go tests and benchmarks (no CGo)
+trampoline.go         Go declarations for assembly functions (no body)
+trampoline_amd64.s    x86-64: SwitchStack, GetG, CPURelax, memory fences
+trampoline_arm64.s    arm64:  SwitchStack, GetG, CPURelax, memory fences
 ```
 
-## Key Design Decisions
+## Why the split between sandbox.go and sandbox_test.go?
 
-### SPSC Ring Buffer
-- Head and tail on **separate 64-byte cache lines** — eliminates false sharing
-- Work items are exactly **64 bytes** (one cache line) — no torn reads
-- Power-of-2 capacity — index wrapping is a bitmask, not a modulo
-
-### Adaptive Back-off (C thread)
-1. **Spin** (<1000 iters): `PAUSE`/`YIELD` hint — ~1 ns/iter, zero latency
-2. **Yield** (<5000 iters): `sched_yield()` — gives up timeslice
-3. **Sleep**: `futex_wait` / `__ulock_wait` — woken by Go side on push
-
-### Guard Pages
-Every memory region (data, stack) is flanked by `PROT_NONE` pages.
-Any out-of-bounds read or write triggers `SIGSEGV` immediately, with
-`si_code == SEGV_ACCERR` (distinguishable from unmapped-page faults).
-
-### W^X Code Pages
-Code is mapped `PROT_READ|PROT_WRITE` during JIT compilation, then
-`sandbox_seal_code()` flips it to `PROT_READ|PROT_EXEC`. The page is
-never simultaneously writable and executable.
-
-### Stack Switch Safety
-Before calling `SwitchStack()`, the goroutine MUST update `g.stack.lo`
-and `g.stack.hi` to reflect the new stack bounds. Failure to do so will
-cause the Go GC to panic during stack scanning (`gentraceback` validates
-that frame pointers remain within `[g.stack.lo, g.stack.hi]`).
-
-## Portability
-
-| Feature          | Linux                  | Darwin (macOS/iOS)          |
-|------------------|------------------------|-----------------------------|
-| Anonymous mmap   | `MAP_ANONYMOUS`        | `MAP_ANONYMOUS`             |
-| Sleep primitive  | `futex(FUTEX_WAIT)`    | `__ulock_wait`              |
-| Wake primitive   | `futex(FUTEX_WAKE)`    | `__ulock_wake`              |
-| Spin hint x86    | `PAUSE`                | `PAUSE`                     |
-| Spin hint arm64  | `YIELD`                | `YIELD`                     |
-| ICache flush     | `__builtin___clear_cache` | `__builtin___clear_cache` |
-
-## Approximate Latencies
-
-| Mechanism              | Round-trip latency  |
-|------------------------|---------------------|
-| CGo call (each time)   | ~100–200 ns         |
-| SPSC ring (hot/spin)   | ~10–30 ns           |
-| Ring + futex sleep     | ~1–4 µs             |
-| Local function call    | ~1 ns               |
-
-The spinning ring gets you within one order of magnitude of a local
-function call — the irreducible cost is cache coherency propagation
-across cores (~10 ns on modern hardware).
+Go forbids `import "C"` in `_test.go` files. All CGo lives in `sandbox.go`
+(a regular package file). The test file imports the package normally and
+sees only Go types — `Ring`, `SandboxMem` — with no C types leaking through.
 
 ## Building
 
 ```bash
-# C only (for testing the ring/guard page logic standalone)
-clang -std=c11 -O2 -o sandbox_test c/sandbox.c -lpthread   # Linux
-clang -std=c11 -O2 -o sandbox_test c/sandbox.c              # Darwin
+# Run all tests
+go test -v -count=1 .
 
-# As part of a Go module (CGo picks up sandbox.c automatically via
-# the cgo directives in go/sandbox.go)
-go build ./...
+# Run benchmarks (5 s each)
+go test -bench=. -benchtime=5s -benchmem .
+
+# Build the package (checks compilation only)
+go build .
 ```
 
-## Go Version Note
+No special flags needed. CGo picks up `sandbox.c` automatically via the
+`#include "sandbox.c"` directive in the preamble of `sandbox.go`.
 
-`GetG()` returns R14 (amd64) or R28 (arm64) which is the dedicated `g`
-register introduced in Go 1.17's register-based calling convention.
-The `g.stack` field offsets are **runtime-internal and not stable**.
-Pin your Go toolchain version (`go.toolchain` in `go.mod`) if you
-access `g` fields directly via unsafe pointer arithmetic.
+## Architecture
+
+```
+Go goroutine                      C interpreter thread (locked OS thread)
+     │                                        │
+     │  ring.Push()  — atomic store + futex   │
+     │────────────────────────────────────────►│
+     │                                        │  dispatch(item)
+     │  ring.WaitResult() — atomic poll       │
+     │◄────────────────────────────────────────│
+```
+
+### Adaptive idle back-off (C thread)
+
+```
+Work arrives → reset to SPINNING
+      │
+      ▼
+  SPINNING   spin < 1000       PAUSE/YIELD hint, ~1–5 ns/iter
+      │
+      ▼
+  YIELDING   spin 1000–5000    sched_yield(), ~1 µs/iter
+      │
+      ▼
+  DEADLINE?  every ~1000 yields
+      ├─ < 100 ms → back to YIELDING
+      └─ ≥ 100 ms → SLEEPING (futex_wait indefinitely)
+                         │
+                    woken by Push() futex_wake
+```
+
+### Guard pages
+
+Data and stack regions are flanked by `PROT_NONE` pages. Out-of-bounds
+access triggers `SIGSEGV` with `si_code == SEGV_ACCERR`.
+
+### W^X enforcement
+
+Code pages are `PROT_READ|PROT_WRITE` during JIT compilation. `SealCode()`
+flips them to `PROT_READ|PROT_EXEC`. Never simultaneously writable and
+executable.
+
+### Stack switching (trampoline)
+
+`SwitchStack()` swaps RSP. The caller **must** update `g.stack.lo` /
+`g.stack.hi` before calling, or the Go GC will panic. See comments in
+`trampoline.go` and `trampoline_amd64.s`.
+
+## Approximate latencies
+
+| Mechanism              | Round-trip  |
+|------------------------|-------------|
+| CGo call each time     | ~100–200 ns |
+| SPSC ring (hot/spin)   | ~10–30 ns   |
+| Ring + futex wake      | ~1–4 µs     |
+| Local function call    | ~1 ns       |
+
+## Portability
+
+| Feature          | Linux                     | Darwin                    |
+|------------------|---------------------------|---------------------------|
+| Anonymous mmap   | `MAP_ANONYMOUS`           | `MAP_ANONYMOUS`           |
+| Futex sleep      | `SYS_futex`               | `__ulock_wait/wake`       |
+| Spin hint x86    | `PAUSE`                   | `PAUSE`                   |
+| Spin hint arm64  | `YIELD`                   | `YIELD`                   |
+| ICache flush     | `__builtin___clear_cache` | `__builtin___clear_cache` |
+
+## Go version note
+
+Pin your Go toolchain (`go.toolchain` in `go.mod`) if you access `g` struct
+fields directly — their offsets are runtime-internal and not stable across
+versions. `GetG()` returns R14 (amd64) or R28 (arm64), valid for Go ≥ 1.17.

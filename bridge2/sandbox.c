@@ -163,9 +163,12 @@ void sandbox_mem_destroy(sandbox_mem_t* m) {
 // Interpreter thread — parked here permanently after CGo handoff
 // ----------------------------------------------------------------------------
 
-static void dispatch(work_item_t* item) {
-    // Replace this with your actual opcode dispatch table.
+// Returns false for OPCODE_SHUTDOWN, true otherwise.
+static bool dispatch(work_item_t* item) {
     switch (item->opcode) {
+        case OPCODE_SHUTDOWN:
+            item->result = 0;
+            return false;
         case 0:  // NOP / ping
             item->result = 0xDEADBEEF;
             break;
@@ -173,6 +176,7 @@ static void dispatch(work_item_t* item) {
             item->result = ~0ULL;
             break;
     }
+    return true;
 }
 
 void interpreter_thread_main(spsc_ring_t* ring) {
@@ -189,15 +193,21 @@ void interpreter_thread_main(spsc_ring_t* ring) {
             spin     = 0;
             sleeping = false;   // reset: next idle period starts fresh
 
-            dispatch(&item);
+            bool keep_going = dispatch(&item);
 
-            // Signal completion. The slot index is tail-1 because ring_pop
-            // already advanced tail.
-            atomic_store_explicit(
-                &ring->items[(ring->tail - 1) & (ring->capacity - 1)].state,
-                WORK_STATE_DONE,
-                memory_order_release
-            );
+            // Write result back to the ring slot, then mark done.
+            // The slot index is tail-1 because ring_pop already advanced tail.
+            {
+                uint64_t si = (atomic_load_explicit(&ring->tail, memory_order_relaxed) - 1)
+                              & (ring->capacity - 1);
+                ring->items[si].result = item.result;
+                atomic_store_explicit(&ring->items[si].state,
+                                      WORK_STATE_DONE,
+                                      memory_order_release);
+            }
+
+            if (!keep_going) return;
+
             last_head = atomic_load_explicit(&ring->head, memory_order_relaxed);
             continue;
         }

@@ -57,6 +57,8 @@ static inline void futex_wake(uint32_t* addr) {
 #define WORK_STATE_POSTED  1
 #define WORK_STATE_DONE    2
 
+#define OPCODE_SHUTDOWN    0xFFFFFFFF
+
 typedef struct {
     _Atomic uint32_t state;
     uint32_t         opcode;
@@ -64,7 +66,7 @@ typedef struct {
     uint64_t         arg1;
     uint64_t         arg2;
     uint64_t         result;
-    uint8_t          _pad[16];   // pad to 64 bytes
+    uint8_t          _pad[24];
 } work_item_t;
 
 _Static_assert(sizeof(work_item_t) == 64, "work_item_t must be 64 bytes");
@@ -77,7 +79,7 @@ _Static_assert(sizeof(work_item_t) == 64, "work_item_t must be 64 bytes");
 
 typedef struct {
     _Atomic uint64_t head;           // written by producer (Go side)
-    uint8_t          _pad0[56];      // cache line isolation
+    uint8_t          _pad0[56];
     _Atomic uint64_t tail;           // written by consumer (C side)
     uint8_t          _pad1[56];
     uint32_t         capacity;
@@ -90,11 +92,11 @@ typedef struct {
 // ----------------------------------------------------------------------------
 
 typedef struct {
-    void*  code;        // PROT_READ|PROT_EXEC  (after sealing)
+    void*  code;
     size_t code_size;
-    void*  data;        // PROT_READ|PROT_WRITE (with guards)
+    void*  data;
     size_t data_size;
-    void*  stack_top;   // RSP should point here (stack grows down)
+    void*  stack_top;
     size_t stack_size;
 } sandbox_mem_t;
 
@@ -109,6 +111,6 @@ bool          ring_pop(spsc_ring_t* r, work_item_t* out);
 
 sandbox_mem_t sandbox_mem_create(size_t code_sz, size_t data_sz, size_t stack_sz);
 void          sandbox_mem_destroy(sandbox_mem_t* m);
-void          sandbox_seal_code(sandbox_mem_t* m);   // flip code to RX, enforce W^X
+void          sandbox_seal_code(sandbox_mem_t* m);
 
 void          interpreter_thread_main(spsc_ring_t* ring);  // never returns
