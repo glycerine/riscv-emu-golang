@@ -29,6 +29,7 @@ type aotBlockCompile struct {
 	blk         *compiledBlock
 	block       *ir.Block // retained for VizJit dump (nil when VizJit disabled)
 	progs       string    // goasm Prog listing (empty when VizJit disabled)
+	hasFP       bool
 }
 
 // jitCompileAOTSegment batch-compiles every block range into one
@@ -86,6 +87,7 @@ func (j *JIT) jitCompileAOTSegment(
 			baseOffset:  totalSize,
 			block:       vizBlock,
 			progs:       progs,
+			hasFP:       allocHasFP(alloc),
 		})
 		totalSize += len(code)
 	}
@@ -106,7 +108,7 @@ func (j *JIT) jitCompileAOTSegment(
 		copy(execMem[bc.baseOffset:bc.baseOffset+len(bc.bytes)], bc.bytes)
 
 		blockBase := codeBase + uintptr(bc.baseOffset)
-		bc.blk = &compiledBlock{fn: blockBase}
+		bc.blk = &compiledBlock{fn: blockBase, hasFP: bc.hasFP}
 
 		if bc.lowerResult.ChainEntryProg == nil {
 			// V2 or debug variants don't produce ChainEntryProg; skip.

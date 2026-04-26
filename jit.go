@@ -137,6 +137,7 @@ type compiledBlock struct {
 	chainEntry uintptr           // entry point for chaining
 	chainExits []chainPatchInfo  // chain exits for patching
 	jalrICs    []jalrICPatchInfo // JALR IC sites for patching
+	hasFP      bool              // block uses FP registers (skip f[] copy when false)
 
 	// segment is the DecodedExecuteSegment that owns this block's native
 	// code, or nil for lazy-compiled blocks. Set at AOT install time;
@@ -676,7 +677,7 @@ func (j *JIT) RunJIT(cpu *CPU) error {
 					vBegin = seg.vaddrBegin
 					segSz = seg.vaddrSize
 				}
-				res = abjitDispatch(blk.fn, cpu, j, dcBase, dcMask, vBegin, segSz)
+				res = abjitDispatch(blk, cpu, j, dcBase, dcMask, vBegin, segSz)
 			} else {
 				regFile := cpu.mem.RegFileBase()
 				stackTop := cpu.mem.StackTop()

@@ -569,5 +569,55 @@ func (lc *lowerCtxABJIT) abjitJalrIC(ins *IRInstr) {
 // ── Call (not supported in Phase 3) ──
 
 func (lc *lowerCtxABJIT) abjitCall(ins *IRInstr) error {
-	return fmt.Errorf("ir.LowerAMD64_ABJIT: IRCall not supported (index %d)", lc.idx)
+	if int(ins.Imm) >= len(lc.blk.CTab) {
+		return nil
+	}
+	sym := lc.blk.CTab[ins.Imm]
+
+	callerSavedInt := []int16{
+		goasm.REG_AMD64_DX, goasm.REG_AMD64_SI, goasm.REG_AMD64_DI,
+		goasm.REG_AMD64_R8, goasm.REG_AMD64_R9, goasm.REG_AMD64_R10,
+		goasm.REG_AMD64_R11,
+	}
+	var liveInt, liveFP []int16
+	for _, r := range callerSavedInt {
+		if lc.isRegLive(r) {
+			liveInt = append(liveInt, r)
+		}
+	}
+	for i := int16(0); i < 14; i++ {
+		r := goasm.REG_AMD64_X0 + i
+		if lc.isRegLive(r) {
+			liveFP = append(liveFP, r)
+		}
+	}
+
+	saveSize := int64(len(liveInt)+len(liveFP)) * 8
+	if saveSize > 0 {
+		lc.emitRI(x86.ASUBQ, saveSize, goasm.REG_AMD64_SP)
+	}
+	for i, r := range liveInt {
+		lc.emitMR(x86.AMOVQ, r, goasm.REG_AMD64_SP, int64(i)*8)
+	}
+	for i, r := range liveFP {
+		lc.emitMR(x86.AMOVSD, r, goasm.REG_AMD64_SP, int64(len(liveInt)+i)*8)
+	}
+
+	lc.loadImm(int64(sym.Addr), stgA)
+	p := lc.c.NewProg()
+	p.As = obj.ACALL
+	p.To.Type = obj.TYPE_REG
+	p.To.Reg = stgA
+	lc.c.Append(p)
+
+	for i, r := range liveInt {
+		lc.emitRM(x86.AMOVQ, goasm.REG_AMD64_SP, int64(i)*8, r)
+	}
+	for i, r := range liveFP {
+		lc.emitRM(x86.AMOVSD, goasm.REG_AMD64_SP, int64(len(liveInt)+i)*8, r)
+	}
+	if saveSize > 0 {
+		lc.emitRI(x86.AADDQ, saveSize, goasm.REG_AMD64_SP)
+	}
+	return nil
 }

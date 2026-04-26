@@ -75,6 +75,7 @@ func (j *JIT) jitCompile(res *emitResult) (*compiledBlock, error) {
 	blk := &compiledBlock{
 		fn:         codeBase,
 		nativeMmap: execMem,
+		hasFP:      allocHasFP(alloc),
 	}
 
 	// Step 6: Block chaining setup — backpatch MOVABS sentinels and record metadata.
@@ -177,7 +178,7 @@ func (j *JIT) jitCompileDebug(res *emitResult) (*compiledBlock, *compileDebugInf
 	copy(execMem, code)
 
 	codeBase := uintptr(unsafe.Pointer(&execMem[0]))
-	blk := &compiledBlock{fn: codeBase, nativeMmap: execMem}
+	blk := &compiledBlock{fn: codeBase, nativeMmap: execMem, hasFP: allocHasFP(alloc)}
 
 	// Backpatch chain-exit sentinels to the slow-exit stubs and record
 	// metadata, same as jitCompile. Without this, any chain exit in
@@ -216,6 +217,15 @@ func allocExec(size int) ([]byte, error) {
 		return nil, err
 	}
 	return mem, nil
+}
+
+func allocHasFP(alloc *ir.Allocation) bool {
+	for vr := ir.VReg(32); vr < 64; vr++ {
+		if int(vr) < len(alloc.Kind) && (alloc.Kind[vr] == ir.AllocReg || alloc.Kind[vr] == ir.AllocStack) {
+			return true
+		}
+	}
+	return false
 }
 
 // allocRWAnon allocates anonymous mmap with PROT_READ|PROT_WRITE

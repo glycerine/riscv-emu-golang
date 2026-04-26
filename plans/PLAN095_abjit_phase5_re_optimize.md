@@ -468,7 +468,8 @@ Step 1 (persistent buffer + State extension)
 Step 2 (decoder cache lookup)  ←  needs DC fields from Step 1
     ↓
 Step 3 (2-way JALR IC)         ←  emitted before DC lookup from Step 2
-    
+ NOPE: THIS WAS REPLACED BY THE DECODER CACHE LOOKUP (in rv8).
+ 
 Step 4 (inline syscall)        ←  independent, but benefits from Step 1
 Step 5 (IRCall/gocall)         ←  independent
 Step 6 (lazy FP copy)          ←  independent, benefits from Step 1
