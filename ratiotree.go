@@ -3,13 +3,12 @@ package riscv
 import (
 	"fmt"
 	"math/big"
-	"riscv/ir"
 	"strings"
 
 	rb "github.com/glycerine/rbtree"
 )
 
-var _ = &ir.Block{}
+var _ = &Block{}
 
 // riscvElemAddr tracks the original guest RISCV code
 // address from the ELF, for organization in a riscvCodeTree.
@@ -41,7 +40,7 @@ type riscvCodeBasicBlock struct {
 	rvAddr riscvElemAddr
 
 	payload fmt.Stringer
-	// todo: convert payload to *ir.Block
+	// todo: convert payload to *Block
 	// blocking: does it have String() method?
 }
 

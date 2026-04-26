@@ -1,10 +1,8 @@
 package riscv
 
-import "riscv/ir"
-
 // EmitBlockResult holds IR block + metadata for benchmarking.
 type EmitBlockResult struct {
-	Block    *ir.Block
+	Block    *Block
 	NumInsns int
 	StartPC  uint64
 	EndPC    uint64

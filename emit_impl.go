@@ -1,4 +1,4 @@
-package ir
+package riscv
 
 // op3 emits a three-register operation: Dst = A op B.
 // If dst is VRegZero, the instruction is discarded (RISC-V x0 semantics).

@@ -4,7 +4,6 @@ import (
 	"os"
 	//"path/filepath"
 	"riscv/internal/jitcall"
-	"riscv/ir"
 	"strings"
 	"testing"
 )
@@ -720,17 +719,17 @@ func TestSRL_ExactIR(t *testing.T) {
 	defer mem.Free()
 
 	// Manually build the exact IR block from the dump:
-	e := ir.NewEmitter()
-	x7 := ir.VReg(7)
-	x11 := ir.VReg(11)
-	x12 := ir.VReg(12)
-	x14 := ir.VReg(14)
+	e := NewEmitter()
+	x7 := VReg(7)
+	x11 := VReg(11)
+	x12 := VReg(12)
+	x14 := VReg(14)
 
 	// Prepended loads
-	e.Load(x7, e.XBase(), 56, ir.I64, false)
-	e.Load(x11, e.XBase(), 88, ir.I64, false)
-	e.Load(x12, e.XBase(), 96, ir.I64, false)
-	e.Load(x14, e.XBase(), 112, ir.I64, false)
+	e.Load(x7, e.XBase(), 56, I64, false)
+	e.Load(x11, e.XBase(), 88, I64, false)
+	e.Load(x12, e.XBase(), 96, I64, false)
+	e.Load(x14, e.XBase(), 112, I64, false)
 
 	// SRL: shr x14 = x11, x12
 	e.Shr(x14, x11, x12)
@@ -749,20 +748,20 @@ func TestSRL_ExactIR(t *testing.T) {
 
 	// Branch NE x14, x7 -> taken (to fail exit)
 	failLabel := e.NewLabel()
-	e.Branch(x14, x7, ir.NE, failLabel)
+	e.Branch(x14, x7, NE, failLabel)
 
 	// Fall-through: writeback + ret (pass)
-	e.Store(e.XBase(), 56, x7, ir.I64)
-	e.Store(e.XBase(), 112, x14, ir.I64)
+	e.Store(e.XBase(), 56, x7, I64)
+	e.Store(e.XBase(), 112, x14, I64)
 	passPC := uint64(0x14c)
-	e.Ret(passPC, 0, ir.VRegZero)
+	e.Ret(passPC, 0, VRegZero)
 
 	// Taken: writeback + ret (fail)
 	e.PlaceLabel(failLabel)
-	e.Store(e.XBase(), 56, x7, ir.I64)
-	e.Store(e.XBase(), 112, x14, ir.I64)
+	e.Store(e.XBase(), 56, x7, I64)
+	e.Store(e.XBase(), 112, x14, I64)
 	failPC := uint64(0x592)
-	e.Ret(failPC, 0, ir.VRegZero)
+	e.Ret(failPC, 0, VRegZero)
 
 	// Compile and execute
 	blk := e.Block
@@ -796,30 +795,30 @@ func TestSRL_ExactIR_V2(t *testing.T) {
 	}
 	defer mem.Free()
 
-	e := ir.NewEmitter()
-	x7 := ir.VReg(7)
-	x11 := ir.VReg(11)
-	x12 := ir.VReg(12)
-	x14 := ir.VReg(14)
+	e := NewEmitter()
+	x7 := VReg(7)
+	x11 := VReg(11)
+	x12 := VReg(12)
+	x14 := VReg(14)
 
-	e.Load(x7, e.XBase(), 56, ir.I64, false)
-	e.Load(x11, e.XBase(), 88, ir.I64, false)
-	e.Load(x12, e.XBase(), 96, ir.I64, false)
-	e.Load(x14, e.XBase(), 112, ir.I64, false)
+	e.Load(x7, e.XBase(), 56, I64, false)
+	e.Load(x11, e.XBase(), 88, I64, false)
+	e.Load(x12, e.XBase(), 96, I64, false)
+	e.Load(x14, e.XBase(), 112, I64, false)
 	e.Shr(x14, x11, x12)
 	e.AddImm(e.IC(), e.IC(), 1)
 	e.Const(x7, -2147483648)
 	e.AddImm(e.IC(), e.IC(), 1)
 	e.AddImm(e.IC(), e.IC(), 1)
 	failLabel := e.NewLabel()
-	e.Branch(x14, x7, ir.NE, failLabel)
-	e.Store(e.XBase(), 56, x7, ir.I64)
-	e.Store(e.XBase(), 112, x14, ir.I64)
-	e.Ret(0x14c, 0, ir.VRegZero)
+	e.Branch(x14, x7, NE, failLabel)
+	e.Store(e.XBase(), 56, x7, I64)
+	e.Store(e.XBase(), 112, x14, I64)
+	e.Ret(0x14c, 0, VRegZero)
 	e.PlaceLabel(failLabel)
-	e.Store(e.XBase(), 56, x7, ir.I64)
-	e.Store(e.XBase(), 112, x14, ir.I64)
-	e.Ret(0x592, 0, ir.VRegZero)
+	e.Store(e.XBase(), 56, x7, I64)
+	e.Store(e.XBase(), 112, x14, I64)
+	e.Ret(0x592, 0, VRegZero)
 
 	blk := e.Block
 	j := NewJIT()
@@ -843,41 +842,41 @@ func TestSRL_ExactIR_V2(t *testing.T) {
 }
 
 func TestSRL_ExactIR_DumpAlloc(t *testing.T) {
-	e := ir.NewEmitter()
-	x7 := ir.VReg(7)
-	x11 := ir.VReg(11)
-	x12 := ir.VReg(12)
-	x14 := ir.VReg(14)
+	e := NewEmitter()
+	x7 := VReg(7)
+	x11 := VReg(11)
+	x12 := VReg(12)
+	x14 := VReg(14)
 
-	e.Load(x7, e.XBase(), 56, ir.I64, false)
-	e.Load(x11, e.XBase(), 88, ir.I64, false)
-	e.Load(x12, e.XBase(), 96, ir.I64, false)
-	e.Load(x14, e.XBase(), 112, ir.I64, false)
+	e.Load(x7, e.XBase(), 56, I64, false)
+	e.Load(x11, e.XBase(), 88, I64, false)
+	e.Load(x12, e.XBase(), 96, I64, false)
+	e.Load(x14, e.XBase(), 112, I64, false)
 	e.Shr(x14, x11, x12)
 	e.AddImm(e.IC(), e.IC(), 1)
 	e.Const(x7, -2147483648)
 	e.AddImm(e.IC(), e.IC(), 1)
 	e.AddImm(e.IC(), e.IC(), 1)
 	failLabel := e.NewLabel()
-	e.Branch(x14, x7, ir.NE, failLabel)
-	e.Store(e.XBase(), 56, x7, ir.I64)
-	e.Store(e.XBase(), 112, x14, ir.I64)
-	e.Ret(0x14c, 0, ir.VRegZero)
+	e.Branch(x14, x7, NE, failLabel)
+	e.Store(e.XBase(), 56, x7, I64)
+	e.Store(e.XBase(), 112, x14, I64)
+	e.Ret(0x14c, 0, VRegZero)
 	e.PlaceLabel(failLabel)
-	e.Store(e.XBase(), 56, x7, ir.I64)
-	e.Store(e.XBase(), 112, x14, ir.I64)
-	e.Ret(0x592, 0, ir.VRegZero)
+	e.Store(e.XBase(), 56, x7, I64)
+	e.Store(e.XBase(), 112, x14, I64)
+	e.Ret(0x592, 0, VRegZero)
 
 	blk := e.Block
-	pool := ir.RV8Pool(blk)
-	pinned := ir.RV8Pinned()
+	pool := RV8Pool(blk)
+	pinned := RV8Pinned()
 	j := NewJIT()
 	alloc := j.irAlloc.Allocate(blk, pool, pinned, nil)
 
 	//t.Logf("StackSlots=%d", alloc.StackSlots)
 	for i, k := range alloc.Kind {
 		_ = i
-		if k != ir.AllocUnused {
+		if k != AllocUnused {
 			//t.Logf("VReg(%d): kind=%v spill=%d", i, k, alloc.SpillSlot[i])
 		}
 	}
@@ -896,25 +895,25 @@ func TestSRL_Block61_V1vV2(t *testing.T) {
 	}
 	defer mem.Free()
 
-	e := ir.NewEmitter()
-	x1 := ir.VReg(1)
-	x2 := ir.VReg(2)
-	x3 := ir.VReg(3)
-	x4 := ir.VReg(4)
-	x5 := ir.VReg(5)
-	x6 := ir.VReg(6)
-	x7 := ir.VReg(7)
-	x14 := ir.VReg(14)
+	e := NewEmitter()
+	x1 := VReg(1)
+	x2 := VReg(2)
+	x3 := VReg(3)
+	x4 := VReg(4)
+	x5 := VReg(5)
+	x6 := VReg(6)
+	x7 := VReg(7)
+	x14 := VReg(14)
 
 	// Prepended loads
-	e.Load(x1, e.XBase(), 8, ir.I64, false)
-	e.Load(x2, e.XBase(), 16, ir.I64, false)
-	e.Load(x3, e.XBase(), 24, ir.I64, false)
-	e.Load(x4, e.XBase(), 32, ir.I64, false)
-	e.Load(x5, e.XBase(), 40, ir.I64, false)
-	e.Load(x6, e.XBase(), 48, ir.I64, false)
-	e.Load(x7, e.XBase(), 56, ir.I64, false)
-	e.Load(x14, e.XBase(), 112, ir.I64, false)
+	e.Load(x1, e.XBase(), 8, I64, false)
+	e.Load(x2, e.XBase(), 16, I64, false)
+	e.Load(x3, e.XBase(), 24, I64, false)
+	e.Load(x4, e.XBase(), 32, I64, false)
+	e.Load(x5, e.XBase(), 40, I64, false)
+	e.Load(x6, e.XBase(), 48, I64, false)
+	e.Load(x7, e.XBase(), 56, I64, false)
+	e.Load(x14, e.XBase(), 112, I64, false)
 
 	// SRL x14 = x1, x2
 	e.Shr(x14, x1, x2)
@@ -931,45 +930,45 @@ func TestSRL_Block61_V1vV2(t *testing.T) {
 	e.AddImm(e.IC(), e.IC(), 1)
 	// BNE x4, x5 -> L7 (test count exit)
 	l7 := e.NewLabel()
-	e.Branch(x4, x5, ir.NE, l7)
+	e.Branch(x4, x5, NE, l7)
 	// CONST x7 = 16777216 (0x1000000)
 	e.Const(x7, 16777216)
 	e.AddImm(e.IC(), e.IC(), 1)
 	e.AddImm(e.IC(), e.IC(), 1)
 	// BNE x6, x7 -> L10 (test fail)
 	l10 := e.NewLabel()
-	e.Branch(x6, x7, ir.NE, l10)
+	e.Branch(x6, x7, NE, l10)
 	// Pass: const x3 = 26
 	e.Const(x3, 26)
 	e.AddImm(e.IC(), e.IC(), 1)
 	e.Const(x4, 0)
 	e.AddImm(e.IC(), e.IC(), 1)
 	// WriteBackAll + Ret (pass → pc=886)
-	e.Store(e.XBase(), 24, x3, ir.I64)
-	e.Store(e.XBase(), 32, x4, ir.I64)
-	e.Store(e.XBase(), 40, x5, ir.I64)
-	e.Store(e.XBase(), 48, x6, ir.I64)
-	e.Store(e.XBase(), 56, x7, ir.I64)
-	e.Store(e.XBase(), 112, x14, ir.I64)
-	e.Ret(886, 0, ir.VRegZero)
+	e.Store(e.XBase(), 24, x3, I64)
+	e.Store(e.XBase(), 32, x4, I64)
+	e.Store(e.XBase(), 40, x5, I64)
+	e.Store(e.XBase(), 48, x6, I64)
+	e.Store(e.XBase(), 56, x7, I64)
+	e.Store(e.XBase(), 112, x14, I64)
+	e.Ret(886, 0, VRegZero)
 	// L10: fail
 	e.PlaceLabel(l10)
-	e.Store(e.XBase(), 24, x3, ir.I64)
-	e.Store(e.XBase(), 32, x4, ir.I64)
-	e.Store(e.XBase(), 40, x5, ir.I64)
-	e.Store(e.XBase(), 48, x6, ir.I64)
-	e.Store(e.XBase(), 56, x7, ir.I64)
-	e.Store(e.XBase(), 112, x14, ir.I64)
-	e.Ret(1426, 0, ir.VRegZero)
+	e.Store(e.XBase(), 24, x3, I64)
+	e.Store(e.XBase(), 32, x4, I64)
+	e.Store(e.XBase(), 40, x5, I64)
+	e.Store(e.XBase(), 48, x6, I64)
+	e.Store(e.XBase(), 56, x7, I64)
+	e.Store(e.XBase(), 112, x14, I64)
+	e.Ret(1426, 0, VRegZero)
 	// L7: count mismatch exit
 	e.PlaceLabel(l7)
-	e.Store(e.XBase(), 24, x3, ir.I64)
-	e.Store(e.XBase(), 32, x4, ir.I64)
-	e.Store(e.XBase(), 40, x5, ir.I64)
-	e.Store(e.XBase(), 48, x6, ir.I64)
-	e.Store(e.XBase(), 56, x7, ir.I64)
-	e.Store(e.XBase(), 112, x14, ir.I64)
-	e.Ret(854, 0, ir.VRegZero)
+	e.Store(e.XBase(), 24, x3, I64)
+	e.Store(e.XBase(), 32, x4, I64)
+	e.Store(e.XBase(), 40, x5, I64)
+	e.Store(e.XBase(), 48, x6, I64)
+	e.Store(e.XBase(), 56, x7, I64)
+	e.Store(e.XBase(), 112, x14, I64)
+	e.Ret(854, 0, VRegZero)
 
 	blk := e.Block
 
@@ -1027,13 +1026,13 @@ func TestSRL_Block61_V1vV2b(t *testing.T) {
 	}
 	defer mem.Free()
 
-	e := ir.NewEmitter()
-	x1, x2, x3, x4 := ir.VReg(1), ir.VReg(2), ir.VReg(3), ir.VReg(4)
-	x5, x6, x7, x14 := ir.VReg(5), ir.VReg(6), ir.VReg(7), ir.VReg(14)
+	e := NewEmitter()
+	x1, x2, x3, x4 := VReg(1), VReg(2), VReg(3), VReg(4)
+	x5, x6, x7, x14 := VReg(5), VReg(6), VReg(7), VReg(14)
 
 	// Prepended loads (8 guest regs)
-	for _, vr := range []ir.VReg{x1, x2, x3, x4, x5, x6, x7, x14} {
-		e.Load(vr, e.XBase(), int64(vr)*8, ir.I64, false)
+	for _, vr := range []VReg{x1, x2, x3, x4, x5, x6, x7, x14} {
+		e.Load(vr, e.XBase(), int64(vr)*8, I64, false)
 	}
 
 	e.Shr(x14, x1, x2) // SRL x14 = x1, x2
@@ -1047,14 +1046,14 @@ func TestSRL_Block61_V1vV2b(t *testing.T) {
 	e.AddImm(e.IC(), e.IC(), 1)
 
 	l7 := e.NewLabel()
-	e.Branch(x4, x5, ir.NE, l7) // BNE x4, x5 → L7
+	e.Branch(x4, x5, NE, l7) // BNE x4, x5 → L7
 
 	e.Const(x7, 0x1000000) // CONST x7 = 16777216
 	e.AddImm(e.IC(), e.IC(), 1)
 	e.AddImm(e.IC(), e.IC(), 1)
 
 	l10 := e.NewLabel()
-	e.Branch(x6, x7, ir.NE, l10) // BNE x6, x7 → L10
+	e.Branch(x6, x7, NE, l10) // BNE x6, x7 → L10
 
 	// Pass exit
 	e.Const(x3, 26)
@@ -1062,22 +1061,22 @@ func TestSRL_Block61_V1vV2b(t *testing.T) {
 	e.Const(x4, 0)
 	e.AddImm(e.IC(), e.IC(), 1)
 	wb := func() {
-		for _, vr := range []ir.VReg{x3, x4, x5, x6, x7, x14} {
-			e.Store(e.XBase(), int64(vr)*8, vr, ir.I64)
+		for _, vr := range []VReg{x3, x4, x5, x6, x7, x14} {
+			e.Store(e.XBase(), int64(vr)*8, vr, I64)
 		}
 	}
 	wb()
-	e.Ret(886, 0, ir.VRegZero)
+	e.Ret(886, 0, VRegZero)
 
 	// L10: fail
 	e.PlaceLabel(l10)
 	wb()
-	e.Ret(1426, 0, ir.VRegZero)
+	e.Ret(1426, 0, VRegZero)
 
 	// L7: count exit
 	e.PlaceLabel(l7)
 	wb()
-	e.Ret(854, 0, ir.VRegZero)
+	e.Ret(854, 0, VRegZero)
 
 	blk := e.Block
 
@@ -1228,13 +1227,13 @@ func TestSRL_Block39_Alloc(t *testing.T) {
 	}
 	//t.Logf("block: numInsns=%d, %d IR instrs", res.numInsns, len(res.block.Instrs))
 
-	pool := ir.RV8Pool(res.block)
+	pool := RV8Pool(res.block)
 	j := NewJIT()
-	alloc := j.irAlloc.Allocate(res.block, pool, ir.RV8Pinned(), nil)
+	alloc := j.irAlloc.Allocate(res.block, pool, RV8Pinned(), nil)
 
 	// Find all intervals for x1.
 	for _, ia := range alloc.IntervalMap {
-		if ia.Interval.VReg == ir.VReg(1) {
+		if ia.Interval.VReg == VReg(1) {
 			//t.Logf("x1 interval: [%d..%d] host=%d", ia.Interval.Start, ia.Interval.End, ia.Host)
 		}
 	}
@@ -1317,11 +1316,11 @@ func TestDebugV1V2_SRL_DumpAlloc(t *testing.T) {
 			res := emitBlock(&cpu.mem, cpu.pc)
 			if res != nil && res.startPC <= 0x322 && res.endPC > 0x322 {
 				//t.Logf("found block: startPC=0x%x endPC=0x%x numInsns=%d irLen=%d", res.startPC, res.endPC, res.numInsns, len(res.block.Instrs))
-				pool := ir.RV8Pool(res.block)
-				alloc := j.irAlloc.Allocate(res.block, pool, ir.RV8Pinned(), nil)
+				pool := RV8Pool(res.block)
+				alloc := j.irAlloc.Allocate(res.block, pool, RV8Pinned(), nil)
 				for _, ia := range alloc.IntervalMap {
 					vr := ia.Interval.VReg
-					if vr == ir.VReg(11) || vr == ir.VReg(12) {
+					if vr == VReg(11) || vr == VReg(12) {
 						//t.Logf("  VReg(%d) [%d..%d] host=%d", vr, ia.Interval.Start, ia.Interval.End, ia.Host)
 					}
 				}
@@ -1452,7 +1451,7 @@ func TestDumpBlock_ld_st_0x1a0(t *testing.T) {
 	}
 	//t.Logf("block: start=0x%x end=0x%x insns=%d irLen=%d", res.startPC, res.endPC, res.numInsns, len(res.block.Instrs))
 
-	// Dump full IR.
+	// Dump full
 	//t.Logf("=== IR (%d instructions) ===", len(res.block.Instrs))
 	//for i, ins := range res.block.Instrs {
 	//t.Logf("  [%3d] %v", i, ins)
@@ -1464,16 +1463,16 @@ func TestDumpBlock_ld_st_0x1a0(t *testing.T) {
 	branches := 0
 	for _, ins := range res.block.Instrs {
 		switch ins.Op {
-		case ir.IRJump:
+		case IRJump:
 			jumps++
-		case ir.IRBranch, ir.IRBranchImm:
+		case IRBranch, IRBranchImm:
 			branches++
 		}
 	}
 	// BudgetCheck emits: BranchImm + Jump + PlaceLabel + WriteBackAll-seq + Ret
 	// Count BranchImm with Imm2=4096 (MaxIC) as budget checks.
 	for _, ins := range res.block.Instrs {
-		if ins.Op == ir.IRBranchImm && ins.Imm2 == int64(ir.MaxIC) {
+		if ins.Op == IRBranchImm && ins.Imm2 == int64(MaxIC) {
 			budgetChecks++
 		}
 	}
@@ -1708,7 +1707,7 @@ func TestFusion_SLLI_SRLI_ZextW(t *testing.T) {
 
 	foundZext := false
 	for _, ins := range res.block.Instrs {
-		if ins.Op == ir.IRZext && ins.T == ir.I32 {
+		if ins.Op == IRZext && ins.T == I32 {
 			foundZext = true
 		}
 	}
@@ -1760,10 +1759,10 @@ func TestFusion_ADDIW_SLLI_SRLI_Addiwz(t *testing.T) {
 	foundZext := false
 	foundSext := false
 	for _, ins := range res.block.Instrs {
-		if ins.Op == ir.IRZext && ins.T == ir.I32 {
+		if ins.Op == IRZext && ins.T == I32 {
 			foundZext = true
 		}
-		if ins.Op == ir.IRSext && ins.T == ir.I32 {
+		if ins.Op == IRSext && ins.T == I32 {
 			foundSext = true
 		}
 	}

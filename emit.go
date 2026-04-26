@@ -1,4 +1,4 @@
-package ir
+package riscv
 
 // Emitter wraps a Block and exposes helper methods for building IR.
 type Emitter struct {

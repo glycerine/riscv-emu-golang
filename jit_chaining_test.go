@@ -2,7 +2,6 @@ package riscv
 
 import (
 	"encoding/binary"
-	"riscv/ir"
 	"testing"
 	"unsafe"
 )
@@ -115,24 +114,27 @@ func TestChaining_PatchPointsAtImm64_OfMovABS(t *testing.T) {
 // more so the dispatcher's tryPatchChain call finds a non-nil target.
 // A call+return+loop achieves this:
 //
-//   0x1000  ADDI x12, x12, 1           ; block A: loop counter
-//   0x1004  JAL  x5, +12               ; block A: chain to 0x1010 (callee)
-//   0x1008  BLT  x12, x13, -0x8        ; block C: branch back to 0x1000
-//   0x100C  ECALL                       ; block C: exit when done
-//   0x1010  JALR x0, 0(x5)             ; block B: return via x5 (=0x1008)
+//	0x1000  ADDI x12, x12, 1           ; block A: loop counter
+//	0x1004  JAL  x5, +12               ; block A: chain to 0x1010 (callee)
+//	0x1008  BLT  x12, x13, -0x8        ; block C: branch back to 0x1000
+//	0x100C  ECALL                       ; block C: exit when done
+//	0x1010  JALR x0, 0(x5)             ; block B: return via x5 (=0x1008)
 //
 // Uses x5 (not x1/ra) as link register to avoid RAS inlining — this
 // test verifies inter-block chain patching, not return prediction.
 //
 // Iteration 1: A runs, chain-exits to 0x1010 (stub, B not yet compiled)
-//              → B compiles → B runs, JALR to 0x1008 → C compiles →
-//              C runs BLT back to 0x1000.
+//
+//	→ B compiles → B runs, JALR to 0x1008 → C compiles →
+//	C runs BLT back to 0x1000.
+//
 // Iteration 2+: A's chain exit to B is now patchable; on A's jitOK
-//              return the dispatcher patches it. Same for C→A.
+//
+//	return the dispatcher patches it. Same for C→A.
 func TestChaining_PatchedJumpReachesChainEntry(t *testing.T) {
 	insns := []uint32{
-		/* 0x1000 */ ienc(opOPIMM, 0, 12, 12, 1),    // ADDI x12, x12, 1
-		/* 0x1004 */ jenc(5, 0xC),                    // JAL  x5, +12
+		/* 0x1000 */ ienc(opOPIMM, 0, 12, 12, 1), // ADDI x12, x12, 1
+		/* 0x1004 */ jenc(5, 0xC), // JAL  x5, +12
 		/* 0x1008 */ benc(opBRANCH, 4, 12, 13, -0x8), // BLT  x12, x13, -8
 		/* 0x100C */ instrECALL,
 		/* 0x1010 */ ienc(opJALR, 0, 0, 5, 0), // JALR x0, 0(x5)
@@ -289,13 +291,13 @@ func TestChaining_IndirectBranch_NoChain(t *testing.T) {
 //	0x1018  JALR x0, 0(x1)          ; return
 func TestRAS_InlinesCalleeAndPredictsReturn(t *testing.T) {
 	insns := []uint32{
-		/* 0x1000 */ ienc(opOPIMM, 0, 10, 0, 42),   // ADDI x10, x0, 42
-		/* 0x1004 */ jenc(1, 16),                    // JAL  x1, +16
-		/* 0x1008 */ ienc(opOPIMM, 0, 11, 10, 0),   // ADDI x11, x10, 0
-		/* 0x100C */ instrECALL,                     // ECALL
-		/* 0x1010 */ ienc(opOPIMM, 0, 0, 0, 0),     // NOP (padding)
-		/* 0x1014 */ ienc(opOPIMM, 0, 10, 10, 1),   // ADDI x10, x10, 1
-		/* 0x1018 */ ienc(opJALR, 0, 0, 1, 0),      // JALR x0, 0(x1)
+		/* 0x1000 */ ienc(opOPIMM, 0, 10, 0, 42), // ADDI x10, x0, 42
+		/* 0x1004 */ jenc(1, 16), // JAL  x1, +16
+		/* 0x1008 */ ienc(opOPIMM, 0, 11, 10, 0), // ADDI x11, x10, 0
+		/* 0x100C */ instrECALL, // ECALL
+		/* 0x1010 */ ienc(opOPIMM, 0, 0, 0, 0), // NOP (padding)
+		/* 0x1014 */ ienc(opOPIMM, 0, 10, 10, 1), // ADDI x10, x10, 1
+		/* 0x1018 */ ienc(opJALR, 0, 0, 1, 0), // JALR x0, 0(x1)
 	}
 
 	// --- IR-level check: the block should contain a BranchImm EQ
@@ -315,7 +317,7 @@ func TestRAS_InlinesCalleeAndPredictsReturn(t *testing.T) {
 
 	foundPrediction := false
 	for _, ins := range res.block.Instrs {
-		if ins.Op == ir.IRBranchImm && ins.Pred == ir.EQ && ins.Imm2 == 0x1008 {
+		if ins.Op == IRBranchImm && ins.Pred == EQ && ins.Imm2 == 0x1008 {
 			foundPrediction = true
 			break
 		}
@@ -356,13 +358,13 @@ func TestRAS_InlinesCalleeAndPredictsReturn(t *testing.T) {
 // the return correctly.
 func TestRAS_MismatchFallsBackToJalrIC(t *testing.T) {
 	insns := []uint32{
-		/* 0x1000 */ ienc(opOPIMM, 0, 10, 0, 42),   // ADDI x10, x0, 42
-		/* 0x1004 */ jenc(1, 16),                    // JAL  x1, +16
-		/* 0x1008 */ ienc(opOPIMM, 0, 11, 10, 0),   // ADDI x11, x10, 0
-		/* 0x100C */ instrECALL,                     // ECALL
-		/* 0x1010 */ ienc(opOPIMM, 0, 0, 0, 0),     // NOP
-		/* 0x1014 */ ienc(opOPIMM, 0, 1, 0, 0x50),  // LI x1, 0x50 (corrupt ra)
-		/* 0x1018 */ ienc(opJALR, 0, 0, 1, 0),      // JALR x0, 0(x1)
+		/* 0x1000 */ ienc(opOPIMM, 0, 10, 0, 42), // ADDI x10, x0, 42
+		/* 0x1004 */ jenc(1, 16), // JAL  x1, +16
+		/* 0x1008 */ ienc(opOPIMM, 0, 11, 10, 0), // ADDI x11, x10, 0
+		/* 0x100C */ instrECALL, // ECALL
+		/* 0x1010 */ ienc(opOPIMM, 0, 0, 0, 0), // NOP
+		/* 0x1014 */ ienc(opOPIMM, 0, 1, 0, 0x50), // LI x1, 0x50 (corrupt ra)
+		/* 0x1018 */ ienc(opJALR, 0, 0, 1, 0), // JALR x0, 0(x1)
 	}
 	cpu, mem := newTestCPU(t, Size64MB, 0x1000, insns)
 	defer mem.Free()

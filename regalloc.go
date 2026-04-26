@@ -1,4 +1,4 @@
-package ir
+package riscv
 
 // ── Interval representation ──
 

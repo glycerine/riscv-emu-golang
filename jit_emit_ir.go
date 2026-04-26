@@ -6,7 +6,6 @@ package riscv
 import (
 	"fmt"
 	"os"
-	"riscv/ir"
 )
 
 // testIterStart is set by tests to rotate gotoTargets iteration order.
@@ -15,7 +14,7 @@ import (
 
 // emitResult holds the generated IR block and metadata.
 type emitResult struct {
-	block         *ir.Block
+	block         *Block
 	startPC       uint64
 	endPC         uint64
 	numInsns      int
@@ -24,7 +23,7 @@ type emitResult struct {
 
 // deferredExit holds an external branch exit to emit at finalize time.
 type deferredExit struct {
-	label    ir.Label
+	label    Label
 	targetPC uint64
 }
 
@@ -32,10 +31,10 @@ type deferredExit struct {
 // Each load/store registers one so the fault tail returns its own PC and the
 // live VReg holding the faulting guest address (matches jit_emit.go behavior).
 type deferredFault struct {
-	label  ir.Label
-	pc     uint64  // PC of the faulting RISC-V instruction
-	addrVR ir.VReg // VReg holding the computed guest address
-	status int     // jitLoadFault or jitStoreFault
+	label  Label
+	pc     uint64 // PC of the faulting RISC-V instruction
+	addrVR VReg   // VReg holding the computed guest address
+	status int    // jitLoadFault or jitStoreFault
 }
 
 // emitter accumulates IR for a basic block.
@@ -59,7 +58,7 @@ type emitter struct {
 	mem            *GuestMemory
 	startPC        uint64
 	pc             uint64
-	irEm           *ir.Emitter
+	irEm           *Emitter
 	numInsns       int
 	regsUsed       uint32 // bit i set iff xreg(i) or xregDst(i) was called
 	terminated     bool
@@ -79,9 +78,9 @@ type emitter struct {
 
 // xreg returns the VReg for integer register r (source read) and
 // marks it as used so the prologue pre-loads x[r].
-func (e *emitter) xreg(r uint32) ir.VReg {
+func (e *emitter) xreg(r uint32) VReg {
 	if r == 0 {
-		return ir.VRegZero
+		return VRegZero
 	}
 	e.regsUsed |= uint32(1) << r
 	return e.irEm.XReg(r)
@@ -91,9 +90,9 @@ func (e *emitter) xreg(r uint32) ir.VReg {
 // marks it used (prologue load) and dirty (WriteBackAll store). See
 // the comment on the emitter struct's regsUsed field for why the
 // prologue load is required even for write-only regs.
-func (e *emitter) xregDst(r uint32) ir.VReg {
+func (e *emitter) xregDst(r uint32) VReg {
 	if r == 0 {
-		return ir.VRegZero
+		return VRegZero
 	}
 	e.regsUsed |= uint32(1) << r
 	vr := e.irEm.XReg(r)
@@ -102,13 +101,13 @@ func (e *emitter) xregDst(r uint32) ir.VReg {
 }
 
 // freg returns the VReg for FP register r.
-func (e *emitter) freg(r uint32) ir.VReg {
+func (e *emitter) freg(r uint32) VReg {
 	return e.irEm.FRegV(r)
 }
 
 // fregDst returns the VReg for FP register r (write destination).
 // Marks the register dirty so WriteBackAll stores it at block exit.
-func (e *emitter) fregDst(r uint32) ir.VReg {
+func (e *emitter) fregDst(r uint32) VReg {
 	vr := e.irEm.FRegV(r)
 	e.irEm.MarkDirty(vr)
 	return vr
@@ -132,11 +131,11 @@ func (e *emitter) fregDst(r uint32) ir.VReg {
 
 // canonF32 returns an F32 VReg equal to val if non-NaN, else the
 // canonical quiet NaN 0x7FC00000.
-func (e *emitter) canonF32(val ir.VReg) ir.VReg {
+func (e *emitter) canonF32(val VReg) VReg {
 	em := e.irEm
 	// Bit-cast val (F32 XMM) to integer bits.
 	intBits := em.Tmp()
-	em.MovT(intBits, val, ir.I64)
+	em.MovT(intBits, val, I64)
 	// absBits = bits & 0x7FFFFFFF (clears sign, keeps exp+mantissa in low 32)
 	absBits := em.Tmp()
 	em.AndImm(absBits, intBits, 0x7FFFFFFF)
@@ -147,25 +146,25 @@ func (e *emitter) canonF32(val ir.VReg) ir.VReg {
 	mergedInt := em.Tmp()
 	notNaNLabel := em.NewLabel()
 	doneLabel := em.NewLabel()
-	em.Branch(absBits, infBits, ir.LEU, notNaNLabel)
+	em.Branch(absBits, infBits, LEU, notNaNLabel)
 	// NaN path.
 	em.Const(mergedInt, 0x7FC00000)
 	em.Jump(doneLabel)
 	// Non-NaN path: low 32 of original int bits.
 	em.PlaceLabel(notNaNLabel)
-	em.Zext(mergedInt, intBits, ir.I32)
+	em.Zext(mergedInt, intBits, I32)
 	em.PlaceLabel(doneLabel)
 	// Bit-cast back to F32 XMM.
 	out := em.Tmp()
-	em.MovT(out, mergedInt, ir.F32)
+	em.MovT(out, mergedInt, F32)
 	return out
 }
 
 // canonF64 is the f64 counterpart.
-func (e *emitter) canonF64(val ir.VReg) ir.VReg {
+func (e *emitter) canonF64(val VReg) VReg {
 	em := e.irEm
 	intBits := em.Tmp()
-	em.MovT(intBits, val, ir.I64)
+	em.MovT(intBits, val, I64)
 	// absBits = bits & 0x7FFFFFFFFFFFFFFF
 	absBits := em.Tmp()
 	absMask := em.Tmp()
@@ -176,7 +175,7 @@ func (e *emitter) canonF64(val ir.VReg) ir.VReg {
 	mergedInt := em.Tmp()
 	notNaNLabel := em.NewLabel()
 	doneLabel := em.NewLabel()
-	em.Branch(absBits, infBits, ir.LEU, notNaNLabel)
+	em.Branch(absBits, infBits, LEU, notNaNLabel)
 	// NaN path: canonical qNaN for f64.
 	em.Const(mergedInt, int64(0x7FF8000000000000))
 	em.Jump(doneLabel)
@@ -184,7 +183,7 @@ func (e *emitter) canonF64(val ir.VReg) ir.VReg {
 	em.Mov(mergedInt, intBits)
 	em.PlaceLabel(doneLabel)
 	out := em.Tmp()
-	em.MovT(out, mergedInt, ir.F64)
+	em.MovT(out, mergedInt, F64)
 	return out
 }
 
@@ -211,11 +210,11 @@ func (e *emitter) canonF64(val ir.VReg) ir.VReg {
 // the memory-write is the single source of truth.
 
 // boxF32 NaN-boxes a 32-bit value into f[rd] (spec §11.2).
-func (e *emitter) boxF32(rd uint32, val ir.VReg) {
+func (e *emitter) boxF32(rd uint32, val VReg) {
 	em := e.irEm
 	// Bit-cast val (F32-typed, in XMM) to an I64 GPR temp.
 	intBits := em.Tmp()
-	em.MovT(intBits, val, ir.I64)
+	em.MovT(intBits, val, I64)
 	// Mask to low 32 bits (clears any XMM garbage in high 32).
 	low := em.Tmp()
 	em.AndImm(low, intBits, 0xFFFFFFFF)
@@ -225,18 +224,18 @@ func (e *emitter) boxF32(rd uint32, val ir.VReg) {
 	boxed := em.Tmp()
 	em.Or(boxed, low, hi)
 	// Store the boxed word directly to f[rd] memory.
-	em.Store(em.FBase(), int64(rd)*8, boxed, ir.I64)
+	em.Store(em.FBase(), int64(rd)*8, boxed, I64)
 }
 
 // unboxF32 extracts a 32-bit float from f[rs], returning canonical
 // qNaN if the box is malformed (upper 32 bits not all-ones, spec
 // §11.2). Returns an F32-typed VReg suitable for FAdd/FSub/...
-func (e *emitter) unboxF32(rs uint32) ir.VReg {
+func (e *emitter) unboxF32(rs uint32) VReg {
 	em := e.irEm
 	// Load the raw 64-bit word from f[rs] directly as I64. This
 	// bypasses the FP VReg typing and its MOVSS-zero-extend hazard.
 	srcInt := em.Tmp()
-	em.Load(srcInt, em.FBase(), int64(rs)*8, ir.I64, false)
+	em.Load(srcInt, em.FBase(), int64(rs)*8, I64, false)
 	// Check upper 32 == 0xFFFFFFFF.
 	upper := em.Tmp()
 	em.ShrImm(upper, srcInt, 32)
@@ -245,21 +244,21 @@ func (e *emitter) unboxF32(rs uint32) ir.VReg {
 	intResult := em.Tmp()
 	okLabel := em.NewLabel()
 	doneLabel := em.NewLabel()
-	em.Branch(upper, check, ir.EQ, okLabel)
+	em.Branch(upper, check, EQ, okLabel)
 	em.Const(intResult, 0x7FC00000) // malformed box → canonical qNaN
 	em.Jump(doneLabel)
 	em.PlaceLabel(okLabel)
-	em.Zext(intResult, srcInt, ir.I32)
+	em.Zext(intResult, srcInt, I32)
 	em.PlaceLabel(doneLabel)
 	// Bit-cast the 32-bit integer bits into an F32 VReg (XMM).
 	fpResult := em.Tmp()
-	em.MovT(fpResult, intResult, ir.F32)
+	em.MovT(fpResult, intResult, F32)
 	return fpResult
 }
 
 // ── Control flow helpers ───────────────────────────────────────────────
 
-func (e *emitter) getOrCreateLabel(pc uint64) ir.Label {
+func (e *emitter) getOrCreateLabel(pc uint64) Label {
 	if l, ok := e.pcLabels.get(pc); ok {
 		return l
 	}
@@ -320,7 +319,7 @@ func (e *emitter) emitLoadFused(rd uint32, guestAddr int64, funct3 uint32) {
 		width = 8
 	}
 
-	fl := e.allocFaultLabel(ir.VRegZero, jitLoadFault)
+	fl := e.allocFaultLabel(VRegZero, jitLoadFault)
 	addr := e.irEm.Tmp()
 	e.irEm.Const(addr, guestAddr)
 	e.irEm.MaskedLoadAddr(dst, addr, memBase, mask, width, signed, fl)
@@ -338,7 +337,7 @@ func (e *emitter) advancePC(size uint64) {
 
 func (e *emitter) emitReturn(pc uint64, status int) {
 	e.irEm.WriteBackAll()
-	e.irEm.Ret(pc, status, ir.VRegZero)
+	e.irEm.Ret(pc, status, VRegZero)
 }
 
 // emitSyscall emits the ECALL fast path: writeback all dirty regs,
@@ -362,7 +361,7 @@ func (e *emitter) emitSyscall(resumePC uint64, dispatcherAddr uintptr) {
 // (PC, addrVR, status) tuple so finalize() emits a tail returning the actual
 // faulting instruction's PC and the live faulting address. Mirrors the TCC
 // emitter's per-call-site `return (JITResult){pc, ic, status, addr}` pattern.
-func (e *emitter) allocFaultLabel(addr ir.VReg, status int) ir.Label {
+func (e *emitter) allocFaultLabel(addr VReg, status int) Label {
 	l := e.irEm.NewLabel()
 	e.deferredFaults = append(e.deferredFaults, deferredFault{
 		label: l, pc: e.pc, addrVR: addr, status: status,
@@ -398,7 +397,7 @@ func (e *emitter) lastIRWasTerminator() bool {
 		return false
 	}
 	switch ins[len(ins)-1].Op {
-	case ir.IRRet, ir.IRRetDyn, ir.IRSyscall, ir.IRChainExit, ir.IRJalrIC:
+	case IRRet, IRRetDyn, IRSyscall, IRChainExit, IRJalrIC:
 		return true
 	}
 	return false
@@ -410,24 +409,24 @@ func (e *emitter) emitWriteBackAll() {
 
 // emitDivGuarded emits a 64-bit DIV/DIVU/REM/REMU with zero-divisor and
 // overflow guards per the RISC-V spec (no x86 fault on divide-by-zero).
-func (e *emitter) emitDivGuarded(dst, a, b ir.VReg, signed, wantRem bool) {
+func (e *emitter) emitDivGuarded(dst, a, b VReg, signed, wantRem bool) {
 	em := e.irEm
 	doneLabel := em.NewLabel()
 	normalLabel := em.NewLabel()
 
 	// Check divisor == 0.
 	zeroLabel := em.NewLabel()
-	em.Branch(b, ir.VRegZero, ir.EQ, zeroLabel)
+	em.Branch(b, VRegZero, EQ, zeroLabel)
 
 	if signed {
 		// Check signed overflow: a == INT64_MIN && b == -1.
 		ovfLabel := em.NewLabel()
 		tmin := em.Tmp()
 		em.Const(tmin, -9223372036854775808) // INT64_MIN
-		em.Branch(a, tmin, ir.NE, normalLabel)
+		em.Branch(a, tmin, NE, normalLabel)
 		tminus1 := em.Tmp()
 		em.Const(tminus1, -1)
-		em.Branch(b, tminus1, ir.NE, normalLabel)
+		em.Branch(b, tminus1, NE, normalLabel)
 		// Overflow path.
 		em.PlaceLabel(ovfLabel)
 		if wantRem {
@@ -470,7 +469,7 @@ func (e *emitter) emitDivGuarded(dst, a, b ir.VReg, signed, wantRem bool) {
 
 // emitDivW emits a 32-bit DIVW/DIVUW/REMW/REMUW with guards.
 // Operates on lower 32 bits, result is sign-extended to 64 bits.
-func (e *emitter) emitDivW(dst, a, b ir.VReg, signed, wantRem bool) {
+func (e *emitter) emitDivW(dst, a, b VReg, signed, wantRem bool) {
 	em := e.irEm
 	doneLabel := em.NewLabel()
 	normalLabel := em.NewLabel()
@@ -479,31 +478,31 @@ func (e *emitter) emitDivW(dst, a, b ir.VReg, signed, wantRem bool) {
 	a32 := em.Tmp()
 	b32 := em.Tmp()
 	if signed {
-		em.Sext(a32, a, ir.I32)
-		em.Sext(b32, b, ir.I32)
+		em.Sext(a32, a, I32)
+		em.Sext(b32, b, I32)
 	} else {
-		em.Zext(a32, a, ir.I32)
-		em.Zext(b32, b, ir.I32)
+		em.Zext(a32, a, I32)
+		em.Zext(b32, b, I32)
 	}
 
 	// Check divisor == 0.
 	zeroLabel := em.NewLabel()
-	em.Branch(b32, ir.VRegZero, ir.EQ, zeroLabel)
+	em.Branch(b32, VRegZero, EQ, zeroLabel)
 
 	if signed {
 		// Check signed overflow: a32 == INT32_MIN && b32 == -1.
 		ovfLabel := em.NewLabel()
 		tmin := em.Tmp()
 		em.Const(tmin, -2147483648) // INT32_MIN (sign-extended to 64-bit)
-		em.Branch(a32, tmin, ir.NE, normalLabel)
+		em.Branch(a32, tmin, NE, normalLabel)
 		tminus1 := em.Tmp()
 		em.Const(tminus1, -1)
-		em.Branch(b32, tminus1, ir.NE, normalLabel)
+		em.Branch(b32, tminus1, NE, normalLabel)
 		em.PlaceLabel(ovfLabel)
 		if wantRem {
 			em.Const(dst, 0)
 		} else {
-			em.Sext(dst, a32, ir.I32) // dividend, sign-extended
+			em.Sext(dst, a32, I32) // dividend, sign-extended
 		}
 		em.Jump(doneLabel)
 	} else {
@@ -513,7 +512,7 @@ func (e *emitter) emitDivW(dst, a, b ir.VReg, signed, wantRem bool) {
 	// Zero-divisor path.
 	em.PlaceLabel(zeroLabel)
 	if wantRem {
-		em.Sext(dst, a32, ir.I32) // REMW(x,0) → x, sign-extended
+		em.Sext(dst, a32, I32) // REMW(x,0) → x, sign-extended
 	} else {
 		em.Const(dst, -1) // DIVW(x,0) → all-ones
 	}
@@ -535,7 +534,7 @@ func (e *emitter) emitDivW(dst, a, b ir.VReg, signed, wantRem bool) {
 			em.DivU(t, a32, b32)
 		}
 	}
-	em.Sext(dst, t, ir.I32)
+	em.Sext(dst, t, I32)
 
 	em.PlaceLabel(doneLabel)
 }
@@ -546,40 +545,40 @@ func (e *emitter) emitDivW(dst, a, b ir.VReg, signed, wantRem bool) {
 //	§11.6 signed-zero ordering: -0.0 < +0.0.
 //
 // Emits an FP-typed dst (XMM); caller is responsible for boxing.
-func (e *emitter) emitFMinMax(dst, a, b ir.VReg, t ir.Type, isMax bool) {
+func (e *emitter) emitFMinMax(dst, a, b VReg, t Type, isMax bool) {
 	em := e.irEm
 	lDone := em.NewLabel()
 
 	// 1. NaN handling.
 	aIsNum := em.Tmp()
-	em.FCmp(aIsNum, a, a, ir.EQ, t) // 1 if not NaN, 0 if NaN
+	em.FCmp(aIsNum, a, a, EQ, t) // 1 if not NaN, 0 if NaN
 	bIsNum := em.Tmp()
-	em.FCmp(bIsNum, b, b, ir.EQ, t)
+	em.FCmp(bIsNum, b, b, EQ, t)
 
 	lAIsNum := em.NewLabel()
-	em.Branch(aIsNum, ir.VRegZero, ir.NE, lAIsNum) // a is number
+	em.Branch(aIsNum, VRegZero, NE, lAIsNum) // a is number
 	// a is NaN.
 	lBothNaN := em.NewLabel()
-	em.Branch(bIsNum, ir.VRegZero, ir.EQ, lBothNaN) // b NaN too
+	em.Branch(bIsNum, VRegZero, EQ, lBothNaN) // b NaN too
 	// a NaN, b number → dst = b.
 	em.Mov(dst, b)
 	em.Jump(lDone)
 	em.PlaceLabel(lBothNaN)
 	// Both NaN → canonical qNaN.
 	canonInt := em.Tmp()
-	if t == ir.F32 {
+	if t == F32 {
 		em.Const(canonInt, 0x7FC00000)
-		em.MovT(dst, canonInt, ir.F32)
+		em.MovT(dst, canonInt, F32)
 	} else {
 		em.Const(canonInt, int64(0x7FF8000000000000))
-		em.MovT(dst, canonInt, ir.F64)
+		em.MovT(dst, canonInt, F64)
 	}
 	em.Jump(lDone)
 
 	em.PlaceLabel(lAIsNum)
 	// a is number. Check b.
 	lNumeric := em.NewLabel()
-	em.Branch(bIsNum, ir.VRegZero, ir.NE, lNumeric) // both numbers
+	em.Branch(bIsNum, VRegZero, NE, lNumeric) // both numbers
 	// a number, b NaN → dst = a.
 	em.Mov(dst, a)
 	em.Jump(lDone)
@@ -590,13 +589,13 @@ func (e *emitter) emitFMinMax(dst, a, b ir.VReg, t ir.Type, isMax bool) {
 	// Test "both operands are zero" via bit-level: (aBits | bBits)
 	// with sign bit masked off == 0 ⇔ both are +0 or -0.
 	aBits := em.Tmp()
-	em.MovT(aBits, a, ir.I64)
+	em.MovT(aBits, a, I64)
 	bBits := em.Tmp()
-	em.MovT(bBits, b, ir.I64)
+	em.MovT(bBits, b, I64)
 	orBits := em.Tmp()
 	em.Or(orBits, aBits, bBits)
 	absOr := em.Tmp()
-	if t == ir.F32 {
+	if t == F32 {
 		em.AndImm(absOr, orBits, 0x7FFFFFFF)
 	} else {
 		mask63 := em.Tmp()
@@ -604,7 +603,7 @@ func (e *emitter) emitFMinMax(dst, a, b ir.VReg, t ir.Type, isMax bool) {
 		em.And(absOr, orBits, mask63)
 	}
 	lFPCmp := em.NewLabel()
-	em.Branch(absOr, ir.VRegZero, ir.NE, lFPCmp)
+	em.Branch(absOr, VRegZero, NE, lFPCmp)
 
 	// Both operands are ±0. Spec orders -0 < +0:
 	//   FMIN: return -0 if either has sign bit set; else +0.
@@ -624,12 +623,12 @@ func (e *emitter) emitFMinMax(dst, a, b ir.VReg, t ir.Type, isMax bool) {
 	em.PlaceLabel(lFPCmp)
 	cmp := em.Tmp()
 	if isMax {
-		em.FCmp(cmp, a, b, ir.GT, t)
+		em.FCmp(cmp, a, b, GT, t)
 	} else {
-		em.FCmp(cmp, a, b, ir.LT, t)
+		em.FCmp(cmp, a, b, LT, t)
 	}
 	lPickA := em.NewLabel()
-	em.Branch(cmp, ir.VRegZero, ir.NE, lPickA)
+	em.Branch(cmp, VRegZero, NE, lPickA)
 	em.Mov(dst, b)
 	em.Jump(lDone)
 	em.PlaceLabel(lPickA)
@@ -638,20 +637,20 @@ func (e *emitter) emitFMinMax(dst, a, b ir.VReg, t ir.Type, isMax bool) {
 	em.PlaceLabel(lDone)
 }
 
-func branchPred(funct3 uint32) (ir.Pred, bool) {
+func branchPred(funct3 uint32) (Pred, bool) {
 	switch funct3 {
 	case 0:
-		return ir.EQ, true
+		return EQ, true
 	case 1:
-		return ir.NE, true
+		return NE, true
 	case 4:
-		return ir.LT, true
+		return LT, true
 	case 5:
-		return ir.GE, true
+		return GE, true
 	case 6:
-		return ir.LTU, true
+		return LTU, true
 	case 7:
-		return ir.GEU, true
+		return GEU, true
 	}
 	return 0, false
 }
@@ -924,11 +923,11 @@ func emitBlockLinear(mem *GuestMemory, startPC, endPC uint64) *emitResult {
 }
 
 // emitBlockRange walks instructions sequentially from startPC until
-// endPC or the first terminator, emitting IR. Shared between
+// endPC or the first terminator, emitting  Shared between
 // emitBlock (BFS-driven endPC via scanRegion) and emitBlockLinear
 // (explicit endPC from the AOT enumeration).
 func emitBlockRange(mem *GuestMemory, pc, endPC uint64) *emitResult {
-	irEm := ir.NewEmitter()
+	irEm := NewEmitter()
 
 	gt := newU64setSized(256)
 	//gt.IterStart = testIterStart
@@ -995,12 +994,12 @@ func emitBlockRange(mem *GuestMemory, pc, endPC uint64) *emitResult {
 	// (e.g. `li a7, 93` with no prior use of a7) — see the comment on
 	// emitter.regsUsed for why the apparent waste is load-bearing.
 	// Must run AFTER emission so regsUsed is fully populated.
-	var loads []ir.IRInstr
+	var loads []IRInstr
 	for i := uint32(1); i < 32; i++ {
 		if e.regsUsed&(uint32(1)<<i) != 0 {
-			loads = append(loads, ir.IRInstr{
-				Op: ir.IRLoad, T: ir.I64,
-				Dst: ir.VReg(i), A: irEm.XBase(),
+			loads = append(loads, IRInstr{
+				Op: IRLoad, T: I64,
+				Dst: VReg(i), A: irEm.XBase(),
 				Imm: int64(i) * 8,
 			})
 		}
@@ -1011,7 +1010,7 @@ func emitBlockRange(mem *GuestMemory, pc, endPC uint64) *emitResult {
 		for lab, idx := range e.irEm.Block.Labels {
 			e.irEm.Block.Labels[lab] = idx + len(loads)
 		}
-		ir.MaxVReg(e.irEm.Block)
+		MaxVReg(e.irEm.Block)
 	}
 
 	return e.finalize()
@@ -1226,7 +1225,7 @@ func (e *emitter) emitOpImm(rd, rs1 uint32, imm int64, funct3, funct7 uint32) {
 					nF6 := next >> 26
 					nShamt := int64((next >> 20) & 0x3F)
 					if nOp == 0x13 && nF3 == 5 && nF6 == 0 && nShamt == 32 && nRd == rd && nRs1 == rd {
-						e.irEm.Zext(e.xregDst(rd), e.xreg(rs1), ir.I32)
+						e.irEm.Zext(e.xregDst(rd), e.xreg(rs1), I32)
 						e.advancePC(4)
 						e.advancePC(4)
 						return
@@ -1252,19 +1251,19 @@ func (e *emitter) emitOpImm(rd, rs1 uint32, imm int64, funct3, funct7 uint32) {
 			switch shamt {
 			case 0: // CLZ
 				src := e.xreg(rs1)
-				e.irEm.Clz(e.xregDst(rd), src, ir.I64)
+				e.irEm.Clz(e.xregDst(rd), src, I64)
 			case 1: // CTZ
 				src := e.xreg(rs1)
-				e.irEm.Ctz(e.xregDst(rd), src, ir.I64)
+				e.irEm.Ctz(e.xregDst(rd), src, I64)
 			case 2: // CPOP
 				src := e.xreg(rs1)
-				e.irEm.Popcount(e.xregDst(rd), src, ir.I64)
+				e.irEm.Popcount(e.xregDst(rd), src, I64)
 			case 0x22: // SEXT.B
 				src := e.xreg(rs1)
-				e.irEm.Sext(e.xregDst(rd), src, ir.I8)
+				e.irEm.Sext(e.xregDst(rd), src, I8)
 			case 0x23: // SEXT.H
 				src := e.xreg(rs1)
-				e.irEm.Sext(e.xregDst(rd), src, ir.I16)
+				e.irEm.Sext(e.xregDst(rd), src, I16)
 			default:
 				e.terminated = true
 			}
@@ -1273,10 +1272,10 @@ func (e *emitter) emitOpImm(rd, rs1 uint32, imm int64, funct3, funct7 uint32) {
 		}
 	case 2: // SLTI
 		src := e.xreg(rs1)
-		e.irEm.SetImm(e.xregDst(rd), src, imm, ir.LT)
+		e.irEm.SetImm(e.xregDst(rd), src, imm, LT)
 	case 3: // SLTIU
 		src := e.xreg(rs1)
-		e.irEm.SetImm(e.xregDst(rd), src, imm, ir.LTU)
+		e.irEm.SetImm(e.xregDst(rd), src, imm, LTU)
 	case 4: // XORI
 		src := e.xreg(rs1)
 		e.irEm.XorImm(e.xregDst(rd), src, imm)
@@ -1310,7 +1309,7 @@ func (e *emitter) emitOpImm(rd, rs1 uint32, imm int64, funct3, funct7 uint32) {
 				mask := e.irEm.Tmp()
 				// mask = (byteVal != 0) ? 0xFF : 0
 				ne := e.irEm.Tmp()
-				e.irEm.Set(ne, byteVal, ir.VRegZero, ir.NE)
+				e.irEm.Set(ne, byteVal, VRegZero, NE)
 				e.irEm.Neg(mask, ne)            // 0→0, 1→-1 (0xFFFF...)
 				e.irEm.AndImm(mask, mask, 0xFF) // keep only low byte = 0xFF or 0
 				e.irEm.ShlImm(mask, mask, int64(i*8))
@@ -1321,7 +1320,7 @@ func (e *emitter) emitOpImm(rd, rs1 uint32, imm int64, funct3, funct7 uint32) {
 			e.irEm.Bswap(e.xregDst(rd), src)
 		case 0x02: // ZEXT.H
 			src := e.xreg(rs1)
-			e.irEm.Zext(e.xregDst(rd), src, ir.I16)
+			e.irEm.Zext(e.xregDst(rd), src, I16)
 		default:
 			e.terminated = true
 		}
@@ -1361,11 +1360,11 @@ func (e *emitter) emitOpImm32(rd, rs1 uint32, imm int64, funct3, funct7 uint32) 
 					src := e.xreg(rs1)
 					dst := e.xregDst(rd)
 					if imm == 0 {
-						e.irEm.Zext(dst, src, ir.I32)
+						e.irEm.Zext(dst, src, I32)
 					} else {
 						t := e.irEm.Tmp()
 						e.irEm.AddImm(t, src, imm)
-						e.irEm.Zext(dst, t, ir.I32)
+						e.irEm.Zext(dst, t, I32)
 					}
 					e.advancePC(4) // consumed SLLI
 					e.advancePC(4) // consumed SRLI
@@ -1377,44 +1376,44 @@ func (e *emitter) emitOpImm32(rd, rs1 uint32, imm int64, funct3, funct7 uint32) 
 		dst := e.xregDst(rd)
 		if imm == 0 {
 			// SEXT.W
-			e.irEm.Sext(dst, src, ir.I32)
+			e.irEm.Sext(dst, src, I32)
 		} else {
 			t := e.irEm.Tmp()
 			e.irEm.AddImm(t, src, imm)
-			e.irEm.Sext(dst, t, ir.I32)
+			e.irEm.Sext(dst, t, I32)
 		}
 	case 1: // SLLIW / SLLI.UW
 		if funct7 == 0x04 { // SLLI.UW
 			t := e.irEm.Tmp()
-			e.irEm.Zext(t, e.xreg(rs1), ir.I32)
+			e.irEm.Zext(t, e.xreg(rs1), I32)
 			e.irEm.ShlImm(e.xregDst(rd), t, shamt)
 		} else { // SLLIW
 			t := e.irEm.Tmp()
 			e.irEm.ShlImm(t, e.xreg(rs1), shamt)
-			e.irEm.Sext(e.xregDst(rd), t, ir.I32)
+			e.irEm.Sext(e.xregDst(rd), t, I32)
 		}
 	case 5: // SRLIW / SRAIW / RORIW
 		switch funct7 >> 1 {
 		case 0x00: // SRLIW
 			t := e.irEm.Tmp()
-			e.irEm.Zext(t, e.xreg(rs1), ir.I32) // zero-extend to get uint32
+			e.irEm.Zext(t, e.xreg(rs1), I32) // zero-extend to get uint32
 			e.irEm.ShrImm(t, t, shamt)
-			e.irEm.Sext(e.xregDst(rd), t, ir.I32)
+			e.irEm.Sext(e.xregDst(rd), t, I32)
 		case 0x10: // SRAIW
 			t := e.irEm.Tmp()
-			e.irEm.Sext(t, e.xreg(rs1), ir.I32) // sign-extend to get int32
+			e.irEm.Sext(t, e.xreg(rs1), I32) // sign-extend to get int32
 			e.irEm.SarImm(t, t, shamt)
-			e.irEm.Sext(e.xregDst(rd), t, ir.I32)
+			e.irEm.Sext(e.xregDst(rd), t, I32)
 		case 0x30: // RORIW — word rotate right immediate
 			src := e.xreg(rs1)
 			t := e.irEm.Tmp()
-			e.irEm.Zext(t, src, ir.I32)
+			e.irEm.Zext(t, src, I32)
 			t1 := e.irEm.Tmp()
 			e.irEm.ShrImm(t1, t, shamt)
 			t2 := e.irEm.Tmp()
 			e.irEm.ShlImm(t2, t, 32-shamt)
 			e.irEm.Or(t1, t1, t2)
-			e.irEm.Sext(e.xregDst(rd), t1, ir.I32)
+			e.irEm.Sext(e.xregDst(rd), t1, I32)
 		default:
 			e.terminated = true
 		}
@@ -1441,9 +1440,9 @@ func (e *emitter) emitOp(rd, rs1, rs2, funct3, funct7 uint32) {
 		case 1:
 			e.irEm.Shl(dst, a, b)
 		case 2:
-			e.irEm.Set(dst, a, b, ir.LT)
+			e.irEm.Set(dst, a, b, LT)
 		case 3:
-			e.irEm.Set(dst, a, b, ir.LTU)
+			e.irEm.Set(dst, a, b, LTU)
 		case 4:
 			e.irEm.Xor(dst, a, b)
 		case 5:
@@ -1492,15 +1491,15 @@ func (e *emitter) emitOp(rd, rs1, rs2, funct3, funct7 uint32) {
 			e.emitDivGuarded(dst, a, b, false, true)
 		}
 	case 0x04: // Zbb: ZEXT.H (R-type encoding funct7=0x04, funct3 can vary)
-		e.irEm.Zext(dst, a, ir.I16)
+		e.irEm.Zext(dst, a, I16)
 	case 0x05: // MIN/MAX (Zbb) + CLMUL (Zbc)
 		switch funct3 {
 		case 4: // MIN
 			takeA := e.irEm.NewLabel()
 			done := e.irEm.NewLabel()
 			t := e.irEm.Tmp()
-			e.irEm.Set(t, a, b, ir.LT)
-			e.irEm.Branch(t, ir.VRegZero, ir.NE, takeA)
+			e.irEm.Set(t, a, b, LT)
+			e.irEm.Branch(t, VRegZero, NE, takeA)
 			e.irEm.Mov(dst, b)
 			e.irEm.Jump(done)
 			e.irEm.PlaceLabel(takeA)
@@ -1510,8 +1509,8 @@ func (e *emitter) emitOp(rd, rs1, rs2, funct3, funct7 uint32) {
 			takeA := e.irEm.NewLabel()
 			done := e.irEm.NewLabel()
 			t := e.irEm.Tmp()
-			e.irEm.Set(t, a, b, ir.LTU)
-			e.irEm.Branch(t, ir.VRegZero, ir.NE, takeA)
+			e.irEm.Set(t, a, b, LTU)
+			e.irEm.Branch(t, VRegZero, NE, takeA)
 			e.irEm.Mov(dst, b)
 			e.irEm.Jump(done)
 			e.irEm.PlaceLabel(takeA)
@@ -1521,8 +1520,8 @@ func (e *emitter) emitOp(rd, rs1, rs2, funct3, funct7 uint32) {
 			takeA := e.irEm.NewLabel()
 			done := e.irEm.NewLabel()
 			t := e.irEm.Tmp()
-			e.irEm.Set(t, a, b, ir.GT)
-			e.irEm.Branch(t, ir.VRegZero, ir.NE, takeA)
+			e.irEm.Set(t, a, b, GT)
+			e.irEm.Branch(t, VRegZero, NE, takeA)
 			e.irEm.Mov(dst, b)
 			e.irEm.Jump(done)
 			e.irEm.PlaceLabel(takeA)
@@ -1532,8 +1531,8 @@ func (e *emitter) emitOp(rd, rs1, rs2, funct3, funct7 uint32) {
 			takeA := e.irEm.NewLabel()
 			done := e.irEm.NewLabel()
 			t := e.irEm.Tmp()
-			e.irEm.Set(t, a, b, ir.GTU)
-			e.irEm.Branch(t, ir.VRegZero, ir.NE, takeA)
+			e.irEm.Set(t, a, b, GTU)
+			e.irEm.Branch(t, VRegZero, NE, takeA)
 			e.irEm.Mov(dst, b)
 			e.irEm.Jump(done)
 			e.irEm.PlaceLabel(takeA)
@@ -1547,7 +1546,7 @@ func (e *emitter) emitOp(rd, rs1, rs2, funct3, funct7 uint32) {
 		case 5: // CZERO.EQZ: d = (b == 0) ? 0 : a
 			skip := e.irEm.NewLabel()
 			done := e.irEm.NewLabel()
-			e.irEm.Branch(b, ir.VRegZero, ir.NE, skip)
+			e.irEm.Branch(b, VRegZero, NE, skip)
 			e.irEm.Const(dst, 0)
 			e.irEm.Jump(done)
 			e.irEm.PlaceLabel(skip)
@@ -1556,7 +1555,7 @@ func (e *emitter) emitOp(rd, rs1, rs2, funct3, funct7 uint32) {
 		case 7: // CZERO.NEZ: d = (b != 0) ? 0 : a
 			skip := e.irEm.NewLabel()
 			done := e.irEm.NewLabel()
-			e.irEm.Branch(b, ir.VRegZero, ir.EQ, skip)
+			e.irEm.Branch(b, VRegZero, EQ, skip)
 			e.irEm.Const(dst, 0)
 			e.irEm.Jump(done)
 			e.irEm.PlaceLabel(skip)
@@ -1659,21 +1658,21 @@ func (e *emitter) emitOp32(rd, rs1, rs2, funct3, funct7 uint32) {
 		case 0: // ADDW
 			t := e.irEm.Tmp()
 			e.irEm.Add(t, a, b)
-			e.irEm.Sext(dst, t, ir.I32)
+			e.irEm.Sext(dst, t, I32)
 		case 1: // SLLW — shift amount masked to 5 bits (not 6)
 			shamt := e.irEm.Tmp()
 			e.irEm.AndImm(shamt, b, 31)
 			t := e.irEm.Tmp()
-			e.irEm.Zext(t, a, ir.I32)
+			e.irEm.Zext(t, a, I32)
 			e.irEm.Shl(t, t, shamt)
-			e.irEm.Sext(dst, t, ir.I32)
+			e.irEm.Sext(dst, t, I32)
 		case 5: // SRLW — shift amount masked to 5 bits
 			shamt := e.irEm.Tmp()
 			e.irEm.AndImm(shamt, b, 31)
 			t := e.irEm.Tmp()
-			e.irEm.Zext(t, a, ir.I32)
+			e.irEm.Zext(t, a, I32)
 			e.irEm.Shr(t, t, shamt)
-			e.irEm.Sext(dst, t, ir.I32)
+			e.irEm.Sext(dst, t, I32)
 		default:
 			e.terminated = true
 		}
@@ -1682,14 +1681,14 @@ func (e *emitter) emitOp32(rd, rs1, rs2, funct3, funct7 uint32) {
 		case 0: // SUBW
 			t := e.irEm.Tmp()
 			e.irEm.Sub(t, a, b)
-			e.irEm.Sext(dst, t, ir.I32)
+			e.irEm.Sext(dst, t, I32)
 		case 5: // SRAW — shift amount masked to 5 bits
 			shamt := e.irEm.Tmp()
 			e.irEm.AndImm(shamt, b, 31)
 			t := e.irEm.Tmp()
-			e.irEm.Sext(t, a, ir.I32)
+			e.irEm.Sext(t, a, I32)
 			e.irEm.Sar(t, t, shamt)
-			e.irEm.Sext(dst, t, ir.I32)
+			e.irEm.Sext(dst, t, I32)
 		default:
 			e.terminated = true
 		}
@@ -1698,7 +1697,7 @@ func (e *emitter) emitOp32(rd, rs1, rs2, funct3, funct7 uint32) {
 		case 0: // MULW
 			t := e.irEm.Tmp()
 			e.irEm.Mul(t, a, b)
-			e.irEm.Sext(dst, t, ir.I32)
+			e.irEm.Sext(dst, t, I32)
 		case 4: // DIVW — guarded 32-bit signed division
 			e.emitDivW(dst, a, b, true, false)
 		case 5: // DIVUW — guarded 32-bit unsigned division
@@ -1712,13 +1711,13 @@ func (e *emitter) emitOp32(rd, rs1, rs2, funct3, funct7 uint32) {
 		}
 	case 0x04: // Zba: ADD.UW
 		t := e.irEm.Tmp()
-		e.irEm.Zext(t, a, ir.I32)
+		e.irEm.Zext(t, a, I32)
 		e.irEm.Add(dst, b, t)
 	case 0x30: // Zbb: ROLW/RORW
 		switch funct3 {
 		case 1: // ROLW
 			t := e.irEm.Tmp()
-			e.irEm.Zext(t, a, ir.I32)
+			e.irEm.Zext(t, a, I32)
 			t1 := e.irEm.Tmp()
 			shamt := e.irEm.Tmp()
 			e.irEm.AndImm(shamt, b, 31)
@@ -1729,10 +1728,10 @@ func (e *emitter) emitOp32(rd, rs1, rs2, funct3, funct7 uint32) {
 			t2 := e.irEm.Tmp()
 			e.irEm.Shr(t2, t, sub)
 			e.irEm.Or(t1, t1, t2)
-			e.irEm.Sext(dst, t1, ir.I32)
+			e.irEm.Sext(dst, t1, I32)
 		case 5: // RORW
 			t := e.irEm.Tmp()
-			e.irEm.Zext(t, a, ir.I32)
+			e.irEm.Zext(t, a, I32)
 			t1 := e.irEm.Tmp()
 			shamt := e.irEm.Tmp()
 			e.irEm.AndImm(shamt, b, 31)
@@ -1743,7 +1742,7 @@ func (e *emitter) emitOp32(rd, rs1, rs2, funct3, funct7 uint32) {
 			t2 := e.irEm.Tmp()
 			e.irEm.Shl(t2, t, sub)
 			e.irEm.Or(t1, t1, t2)
-			e.irEm.Sext(dst, t1, ir.I32)
+			e.irEm.Sext(dst, t1, I32)
 		default:
 			e.terminated = true
 		}
@@ -1751,16 +1750,16 @@ func (e *emitter) emitOp32(rd, rs1, rs2, funct3, funct7 uint32) {
 		switch funct3 {
 		case 0: // CLZW (rs2 encoding = 0)
 			t := e.irEm.Tmp()
-			e.irEm.Zext(t, a, ir.I32)
-			e.irEm.Clz(dst, t, ir.I32)
+			e.irEm.Zext(t, a, I32)
+			e.irEm.Clz(dst, t, I32)
 		case 1: // CTZW
 			t := e.irEm.Tmp()
-			e.irEm.Zext(t, a, ir.I32)
-			e.irEm.Ctz(dst, t, ir.I32)
+			e.irEm.Zext(t, a, I32)
+			e.irEm.Ctz(dst, t, I32)
 		case 2: // CPOPW
 			t := e.irEm.Tmp()
-			e.irEm.Zext(t, a, ir.I32)
-			e.irEm.Popcount(dst, t, ir.I32)
+			e.irEm.Zext(t, a, I32)
+			e.irEm.Popcount(dst, t, I32)
 		default:
 			e.terminated = true
 		}
@@ -1768,17 +1767,17 @@ func (e *emitter) emitOp32(rd, rs1, rs2, funct3, funct7 uint32) {
 		switch funct3 {
 		case 2:
 			t := e.irEm.Tmp()
-			e.irEm.Zext(t, a, ir.I32)
+			e.irEm.Zext(t, a, I32)
 			e.irEm.ShlImm(t, t, 1)
 			e.irEm.Add(dst, b, t)
 		case 4:
 			t := e.irEm.Tmp()
-			e.irEm.Zext(t, a, ir.I32)
+			e.irEm.Zext(t, a, I32)
 			e.irEm.ShlImm(t, t, 2)
 			e.irEm.Add(dst, b, t)
 		case 6:
 			t := e.irEm.Tmp()
-			e.irEm.Zext(t, a, ir.I32)
+			e.irEm.Zext(t, a, I32)
 			e.irEm.ShlImm(t, t, 3)
 			e.irEm.Add(dst, b, t)
 		default:
@@ -1811,19 +1810,19 @@ func (e *emitter) emitLoad(rd, rs1 uint32, imm int64, funct3 uint32) {
 		doneLabel := e.irEm.NewLabel()
 		alignBits := e.irEm.Tmp()
 		e.irEm.AndImm(alignBits, addr, int64(width-1))
-		e.irEm.Branch(alignBits, ir.VRegZero, ir.EQ, alignedLabel)
+		e.irEm.Branch(alignBits, VRegZero, EQ, alignedLabel)
 		// OOB check for misaligned path (same as MaskedLoadAddr does for aligned).
 		if CheckSandboxBounds {
 			e.emitOOBCheck(addr, width, faultLabel)
 		}
-		t := ir.WidthToType(width)
+		t := WidthToType(width)
 		e.irEm.MisalignedLoad(dst, addr, t)
 		if signed {
 			switch width {
 			case 2:
-				e.irEm.Sext(dst, dst, ir.I16)
+				e.irEm.Sext(dst, dst, I16)
 			case 4:
-				e.irEm.Sext(dst, dst, ir.I32)
+				e.irEm.Sext(dst, dst, I32)
 			}
 		}
 		e.irEm.Jump(doneLabel)
@@ -1837,7 +1836,7 @@ func (e *emitter) emitLoad(rd, rs1 uint32, imm int64, funct3 uint32) {
 
 // emitOOBCheck emits (addr | (addr+width-1)) & ~mask != 0 → goto faultLabel.
 // Only emitted when CheckSandboxBounds is on; the fast path skips this.
-func (e *emitter) emitOOBCheck(addr ir.VReg, width int, faultLabel ir.Label) {
+func (e *emitter) emitOOBCheck(addr VReg, width int, faultLabel Label) {
 	mask := e.irEm.MemMask()
 	endAddr := addr
 	if width > 1 {
@@ -1849,13 +1848,13 @@ func (e *emitter) emitOOBCheck(addr ir.VReg, width int, faultLabel ir.Label) {
 	e.irEm.Not(maskNot, mask)
 	oob := e.irEm.Tmp()
 	e.irEm.And(oob, endAddr, maskNot)
-	e.irEm.Branch(oob, ir.VRegZero, ir.NE, faultLabel)
+	e.irEm.Branch(oob, VRegZero, NE, faultLabel)
 }
 
 // emitMisalignedLoad emits byte-by-byte loads for a misaligned address.
 // addr is a VReg holding the guest virtual address (already computed).
 // faultLabel is the per-call-site fault tail (already registered with addr).
-func (e *emitter) emitMisalignedLoad(dst ir.VReg, addr ir.VReg, width int, signed bool, faultLabel ir.Label) {
+func (e *emitter) emitMisalignedLoad(dst VReg, addr VReg, width int, signed bool, faultLabel Label) {
 	memBase := e.irEm.MemBase()
 	mask := e.irEm.MemMask()
 
@@ -1866,14 +1865,14 @@ func (e *emitter) emitMisalignedLoad(dst ir.VReg, addr ir.VReg, width int, signe
 	maskNot := e.irEm.Tmp()
 	e.irEm.Not(maskNot, mask)
 	e.irEm.And(tmp1, tmp1, maskNot)
-	e.irEm.Branch(tmp1, ir.VRegZero, ir.NE, faultLabel)
+	e.irEm.Branch(tmp1, VRegZero, NE, faultLabel)
 
 	// Load byte 0.
 	m0 := e.irEm.Tmp()
 	e.irEm.And(m0, addr, mask)
 	h0 := e.irEm.Tmp()
 	e.irEm.Add(h0, memBase, m0)
-	e.irEm.Load(dst, h0, 0, ir.I8, false) // zero-extend byte
+	e.irEm.Load(dst, h0, 0, I8, false) // zero-extend byte
 
 	// Load remaining bytes and OR them in.
 	for i := 1; i < width; i++ {
@@ -1884,7 +1883,7 @@ func (e *emitter) emitMisalignedLoad(dst ir.VReg, addr ir.VReg, width int, signe
 		hi := e.irEm.Tmp()
 		e.irEm.Add(hi, memBase, mi)
 		bi := e.irEm.Tmp()
-		e.irEm.Load(bi, hi, 0, ir.I8, false)
+		e.irEm.Load(bi, hi, 0, I8, false)
 		shifted := e.irEm.Tmp()
 		e.irEm.ShlImm(shifted, bi, int64(i*8))
 		e.irEm.Or(dst, dst, shifted)
@@ -1894,9 +1893,9 @@ func (e *emitter) emitMisalignedLoad(dst ir.VReg, addr ir.VReg, width int, signe
 	if signed {
 		switch width {
 		case 2:
-			e.irEm.Sext(dst, dst, ir.I16)
+			e.irEm.Sext(dst, dst, I16)
 		case 4:
-			e.irEm.Sext(dst, dst, ir.I32)
+			e.irEm.Sext(dst, dst, I32)
 		}
 	}
 }
@@ -1920,11 +1919,11 @@ func (e *emitter) emitStore(rs1, rs2 uint32, imm int64, funct3 uint32) {
 		doneLabel := e.irEm.NewLabel()
 		alignBits := e.irEm.Tmp()
 		e.irEm.AndImm(alignBits, addr, int64(width-1))
-		e.irEm.Branch(alignBits, ir.VRegZero, ir.EQ, alignedLabel)
+		e.irEm.Branch(alignBits, VRegZero, EQ, alignedLabel)
 		if CheckSandboxBounds {
 			e.emitOOBCheck(addr, width, faultLabel)
 		}
-		t := ir.WidthToType(width)
+		t := WidthToType(width)
 		e.irEm.MisalignedStore(addr, src, t)
 		e.irEm.Jump(doneLabel)
 		e.irEm.PlaceLabel(alignedLabel)
@@ -1937,7 +1936,7 @@ func (e *emitter) emitStore(rs1, rs2 uint32, imm int64, funct3 uint32) {
 
 // emitMisalignedStore emits byte-by-byte stores for a misaligned address.
 // faultLabel is the per-call-site fault tail (already registered with addr).
-func (e *emitter) emitMisalignedStore(addr, src ir.VReg, width int, faultLabel ir.Label) {
+func (e *emitter) emitMisalignedStore(addr, src VReg, width int, faultLabel Label) {
 	memBase := e.irEm.MemBase()
 	mask := e.irEm.MemMask()
 
@@ -1948,7 +1947,7 @@ func (e *emitter) emitMisalignedStore(addr, src ir.VReg, width int, faultLabel i
 	maskNot := e.irEm.Tmp()
 	e.irEm.Not(maskNot, mask)
 	e.irEm.And(tmp1, tmp1, maskNot)
-	e.irEm.Branch(tmp1, ir.VRegZero, ir.NE, faultLabel)
+	e.irEm.Branch(tmp1, VRegZero, NE, faultLabel)
 
 	// Store each byte. Byte 0 reuses addr directly (no AddImm by 0).
 	for i := 0; i < width; i++ {
@@ -1968,7 +1967,7 @@ func (e *emitter) emitMisalignedStore(addr, src ir.VReg, width int, faultLabel i
 			e.irEm.ShrImm(bi, src, int64(i*8))
 			e.irEm.AndImm(bi, bi, 0xFF)
 		}
-		e.irEm.Store(hi, 0, bi, ir.I8)
+		e.irEm.Store(hi, 0, bi, I8)
 	}
 }
 
@@ -1995,13 +1994,13 @@ func (e *emitter) emitFPLoad(rd, rs1 uint32, imm int64, funct3 uint32) {
 	doneLabel := e.irEm.NewLabel()
 	alignBits := e.irEm.Tmp()
 	e.irEm.AndImm(alignBits, addr, int64(width-1))
-	e.irEm.Branch(alignBits, ir.VRegZero, ir.EQ, alignedLabel)
+	e.irEm.Branch(alignBits, VRegZero, EQ, alignedLabel)
 
 	// Misaligned path: OOB check, then byte-by-byte load, then NaN-box if FLW.
 	if CheckSandboxBounds {
 		e.emitOOBCheck(addr, width, faultLabel)
 	}
-	t := ir.WidthToType(width)
+	t := WidthToType(width)
 	tmp := e.irEm.Tmp()
 	e.irEm.MisalignedLoad(tmp, addr, t)
 	if funct3 == 2 {
@@ -2025,7 +2024,7 @@ func (e *emitter) emitFPLoad(rd, rs1 uint32, imm int64, funct3 uint32) {
 
 // emitMisalignedFPLoad emits a byte-by-byte FP load (FLW or FLD) at a
 // misaligned address. faultLabel is the per-call-site fault tail.
-func (e *emitter) emitMisalignedFPLoad(rd uint32, addr ir.VReg, width int, faultLabel ir.Label) {
+func (e *emitter) emitMisalignedFPLoad(rd uint32, addr VReg, width int, faultLabel Label) {
 	tmp := e.irEm.Tmp()
 	e.emitMisalignedLoad(tmp, addr, width, false, faultLabel)
 	if width == 4 { // FLW: NaN-box low 32 bits into f[rd]
@@ -2058,16 +2057,16 @@ func (e *emitter) emitFPStore(rs1, rs2 uint32, imm int64, funct3 uint32) {
 	doneLabel := e.irEm.NewLabel()
 	alignBits := e.irEm.Tmp()
 	e.irEm.AndImm(alignBits, addr, int64(width-1))
-	e.irEm.Branch(alignBits, ir.VRegZero, ir.EQ, alignedLabel)
+	e.irEm.Branch(alignBits, VRegZero, EQ, alignedLabel)
 
 	// Misaligned path: OOB check first.
 	if CheckSandboxBounds {
 		e.emitOOBCheck(addr, width, faultLabel)
 	}
-	t := ir.WidthToType(width)
+	t := WidthToType(width)
 	if funct3 == 2 {
 		tmp := e.irEm.Tmp()
-		e.irEm.Zext(tmp, e.freg(rs2), ir.I32)
+		e.irEm.Zext(tmp, e.freg(rs2), I32)
 		e.irEm.MisalignedStore(addr, tmp, t)
 	} else {
 		e.irEm.MisalignedStore(addr, e.freg(rs2), t)
@@ -2078,7 +2077,7 @@ func (e *emitter) emitFPStore(rs1, rs2 uint32, imm int64, funct3 uint32) {
 	e.irEm.PlaceLabel(alignedLabel)
 	if funct3 == 2 {
 		tmp := e.irEm.Tmp()
-		e.irEm.Zext(tmp, e.freg(rs2), ir.I32)
+		e.irEm.Zext(tmp, e.freg(rs2), I32)
 		e.irEm.GuestStoreAddr(addr, e.irEm.MemBase(), e.irEm.MemMask(), tmp, 4, faultLabel)
 	} else {
 		e.irEm.GuestStoreAddr(addr, e.irEm.MemBase(), e.irEm.MemMask(), e.freg(rs2), 8, faultLabel)
@@ -2088,10 +2087,10 @@ func (e *emitter) emitFPStore(rs1, rs2 uint32, imm int64, funct3 uint32) {
 
 // emitMisalignedFPStore emits a byte-by-byte FP store (FSW or FSD) at a
 // misaligned address. faultLabel is the per-call-site fault tail.
-func (e *emitter) emitMisalignedFPStore(rs2 uint32, addr ir.VReg, width int, faultLabel ir.Label) {
+func (e *emitter) emitMisalignedFPStore(rs2 uint32, addr VReg, width int, faultLabel Label) {
 	if width == 4 { // FSW: extract low 32 bits, then byte-by-byte
 		src := e.irEm.Tmp()
-		e.irEm.Zext(src, e.freg(rs2), ir.I32)
+		e.irEm.Zext(src, e.freg(rs2), I32)
 		e.emitMisalignedStore(addr, src, 4, faultLabel)
 	} else { // FSD: store all 64 bits
 		e.emitMisalignedStore(addr, e.freg(rs2), 8, faultLabel)
@@ -2126,13 +2125,13 @@ func (e *emitter) emitFMA(opcode, rd, rs1, rs2, rs3, fpfmt uint32) {
 		result := e.irEm.Tmp()
 		switch opcode {
 		case 0x43: // FMADD.S
-			e.irEm.FMA(result, a, b, c, ir.F32)
+			e.irEm.FMA(result, a, b, c, F32)
 		case 0x47: // FMSUB.S
-			e.irEm.Fmsub(result, a, b, c, ir.F32)
+			e.irEm.Fmsub(result, a, b, c, F32)
 		case 0x4F: // FNMADD.S
-			e.irEm.Fnmadd(result, a, b, c, ir.F32)
+			e.irEm.Fnmadd(result, a, b, c, F32)
 		case 0x4B: // FNMSUB.S
-			e.irEm.Fnmsub(result, a, b, c, ir.F32)
+			e.irEm.Fnmsub(result, a, b, c, F32)
 		}
 		e.boxF32(rd, e.canonF32(result))
 	} else { // double precision
@@ -2142,13 +2141,13 @@ func (e *emitter) emitFMA(opcode, rd, rs1, rs2, rs3, fpfmt uint32) {
 		result := e.irEm.Tmp()
 		switch opcode {
 		case 0x43: // FMADD.D
-			e.irEm.FMA(result, a, b, c, ir.F64)
+			e.irEm.FMA(result, a, b, c, F64)
 		case 0x47: // FMSUB.D
-			e.irEm.Fmsub(result, a, b, c, ir.F64)
+			e.irEm.Fmsub(result, a, b, c, F64)
 		case 0x4F: // FNMADD.D
-			e.irEm.Fnmadd(result, a, b, c, ir.F64)
+			e.irEm.Fnmadd(result, a, b, c, F64)
 		case 0x4B: // FNMSUB.D
-			e.irEm.Fnmsub(result, a, b, c, ir.F64)
+			e.irEm.Fnmsub(result, a, b, c, F64)
 		}
 		e.boxF64(rd, e.canonF64(result))
 	}
@@ -2172,30 +2171,30 @@ func (e *emitter) emitFPOpS(rd, rs1, rs2, funct3, funct5 uint32) {
 		a := e.unboxF32(rs1)
 		b := e.unboxF32(rs2)
 		result := e.irEm.Tmp()
-		e.irEm.FAdd(result, a, b, ir.F32)
+		e.irEm.FAdd(result, a, b, F32)
 		e.boxF32(rd, e.canonF32(result))
 	case 0x01: // FSUB.S
 		a := e.unboxF32(rs1)
 		b := e.unboxF32(rs2)
 		result := e.irEm.Tmp()
-		e.irEm.FSub(result, a, b, ir.F32)
+		e.irEm.FSub(result, a, b, F32)
 		e.boxF32(rd, e.canonF32(result))
 	case 0x02: // FMUL.S
 		a := e.unboxF32(rs1)
 		b := e.unboxF32(rs2)
 		result := e.irEm.Tmp()
-		e.irEm.FMul(result, a, b, ir.F32)
+		e.irEm.FMul(result, a, b, F32)
 		e.boxF32(rd, e.canonF32(result))
 	case 0x03: // FDIV.S
 		a := e.unboxF32(rs1)
 		b := e.unboxF32(rs2)
 		result := e.irEm.Tmp()
-		e.irEm.FDiv(result, a, b, ir.F32)
+		e.irEm.FDiv(result, a, b, F32)
 		e.boxF32(rd, e.canonF32(result))
 	case 0x0B: // FSQRT.S
 		a := e.unboxF32(rs1)
 		result := e.irEm.Tmp()
-		e.irEm.FSqrt(result, a, ir.F32)
+		e.irEm.FSqrt(result, a, F32)
 		e.boxF32(rd, e.canonF32(result))
 	case 0x04: // FSGNJ.S / FSGNJN.S / FSGNJX.S
 		e.emitFsgnjS(rd, rs1, rs2, funct3)
@@ -2203,12 +2202,12 @@ func (e *emitter) emitFPOpS(rd, rs1, rs2, funct3, funct5 uint32) {
 		a := e.unboxF32(rs1)
 		b := e.unboxF32(rs2)
 		result := e.irEm.Tmp()
-		e.emitFMinMax(result, a, b, ir.F32, funct3 == 1) // funct3=0: MIN, 1: MAX
-		e.boxF32(rd, result)                             // FMinMax emits canon on the two-NaN path internally
+		e.emitFMinMax(result, a, b, F32, funct3 == 1) // funct3=0: MIN, 1: MAX
+		e.boxF32(rd, result)                          // FMinMax emits canon on the two-NaN path internally
 	case 0x08: // FCVT.S.D
 		a := e.freg(rs1)
 		result := e.irEm.Tmp()
-		e.irEm.FCvtFF(result, a, ir.F64, ir.F32)
+		e.irEm.FCvtFF(result, a, F64, F32)
 		e.boxF32(rd, e.canonF32(result))
 	case 0x14: // FEQ.S / FLT.S / FLE.S
 		e.emitFcmpS(rd, rs1, rs2, funct3)
@@ -2220,7 +2219,7 @@ func (e *emitter) emitFPOpS(rd, rs1, rs2, funct3, funct5 uint32) {
 		switch funct3 {
 		case 0: // FMV.X.W
 			if rd != 0 {
-				e.irEm.Sext(e.xregDst(rd), e.freg(rs1), ir.I32)
+				e.irEm.Sext(e.xregDst(rd), e.freg(rs1), I32)
 			}
 		default:
 			e.terminated = true
@@ -2236,21 +2235,21 @@ func (e *emitter) emitFPOpS(rd, rs1, rs2, funct3, funct5 uint32) {
 // needed for f64 (all 64 bits are the value) but we route through
 // memory to keep the allocator from typed-loading with MOVSD before a
 // possible later re-read: the store-to-f[rd]-as-I64 makes it clean.
-func (e *emitter) boxF64(rd uint32, val ir.VReg) {
+func (e *emitter) boxF64(rd uint32, val VReg) {
 	em := e.irEm
 	intBits := em.Tmp()
-	em.MovT(intBits, val, ir.I64)
-	em.Store(em.FBase(), int64(rd)*8, intBits, ir.I64)
+	em.MovT(intBits, val, I64)
+	em.Store(em.FBase(), int64(rd)*8, intBits, I64)
 }
 
 // unboxF64 loads the 64-bit double from f[rs] as F64 suitable for
 // ADDSD/SUBSD/etc. Avoids the FP-VReg typing hazard.
-func (e *emitter) unboxF64(rs uint32) ir.VReg {
+func (e *emitter) unboxF64(rs uint32) VReg {
 	em := e.irEm
 	intBits := em.Tmp()
-	em.Load(intBits, em.FBase(), int64(rs)*8, ir.I64, false)
+	em.Load(intBits, em.FBase(), int64(rs)*8, I64, false)
 	out := em.Tmp()
-	em.MovT(out, intBits, ir.F64)
+	em.MovT(out, intBits, F64)
 	return out
 }
 
@@ -2260,30 +2259,30 @@ func (e *emitter) emitFPOpD(rd, rs1, rs2, funct3, funct5 uint32) {
 		a := e.unboxF64(rs1)
 		b := e.unboxF64(rs2)
 		result := e.irEm.Tmp()
-		e.irEm.FAdd(result, a, b, ir.F64)
+		e.irEm.FAdd(result, a, b, F64)
 		e.boxF64(rd, e.canonF64(result))
 	case 0x01: // FSUB.D
 		a := e.unboxF64(rs1)
 		b := e.unboxF64(rs2)
 		result := e.irEm.Tmp()
-		e.irEm.FSub(result, a, b, ir.F64)
+		e.irEm.FSub(result, a, b, F64)
 		e.boxF64(rd, e.canonF64(result))
 	case 0x02: // FMUL.D
 		a := e.unboxF64(rs1)
 		b := e.unboxF64(rs2)
 		result := e.irEm.Tmp()
-		e.irEm.FMul(result, a, b, ir.F64)
+		e.irEm.FMul(result, a, b, F64)
 		e.boxF64(rd, e.canonF64(result))
 	case 0x03: // FDIV.D
 		a := e.unboxF64(rs1)
 		b := e.unboxF64(rs2)
 		result := e.irEm.Tmp()
-		e.irEm.FDiv(result, a, b, ir.F64)
+		e.irEm.FDiv(result, a, b, F64)
 		e.boxF64(rd, e.canonF64(result))
 	case 0x0B: // FSQRT.D
 		a := e.unboxF64(rs1)
 		result := e.irEm.Tmp()
-		e.irEm.FSqrt(result, a, ir.F64)
+		e.irEm.FSqrt(result, a, F64)
 		e.boxF64(rd, e.canonF64(result))
 	case 0x04: // FSGNJ.D
 		e.emitFsgnjD(rd, rs1, rs2, funct3)
@@ -2291,12 +2290,12 @@ func (e *emitter) emitFPOpD(rd, rs1, rs2, funct3, funct5 uint32) {
 		a := e.unboxF64(rs1)
 		b := e.unboxF64(rs2)
 		result := e.irEm.Tmp()
-		e.emitFMinMax(result, a, b, ir.F64, funct3 == 1)
+		e.emitFMinMax(result, a, b, F64, funct3 == 1)
 		e.boxF64(rd, result)
 	case 0x08: // FCVT.D.S
 		a := e.unboxF32(rs1)
 		result := e.irEm.Tmp()
-		e.irEm.FCvtFF(result, a, ir.F32, ir.F64)
+		e.irEm.FCvtFF(result, a, F32, F64)
 		e.boxF64(rd, e.canonF64(result))
 	case 0x14: // FEQ.D / FLT.D / FLE.D
 		e.emitFcmpD(rd, rs1, rs2, funct3)
@@ -2397,11 +2396,11 @@ func (e *emitter) emitFcmpS(rd, rs1, rs2, funct3 uint32) {
 	dst := e.xregDst(rd)
 	switch funct3 {
 	case 0:
-		e.irEm.FCmp(dst, a, b, ir.LE, ir.F32)
+		e.irEm.FCmp(dst, a, b, LE, F32)
 	case 1:
-		e.irEm.FCmp(dst, a, b, ir.LT, ir.F32)
+		e.irEm.FCmp(dst, a, b, LT, F32)
 	case 2:
-		e.irEm.FCmp(dst, a, b, ir.EQ, ir.F32)
+		e.irEm.FCmp(dst, a, b, EQ, F32)
 	default:
 		e.terminated = true
 	}
@@ -2416,11 +2415,11 @@ func (e *emitter) emitFcmpD(rd, rs1, rs2, funct3 uint32) {
 	dst := e.xregDst(rd)
 	switch funct3 {
 	case 0:
-		e.irEm.FCmp(dst, a, b, ir.LE, ir.F64)
+		e.irEm.FCmp(dst, a, b, LE, F64)
 	case 1:
-		e.irEm.FCmp(dst, a, b, ir.LT, ir.F64)
+		e.irEm.FCmp(dst, a, b, LT, F64)
 	case 2:
-		e.irEm.FCmp(dst, a, b, ir.EQ, ir.F64)
+		e.irEm.FCmp(dst, a, b, EQ, F64)
 	default:
 		e.terminated = true
 	}
@@ -2437,16 +2436,16 @@ func (e *emitter) emitFcvtToIntS(rd, rs1, rs2 uint32) {
 	switch rs2 {
 	case 0: // FCVT.W.S
 		t := e.irEm.Tmp()
-		e.irEm.FCvtToI(t, a, ir.F32, ir.I32)
-		e.irEm.Sext(dst, t, ir.I32)
+		e.irEm.FCvtToI(t, a, F32, I32)
+		e.irEm.Sext(dst, t, I32)
 	case 1: // FCVT.WU.S
 		t := e.irEm.Tmp()
-		e.irEm.FCvtToU(t, a, ir.F32, ir.I32)
-		e.irEm.Sext(dst, t, ir.I32)
+		e.irEm.FCvtToU(t, a, F32, I32)
+		e.irEm.Sext(dst, t, I32)
 	case 2: // FCVT.L.S
-		e.irEm.FCvtToI(dst, a, ir.F32, ir.I64)
+		e.irEm.FCvtToI(dst, a, F32, I64)
 	case 3: // FCVT.LU.S
-		e.irEm.FCvtToU(dst, a, ir.F32, ir.I64)
+		e.irEm.FCvtToU(dst, a, F32, I64)
 	default:
 		e.terminated = true
 	}
@@ -2461,16 +2460,16 @@ func (e *emitter) emitFcvtToIntD(rd, rs1, rs2 uint32) {
 	switch rs2 {
 	case 0:
 		t := e.irEm.Tmp()
-		e.irEm.FCvtToI(t, a, ir.F64, ir.I32)
-		e.irEm.Sext(dst, t, ir.I32)
+		e.irEm.FCvtToI(t, a, F64, I32)
+		e.irEm.Sext(dst, t, I32)
 	case 1:
 		t := e.irEm.Tmp()
-		e.irEm.FCvtToU(t, a, ir.F64, ir.I32)
-		e.irEm.Sext(dst, t, ir.I32)
+		e.irEm.FCvtToU(t, a, F64, I32)
+		e.irEm.Sext(dst, t, I32)
 	case 2:
-		e.irEm.FCvtToI(dst, a, ir.F64, ir.I64)
+		e.irEm.FCvtToI(dst, a, F64, I64)
 	case 3:
-		e.irEm.FCvtToU(dst, a, ir.F64, ir.I64)
+		e.irEm.FCvtToU(dst, a, F64, I64)
 	default:
 		e.terminated = true
 	}
@@ -2481,23 +2480,23 @@ func (e *emitter) emitFcvtFromIntS(rd, rs1, rs2 uint32) {
 	switch rs2 {
 	case 0: // FCVT.S.W
 		t := e.irEm.Tmp()
-		e.irEm.Sext(t, s, ir.I32)
+		e.irEm.Sext(t, s, I32)
 		result := e.irEm.Tmp()
-		e.irEm.FCvtFromI(result, t, ir.I32, ir.F32)
+		e.irEm.FCvtFromI(result, t, I32, F32)
 		e.boxF32(rd, result)
 	case 1: // FCVT.S.WU
 		t := e.irEm.Tmp()
-		e.irEm.Zext(t, s, ir.I32)
+		e.irEm.Zext(t, s, I32)
 		result := e.irEm.Tmp()
-		e.irEm.FCvtFromU(result, t, ir.I32, ir.F32)
+		e.irEm.FCvtFromU(result, t, I32, F32)
 		e.boxF32(rd, result)
 	case 2: // FCVT.S.L
 		result := e.irEm.Tmp()
-		e.irEm.FCvtFromI(result, s, ir.I64, ir.F32)
+		e.irEm.FCvtFromI(result, s, I64, F32)
 		e.boxF32(rd, result)
 	case 3: // FCVT.S.LU
 		result := e.irEm.Tmp()
-		e.irEm.FCvtFromU(result, s, ir.I64, ir.F32)
+		e.irEm.FCvtFromU(result, s, I64, F32)
 		e.boxF32(rd, result)
 	default:
 		e.terminated = true
@@ -2510,16 +2509,16 @@ func (e *emitter) emitFcvtFromIntD(rd, rs1, rs2 uint32) {
 	switch rs2 {
 	case 0:
 		t := e.irEm.Tmp()
-		e.irEm.Sext(t, s, ir.I32)
-		e.irEm.FCvtFromI(dst, t, ir.I32, ir.F64)
+		e.irEm.Sext(t, s, I32)
+		e.irEm.FCvtFromI(dst, t, I32, F64)
 	case 1:
 		t := e.irEm.Tmp()
-		e.irEm.Zext(t, s, ir.I32)
-		e.irEm.FCvtFromU(dst, t, ir.I32, ir.F64)
+		e.irEm.Zext(t, s, I32)
+		e.irEm.FCvtFromU(dst, t, I32, F64)
 	case 2:
-		e.irEm.FCvtFromI(dst, s, ir.I64, ir.F64)
+		e.irEm.FCvtFromI(dst, s, I64, F64)
 	case 3:
-		e.irEm.FCvtFromU(dst, s, ir.I64, ir.F64)
+		e.irEm.FCvtFromU(dst, s, I64, F64)
 	default:
 		e.terminated = true
 	}
@@ -2574,7 +2573,7 @@ func (e *emitter) emitJALR(rd, rs1 uint32, imm int64, insnSize uint64) {
 		e.callStack = e.callStack[:len(e.callStack)-1]
 
 		returnLabel := e.getOrCreateLabel(expectedAddr)
-		e.irEm.BranchImm(e.xreg(rs1), int64(expectedAddr), ir.EQ, returnLabel)
+		e.irEm.BranchImm(e.xreg(rs1), int64(expectedAddr), EQ, returnLabel)
 
 		// Mismatch: fall through to JALR IC (terminal).
 		tgt := e.irEm.Tmp()
@@ -2619,7 +2618,7 @@ func (e *emitter) emitBranch(rs1, rs2, funct3 uint32, offset int64) {
 		// A branch is "backward" if the target was already emitted (visited).
 		// We cannot simply check target < e.pc because scanRegion may have
 		// followed a forward JAL past the target, causing the target to be
-		// emitted at a higher PC but earlier in the IR. Jumping to an
+		// emitted at a higher PC but earlier in the  Jumping to an
 		// already-emitted label re-executes code → potential infinite loop
 		// → requires BudgetCheck.
 		backward := target < e.pc || e.visited[target]

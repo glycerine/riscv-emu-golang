@@ -1,4 +1,4 @@
-package ir
+package riscv
 
 // lower_amd64_ops.go — Shared per-op AMD64 lowering.
 //

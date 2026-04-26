@@ -1,4 +1,4 @@
-package ir
+package riscv
 
 // FixedStaticAllocator maps a fixed set of high-priority RISC-V registers
 // to native host registers, spilling the rest to stack slots. No liveness

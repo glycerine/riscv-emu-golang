@@ -4,8 +4,6 @@ import (
 	"encoding/binary"
 	"testing"
 	"unsafe"
-
-	"riscv/ir"
 )
 
 // Part A — chain-exit foundation tests at the jitCompile boundary.
@@ -19,11 +17,11 @@ import (
 // metadata is correct and Part C can proceed. If they fail, the failing
 // assertion pinpoints where the pipeline breaks.
 
-// buildChainExitOnlyBlock builds an ir.Block containing nothing but a
+// buildChainExitOnlyBlock builds an Block containing nothing but a
 // single IRChainExit{targetPC}. Uses the high-level Emitter so we match
 // the conventions jit_emit_ir would use in production.
-func buildChainExitOnlyBlock(targetPC uint64) *ir.Block {
-	e := ir.NewEmitter()
+func buildChainExitOnlyBlock(targetPC uint64) *Block {
+	e := NewEmitter()
 	e.ChainExit(targetPC, 0)
 	b := e.Block
 	b.Instrs[0] = b.Instrs[0] // no-op touch; Block is already populated

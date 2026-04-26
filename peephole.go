@@ -1,4 +1,4 @@
-package ir
+package riscv
 
 // PeepholeSz is the sliding-window depth for the online peephole optimizer.
 // Tunable: larger windows catch more patterns but cost more per emit.

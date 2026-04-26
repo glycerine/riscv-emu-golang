@@ -1,4 +1,4 @@
-package ir
+package riscv
 
 import (
 	"encoding/binary"

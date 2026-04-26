@@ -4,7 +4,6 @@ import (
 	"testing"
 
 	"riscv"
-	"riscv/ir"
 )
 
 func runJITBenchGuest(cpu *riscv.CPU) (exitCode int, insns uint64) {
@@ -49,10 +48,10 @@ func BenchmarkCPU_FullExecution_JIT_Rv8(b *testing.B) {
 }
 
 func BenchmarkCPU_FullExecution_JIT_ABJIT(b *testing.B) {
-	benchJITELFWithPolicy(b, loadCPUELF(b), ir.PolicyABJIT)
+	benchJITELFWithPolicy(b, loadCPUELF(b), riscv.PolicyABJIT)
 }
 
-func benchJITELFWithPolicy(b *testing.B, elfData []byte, policy ir.RegPolicy) {
+func benchJITELFWithPolicy(b *testing.B, elfData []byte, policy riscv.RegPolicy) {
 	b.Helper()
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -87,7 +86,7 @@ func BenchmarkJIT_CoreMark_Rv8(b *testing.B) {
 }
 
 func BenchmarkJIT_CoreMark_ABJIT(b *testing.B) {
-	benchJITELFWithPolicy(b, loadELFFrom(b, "CM_ELF", "coremark.elf"), ir.PolicyABJIT)
+	benchJITELFWithPolicy(b, loadELFFrom(b, "CM_ELF", "coremark.elf"), riscv.PolicyABJIT)
 }
 
 // ── Dhrystone JIT benchmarks ──────────────────────────────────────────────
@@ -97,7 +96,7 @@ func BenchmarkJIT_Dhrystone_Rv8(b *testing.B) {
 }
 
 func BenchmarkJIT_Dhrystone_ABJIT(b *testing.B) {
-	benchJITELFWithPolicy(b, loadELFFrom(b, "DHRY_ELF", "dhrystone.elf"), ir.PolicyABJIT)
+	benchJITELFWithPolicy(b, loadELFFrom(b, "DHRY_ELF", "dhrystone.elf"), riscv.PolicyABJIT)
 }
 
 // benchJITELF runs the JIT benchmark loop against an arbitrary guest
@@ -112,7 +111,7 @@ func benchJITELF(b *testing.B, elfData []byte, strategy string) {
 	for i := 0; i < b.N; i++ {
 		cpu, mem := newBenchCPU(b, elfData)
 		jit := riscv.NewJIT()
-		jit.SetRegPolicy(ir.PolicyRV8)
+		jit.SetRegPolicy(riscv.PolicyRV8)
 		jit.SetAllocStrategy(strategy)
 		_, insns := runJITBenchGuestWith(cpu, jit)
 		totalInsns += insns

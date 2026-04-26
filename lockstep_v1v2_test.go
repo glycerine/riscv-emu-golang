@@ -3,23 +3,22 @@ package riscv
 import (
 	"math/rand"
 	"riscv/goasm"
-	"riscv/ir"
 	"syscall"
 	"testing"
 	"unsafe"
 )
 
 // compileIR compiles an IR block using the rv8 lowerer, returns executable memory.
-func compileIR(t *testing.T, b *ir.Block) (uintptr, []byte) {
+func compileIR(t *testing.T, b *Block) (uintptr, []byte) {
 	t.Helper()
-	pool := ir.RV8Pool(b)
-	pinned := ir.RV8Pinned()
+	pool := RV8Pool(b)
+	pinned := RV8Pinned()
 	j := NewJIT()
 	alloc := j.irAlloc.Allocate(b, pool, pinned, nil)
 
 	ctx := goasm.New(goasm.AMD64)
 	ctx.Append(ctx.NewATEXT())
-	_, err := ir.LowerAMD64_RV8(ctx, b, alloc)
+	_, err := LowerAMD64_RV8(ctx, b, alloc)
 	if err != nil {
 		t.Fatalf("lower: %v", err)
 	}
@@ -60,7 +59,7 @@ func TestRV8_RandomBlocks(t *testing.T) {
 	defer mem.Free()
 
 	j := NewJIT()
-	j.SetRegPolicy(ir.PolicyRV8)
+	j.SetRegPolicy(PolicyRV8)
 	for i := 0; i < numBlocks; i++ {
 		n := rng.Intn(maxInsns) + 1
 		blk := genLockstepBlock(rng, n, 6)
@@ -68,11 +67,11 @@ func TestRV8_RandomBlocks(t *testing.T) {
 			continue
 		}
 
-		pool := ir.RV8Pool(blk)
-		alloc := j.irAlloc.Allocate(blk, pool, ir.RV8Pinned(), nil)
+		pool := RV8Pool(blk)
+		alloc := j.irAlloc.Allocate(blk, pool, RV8Pinned(), nil)
 		ctx := goasm.New(goasm.AMD64)
 		ctx.Append(ctx.NewATEXT())
-		if _, err := ir.LowerAMD64_RV8(ctx, blk, alloc); err != nil {
+		if _, err := LowerAMD64_RV8(ctx, blk, alloc); err != nil {
 			continue
 		}
 		code, err := ctx.Assemble()
@@ -109,8 +108,8 @@ func mmapCode(t *testing.T, code []byte) (uintptr, []byte) {
 }
 
 // genLockstepBlock generates a valid IR block for testing.
-func genLockstepBlock(rng *rand.Rand, n int, maxVR int) *ir.Block {
-	e := ir.NewEmitter()
+func genLockstepBlock(rng *rand.Rand, n int, maxVR int) *Block {
+	e := NewEmitter()
 	if n < 1 {
 		n = 1
 	}
@@ -119,7 +118,7 @@ func genLockstepBlock(rng *rand.Rand, n int, maxVR int) *ir.Block {
 	if numInit > n {
 		numInit = n
 	}
-	temps := make([]ir.VReg, 0, numInit+n)
+	temps := make([]VReg, 0, numInit+n)
 	for i := 0; i < numInit && i < n-1; i++ {
 		tmp := e.Tmp()
 		e.Const(tmp, rng.Int63n(1000)-500)
@@ -139,10 +138,10 @@ func genLockstepBlock(rng *rand.Rand, n int, maxVR int) *ir.Block {
 		dst := e.Tmp()
 
 		if rng.Intn(10) == 0 {
-			pickA = ir.VRegZero
+			pickA = VRegZero
 		}
 		if rng.Intn(10) == 0 {
-			pickB = ir.VRegZero
+			pickB = VRegZero
 		}
 
 		op := rng.Intn(22)
@@ -184,17 +183,17 @@ func genLockstepBlock(rng *rand.Rand, n int, maxVR int) *ir.Block {
 		case 17:
 			e.Const(dst, rng.Int63())
 		case 18:
-			e.Sext(dst, pickA, ir.I32)
+			e.Sext(dst, pickA, I32)
 		case 19:
-			e.Zext(dst, pickA, ir.I32)
+			e.Zext(dst, pickA, I32)
 		case 20:
-			e.Set(dst, pickA, pickB, ir.Pred(rng.Intn(10)))
+			e.Set(dst, pickA, pickB, Pred(rng.Intn(10)))
 		case 21:
-			e.SetImm(dst, pickA, rng.Int63n(200)-100, ir.Pred(rng.Intn(10)))
+			e.SetImm(dst, pickA, rng.Int63n(200)-100, Pred(rng.Intn(10)))
 		}
 		temps = append(temps, dst)
 	}
 
-	e.Ret(0x1000, 0, ir.VRegZero)
+	e.Ret(0x1000, 0, VRegZero)
 	return e.Block
 }

@@ -1,4 +1,4 @@
-package ir
+package riscv
 
 // lower_amd64_shared.go — Types and helpers shared across AMD64 lowerers.
 

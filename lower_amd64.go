@@ -1,4 +1,4 @@
-package ir
+package riscv
 
 // lower_amd64.go — AMD64 register layout constants and pool definitions.
 

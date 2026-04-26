@@ -18,7 +18,6 @@ import (
 
 	"riscv"
 	"riscv/goasm"
-	"riscv/ir"
 )
 
 const defaultGcELF = "/Users/jaten/ris/test_data/gc_riscv64"
@@ -89,14 +88,14 @@ func BenchmarkLower_V1(b *testing.B) {
 
 	// Pre-allocate with V1 pool.
 	type prepped struct {
-		blk   *ir.Block
-		alloc *ir.Allocation
+		blk   *riscv.Block
+		alloc *riscv.Allocation
 	}
-	allocator := ir.NewFixedStaticAllocator()
+	allocator := riscv.NewFixedStaticAllocator()
 	items := make([]prepped, 0, len(results))
 	for _, r := range results {
-		pool := ir.RV8Pool(r.Block)
-		alloc := allocator.Allocate(r.Block, pool, ir.RV8Pinned(), nil)
+		pool := riscv.RV8Pool(r.Block)
+		alloc := allocator.Allocate(r.Block, pool, riscv.RV8Pinned(), nil)
 		items = append(items, prepped{r.Block, alloc})
 	}
 	b.Logf("collected %d IR blocks", len(items))
@@ -109,7 +108,7 @@ func BenchmarkLower_V1(b *testing.B) {
 		for _, it := range items {
 			ctx := goasm.New(goasm.AMD64)
 			ctx.Append(ctx.NewATEXT())
-			if _, err := ir.LowerAMD64_RV8(ctx, it.blk, it.alloc); err != nil {
+			if _, err := riscv.LowerAMD64_RV8(ctx, it.blk, it.alloc); err != nil {
 				continue
 			}
 			_, _ = ctx.Assemble()
@@ -130,14 +129,14 @@ func BenchmarkLower_V2(b *testing.B) {
 	}
 
 	type prepped struct {
-		blk   *ir.Block
-		alloc *ir.Allocation
+		blk   *riscv.Block
+		alloc *riscv.Allocation
 	}
-	allocator := ir.NewFixedStaticAllocator()
+	allocator := riscv.NewFixedStaticAllocator()
 	items := make([]prepped, 0, len(results))
 	for _, r := range results {
-		pool := ir.RV8Pool(r.Block)
-		alloc := allocator.Allocate(r.Block, pool, ir.RV8Pinned(), nil)
+		pool := riscv.RV8Pool(r.Block)
+		alloc := allocator.Allocate(r.Block, pool, riscv.RV8Pinned(), nil)
 		items = append(items, prepped{r.Block, alloc})
 	}
 	b.Logf("collected %d IR blocks", len(items))
@@ -150,7 +149,7 @@ func BenchmarkLower_V2(b *testing.B) {
 		for _, it := range items {
 			ctx := goasm.New(goasm.AMD64)
 			ctx.Append(ctx.NewATEXT())
-			if _, err := ir.LowerAMD64_RV8(ctx, it.blk, it.alloc); err != nil {
+			if _, err := riscv.LowerAMD64_RV8(ctx, it.blk, it.alloc); err != nil {
 				continue
 			}
 			_, _ = ctx.Assemble()
@@ -213,7 +212,7 @@ func TestLower_CodeSize_V1_vs_V2(t *testing.T) {
 		t.Skip("no IR blocks collected")
 	}
 
-	allocator := ir.NewFixedStaticAllocator()
+	allocator := riscv.NewFixedStaticAllocator()
 	var v1Total, v2Total, v1Count, v2Count int
 	var totalIRInstrs int
 	for _, r := range results {
@@ -221,11 +220,11 @@ func TestLower_CodeSize_V1_vs_V2(t *testing.T) {
 		totalIRInstrs += len(blk.Instrs)
 
 		// V1
-		pool1 := ir.RV8Pool(blk)
-		alloc1 := allocator.Allocate(blk, pool1, ir.RV8Pinned(), nil)
+		pool1 := riscv.RV8Pool(blk)
+		alloc1 := allocator.Allocate(blk, pool1, riscv.RV8Pinned(), nil)
 		ctx1 := goasm.New(goasm.AMD64)
 		ctx1.Append(ctx1.NewATEXT())
-		if _, err := ir.LowerAMD64_RV8(ctx1, blk, alloc1); err == nil {
+		if _, err := riscv.LowerAMD64_RV8(ctx1, blk, alloc1); err == nil {
 			if code, err := ctx1.Assemble(); err == nil {
 				v1Total += len(code)
 				v1Count++
@@ -233,11 +232,11 @@ func TestLower_CodeSize_V1_vs_V2(t *testing.T) {
 		}
 
 		// V2
-		pool2 := ir.RV8Pool(blk)
-		alloc2 := allocator.Allocate(blk, pool2, ir.RV8Pinned(), nil)
+		pool2 := riscv.RV8Pool(blk)
+		alloc2 := allocator.Allocate(blk, pool2, riscv.RV8Pinned(), nil)
 		ctx2 := goasm.New(goasm.AMD64)
 		ctx2.Append(ctx2.NewATEXT())
-		if _, err := ir.LowerAMD64_RV8(ctx2, blk, alloc2); err == nil {
+		if _, err := riscv.LowerAMD64_RV8(ctx2, blk, alloc2); err == nil {
 			if code, err := ctx2.Assemble(); err == nil {
 				v2Total += len(code)
 				v2Count++

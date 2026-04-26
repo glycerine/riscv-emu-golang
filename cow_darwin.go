@@ -1,6 +1,6 @@
 //go:build darwin
 
-package ir
+package riscv
 
 // Copy-on-write remapping on Darwin via the Mach VM API.
 //

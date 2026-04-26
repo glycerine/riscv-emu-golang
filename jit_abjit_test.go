@@ -3,7 +3,6 @@ package riscv
 import (
 	"os"
 	"path/filepath"
-	"riscv/ir"
 	"strings"
 	"testing"
 )
@@ -28,7 +27,7 @@ func runABJITWithOS(cpu *CPU) (exitCode int, err error) {
 	}()
 
 	jit := NewJIT()
-	jit.SetRegPolicy(ir.PolicyABJIT)
+	jit.SetRegPolicy(PolicyABJIT)
 	err = jit.RunJIT(cpu)
 	return
 }
@@ -89,7 +88,7 @@ func TestABJIT_SingleBlock_ADD(t *testing.T) {
 	defer cpu.Notes.Pop()
 
 	jit := NewJIT()
-	jit.SetRegPolicy(ir.PolicyABJIT)
+	jit.SetRegPolicy(PolicyABJIT)
 	_ = jit.RunJIT(cpu)
 
 	if cpu.x[3] != 42 {

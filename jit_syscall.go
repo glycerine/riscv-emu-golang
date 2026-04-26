@@ -2,7 +2,6 @@ package riscv
 
 import (
 	"riscv/internal/syscalls"
-	"riscv/ir"
 )
 
 // syscall_dispatcher address — obtained once at init. The JIT's IR
@@ -57,7 +56,7 @@ func currentSyscallDispatcherAddr() uintptr {
 var inlineEcallEnabled bool = true
 
 func init() {
-	ir.InlineSyscall = inlineEcallEnabled
+	InlineSyscall = inlineEcallEnabled
 }
 
 // SetInlineEcallEnabled toggles the inline-ECALL codegen for
@@ -65,7 +64,7 @@ func init() {
 // path they were compiled with.
 func SetInlineEcallEnabled(on bool) {
 	inlineEcallEnabled = on
-	ir.InlineSyscall = on
+	InlineSyscall = on
 }
 
 // InlineEcallEnabled reports whether the JIT will inline ECALL

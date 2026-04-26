@@ -1,4 +1,4 @@
-package ir
+package riscv
 
 // lower_amd64_abjit.go — abjit AMD64 lowerer.
 //

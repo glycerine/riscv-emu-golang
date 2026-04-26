@@ -13,7 +13,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"riscv/goasm"
-	"riscv/ir"
 	"syscall"
 	"unsafe"
 )
@@ -24,11 +23,11 @@ type aotBlockCompile struct {
 	startPC     uint64
 	endPC       uint64
 	bytes       []byte
-	lowerResult *ir.LowerResult
+	lowerResult *LowerResult
 	baseOffset  int // offset of this block within the unified mmap
 	blk         *compiledBlock
-	block       *ir.Block // retained for VizJit dump (nil when VizJit disabled)
-	progs       string    // goasm Prog listing (empty when VizJit disabled)
+	block       *Block // retained for VizJit dump (nil when VizJit disabled)
+	progs       string // goasm Prog listing (empty when VizJit disabled)
 	hasFP       bool
 }
 
@@ -68,7 +67,7 @@ func (j *JIT) jitCompileAOTSegment(
 		// prog encoding state). Only when VizJit is active —
 		// DumpProgs is cheap but non-zero.
 		var progs string
-		var vizBlock *ir.Block
+		var vizBlock *Block
 		if _, on := vizJitEnabled(); on {
 			progs = ctx.DumpProgs()
 			vizBlock = res.block
@@ -262,7 +261,7 @@ func aotBackpatchJalrICs(
 	execMem []byte,
 	blockBase uintptr,
 	baseOffset int,
-	lowerResult *ir.LowerResult,
+	lowerResult *LowerResult,
 	blk *compiledBlock,
 ) {
 	for _, ic := range lowerResult.JalrICs {

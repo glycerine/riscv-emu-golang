@@ -16,7 +16,6 @@ import (
 	"sync"
 
 	"riscv/goasm"
-	"riscv/ir"
 )
 
 // vizJitTag is the 16-hex-char session tag — generated once per
@@ -177,7 +176,7 @@ func parseHexLine(ln string) (pc uint64, hex string, ok bool) {
 // ("", false) if disabled. Creates the directory on first active
 // call.
 func vizJitEnabled() (string, bool) {
-	dir := ir.VIZJIT_DIR
+	dir := VIZJIT_DIR
 	if dir == "" {
 		return "", false
 	}
@@ -206,11 +205,11 @@ func vizJitEnabled() (string, bool) {
 func vizJitDump(
 	startPC, endPC uint64,
 	mem *GuestMemory,
-	block *ir.Block,
+	block *Block,
 	progs string,
 	codeLen int,
 	codeBase uintptr,
-	allocs ...*ir.Allocation,
+	allocs ...*Allocation,
 ) {
 	dir, ok := vizJitEnabled()
 	if !ok {
@@ -246,12 +245,12 @@ func vizJitDump(
 		sb.WriteString("== Allocation ==\n")
 		for v := 0; v < len(alloc.Kind); v++ {
 			k := alloc.Kind[v]
-			if k == ir.AllocUnused {
+			if k == AllocUnused {
 				continue
 			}
-			vr := ir.VReg(v)
+			vr := VReg(v)
 			switch k {
-			case ir.AllocReg:
+			case AllocReg:
 				host := int16(-1)
 				for _, ia := range alloc.IntervalMap {
 					if ia.Interval.VReg == vr {
@@ -260,7 +259,7 @@ func vizJitDump(
 					}
 				}
 				fmt.Fprintf(&sb, "  %-5v → reg %s\n", vr, vizHostRegName(host))
-			case ir.AllocStack:
+			case AllocStack:
 				fmt.Fprintf(&sb, "  %-5v → stack slot=%d  [RSP+%d]\n",
 					vr, alloc.SpillSlot[v], int(alloc.SpillSlot[v])*8)
 			default:

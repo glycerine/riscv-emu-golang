@@ -1,4 +1,4 @@
-package ir
+package riscv
 
 // Exhaustive register-pair tests for lowerShift and lowerBinop.
 //

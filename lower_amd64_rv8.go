@@ -1,4 +1,4 @@
-package ir
+package riscv
 
 // lower_amd64_rv8.go — rv8-faithful AMD64 lowerer.
 //

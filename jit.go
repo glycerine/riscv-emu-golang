@@ -8,7 +8,6 @@ import (
 	"os"
 	"riscv/abjit"
 	"riscv/internal/jitcall"
-	"riscv/ir"
 	"sync/atomic"
 	"syscall"
 	"unsafe"
@@ -167,12 +166,12 @@ const (
 	// jitOKJalrMiss is emitted by a JALR-IC miss stub. sret.PC holds the
 	// target PC; sret.FaultAddr (repurposed) holds the site index. Go
 	// dispatcher patches the site's IC slots, then dispatch continues.
-	// Must agree with ir.JitOKJalrMiss.
-	jitOKJalrMiss = ir.JitOKJalrMiss
+	// Must agree with JitOKJalrMiss.
+	jitOKJalrMiss = JitOKJalrMiss
 	// jitMisalign: JIT block hit a misaligned memory access it can't handle
 	// inline. sret.PC = faulting instruction's PC. Dispatcher re-executes
 	// via the interpreter (which does byte-by-byte), then continues.
-	jitMisalign = ir.JitMisalign
+	jitMisalign = JitMisalign
 )
 
 // Block cache: direct-mapped array replaces map[uint64]*compiledBlock.
@@ -229,8 +228,8 @@ type JIT struct {
 	// lazy-vs-AOT gap and by tests that want to drive the fallback path.
 	DisableAutoAOT bool
 
-	irAlloc    ir.RegAllocator
-	regPolicy  ir.RegPolicy
+	irAlloc    RegAllocator
+	regPolicy  RegPolicy
 	useABJIT   bool
 	abjitState *abjit.State
 
@@ -249,16 +248,16 @@ type JIT struct {
 func NewJIT() *JIT {
 	j := &JIT{
 		noJIT:   make(map[uint64]bool),
-		irAlloc: ir.NewFixedStaticAllocator(),
+		irAlloc: NewFixedStaticAllocator(),
 	}
-	j.SetRegPolicy(ir.PolicyABJIT)
+	j.SetRegPolicy(PolicyABJIT)
 	return j
 }
 
 // SetAllocStrategy reinstalls the Fixed Static Mapping allocator and clears
 // cached blocks, so existing callers continue to work.
 func (j *JIT) SetAllocStrategy(name string) {
-	j.irAlloc = ir.NewFixedStaticAllocator()
+	j.irAlloc = NewFixedStaticAllocator()
 	// Clear block cache — compiled blocks used the old allocator.
 	j.cache = [blockCacheSize]blockCacheEntry{}
 	j.noJIT = make(map[uint64]bool)
@@ -266,7 +265,7 @@ func (j *JIT) SetAllocStrategy(name string) {
 
 // SetRegPolicy switches the register allocation policy and clears
 // cached blocks (they were compiled with the old policy).
-func (j *JIT) SetRegPolicy(p ir.RegPolicy) {
+func (j *JIT) SetRegPolicy(p RegPolicy) {
 	j.regPolicy = p
 	j.useABJIT = p.Name == "abjit"
 	j.cache = [blockCacheSize]blockCacheEntry{}

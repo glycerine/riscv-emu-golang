@@ -62,7 +62,6 @@ import "C"
 
 import (
 	"fmt"
-	"riscv/ir"
 	"unsafe"
 )
 
@@ -253,7 +252,7 @@ func (m *GuestMemory) CowClone() (*GuestMemory, error) {
 	guardOff := uintptr(m.size) - 2*GuestPageSize
 	C.guest_unguard(unsafe.Pointer(m.base+guardOff), C.size_t(GuestPageSize))
 
-	newBase, err := ir.COWRemap(m.size, m.base)
+	newBase, err := COWRemap(m.size, m.base)
 
 	// Re-guard the parent.
 	C.guest_guard(unsafe.Pointer(m.base+guardOff), C.size_t(GuestPageSize))

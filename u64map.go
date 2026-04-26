@@ -1,7 +1,5 @@
 package riscv
 
-import "riscv/ir"
-
 // u64set is a deterministic set of uint64 values.
 // Iteration order is sorted by key, rotated by iterStart.
 // iterStart allows testing all iteration orderings to flush out
@@ -78,25 +76,25 @@ func (s *u64set) each(fn func(key uint64)) {
 	}
 }
 
-// u64labelmap is a deterministic map from uint64 to ir.Label.
+// u64labelmap is a deterministic map from uint64 to Label.
 type u64labelmap struct {
-	m     map[uint64]ir.Label
+	m     map[uint64]Label
 	keys  []uint64
 	dirty bool
 }
 
 func newU64labelmap() u64labelmap {
-	return u64labelmap{m: make(map[uint64]ir.Label)}
+	return u64labelmap{m: make(map[uint64]Label)}
 }
 
-func (u *u64labelmap) set(key uint64, val ir.Label) {
+func (u *u64labelmap) set(key uint64, val Label) {
 	if _, ok := u.m[key]; !ok {
 		u.dirty = true
 	}
 	u.m[key] = val
 }
 
-func (u *u64labelmap) get(key uint64) (ir.Label, bool) {
+func (u *u64labelmap) get(key uint64) (Label, bool) {
 	v, ok := u.m[key]
 	return v, ok
 }

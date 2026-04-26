@@ -1,6 +1,6 @@
 //go:build darwin || linux
 
-package ir
+package riscv
 
 import (
 	"syscall"

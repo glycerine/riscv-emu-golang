@@ -1,4 +1,4 @@
-package ir
+package riscv
 
 // JitOKJalrMiss is the Result.Status value written by a JALR inline-cache
 // miss stub. The Go dispatcher reads this to distinguish an IC miss from a

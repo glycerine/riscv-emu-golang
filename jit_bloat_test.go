@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	"riscv/goasm"
-	"riscv/ir"
 )
 
 // TestBloat_BenchGuest_0x10de locks in a reproducible measurement of
@@ -79,14 +78,14 @@ func TestBloat_BenchGuest_0x10de(t *testing.T) {
 
 	// Register-allocate and lower through the same AOT path production uses.
 	j := NewJIT()
-	pool := ir.RV8Pool(res.block)
-	pinned := ir.RV8Pinned()
+	pool := RV8Pool(res.block)
+	pinned := RV8Pinned()
 	alloc := j.irAlloc.Allocate(res.block, pool, pinned, nil)
 
 	ctx := goasm.New(goasm.AMD64)
 	ctx.Append(ctx.NewATEXT())
 
-	lowerRes, err := ir.LowerAMD64_RV8(ctx, res.block, alloc)
+	lowerRes, err := LowerAMD64_RV8(ctx, res.block, alloc)
 	if err != nil {
 		t.Fatalf("LowerAMD64_RV8: %v", err)
 	}
@@ -109,19 +108,19 @@ func TestBloat_BenchGuest_0x10de(t *testing.T) {
 		blockEntryPC, irOps, hostBytes, chainExits,
 		maxIRInstrs, maxHostBytes, maxChainExits)
 
-	// Optional VizJit dump. If GOCPU_VIZJIT is set (or ir.VIZJIT_DIR
+	// Optional VizJit dump. If GOCPU_VIZJIT is set (or VIZJIT_DIR
 	// is already pointing somewhere non-empty), respect that so the
 	// artifact survives after the test exits. Otherwise redirect to
 	// t.TempDir() which vanishes on teardown — good for CI, still
 	// useful during interactive -v runs.
 	if testing.Verbose() {
-		if ir.VIZJIT_DIR == "" {
-			savedDir := ir.VIZJIT_DIR
-			ir.VIZJIT_DIR = t.TempDir()
-			defer func() { ir.VIZJIT_DIR = savedDir }()
+		if VIZJIT_DIR == "" {
+			savedDir := VIZJIT_DIR
+			VIZJIT_DIR = t.TempDir()
+			defer func() { VIZJIT_DIR = savedDir }()
 		}
 		vizJitDump(res.startPC, res.endPC, mem, res.block, progs, hostBytes, 0, alloc)
-		t.Logf("VizJit dump written under %s (set GOCPU_VIZJIT=<dir> to keep)", ir.VIZJIT_DIR)
+		t.Logf("VizJit dump written under %s (set GOCPU_VIZJIT=<dir> to keep)", VIZJIT_DIR)
 	}
 
 	// linux known variation (different zig version? different toolchain?)

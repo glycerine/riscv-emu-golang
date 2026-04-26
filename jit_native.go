@@ -8,7 +8,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"riscv/goasm"
-	"riscv/ir"
 	"syscall"
 	"unsafe"
 )
@@ -110,9 +109,10 @@ func (j *JIT) jitCompile(res *emitResult) (*compiledBlock, error) {
 // Before backpatch both MOVABS slots hold the sentinel 0x7BADC0DE7BADC0DE. After:
 //   - cache_pc slot = 0xFFFFFFFFFFFFFFFF (unmatchable → first CMPQ misses)
 //   - cache_fn slot = address of the per-site miss stub
+//
 // On first miss the Go dispatcher calls patchJalrIC to swap in a real
 // target.
-func backpatchJalrICs(execMem []byte, codeBase uintptr, lowerResult *ir.LowerResult, blk *compiledBlock) {
+func backpatchJalrICs(execMem []byte, codeBase uintptr, lowerResult *LowerResult, blk *compiledBlock) {
 	for _, ic := range lowerResult.JalrICs {
 		var info jalrICPatchInfo
 		info.siteIdx = ic.SiteIdx
@@ -221,18 +221,18 @@ func allocExec(size int) ([]byte, error) {
 	return mem, nil
 }
 
-func allocHasFP(alloc *ir.Allocation) bool {
+func allocHasFP(alloc *Allocation) bool {
 	// Architectural FP VRegs 32-63 directly allocated.
-	for vr := ir.VReg(32); vr < 64; vr++ {
-		if int(vr) < len(alloc.Kind) && (alloc.Kind[vr] == ir.AllocReg || alloc.Kind[vr] == ir.AllocStack) {
+	for vr := VReg(32); vr < 64; vr++ {
+		if int(vr) < len(alloc.Kind) && (alloc.Kind[vr] == AllocReg || alloc.Kind[vr] == AllocStack) {
 			return true
 		}
 	}
 	// FP base pointer (VRFBase) used — the block accesses f[] via memory
 	// loads/stores through the FP register file base, even though no
 	// architectural FP VReg is directly allocated.
-	vr := ir.VRFBase
-	if int(vr) < len(alloc.Kind) && (alloc.Kind[vr] == ir.AllocReg || alloc.Kind[vr] == ir.AllocStack) {
+	vr := VRFBase
+	if int(vr) < len(alloc.Kind) && (alloc.Kind[vr] == AllocReg || alloc.Kind[vr] == AllocStack) {
 		return true
 	}
 	return false
