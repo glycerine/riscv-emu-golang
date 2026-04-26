@@ -168,6 +168,11 @@ darwin benchmarks:
   Go JIT — Fixed Static Mapping (native):    3172 MIPS
   Go interpreter (no JIT):                    427 MIPS
 
+linux:  cpu: AMD Ryzen Threadripper 3960X 24-Core Processor
+
+  Go JIT — Fixed Static Mapping (native):    3394 MIPS
+  Go interpreter (no JIT):                     391.6 MIPS
+
 still on default rv8, about to compare to ABJIT
 
   cpu: Intel(R) Core(TM) i7-1068NG7 CPU @ 2.30GHz
