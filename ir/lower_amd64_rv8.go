@@ -617,8 +617,8 @@ func (lc *lowerCtxRV8) rv8Syscall(ins *IRInstr) {
 // ── JALR inline cache (decoder_cache lookup) ──
 //
 // IRJalrIC: target PC in VReg A, site index in Imm.
-// Performs an inline decoder_cache lookup using params published in the
-// sret buffer by CallAOT:
+// Performs an inline decoder_cache lookup (the old 2-slot IC is
+// deprecated) using params published in the sret buffer by CallAOT:
 //   [sret+88]  = decoderCacheBase
 //   [sret+96]  = decoderCacheMask
 //   [sret+104] = vaddrBegin

@@ -104,8 +104,10 @@ func (j *JIT) jitCompile(res *emitResult) (*compiledBlock, error) {
 }
 
 // backpatchJalrICs initializes each JALR IC site's patchable slots and
-// records site metadata on the block. Before backpatch both MOVABS slots
-// hold the sentinel 0x7BADC0DE7BADC0DE. After:
+// records site metadata on the block. Note: the name "IC" is historical;
+// both rv8 and abjit lowerers now use a decoder-cache lookup for the
+// fast path, with these slots as the miss/fallback mechanism.
+// Before backpatch both MOVABS slots hold the sentinel 0x7BADC0DE7BADC0DE. After:
 //   - cache_pc slot = 0xFFFFFFFFFFFFFFFF (unmatchable → first CMPQ misses)
 //   - cache_fn slot = address of the per-site miss stub
 // On first miss the Go dispatcher calls patchJalrIC to swap in a real

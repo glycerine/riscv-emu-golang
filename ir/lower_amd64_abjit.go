@@ -479,7 +479,7 @@ func (lc *lowerCtxABJIT) abjitSyscall(ins *IRInstr) {
 	lc.jmpExitThunk()
 }
 
-// ── JALR IC (simple miss return) ──
+// ── JALR IC (decoder-cache lookup; the old 2-slot IC is deprecated) ──
 
 func (lc *lowerCtxABJIT) abjitJalrIC(ins *IRInstr) {
 	// Save target PC to scratch before storeRegsBack clobbers registers.

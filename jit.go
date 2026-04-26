@@ -242,11 +242,12 @@ type JIT struct {
 
 // NewJIT creates a new JIT translation cache using the Fixed Static Mapping allocator.
 func NewJIT() *JIT {
-	return &JIT{
-		noJIT:     make(map[uint64]bool),
-		irAlloc:   ir.NewFixedStaticAllocator(),
-		regPolicy: ir.PolicyRV8,
+	j := &JIT{
+		noJIT:   make(map[uint64]bool),
+		irAlloc: ir.NewFixedStaticAllocator(),
 	}
+	j.SetRegPolicy(ir.PolicyABJIT)
+	return j
 }
 
 // SetAllocStrategy reinstalls the Fixed Static Mapping allocator and clears
@@ -548,9 +549,14 @@ func (j *JIT) StepBlock(cpu *CPU) (ic uint64, err error) {
 
 	blk := j.lookupBlock(pc)
 	if blk != nil {
-		res := sandboxCall(blk.fn, cpu,
-			cpu.mem.RegFileBase(), cpu.mem.StackTop(),
-			0, 0, 0, 0)
+		var res jitcall.Result
+		if j.useABJIT {
+			res = abjitDispatch(blk, cpu, j, 0, 0, 0, 0)
+		} else {
+			res = sandboxCall(blk.fn, cpu,
+				cpu.mem.RegFileBase(), cpu.mem.StackTop(),
+				0, 0, 0, 0)
+		}
 		if j.trace {
 			fmt.Fprintf(os.Stderr, "JIT pc=0x%x -> PC=0x%x IC=%d status=%d\n",
 				pc, res.PC, res.IC, res.Status)

@@ -222,8 +222,10 @@ const (
 	IRRet       // return {pc=Imm, status=Imm2, faultAddr=A}
 	IRRetDyn    // return {pc=A, status=Imm, faultAddr=B}  — dynamic PC from VReg
 	IRChainExit // chain exit: {targetPC=Imm, exitIdx=Imm2}. WriteBackAll must precede.
-	IRJalrIC    // JALR site inline cache: {targetVReg=A, siteIdx=Imm}. WriteBackAll must precede.
-	IRSyscall   // ECALL fast path. Imm=pc+4 (resume), Imm2=CTab index for dispatcher sym.
+
+	IRJalrIC // JALR site "inline cache" (vestigial name, and was never instruction count). Now better described as: JALR indirect jump via decoder-cache lookup (the old 2-slot IC is deprecated). {targetVReg=A, siteIdx=Imm}. WriteBackAll must precede.
+
+	IRSyscall // ECALL fast path. Imm=pc+4 (resume), Imm2=CTab index for dispatcher sym.
 	// Calls the SysV-ABI dispatcher with (xBase, memBase, memMask), writes sret with
 	// Status=RAX (0=jitOK, 1=jitEcall), and returns. Terminator. WriteBackAll must precede.
 
