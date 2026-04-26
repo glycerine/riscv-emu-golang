@@ -581,7 +581,6 @@ func (j *JIT) StepBlock(cpu *CPU) (ic uint64, err error) {
 		}
 		cpu.pc = res.PC
 
-
 		switch int(res.Status) {
 		case jitOK:
 			return 0, nil
@@ -661,6 +660,12 @@ func (j *JIT) RunJIT(cpu *CPU) (err0 error) {
 	defer func() {
 		r := recover()
 		if r != nil {
+			switch x := r.(type) {
+			case ExitError:
+				if x.Code == 0 {
+					return // "exit status 0"
+				}
+			}
 			err0 = fmt.Errorf("RunJIT panic recovered = '%v'", r)
 			vv("err0 = %v", err0)
 		}
@@ -735,7 +740,6 @@ func (j *JIT) RunJIT(cpu *CPU) (err0 error) {
 				}
 			}
 			cpu.pc = res.PC
-	
 
 			switch int(res.Status) {
 			case jitOK:
