@@ -40,6 +40,7 @@ func collectIRBlocks(tb testing.TB, elfData []byte, maxBlocks int) ([]*riscv.Emi
 	pc := entry
 	seen := make(map[uint64]bool)
 
+	jit := riscv.NewJIT()
 	for len(results) < maxBlocks && pc < entry+0x1000000 {
 		if seen[pc] {
 			pc += 4
@@ -47,7 +48,7 @@ func collectIRBlocks(tb testing.TB, elfData []byte, maxBlocks int) ([]*riscv.Emi
 		}
 		seen[pc] = true
 
-		res := riscv.EmitBlockForBench(mem, pc)
+		res := jit.EmitBlockForBench(mem, pc)
 		if res != nil {
 			results = append(results, res)
 			// Advance past this block.
