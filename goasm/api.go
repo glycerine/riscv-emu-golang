@@ -267,7 +267,7 @@ func (c *Ctx) DumpProgs() string {
 			}
 			continue
 		}
-		fmt.Fprintf(&sb, "%s\n", p.InstructionString())
+		fmt.Fprintf(&sb, "[%5d]  %s\n", p.Pc, p.InstructionString())
 	}
 	return sb.String()
 }

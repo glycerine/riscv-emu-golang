@@ -312,12 +312,17 @@ func vizJitDumpIndex(lines []string) {
 
 // ── x86-64 machine code disassembly ───────────────────────────────────
 
+// vizJitDisasmX86 disassembles machine code bytes and writes a listing
+// with function-relative offsets (matching the goasm Progs Pc values).
+// The absolute base address is shown in the file header; offsets here
+// start at 0 so branch targets can be compared directly against the
+// goasm Progs section.
 func vizJitDisasmX86(sb *strings.Builder, code []byte, basePC uint64) {
 	offset := 0
 	for offset < len(code) {
 		inst, err := x86asm.Decode(code[offset:], 64)
 		if err != nil {
-			fmt.Fprintf(sb, "%06x  %-24s  ??\n", basePC+uint64(offset),
+			fmt.Fprintf(sb, "%x  [%5d]  %-30s  ??\n", basePC+uint64(offset), offset,
 				fmt.Sprintf("%02x", code[offset]))
 			offset++
 			continue
@@ -330,10 +335,44 @@ func vizJitDisasmX86(sb *strings.Builder, code []byte, basePC uint64) {
 			}
 			fmt.Fprintf(&hexBytes, "%02x", b)
 		}
-		text := x86asm.GoSyntax(inst, basePC+uint64(offset), nil)
-		fmt.Fprintf(sb, "%06x  %-24s  %s\n", basePC+uint64(offset), hexBytes.String(), text)
+		absPC := basePC + uint64(offset)
+		text := x86asm.GoSyntax(inst, absPC, nil)
+		text = vizRewriteAbsTarget(text, basePC)
+		fmt.Fprintf(sb, "%x  [%5d]  %-30s  %s\n", absPC, offset, hexBytes.String(), text)
 		offset += inst.Len
 	}
+}
+
+// vizRewriteAbsTarget rewrites "JMP 0xABCD1234" → "JMP 0x2e" when
+// the absolute address falls within the function (basePC-relative).
+// This makes branch targets directly comparable to goasm Progs Pc values.
+func vizRewriteAbsTarget(text string, basePC uint64) string {
+	if basePC == 0 {
+		return text
+	}
+	for _, prefix := range []string{
+		"JMP ", "JE ", "JNE ", "JA ", "JAE ", "JB ", "JBE ",
+		"JG ", "JGE ", "JL ", "JLE ", "JNO ", "JNP ", "JNS ",
+		"JO ", "JP ", "JS ", "JCXZ ", "JECXZ ", "JRCXZ ",
+	} {
+		if !strings.HasPrefix(text, prefix) {
+			continue
+		}
+		rest := text[len(prefix):]
+		if !strings.HasPrefix(rest, "0x") {
+			break
+		}
+		var absAddr uint64
+		if _, err := fmt.Sscanf(rest, "0x%x", &absAddr); err != nil {
+			break
+		}
+		if absAddr >= basePC {
+			relOff := absAddr - basePC
+			return fmt.Sprintf("%s%d (abs 0x%x)", prefix, relOff, absAddr)
+		}
+		break
+	}
+	return text
 }
 
 // ── RISC-V disassembly ─────────────────────────────────────────────────

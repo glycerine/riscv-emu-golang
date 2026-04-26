@@ -88,7 +88,7 @@ func TestVizJit_BranchTargets_MatchMachineCode(t *testing.T) {
 }
 
 // branchOps lists x86 branch mnemonics we care about (excludes CALL/RET).
-var branchRE = regexp.MustCompile(`(?i)^(JMP|JEQ|JNE|JGE|JLE|JGT|JLT|JBE|JAE|JA|JB|JCC|JCS|JHI|JLS|JMI|JPL|JVS|JVC|JOC|JOS|JPC|JPS)\s+(\d+)\s*$`)
+var branchRE = regexp.MustCompile(`(?i)(?:^|\])\s*(JMP|JEQ|JNE|JGE|JLE|JGT|JLT|JBE|JAE|JA|JB|JCC|JCS|JHI|JLS|JMI|JPL|JVS|JVC|JOC|JOS|JPC|JPS)\s+(\d+)\s*$`)
 
 // parseDumpProgsBranches extracts branch target byte offsets from
 // DumpProgs output. Only matches lines like "JMP\t47" or "JNE\t103"
