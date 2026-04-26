@@ -650,7 +650,16 @@ func (j *JIT) stepBlockResult(_ *CPU, res jitcall.Result) (uint64, error) {
 
 // RunJIT executes the CPU using JIT-compiled blocks where possible,
 // falling back to the interpreter for untranslatable instructions.
-func (j *JIT) RunJIT(cpu *CPU) error {
+func (j *JIT) RunJIT(cpu *CPU) (err0 error) {
+
+	defer func() {
+		r := recover()
+		if r != nil {
+			err0 = fmt.Errorf("RunJIT panic recovered = '%v'", r)
+			vv("err0 = %v", err0)
+		}
+	}()
+
 	// AOT is the default: on the first RunJIT call for a JIT that has
 	// no segments yet, transparently translate every executable region
 	// the loader already registered on cpu.mem. Only PCs outside those

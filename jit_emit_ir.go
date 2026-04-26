@@ -271,7 +271,7 @@ func (e *emitter) emitLabel() {
 	e.irEm.PlaceLabel(e.getOrCreateLabel(e.pc))
 }
 
-func (e *emitter) emitIC() {
+func (e *emitter) emitICplusplus() {
 	e.irEm.AddImm(e.irEm.IC(), e.irEm.IC(), 1)
 }
 
@@ -331,7 +331,7 @@ func (e *emitter) advancePC(size uint64) {
 	if e.icEmitted {
 		e.icEmitted = false
 	} else {
-		e.emitIC()
+		e.emitICplusplus()
 	}
 }
 
@@ -2604,7 +2604,7 @@ func (e *emitter) emitBranch(rs1, rs2, funct3 uint32, offset int64) {
 	target := e.pc + uint64(offset)
 	pred, _ := branchPred(funct3)
 
-	e.emitIC()
+	e.emitICplusplus()
 	e.icEmitted = true
 
 	a := e.xreg(rs1)
