@@ -105,9 +105,11 @@ func TestAOTEmitBlockLinear_Dhrystone(t *testing.T) {
 	textBase, textSize, _ := FindTextSection(data)
 	ranges := enumerateBlockRanges(mem, textBase, textSize)
 
+	j := NewJIT()
+
 	ok, nilCount, totalInsns := 0, 0, 0
 	for _, r := range ranges {
-		res := emitBlockLinear(mem, r.startPC, r.endPC)
+		res := j.emitBlockLinear(mem, r.startPC, r.endPC)
 		if res == nil {
 			nilCount++
 			continue
@@ -320,9 +322,10 @@ func TestAOTInstall_RunDhrystone(t *testing.T) {
 //
 // Expected counter shape on dhrystone (from plan's performance
 // section; measured medians):
-//   lazy mode: DispatchOK ~500K, JalrICMisses ~2M (JALR IC firing)
-//   AOT mode:  DispatchOK ~70K,   JalrICMisses <100 (decoder_cache
-//              hot path catches ≥99% of JALRs)
+//
+//	lazy mode: DispatchOK ~500K, JalrICMisses ~2M (JALR IC firing)
+//	AOT mode:  DispatchOK ~70K,   JalrICMisses <100 (decoder_cache
+//	           hot path catches ≥99% of JALRs)
 func TestAOTDispatch_DhrystoneReducesRoundTrips(t *testing.T) {
 	data, err := os.ReadFile("bench/dhrystone.elf")
 	if err != nil {
@@ -475,11 +478,12 @@ type testCodeSeg struct {
 // its own instruction bytes in the file. Loadable via LoadELFBytes.
 //
 // Layout:
-//   ELF header (64 bytes)
-//   Program headers (56 bytes × N)
-//   Code for seg 0 (4 bytes × len(seg0.code))
-//   Code for seg 1
-//   ...
+//
+//	ELF header (64 bytes)
+//	Program headers (56 bytes × N)
+//	Code for seg 0 (4 bytes × len(seg0.code))
+//	Code for seg 1
+//	...
 //
 // No section-header table; that's fine — LoadELFBytes only reads the
 // program-header table, and FindExecLoads likewise.
@@ -506,15 +510,15 @@ func buildMultiCodeELF(t *testing.T, segs []testCodeSeg) []byte {
 
 	// ELF header.
 	copy(buf[0:], "\x7fELF")
-	buf[4], buf[5], buf[6] = 2, 1, 1               // ELFCLASS64, ELFDATA2LSB, EV_CURRENT
-	le.PutUint16(buf[16:], 2)                       // ET_EXEC
-	le.PutUint16(buf[18:], 0xF3)                    // EM_RISCV
-	le.PutUint32(buf[20:], 1)                       // e_version
-	le.PutUint64(buf[24:], segs[0].vaddr)           // e_entry (segment 0 start)
-	le.PutUint64(buf[32:], phOff)                   // e_phoff
-	le.PutUint16(buf[52:], ehSize)                  // e_ehsize
-	le.PutUint16(buf[54:], phEntSize)               // e_phentsize
-	le.PutUint16(buf[56:], uint16(len(segs)))       // e_phnum
+	buf[4], buf[5], buf[6] = 2, 1, 1          // ELFCLASS64, ELFDATA2LSB, EV_CURRENT
+	le.PutUint16(buf[16:], 2)                 // ET_EXEC
+	le.PutUint16(buf[18:], 0xF3)              // EM_RISCV
+	le.PutUint32(buf[20:], 1)                 // e_version
+	le.PutUint64(buf[24:], segs[0].vaddr)     // e_entry (segment 0 start)
+	le.PutUint64(buf[32:], phOff)             // e_phoff
+	le.PutUint16(buf[52:], ehSize)            // e_ehsize
+	le.PutUint16(buf[54:], phEntSize)         // e_phentsize
+	le.PutUint16(buf[56:], uint16(len(segs))) // e_phnum
 
 	// Program headers.
 	for i, s := range segs {
@@ -526,12 +530,12 @@ func buildMultiCodeELF(t *testing.T, segs []testCodeSeg) []byte {
 		}
 		le.PutUint32(ph[0:], ptLoad)
 		le.PutUint32(ph[4:], flags)
-		le.PutUint64(ph[8:], offsets[i])       // p_offset
-		le.PutUint64(ph[16:], s.vaddr)         // p_vaddr
-		le.PutUint64(ph[24:], s.vaddr)         // p_paddr
+		le.PutUint64(ph[8:], offsets[i])             // p_offset
+		le.PutUint64(ph[16:], s.vaddr)               // p_vaddr
+		le.PutUint64(ph[24:], s.vaddr)               // p_paddr
 		le.PutUint64(ph[32:], uint64(len(s.code)*4)) // p_filesz
 		le.PutUint64(ph[40:], uint64(len(s.code)*4)) // p_memsz
-		le.PutUint64(ph[48:], 4)               // p_align
+		le.PutUint64(ph[48:], 4)                     // p_align
 	}
 
 	// Code bytes.

@@ -70,14 +70,14 @@ func TestBloat_BenchGuest_0x10de(t *testing.T) {
 	}
 
 	// Emit IR for the block.
-	res := emitBlock(mem, blockEntryPC)
+	j := NewJIT()
+	res := j.emitBlock(mem, blockEntryPC)
 	if res == nil || res.block == nil || res.numInsns == 0 {
 		t.Fatalf("emitBlock(0x%x) returned nil/empty", blockEntryPC)
 	}
 	irOps := len(res.block.Instrs)
 
 	// Register-allocate and lower through the same AOT path production uses.
-	j := NewJIT()
 	pool := RV8Pool(res.block)
 	pinned := RV8Pinned()
 	alloc := j.irAlloc.Allocate(res.block, pool, pinned, nil)

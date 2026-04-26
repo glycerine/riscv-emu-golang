@@ -3,7 +3,7 @@ package riscv
 import "testing"
 
 func TestMaskedLoad_Basic(t *testing.T) {
-	e := NewEmitter()
+	e := NewEmitter(nil)
 	faultLabel := e.NewLabel()
 	dst := VReg(5)
 	base := VReg(10)
@@ -56,7 +56,7 @@ func TestMaskedLoad_Basic(t *testing.T) {
 }
 
 func TestMaskedLoad_Unsigned(t *testing.T) {
-	e := NewEmitter()
+	e := NewEmitter(nil)
 	faultLabel := e.NewLabel()
 	e.MaskedLoad(VReg(5), VReg(10), e.MemBase(), e.MemMask(), 0, 2, false, faultLabel)
 
@@ -68,7 +68,7 @@ func TestMaskedLoad_Unsigned(t *testing.T) {
 }
 
 func TestMaskedLoad_I64_NoExtend(t *testing.T) {
-	e := NewEmitter()
+	e := NewEmitter(nil)
 	faultLabel := e.NewLabel()
 	e.MaskedLoad(VReg(5), VReg(10), e.MemBase(), e.MemMask(), 0, 8, false, faultLabel)
 
@@ -80,7 +80,7 @@ func TestMaskedLoad_I64_NoExtend(t *testing.T) {
 }
 
 func TestGuestStore_Basic(t *testing.T) {
-	e := NewEmitter()
+	e := NewEmitter(nil)
 	faultLabel := e.NewLabel()
 	e.GuestStore(VReg(10), e.MemBase(), e.MemMask(), 8, VReg(5), 4, faultLabel)
 
@@ -104,7 +104,7 @@ func TestGuestStore_Basic(t *testing.T) {
 }
 
 func TestWriteBackAll_NothingDirty(t *testing.T) {
-	e := NewEmitter()
+	e := NewEmitter(nil)
 	before := len(e.Block.Instrs)
 	e.WriteBackAll()
 	after := len(e.Block.Instrs)
@@ -114,7 +114,7 @@ func TestWriteBackAll_NothingDirty(t *testing.T) {
 }
 
 func TestWriteBackAll_SomeDirty(t *testing.T) {
-	e := NewEmitter()
+	e := NewEmitter(nil)
 	e.MarkDirty(VReg(5))
 	e.MarkDirty(VReg(10))
 	before := len(e.Block.Instrs)
@@ -135,7 +135,7 @@ func TestWriteBackAll_SomeDirty(t *testing.T) {
 }
 
 func TestWriteBackAll_IntegerAndFP(t *testing.T) {
-	e := NewEmitter()
+	e := NewEmitter(nil)
 	e.MarkDirty(VReg(5))  // x5
 	e.MarkDirty(VReg(33)) // f1
 	before := len(e.Block.Instrs)
@@ -159,7 +159,7 @@ func TestWriteBackAll_IntegerAndFP(t *testing.T) {
 }
 
 func TestWriteBackReg(t *testing.T) {
-	e := NewEmitter()
+	e := NewEmitter(nil)
 	e.MarkDirty(VReg(5))
 	before := len(e.Block.Instrs)
 	e.WriteBackReg(VReg(5))
@@ -178,7 +178,7 @@ func TestWriteBackReg(t *testing.T) {
 }
 
 func TestWriteBackReg_FP(t *testing.T) {
-	e := NewEmitter()
+	e := NewEmitter(nil)
 	e.MarkDirty(VReg(32)) // f0
 	before := len(e.Block.Instrs)
 	e.WriteBackReg(VReg(32))
@@ -194,7 +194,7 @@ func TestWriteBackReg_FP(t *testing.T) {
 }
 
 func TestWriteBackReg_VRegZero(t *testing.T) {
-	e := NewEmitter()
+	e := NewEmitter(nil)
 	before := len(e.Block.Instrs)
 	e.WriteBackReg(VRegZero)
 	if len(e.Block.Instrs) != before {
@@ -203,7 +203,7 @@ func TestWriteBackReg_VRegZero(t *testing.T) {
 }
 
 func TestFaultExit(t *testing.T) {
-	e := NewEmitter()
+	e := NewEmitter(nil)
 	e.MarkDirty(VReg(5))
 	faultAddr := e.Tmp()
 	before := len(e.Block.Instrs)
@@ -221,7 +221,7 @@ func TestFaultExit(t *testing.T) {
 }
 
 func TestBudgetCheck(t *testing.T) {
-	e := NewEmitter()
+	e := NewEmitter(nil)
 	target := e.NewLabel()
 	e.PlaceLabel(target)
 
@@ -265,7 +265,7 @@ func TestBudgetCheck(t *testing.T) {
 }
 
 func TestMarkDirty_Basic(t *testing.T) {
-	e := NewEmitter()
+	e := NewEmitter(nil)
 	e.MarkDirty(VReg(5))
 	if !e.IsDirty(VReg(5)) {
 		t.Error("VReg(5) should be dirty")
@@ -273,7 +273,7 @@ func TestMarkDirty_Basic(t *testing.T) {
 }
 
 func TestMarkDirty_VRegZero(t *testing.T) {
-	e := NewEmitter()
+	e := NewEmitter(nil)
 	e.MarkDirty(VRegZero)
 	if e.IsDirty(VRegZero) {
 		t.Error("VRegZero should never be dirty")
@@ -281,7 +281,7 @@ func TestMarkDirty_VRegZero(t *testing.T) {
 }
 
 func TestIsDirty_OutOfRange(t *testing.T) {
-	e := NewEmitter()
+	e := NewEmitter(nil)
 	// Query a VReg way beyond dirty slice.
 	if e.IsDirty(VReg(9999)) {
 		t.Error("out-of-range VReg should not be dirty")
@@ -289,7 +289,7 @@ func TestIsDirty_OutOfRange(t *testing.T) {
 }
 
 func TestMarkDirty_GrowsSlice(t *testing.T) {
-	e := NewEmitter()
+	e := NewEmitter(nil)
 	// Allocate many temps to push past initial dirty size.
 	var last VReg
 	for i := 0; i < 200; i++ {
@@ -303,7 +303,7 @@ func TestMarkDirty_GrowsSlice(t *testing.T) {
 }
 
 func TestWriteBackAll_PreservesDirty(t *testing.T) {
-	e := NewEmitter()
+	e := NewEmitter(nil)
 	e.MarkDirty(VReg(5))
 	e.MarkDirty(VReg(33))
 	e.WriteBackAll()
@@ -323,7 +323,7 @@ func TestWriteBackAll_PreservesDirty(t *testing.T) {
 }
 
 func TestClearDirtySyscallRegs(t *testing.T) {
-	e := NewEmitter()
+	e := NewEmitter(nil)
 	// Mark several regs dirty, including the syscall return regs.
 	e.MarkDirty(VReg(5))  // t0 — not a syscall return reg
 	e.MarkDirty(VReg(10)) // a0
@@ -348,7 +348,7 @@ func TestClearDirtySyscallRegs(t *testing.T) {
 }
 
 func TestReloadSyscallRegs(t *testing.T) {
-	e := NewEmitter()
+	e := NewEmitter(nil)
 	before := len(e.Block.Instrs)
 	e.ReloadSyscallRegs()
 	after := len(e.Block.Instrs)
@@ -399,7 +399,7 @@ func TestReloadSyscallRegs(t *testing.T) {
 }
 
 func TestReloadSyscallRegs_DoesNotAffectOtherRegs(t *testing.T) {
-	e := NewEmitter()
+	e := NewEmitter(nil)
 	e.MarkDirty(VReg(5))
 	e.ReloadSyscallRegs()
 
@@ -415,7 +415,7 @@ func TestReloadSyscallRegs_DoesNotAffectOtherRegs(t *testing.T) {
 
 // End-to-end: simulate ADDI x1, x0, 42 ; SW x1, 0(x2) ; ECALL
 func TestEndToEnd_SimpleBlock(t *testing.T) {
-	e := NewEmitter()
+	e := NewEmitter(nil)
 
 	// ADDI x1, x0, 42  — x0 is always zero, so this is Const(x1, 42).
 	e.Const(e.XReg(1), 42)
@@ -454,7 +454,7 @@ func TestEndToEnd_SimpleBlock(t *testing.T) {
 
 // End-to-end: loop with backward branch budget check.
 func TestEndToEnd_LoopWithBudget(t *testing.T) {
-	e := NewEmitter()
+	e := NewEmitter(nil)
 
 	// Label L (loop top).
 	loopTop := e.NewLabel()

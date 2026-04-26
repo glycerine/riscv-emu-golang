@@ -603,7 +603,7 @@ func (j *JIT) StepBlock(cpu *CPU) (ic uint64, err error) {
 
 	// Try to translate
 	if !j.InterpOnly && !j.noJIT[pc] {
-		res := emitBlock(&cpu.mem, pc)
+		res := j.emitBlock(&cpu.mem, pc)
 		if res != nil && res.numInsns > 0 {
 			compiled, cerr := j.jitCompile(res)
 			if cerr == nil {
@@ -821,7 +821,7 @@ func (j *JIT) RunJIT(cpu *CPU) error {
 
 		// No compiled block — try to translate.
 		if !j.InterpOnly && !j.noJIT[pc] {
-			res := emitBlock(&cpu.mem, pc)
+			res := j.emitBlock(&cpu.mem, pc)
 			if res != nil && res.numInsns > 0 {
 				blk, err := j.jitCompile(res)
 				if err == nil {

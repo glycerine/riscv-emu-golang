@@ -48,7 +48,7 @@ func (j *JIT) jitCompileAOTSegment(
 	compiles := make([]*aotBlockCompile, 0, len(ranges))
 	totalSize := 0
 	for _, r := range ranges {
-		res := emitBlockLinear(mem, r.startPC, r.endPC)
+		res := j.emitBlockLinear(mem, r.startPC, r.endPC)
 		if res == nil || res.numInsns == 0 {
 			continue // untranslatable; decoder_cache slot stays 0
 		}

@@ -52,7 +52,7 @@ func execBlock(t *testing.T, b *Block, x *[32]uint64, _ bool) jitcall.Result {
 // ── Single-instruction exhaustive tests ──
 
 func buildSingleBlock(rd, ra, rb int, emitOp func(*Emitter, VReg, VReg, VReg)) *Block {
-	e := NewEmitter()
+	e := NewEmitter(nil)
 	for i := 1; i <= exhaustN; i++ {
 		e.Load(VReg(i), e.XBase(), int64(i)*8, I64, false)
 	}
@@ -201,7 +201,7 @@ func runSeq2(t *testing.T, op1, op2 opDef) {
 					label := fmt.Sprintf("%s_then_%s/d1=x%d/a=x%d/b=x%d/d2=x%d",
 						op1.name, op2.name, d1, ra, rb, d2)
 					t.Run(label, func(t *testing.T) {
-						e := NewEmitter()
+						e := NewEmitter(nil)
 						for i := 1; i <= exhaustN; i++ {
 							e.Load(VReg(i), e.XBase(), int64(i)*8, I64, false)
 						}
@@ -354,7 +354,7 @@ func runSeq3(t *testing.T, name string,
 						label := fmt.Sprintf("%s/d1=%d/a=%d/b=%d/d2=%d/d3=%d",
 							name, d1, ra, rb, d2, d3)
 						t.Run(label, func(t *testing.T) {
-							e := NewEmitter()
+							e := NewEmitter(nil)
 							for i := 1; i <= N; i++ {
 								e.Load(VReg(i), e.XBase(), int64(i)*8, I64, false)
 							}
@@ -423,7 +423,7 @@ func TestExhaustive_Seq_CONST_CONST_SHR(t *testing.T) {
 			for rb := 1; rb <= N; rb++ {
 				label := fmt.Sprintf("CONST_CONST_SHR/d=%d/a=%d/b=%d", d1, ra, rb)
 				t.Run(label, func(t *testing.T) {
-					e := NewEmitter()
+					e := NewEmitter(nil)
 					// Load all regs first (creates allocation pressure).
 					for i := 1; i <= N; i++ {
 						e.Load(VReg(i), e.XBase(), int64(i)*8, I64, false)
@@ -492,7 +492,7 @@ func TestExhaustive_Seq_FullTestPattern(t *testing.T) {
 						} // d3 holds expected, d2 holds result
 						label := fmt.Sprintf("a=%d/b=%d/d1=%d/d2=%d/d3=%d", ra, rb, d1, d2, d3)
 						t.Run(label, func(t *testing.T) {
-							e := NewEmitter()
+							e := NewEmitter(nil)
 							for i := 1; i <= N; i++ {
 								e.Load(VReg(i), e.XBase(), int64(i)*8, I64, false)
 							}
@@ -534,7 +534,7 @@ func TestExhaustive_Seq_FullTestPattern(t *testing.T) {
 // If LT is false, it computed 5-3>0 (To-From).
 func TestCMP_Convention(t *testing.T) {
 	// Build: load x1=3, x2=5, CMP x1,x2, SETLT x3, store x3, ret.
-	e := NewEmitter()
+	e := NewEmitter(nil)
 	x1 := VReg(1)
 	x2 := VReg(2)
 	x3 := VReg(3)
@@ -562,7 +562,7 @@ func TestCMP_Convention(t *testing.T) {
 	}
 
 	// Also test the reverse: 5 < 3 should be 0.
-	e2 := NewEmitter()
+	e2 := NewEmitter(nil)
 	e2.Const(x1, 5)
 	e2.Const(x2, 3)
 	e2.Set(x3, x1, x2, LT) // x3 = (5 < 3) ? 1 : 0 = 0
@@ -608,7 +608,7 @@ func TestSETImm_Convention(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			e := NewEmitter()
+			e := NewEmitter(nil)
 			x1 := VReg(1)
 			x3 := VReg(3)
 			e.Const(x1, tc.val)
@@ -635,7 +635,7 @@ func TestSETImm_Convention(t *testing.T) {
 
 // TestSETImm_Debug dumps allocation for the 3<5 case to find the V2 bug.
 func TestSETImm_Debug(t *testing.T) {
-	e := NewEmitter()
+	e := NewEmitter(nil)
 	x1 := VReg(1)
 	x3 := VReg(3)
 	e.Const(x1, 3)

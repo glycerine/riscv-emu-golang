@@ -21,7 +21,7 @@ import (
 // single IRChainExit{targetPC}. Uses the high-level Emitter so we match
 // the conventions jit_emit_ir would use in production.
 func buildChainExitOnlyBlock(targetPC uint64) *Block {
-	e := NewEmitter()
+	e := NewEmitter(nil)
 	e.ChainExit(targetPC, 0)
 	b := e.Block
 	b.Instrs[0] = b.Instrs[0] // no-op touch; Block is already populated

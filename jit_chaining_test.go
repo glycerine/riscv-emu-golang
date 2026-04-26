@@ -310,7 +310,8 @@ func TestRAS_InlinesCalleeAndPredictsReturn(t *testing.T) {
 	for i, insn := range insns {
 		mem.Store32(0x1000+uint64(i)*4, insn)
 	}
-	res := emitBlock(mem, 0x1000)
+	j := NewJIT()
+	res := j.emitBlock(mem, 0x1000)
 	if res == nil {
 		t.Fatal("emitBlock returned nil")
 	}

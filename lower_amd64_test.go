@@ -66,7 +66,7 @@ func TestLowerRV8_NilAlloc(t *testing.T) {
 // ── Phase B: Data Movement ──
 
 func TestLower_IRConst(t *testing.T) {
-	e := NewEmitter()
+	e := NewEmitter(nil)
 	tmp := e.Tmp() // t69
 	e.Const(tmp, 42)
 	e.Ret(0x1000, 0, VRegZero)
@@ -78,7 +78,7 @@ func TestLower_IRConst(t *testing.T) {
 }
 
 func TestLower_IRMov(t *testing.T) {
-	e := NewEmitter()
+	e := NewEmitter(nil)
 	t1 := e.Tmp()
 	t2 := e.Tmp()
 	e.Const(t1, 99)
@@ -92,7 +92,7 @@ func TestLower_IRMov(t *testing.T) {
 }
 
 func TestLower_IRSext_I32(t *testing.T) {
-	e := NewEmitter()
+	e := NewEmitter(nil)
 	t1 := e.Tmp()
 	t2 := e.Tmp()
 	e.Const(t1, -1)
@@ -106,7 +106,7 @@ func TestLower_IRSext_I32(t *testing.T) {
 }
 
 func TestLower_IRZext_I32(t *testing.T) {
-	e := NewEmitter()
+	e := NewEmitter(nil)
 	t1 := e.Tmp()
 	t2 := e.Tmp()
 	e.Const(t1, 0xDEADBEEF)
@@ -122,7 +122,7 @@ func TestLower_IRZext_I32(t *testing.T) {
 // ── Phase C: Integer ALU ──
 
 func TestLower_IRAdd(t *testing.T) {
-	e := NewEmitter()
+	e := NewEmitter(nil)
 	t1 := e.Tmp()
 	t2 := e.Tmp()
 	t3 := e.Tmp()
@@ -138,7 +138,7 @@ func TestLower_IRAdd(t *testing.T) {
 }
 
 func TestLower_IRAddImm(t *testing.T) {
-	e := NewEmitter()
+	e := NewEmitter(nil)
 	t1 := e.Tmp()
 	t2 := e.Tmp()
 	e.Const(t1, 10)
@@ -152,7 +152,7 @@ func TestLower_IRAddImm(t *testing.T) {
 }
 
 func TestLower_IRSub(t *testing.T) {
-	e := NewEmitter()
+	e := NewEmitter(nil)
 	t1 := e.Tmp()
 	t2 := e.Tmp()
 	t3 := e.Tmp()
@@ -168,7 +168,7 @@ func TestLower_IRSub(t *testing.T) {
 }
 
 func TestLower_IRMul(t *testing.T) {
-	e := NewEmitter()
+	e := NewEmitter(nil)
 	t1 := e.Tmp()
 	t2 := e.Tmp()
 	t3 := e.Tmp()
@@ -184,7 +184,7 @@ func TestLower_IRMul(t *testing.T) {
 }
 
 func TestLower_IRNeg(t *testing.T) {
-	e := NewEmitter()
+	e := NewEmitter(nil)
 	t1 := e.Tmp()
 	t2 := e.Tmp()
 	e.Const(t1, 42)
@@ -200,7 +200,7 @@ func TestLower_IRNeg(t *testing.T) {
 // ── Phase C: Bitwise ──
 
 func TestLower_IRAnd(t *testing.T) {
-	e := NewEmitter()
+	e := NewEmitter(nil)
 	t1 := e.Tmp()
 	t2 := e.Tmp()
 	t3 := e.Tmp()
@@ -216,7 +216,7 @@ func TestLower_IRAnd(t *testing.T) {
 }
 
 func TestLower_IROr(t *testing.T) {
-	e := NewEmitter()
+	e := NewEmitter(nil)
 	t1 := e.Tmp()
 	t2 := e.Tmp()
 	t3 := e.Tmp()
@@ -232,7 +232,7 @@ func TestLower_IROr(t *testing.T) {
 }
 
 func TestLower_IRXor(t *testing.T) {
-	e := NewEmitter()
+	e := NewEmitter(nil)
 	t1 := e.Tmp()
 	t2 := e.Tmp()
 	t3 := e.Tmp()
@@ -248,7 +248,7 @@ func TestLower_IRXor(t *testing.T) {
 }
 
 func TestLower_IRNot(t *testing.T) {
-	e := NewEmitter()
+	e := NewEmitter(nil)
 	t1 := e.Tmp()
 	t2 := e.Tmp()
 	e.Const(t1, 0xFF)
@@ -264,7 +264,7 @@ func TestLower_IRNot(t *testing.T) {
 // ── Phase D: Shifts ──
 
 func TestLower_IRShlImm(t *testing.T) {
-	e := NewEmitter()
+	e := NewEmitter(nil)
 	t1 := e.Tmp()
 	t2 := e.Tmp()
 	e.Const(t1, 1)
@@ -278,7 +278,7 @@ func TestLower_IRShlImm(t *testing.T) {
 }
 
 func TestLower_IRShrImm(t *testing.T) {
-	e := NewEmitter()
+	e := NewEmitter(nil)
 	t1 := e.Tmp()
 	t2 := e.Tmp()
 	e.Const(t1, 256)
@@ -294,7 +294,7 @@ func TestLower_IRShrImm(t *testing.T) {
 // ── Phase E: Comparison ──
 
 func TestLower_IRSet_EQ(t *testing.T) {
-	e := NewEmitter()
+	e := NewEmitter(nil)
 	t1 := e.Tmp()
 	t2 := e.Tmp()
 	t3 := e.Tmp()
@@ -312,7 +312,7 @@ func TestLower_IRSet_EQ(t *testing.T) {
 // ── Phase E: Memory ──
 
 func TestLower_IRLoad_I64(t *testing.T) {
-	e := NewEmitter()
+	e := NewEmitter(nil)
 	dst := e.Tmp()
 	e.Load(dst, e.MemBase(), 0, I64, false)
 	e.Ret(0x1000, 0, VRegZero)
@@ -324,7 +324,7 @@ func TestLower_IRLoad_I64(t *testing.T) {
 }
 
 func TestLower_IRStore_I64(t *testing.T) {
-	e := NewEmitter()
+	e := NewEmitter(nil)
 	src := e.Tmp()
 	e.Const(src, 99)
 	e.Store(e.MemBase(), 0, src, I64)
@@ -339,7 +339,7 @@ func TestLower_IRStore_I64(t *testing.T) {
 // ── Phase F: Control Flow ──
 
 func TestLower_IRBranch_Forward(t *testing.T) {
-	e := NewEmitter()
+	e := NewEmitter(nil)
 	t1 := e.Tmp()
 	e.Const(t1, 42)
 	target := e.NewLabel()
@@ -355,7 +355,7 @@ func TestLower_IRBranch_Forward(t *testing.T) {
 }
 
 func TestLower_IRJump(t *testing.T) {
-	e := NewEmitter()
+	e := NewEmitter(nil)
 	target := e.NewLabel()
 	e.Jump(target)
 	e.Ret(0x2000, 1, VRegZero) // unreachable
@@ -369,7 +369,7 @@ func TestLower_IRJump(t *testing.T) {
 }
 
 func TestLower_IRRet(t *testing.T) {
-	e := NewEmitter()
+	e := NewEmitter(nil)
 	e.Ret(0x1234, 0, VRegZero)
 
 	bytes, _ := lowerBlockWithRet(t, e.Block)
@@ -381,7 +381,7 @@ func TestLower_IRRet(t *testing.T) {
 // ── Phase I: Pseudo-ops ──
 
 func TestLower_IRMarkLive_NoOp(t *testing.T) {
-	e := NewEmitter()
+	e := NewEmitter(nil)
 	t1 := e.Tmp()
 	e.Const(t1, 1)
 	e.Block.Instrs = append(e.Block.Instrs, IRInstr{Op: IRMarkLive, A: t1})
@@ -447,7 +447,7 @@ func TestLower_AllOpsHandled(t *testing.T) {
 // ── Verify parameter VReg constants match Emitter ──
 
 func TestParamVRegs_MatchEmitter(t *testing.T) {
-	e := NewEmitter()
+	e := NewEmitter(nil)
 	if e.XBase() != VRXBase {
 		t.Errorf("XBase = %v, want %v", e.XBase(), VRXBase)
 	}
@@ -768,7 +768,7 @@ func TestABJITPool_R14Excluded(t *testing.T) {
 // ── Stage 4: rv8 ALU ops ──
 
 func TestRV8Lower_Add(t *testing.T) {
-	e := NewEmitter()
+	e := NewEmitter(nil)
 	e.Add(e.XReg(10), e.XReg(11), e.XReg(12))
 	e.Ret(0x1000, 0, VRegZero)
 	code, _ := lowerBlockRV8(t, e.Block)
@@ -778,7 +778,7 @@ func TestRV8Lower_Add(t *testing.T) {
 }
 
 func TestRV8Lower_Sub(t *testing.T) {
-	e := NewEmitter()
+	e := NewEmitter(nil)
 	e.Sub(e.XReg(10), e.XReg(11), e.XReg(12))
 	e.Ret(0x1000, 0, VRegZero)
 	code, _ := lowerBlockRV8(t, e.Block)
@@ -788,7 +788,7 @@ func TestRV8Lower_Sub(t *testing.T) {
 }
 
 func TestRV8Lower_Const(t *testing.T) {
-	e := NewEmitter()
+	e := NewEmitter(nil)
 	e.Const(e.XReg(10), 42)
 	e.Ret(0x1000, 0, VRegZero)
 	code, _ := lowerBlockRV8(t, e.Block)
@@ -798,7 +798,7 @@ func TestRV8Lower_Const(t *testing.T) {
 }
 
 func TestRV8Lower_Mov(t *testing.T) {
-	e := NewEmitter()
+	e := NewEmitter(nil)
 	e.Const(e.XReg(11), 99)
 	e.Mov(e.XReg(10), e.XReg(11))
 	e.Ret(0x1000, 0, VRegZero)
@@ -809,7 +809,7 @@ func TestRV8Lower_Mov(t *testing.T) {
 }
 
 func TestRV8Lower_Sext(t *testing.T) {
-	e := NewEmitter()
+	e := NewEmitter(nil)
 	e.Const(e.XReg(11), -1)
 	e.Sext(e.XReg(10), e.XReg(11), I32)
 	e.Ret(0x1000, 0, VRegZero)
@@ -820,7 +820,7 @@ func TestRV8Lower_Sext(t *testing.T) {
 }
 
 func TestRV8Lower_Zext(t *testing.T) {
-	e := NewEmitter()
+	e := NewEmitter(nil)
 	e.Const(e.XReg(11), 0xFFFF)
 	e.Zext(e.XReg(10), e.XReg(11), I16)
 	e.Ret(0x1000, 0, VRegZero)
@@ -833,7 +833,7 @@ func TestRV8Lower_Zext(t *testing.T) {
 // ── Stage 5: rv8 memory, shifts, div ──
 
 func TestRV8Lower_Shl(t *testing.T) {
-	e := NewEmitter()
+	e := NewEmitter(nil)
 	e.Const(e.XReg(10), 1)
 	e.Const(e.XReg(11), 5)
 	e.Shl(e.XReg(12), e.XReg(10), e.XReg(11))
@@ -845,7 +845,7 @@ func TestRV8Lower_Shl(t *testing.T) {
 }
 
 func TestRV8Lower_Div(t *testing.T) {
-	e := NewEmitter()
+	e := NewEmitter(nil)
 	e.Const(e.XReg(10), 100)
 	e.Const(e.XReg(11), 7)
 	e.DivS(e.XReg(12), e.XReg(10), e.XReg(11))
@@ -857,7 +857,7 @@ func TestRV8Lower_Div(t *testing.T) {
 }
 
 func TestRV8Lower_Rem(t *testing.T) {
-	e := NewEmitter()
+	e := NewEmitter(nil)
 	e.Const(e.XReg(10), 100)
 	e.Const(e.XReg(11), 7)
 	e.Rem(e.XReg(12), e.XReg(10), e.XReg(11))
@@ -871,7 +871,7 @@ func TestRV8Lower_Rem(t *testing.T) {
 // ── Stage 6: rv8 FP, branch, set, ret ──
 
 func TestRV8Lower_FAdd(t *testing.T) {
-	e := NewEmitter()
+	e := NewEmitter(nil)
 	fa0 := e.FRegV(10)
 	fa1 := e.FRegV(11)
 	fa2 := e.FRegV(12)
@@ -884,7 +884,7 @@ func TestRV8Lower_FAdd(t *testing.T) {
 }
 
 func TestRV8Lower_Branch(t *testing.T) {
-	e := NewEmitter()
+	e := NewEmitter(nil)
 	l := e.NewLabel()
 	e.Const(e.XReg(10), 1)
 	e.Const(e.XReg(11), 2)
@@ -898,7 +898,7 @@ func TestRV8Lower_Branch(t *testing.T) {
 }
 
 func TestRV8Lower_Set(t *testing.T) {
-	e := NewEmitter()
+	e := NewEmitter(nil)
 	e.Const(e.XReg(10), 1)
 	e.Const(e.XReg(11), 2)
 	e.Set(e.XReg(12), e.XReg(10), e.XReg(11), LT)
@@ -962,7 +962,7 @@ func TestEmitMI_RSP_Encoding(t *testing.T) {
 func TestEmitMI_RSP_Functional(t *testing.T) {
 	// Test: ADDQ $5, [RSP+off] actually adds 5 to the value at that location.
 	// Build a block where a temp gets spilled and AddImm operates on it.
-	e := NewEmitter()
+	e := NewEmitter(nil)
 	// Use 20 regs to force temps to spill.
 	for i := 1; i <= 20; i++ {
 		e.Const(e.XReg(uint32(i)), int64(i*100))
@@ -986,7 +986,7 @@ func TestEmitMI_RSP_Functional(t *testing.T) {
 
 func TestEmitMI_RSP_TempVReg(t *testing.T) {
 	// Same as above but using a TEMP VReg (≥70) that spills to [RSP+slot*8].
-	e := NewEmitter()
+	e := NewEmitter(nil)
 	// Use 14 temps to exhaust pool (12 GPRs - parameter overhead).
 	temps := make([]VReg, 14)
 	for i := range temps {
@@ -1013,7 +1013,7 @@ func TestEmitMI_RSP_TempVReg(t *testing.T) {
 }
 
 func TestRV8Set_CmpDirection_RegReg(t *testing.T) {
-	e := NewEmitter()
+	e := NewEmitter(nil)
 	e.Const(e.XReg(10), 3)
 	e.Const(e.XReg(11), 7)
 	e.Set(e.XReg(12), e.XReg(10), e.XReg(11), LT) // 3 < 7 → 1
@@ -1030,7 +1030,7 @@ func TestRV8Set_CmpDirection_RegReg(t *testing.T) {
 }
 
 func TestRV8Set_CmpDirection_SpilledB(t *testing.T) {
-	e := NewEmitter()
+	e := NewEmitter(nil)
 	for i := 1; i <= 20; i++ {
 		e.Const(e.XReg(uint32(i)), int64(i*100))
 	}
@@ -1060,7 +1060,7 @@ func TestRV8Set_CmpDirection_SpilledB(t *testing.T) {
 }
 
 func TestRV8Branch_CmpDirection_SpilledB(t *testing.T) {
-	e := NewEmitter()
+	e := NewEmitter(nil)
 	for i := 1; i <= 20; i++ {
 		e.Const(e.XReg(uint32(i)), int64(i*100))
 	}
@@ -1086,7 +1086,7 @@ func TestRV8Branch_CmpDirection_SpilledB(t *testing.T) {
 }
 
 func TestRV8Lower_Ret(t *testing.T) {
-	e := NewEmitter()
+	e := NewEmitter(nil)
 	e.Ret(0x2000, 0, VRegZero)
 	code, _ := lowerBlockRV8(t, e.Block)
 	if len(code) == 0 {
@@ -1095,7 +1095,7 @@ func TestRV8Lower_Ret(t *testing.T) {
 }
 
 func TestRV8Lower_RetDyn(t *testing.T) {
-	e := NewEmitter()
+	e := NewEmitter(nil)
 	e.Const(e.XReg(1), 0x3000)
 	e.RetDyn(e.XReg(1), 0, VRegZero)
 	code, _ := lowerBlockRV8(t, e.Block)
@@ -1140,7 +1140,7 @@ func execBlockRV8(t *testing.T, b *Block, x *[32]uint64) jitcall.Result {
 }
 
 func TestRV8Trampoline_RoundTrip(t *testing.T) {
-	e := NewEmitter()
+	e := NewEmitter(nil)
 	e.Ret(0x1000, 0, VRegZero)
 	var x [32]uint64
 	res := execBlockRV8(t, e.Block, &x)
@@ -1153,7 +1153,7 @@ func TestRV8Trampoline_RoundTrip(t *testing.T) {
 }
 
 func TestRV8Trampoline_ConstAndRet(t *testing.T) {
-	e := NewEmitter()
+	e := NewEmitter(nil)
 	e.Const(e.XReg(10), 42)
 	e.Ret(0x2000, 0, VRegZero)
 	var x [32]uint64
@@ -1167,7 +1167,7 @@ func TestRV8Trampoline_ConstAndRet(t *testing.T) {
 }
 
 func TestRV8Trampoline_AddRegs(t *testing.T) {
-	e := NewEmitter()
+	e := NewEmitter(nil)
 	e.Add(e.XReg(12), e.XReg(10), e.XReg(11))
 	e.Ret(0x3000, 0, VRegZero)
 	var x [32]uint64
@@ -1183,7 +1183,7 @@ func TestRV8Trampoline_AddRegs(t *testing.T) {
 }
 
 func TestRV8Trampoline_ShiftRegs(t *testing.T) {
-	e := NewEmitter()
+	e := NewEmitter(nil)
 	e.Const(e.XReg(10), 1)
 	e.Const(e.XReg(11), 10)
 	e.Shl(e.XReg(12), e.XReg(10), e.XReg(11))
@@ -1199,7 +1199,7 @@ func TestRV8Trampoline_ShiftRegs(t *testing.T) {
 }
 
 func TestRV8Trampoline_DivRegs(t *testing.T) {
-	e := NewEmitter()
+	e := NewEmitter(nil)
 	e.Const(e.XReg(10), 100)
 	e.Const(e.XReg(11), 7)
 	e.DivS(e.XReg(12), e.XReg(10), e.XReg(11))
@@ -1217,7 +1217,7 @@ func TestRV8Trampoline_DivRegs(t *testing.T) {
 // ── Stage 8: rv8 chain exit/entry ──
 
 func TestRV8Chain_ExitAssembles(t *testing.T) {
-	e := NewEmitter()
+	e := NewEmitter(nil)
 	e.Const(e.XReg(10), 42)
 	e.ChainExit(0x2000, 0)
 	code, _ := lowerBlockRV8(t, e.Block)
@@ -1248,7 +1248,7 @@ func TestRV8Chain_HasChainEntryProg(t *testing.T) {
 }
 
 func TestRV8Chain_ExitHasDesc(t *testing.T) {
-	e := NewEmitter()
+	e := NewEmitter(nil)
 	e.ChainExit(0x3000, 0)
 	b := e.Block
 	pool := RV8Pool(b)
@@ -1272,7 +1272,7 @@ func TestRV8Chain_ExitHasDesc(t *testing.T) {
 // ── Stage 7: rv8 exhaustive register-pair assembly tests ──
 
 func buildRV8SingleBlock(rd, ra, rb int, emitOp func(*Emitter, VReg, VReg, VReg)) *Block {
-	e := NewEmitter()
+	e := NewEmitter(nil)
 	emitOp(e, VReg(rd), VReg(ra), VReg(rb))
 	e.Ret(0x1000, 0, VRegZero)
 	return e.Block
@@ -1308,7 +1308,7 @@ func runRV8ExhaustExec(t *testing.T, name string, emitOp func(*Emitter, VReg, VR
 	for rd := 1; rd <= N; rd++ {
 		for ra := 1; ra <= N; ra++ {
 			for rb := 1; rb <= N; rb++ {
-				e := NewEmitter()
+				e := NewEmitter(nil)
 				emitOp(e, VReg(rd), VReg(ra), VReg(rb))
 				e.Ret(0x1000, 0, VRegZero)
 				blk := e.Block

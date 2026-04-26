@@ -115,7 +115,7 @@ func FuzzEmitterSequences(f *testing.F) {
 			return
 		}
 
-		e := NewEmitter()
+		e := NewEmitter(nil)
 		var prevTmp VReg
 
 		for i := 0; i+1 < len(data); i += 2 {
@@ -238,18 +238,18 @@ func FuzzBlockStructure(f *testing.F) {
 	// each subsequent byte independently drives one operation step.
 	// This lets the coverage-guided fuzzer mutate steps independently.
 	f.Add([]byte{3, 0, 1, 4, 2, 0, 5, 3, 0, 6, 7, 0})             // mixed ops, 4 labels
-	f.Add([]byte{0, 1, 2, 3, 1, 2, 3})                              // 1 label, all branches
-	f.Add([]byte{7, 0, 0, 0, 0, 0, 0, 0, 0})                       // 8 labels, all placements
-	f.Add([]byte{1, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 0})  // 2 labels, mostly ALU
-	f.Add([]byte{2, 1, 1, 1, 3, 3, 3, 0, 0, 0})                    // branches then placements
-	f.Add([]byte{0, 0})                                              // minimal: 1 label, 1 op
+	f.Add([]byte{0, 1, 2, 3, 1, 2, 3})                            // 1 label, all branches
+	f.Add([]byte{7, 0, 0, 0, 0, 0, 0, 0, 0})                      // 8 labels, all placements
+	f.Add([]byte{1, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 0}) // 2 labels, mostly ALU
+	f.Add([]byte{2, 1, 1, 1, 3, 3, 3, 0, 0, 0})                   // branches then placements
+	f.Add([]byte{0, 0})                                           // minimal: 1 label, 1 op
 
 	f.Fuzz(func(t *testing.T, data []byte) {
 		if len(data) < 2 || len(data) > 512 {
 			return
 		}
 
-		e := NewEmitter()
+		e := NewEmitter(nil)
 
 		// First byte: number of labels (1..8).
 		numLabels := int(data[0]%8) + 1
@@ -413,7 +413,7 @@ func FuzzHighLevelHelpers(f *testing.F) {
 		doStore := doStoreByte&1 != 0
 		off := int64(offBits)
 
-		e := NewEmitter()
+		e := NewEmitter(nil)
 		faultLabel := e.NewLabel()
 		dst := VReg(5)
 		base := VReg(10)

@@ -256,7 +256,8 @@ func TestMixedExecution_Block2_Compile(t *testing.T) {
 	mem.Store32(0x1010, renc(opOP, 0, 0x00, 5, 1, 2)) // ADD x5, x1, x2
 	mem.Store32(0x1014, instrECALL)
 
-	res := emitBlock(mem, 0x100C)
+	j := NewJIT()
+	res := j.emitBlock(mem, 0x100C)
 	if res == nil {
 		t.Fatal("emitBlock returned nil")
 	}
@@ -266,7 +267,6 @@ func TestMixedExecution_Block2_Compile(t *testing.T) {
 	//t.Logf("block has %d IR instructions", len(res.block.Instrs))
 
 	// Compile it
-	j := NewJIT()
 	compiled, err := j.jitCompile(res)
 	if err != nil {
 		t.Fatalf("jitCompile: %v", err)
@@ -306,7 +306,8 @@ func TestMixedExecution_Block1_Dump(t *testing.T) {
 	mem.Store32(0x1004, ienc(opOPIMM, 0, 2, 0, 20))
 	mem.Store32(0x1008, csrrs)
 
-	res := emitBlock(mem, 0x1000)
+	j := NewJIT()
+	res := j.emitBlock(mem, 0x1000)
 	if res == nil {
 		t.Fatal("emitBlock returned nil")
 	}
@@ -316,7 +317,6 @@ func TestMixedExecution_Block1_Dump(t *testing.T) {
 		//t.Logf("  [%d] %s", i, ins.String())
 	}
 
-	j := NewJIT()
 	compiled, err := j.jitCompile(res)
 	if err != nil {
 		t.Fatalf("jitCompile: %v", err)
@@ -435,7 +435,7 @@ func TestSubELF_Block39(t *testing.T) {
 
 	// Run block 39 with JIT
 	pc39 := cpu.PC()
-	res := emitBlock(mem, pc39)
+	res := jit.emitBlock(mem, pc39)
 	if res == nil {
 		t.Fatal("emitBlock returned nil for block 39")
 	}
@@ -719,7 +719,7 @@ func TestSRL_ExactIR(t *testing.T) {
 	defer mem.Free()
 
 	// Manually build the exact IR block from the dump:
-	e := NewEmitter()
+	e := NewEmitter(nil)
 	x7 := VReg(7)
 	x11 := VReg(11)
 	x12 := VReg(12)
@@ -795,7 +795,7 @@ func TestSRL_ExactIR_V2(t *testing.T) {
 	}
 	defer mem.Free()
 
-	e := NewEmitter()
+	e := NewEmitter(nil)
 	x7 := VReg(7)
 	x11 := VReg(11)
 	x12 := VReg(12)
@@ -842,7 +842,7 @@ func TestSRL_ExactIR_V2(t *testing.T) {
 }
 
 func TestSRL_ExactIR_DumpAlloc(t *testing.T) {
-	e := NewEmitter()
+	e := NewEmitter(nil)
 	x7 := VReg(7)
 	x11 := VReg(11)
 	x12 := VReg(12)
@@ -895,7 +895,7 @@ func TestSRL_Block61_V1vV2(t *testing.T) {
 	}
 	defer mem.Free()
 
-	e := NewEmitter()
+	e := NewEmitter(nil)
 	x1 := VReg(1)
 	x2 := VReg(2)
 	x3 := VReg(3)
@@ -1026,7 +1026,7 @@ func TestSRL_Block61_V1vV2b(t *testing.T) {
 	}
 	defer mem.Free()
 
-	e := NewEmitter()
+	e := NewEmitter(nil)
 	x1, x2, x3, x4 := VReg(1), VReg(2), VReg(3), VReg(4)
 	x5, x6, x7, x14 := VReg(5), VReg(6), VReg(7), VReg(14)
 
@@ -1221,15 +1221,14 @@ func TestSRL_Block39_Alloc(t *testing.T) {
 	pc := cpu.pc
 	//t.Logf("block 39 starts at pc=0x%x", pc)
 
-	res := emitBlock(&cpu.mem, pc)
+	res := jit.emitBlock(&cpu.mem, pc)
 	if res == nil {
 		t.Fatal("emitBlock returned nil")
 	}
 	//t.Logf("block: numInsns=%d, %d IR instrs", res.numInsns, len(res.block.Instrs))
 
 	pool := RV8Pool(res.block)
-	j := NewJIT()
-	alloc := j.irAlloc.Allocate(res.block, pool, RV8Pinned(), nil)
+	alloc := jit.irAlloc.Allocate(res.block, pool, RV8Pinned(), nil)
 
 	// Find all intervals for x1.
 	for _, ia := range alloc.IntervalMap {
@@ -1313,7 +1312,7 @@ func TestDebugV1V2_SRL_DumpAlloc(t *testing.T) {
 	jit := NewJIT()
 	for i := 0; i < 500; i++ {
 		if cpu.pc == 0x322 || (cpu.pc < 0x322 && cpu.pc+0x400 > 0x322) {
-			res := emitBlock(&cpu.mem, cpu.pc)
+			res := jit.emitBlock(&cpu.mem, cpu.pc)
 			if res != nil && res.startPC <= 0x322 && res.endPC > 0x322 {
 				//t.Logf("found block: startPC=0x%x endPC=0x%x numInsns=%d irLen=%d", res.startPC, res.endPC, res.numInsns, len(res.block.Instrs))
 				pool := RV8Pool(res.block)
@@ -1433,10 +1432,12 @@ func TestDumpBlock_ld_st_0x1a0(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	jit := NewJIT()
+
 	// Try to find a block covering 0x1a0.
 	var res *emitResult
 	for pc := uint64(0x180); pc <= 0x1b0; pc += 2 {
-		r := emitBlock(mem, pc)
+		r := jit.emitBlock(mem, pc)
 		if r != nil && r.startPC <= 0x1a0 && r.endPC > 0x1a0 {
 			res = r
 			break
@@ -1444,7 +1445,7 @@ func TestDumpBlock_ld_st_0x1a0(t *testing.T) {
 	}
 	if res == nil {
 		// Try emitting directly from 0x1a0.
-		res = emitBlock(mem, 0x1a0)
+		res = jit.emitBlock(mem, 0x1a0)
 	}
 	if res == nil {
 		t.Fatal("could not emit block covering 0x1a0")
@@ -1595,7 +1596,7 @@ func testNativeTraceW(t *testing.T, elfPath string, targetBlock int) {
 	pcSnap := cpu.pc
 
 	// Emit the block at current PC.
-	res := emitBlock(&cpu.mem, cpu.pc)
+	res := jit.emitBlock(&cpu.mem, cpu.pc)
 	if res == nil {
 		t.Fatal("emitBlock returned nil")
 	}
@@ -1693,6 +1694,8 @@ func TestFusion_SLLI_SRLI_ZextW(t *testing.T) {
 		instrECALL,
 	}
 
+	jit := NewJIT()
+
 	mem, err := NewGuestMemory(Size1MB)
 	if err != nil {
 		t.Fatal(err)
@@ -1700,7 +1703,7 @@ func TestFusion_SLLI_SRLI_ZextW(t *testing.T) {
 	defer mem.Free()
 	storeInsns(mem, 0x1000, insns)
 
-	res := emitBlock(mem, 0x1000)
+	res := jit.emitBlock(mem, 0x1000)
 	if res == nil {
 		t.Fatal("emitBlock returned nil")
 	}
@@ -1720,7 +1723,6 @@ func TestFusion_SLLI_SRLI_ZextW(t *testing.T) {
 	defer mem2.Free()
 	cpu.SetReg(10, 0xFFFFFFFF_12345678)
 	cpu.Notes.Push(ecallStop)
-	jit := NewJIT()
 	jit.RunJIT(cpu)
 
 	got := cpu.Reg(10)
@@ -1751,7 +1753,8 @@ func TestFusion_ADDIW_SLLI_SRLI_Addiwz(t *testing.T) {
 	defer mem.Free()
 	storeInsns(mem, 0x1000, insns)
 
-	res := emitBlock(mem, 0x1000)
+	jit := NewJIT()
+	res := jit.emitBlock(mem, 0x1000)
 	if res == nil {
 		t.Fatal("emitBlock returned nil")
 	}
@@ -1778,7 +1781,7 @@ func TestFusion_ADDIW_SLLI_SRLI_Addiwz(t *testing.T) {
 	defer mem2.Free()
 	cpu.SetReg(10, 0xFFFFFFFF) // -1 as uint32
 	cpu.Notes.Push(ecallStop)
-	jit := NewJIT()
+
 	jit.RunJIT(cpu)
 
 	got := cpu.Reg(10)

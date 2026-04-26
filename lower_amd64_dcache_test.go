@@ -118,7 +118,7 @@ func execJalrIC(t *testing.T, targetPC uint64, siteIdx int,
 	dcBase uintptr, dcMask, vaddrBegin, segSize uint64) jitcall.Result {
 	t.Helper()
 
-	e := NewEmitter()
+	e := NewEmitter(nil)
 	e.Const(e.XReg(10), int64(targetPC))
 	e.WriteBackAll()
 	e.JalrIC(e.XReg(10), siteIdx)

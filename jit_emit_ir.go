@@ -898,7 +898,7 @@ func scanUsedRegs(mem *GuestMemory, startPC, endPC uint64, used *[32]bool) {
 
 // ── emitBlock ──────────────────────────────────────────────────────────
 
-func emitBlock(mem *GuestMemory, pc uint64) *emitResult {
+func (j *JIT) emitBlock(mem *GuestMemory, pc uint64) *emitResult {
 	region := scanRegion(mem, pc)
 	if region.pcCount == 0 {
 		if debugJIT {
@@ -906,7 +906,7 @@ func emitBlock(mem *GuestMemory, pc uint64) *emitResult {
 		}
 		return nil
 	}
-	return emitBlockRange(mem, pc, region.endPC)
+	return j.emitBlockRange(mem, pc, region.endPC)
 }
 
 // emitBlockLinear emits IR for the range [startPC, endPC) without
@@ -915,19 +915,19 @@ func emitBlock(mem *GuestMemory, pc uint64) *emitResult {
 // the range is empty or emission produces zero instructions, returns
 // nil (caller's decoder_cache slot stays zero → lazy fallback at run
 // time).
-func emitBlockLinear(mem *GuestMemory, startPC, endPC uint64) *emitResult {
+func (j *JIT) emitBlockLinear(mem *GuestMemory, startPC, endPC uint64) *emitResult {
 	if startPC >= endPC {
 		return nil
 	}
-	return emitBlockRange(mem, startPC, endPC)
+	return j.emitBlockRange(mem, startPC, endPC)
 }
 
 // emitBlockRange walks instructions sequentially from startPC until
 // endPC or the first terminator, emitting  Shared between
 // emitBlock (BFS-driven endPC via scanRegion) and emitBlockLinear
 // (explicit endPC from the AOT enumeration).
-func emitBlockRange(mem *GuestMemory, pc, endPC uint64) *emitResult {
-	irEm := NewEmitter()
+func (j *JIT) emitBlockRange(mem *GuestMemory, pc, endPC uint64) *emitResult {
+	irEm := NewEmitter(j)
 
 	gt := newU64setSized(256)
 	//gt.IterStart = testIterStart

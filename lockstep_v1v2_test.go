@@ -109,7 +109,7 @@ func mmapCode(t *testing.T, code []byte) (uintptr, []byte) {
 
 // genLockstepBlock generates a valid IR block for testing.
 func genLockstepBlock(rng *rand.Rand, n int, maxVR int) *Block {
-	e := NewEmitter()
+	e := NewEmitter(nil)
 	if n < 1 {
 		n = 1
 	}

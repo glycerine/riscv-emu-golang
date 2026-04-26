@@ -2,6 +2,7 @@ package riscv
 
 // Emitter wraps a Block and exposes helper methods for building IR.
 type Emitter struct {
+	j       *JIT
 	Block   *Block
 	dirty   []bool // dirty[vr] = true if vr written but not written back
 	nextTmp VReg   // next temporary VReg to allocate
@@ -19,8 +20,9 @@ const initialDirtySize = 128
 
 // NewEmitter creates an Emitter with a fresh Block and pre-allocated
 // parameter VRegs for the JIT block's function arguments.
-func NewEmitter() *Emitter {
+func NewEmitter(j *JIT) *Emitter {
 	e := &Emitter{
+		j:       j,
 		Block:   NewBlock(),
 		dirty:   make([]bool, initialDirtySize),
 		nextTmp: VRegTempStart,
@@ -124,7 +126,7 @@ func (e *Emitter) SetImm(dst, a VReg, imm int64, p Pred) { e.opSetImm(IRSetImm, 
 
 // ── Data movement ──
 
-func (e *Emitter) Mov(dst, a VReg)              { e.op2(IRMov, I64, dst, a) }
+func (e *Emitter) Mov(dst, a VReg) { e.op2(IRMov, I64, dst, a) }
 
 // MovT is Mov with an explicit type. Use F32/F64 when the move crosses
 // integer↔FP register classes so the regalloc places dst in the matching
@@ -321,15 +323,19 @@ func (e *Emitter) Fmsub(dst, a, b, c VReg, t Type) {
 // Fnmadd: Dst = -(A*B + C) — RISC-V FNMADD. Lowered to VFNMSUB213SS/SD
 // because x86's VFNMSUB computes -(a*b - c) = -a*b + c — wait, let me
 // state the actual x86 semantics carefully:
-//   VFMADD213SS  dst = dst*b + c      (uses dst as a)
-//   VFMSUB213SS  dst = dst*b - c
-//   VFNMADD213SS dst = -(dst*b) + c
-//   VFNMSUB213SS dst = -(dst*b) - c
+//
+//	VFMADD213SS  dst = dst*b + c      (uses dst as a)
+//	VFMSUB213SS  dst = dst*b - c
+//	VFNMADD213SS dst = -(dst*b) + c
+//	VFNMSUB213SS dst = -(dst*b) - c
+//
 // Mapping to RISC-V:
-//   RISC-V FMADD   = a*b + c        → VFMADD213SS
-//   RISC-V FMSUB   = a*b - c        → VFMSUB213SS
-//   RISC-V FNMADD  = -(a*b) - c     → VFNMSUB213SS
-//   RISC-V FNMSUB  = -(a*b) + c     → VFNMADD213SS
+//
+//	RISC-V FMADD   = a*b + c        → VFMADD213SS
+//	RISC-V FMSUB   = a*b - c        → VFMSUB213SS
+//	RISC-V FNMADD  = -(a*b) - c     → VFNMSUB213SS
+//	RISC-V FNMSUB  = -(a*b) + c     → VFNMADD213SS
+//
 // We'll use the semantic names (IRFnmadd, IRFnmsub) and the lowerer
 // does the RISC-V→x86 opcode mapping.
 func (e *Emitter) Fnmadd(dst, a, b, c VReg, t Type) {

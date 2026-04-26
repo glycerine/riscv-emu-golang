@@ -47,7 +47,7 @@ func TestLowerABJIT_EmptyBlock(t *testing.T) {
 }
 
 func TestLowerABJIT_RetBlock(t *testing.T) {
-	e := NewEmitter()
+	e := NewEmitter(nil)
 	e.Ret(0x1000, 0, VRegZero)
 
 	code, _ := lowerBlockABJIT(t, e.Block)
@@ -55,7 +55,7 @@ func TestLowerABJIT_RetBlock(t *testing.T) {
 }
 
 func TestLowerABJIT_AddAndRet(t *testing.T) {
-	e := NewEmitter()
+	e := NewEmitter(nil)
 	x1, x2 := e.XReg(1), e.XReg(2)
 	tmp := e.Tmp()
 	e.Add(tmp, x1, x2)
@@ -67,7 +67,7 @@ func TestLowerABJIT_AddAndRet(t *testing.T) {
 }
 
 func TestLowerABJIT_ChainExit(t *testing.T) {
-	e := NewEmitter()
+	e := NewEmitter(nil)
 	e.ChainExit(0x2000, 0)
 
 	code, _ := lowerBlockABJIT(t, e.Block)
@@ -92,7 +92,7 @@ func TestLowerABJIT_ChainEntryExists(t *testing.T) {
 }
 
 func TestLowerABJIT_Syscall(t *testing.T) {
-	e := NewEmitter()
+	e := NewEmitter(nil)
 	e.Syscall(0x1004, 0)
 
 	code, _ := lowerBlockABJIT(t, e.Block)

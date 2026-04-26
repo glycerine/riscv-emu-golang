@@ -21,8 +21,8 @@ func ScanRegionForBench(mem *GuestMemory, pc uint64) ScanRegionResult {
 }
 
 // EmitBlockForBench exposes emitBlock for benchmarking.
-func EmitBlockForBench(mem *GuestMemory, pc uint64) *EmitBlockResult {
-	res := emitBlock(mem, pc)
+func (j *JIT) EmitBlockForBench(mem *GuestMemory, pc uint64) *EmitBlockResult {
+	res := j.emitBlock(mem, pc)
 	if res == nil || res.block == nil || res.numInsns == 0 {
 		return nil
 	}
