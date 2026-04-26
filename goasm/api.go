@@ -160,8 +160,8 @@ func (c *Ctx) NewATEXT() *obj.Prog {
 	p.From.Sym = c.sym
 	p.From.Name = obj.NAME_EXTERN
 	p.To.Type = obj.TYPE_TEXTSIZE
-	p.To.Offset = 0       // frame size 0; trampoline owns the frame
-	p.To.Val = int32(0)   // arg size
+	p.To.Offset = 0     // frame size 0; trampoline owns the frame
+	p.To.Val = int32(0) // arg size
 	return p
 }
 
@@ -263,7 +263,8 @@ func (c *Ctx) DumpProgs() string {
 		}
 		if p.As == obj.ANOP {
 			if nopTargets[p] {
-				fmt.Fprintf(&sb, "L_0x%x:\n", p.Pc)
+				fmt.Fprintf(&sb, "L%v:\n", int64(p.Pc))
+				//fmt.Fprintf(&sb, "L_0x%x:\n", p.Pc)
 			}
 			continue
 		}
