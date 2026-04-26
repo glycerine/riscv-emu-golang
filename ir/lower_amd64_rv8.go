@@ -26,7 +26,6 @@ import (
 
 type lowerCtxRV8 struct {
 	lowerOps
-	sretOffset int64 // offset of sret pointer within frame
 }
 
 // LowerAMD64_RV8 converts a register-allocated IR Block into x86-64 machine
