@@ -723,8 +723,8 @@ func TestPolicyABJIT(t *testing.T) {
 	if p.Pinned == nil {
 		t.Fatal("Pinned is nil")
 	}
-	if p.Lower != nil {
-		t.Error("Lower should be nil (not yet implemented)")
+	if p.Lower == nil {
+		t.Fatal("Lower is nil")
 	}
 
 	b := NewBlock()
