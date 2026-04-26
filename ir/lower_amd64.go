@@ -113,4 +113,5 @@ var PolicyABJIT = RegPolicy{
 	Name:   "abjit",
 	Pool:   ABJITPool,
 	Pinned: ABJITPinned,
+	Lower:  LowerAMD64_ABJIT,
 }
