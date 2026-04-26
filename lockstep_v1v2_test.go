@@ -60,6 +60,7 @@ func TestRV8_RandomBlocks(t *testing.T) {
 	defer mem.Free()
 
 	j := NewJIT()
+	j.SetRegPolicy(ir.PolicyRV8)
 	for i := 0; i < numBlocks; i++ {
 		n := rng.Intn(maxInsns) + 1
 		blk := genLockstepBlock(rng, n, 6)
@@ -88,7 +89,7 @@ func TestRV8_RandomBlocks(t *testing.T) {
 			x[j] = rng.Uint64()
 		}
 
-		res := jitcallCall(exec, &x, &f, &fcsr, mem.Base(), mem.Mask())
+		res := jitcallCall(j, exec, &x, &f, &fcsr, mem.Base(), mem.Mask())
 		if res.PC != 0x1000 {
 			t.Fatalf("block %d: PC=0x%x want 0x1000 (%d instrs)", i, res.PC, len(blk.Instrs))
 		}

@@ -9,14 +9,21 @@ import (
 	"testing"
 )
 
-func jitcallCall(fn uintptr, x *[32]uint64, f *[32]uint64, fcsr *uint32,
+func jitcallCall(j *JIT, fn uintptr, x *[32]uint64, f *[32]uint64, fcsr *uint32,
 	memBase uintptr, memMask uint64) jitcall.Result {
 	gm := GuestMemory{base: memBase, mask: memMask, size: memMask + 1}
 	cpu := &CPU{mem: gm}
 	cpu.x = *x
 	cpu.f = *f
 	cpu.fcsr = *fcsr
-	res := sandboxCall(fn, cpu, gm.RegFileBase(), gm.StackTop(), 0, 0, 0, 0)
+
+	var res jitcall.Result
+	if j.useABJIT {
+		blk := &compiledBlock{fn: fn, hasFP: true}
+		res = abjitDispatch(blk, cpu, j, 0, 0, 0, 0)
+	} else {
+		res = sandboxRv8Call(fn, cpu, gm.RegFileBase(), gm.StackTop(), 0, 0, 0, 0)
+	}
 	*x = cpu.x
 	*f = cpu.f
 	*fcsr = cpu.fcsr
@@ -275,7 +282,7 @@ func TestMixedExecution_Block2_Compile(t *testing.T) {
 	cpu.SetReg(1, 10)
 	cpu.SetReg(2, 20)
 
-	result := jitcallCall(compiled.fn, &cpu.x, &cpu.f, &cpu.fcsr,
+	result := jitcallCall(j, compiled.fn, &cpu.x, &cpu.f, &cpu.fcsr,
 		cpu.mem.Base(), cpu.mem.Mask())
 	_ = result
 	//t.Logf("result: PC=0x%x IC=%d Status=%d", result.PC, result.IC, result.Status)
@@ -320,7 +327,7 @@ func TestMixedExecution_Block1_Dump(t *testing.T) {
 	// Run it
 	cpu := NewCPU(*mem)
 	cpu.SetPC(0x1000)
-	result := jitcallCall(compiled.fn, &cpu.x, &cpu.f, &cpu.fcsr,
+	result := jitcallCall(j, compiled.fn, &cpu.x, &cpu.f, &cpu.fcsr,
 		cpu.mem.Base(), cpu.mem.Mask())
 	_ = result
 	//t.Logf("result: PC=0x%x IC=%d Status=%d x1=%d x2=%d", result.PC, result.IC, result.Status, cpu.Reg(1), cpu.Reg(2))
@@ -771,7 +778,7 @@ func TestSRL_ExactIR(t *testing.T) {
 	x[11] = 0xFFFFFFFF80000000
 	x[12] = 0
 
-	res := jitcallCall(compiled.fn, &x, &f, &fcsr, mem.Base(), mem.Mask())
+	res := jitcallCall(j, compiled.fn, &x, &f, &fcsr, mem.Base(), mem.Mask())
 	//t.Logf("PC=0x%x IC=%d Status=%d x[14]=0x%x x[7]=0x%x", res.PC, res.IC, res.Status, x[14], x[7])
 
 	if x[14] != 0xFFFFFFFF80000000 {
@@ -826,7 +833,7 @@ func TestSRL_ExactIR_V2(t *testing.T) {
 	var fcsr uint32
 	x[11] = 0xFFFFFFFF80000000
 
-	res := jitcallCall(compiled.fn, &x, &f, &fcsr, mem.Base(), mem.Mask())
+	res := jitcallCall(j, compiled.fn, &x, &f, &fcsr, mem.Base(), mem.Mask())
 	_ = res
 	//t.Logf("V2: PC=0x%x IC=%d x[14]=0x%x x[7]=0x%x", res.PC, res.IC, x[14], x[7])
 
@@ -982,14 +989,14 @@ func TestSRL_Block61_V1vV2(t *testing.T) {
 	if err != nil {
 		t.Fatalf("V1 compile: %v", err)
 	}
-	r1 := jitcallCall(c1.fn, &x1v, &f1v, &fcsr1, mem.Base(), mem.Mask())
+	r1 := jitcallCall(j, c1.fn, &x1v, &f1v, &fcsr1, mem.Base(), mem.Mask())
 
 	// V2
 	c2, err := j.jitCompile(&emitResult{block: blk, numInsns: 9})
 	if err != nil {
 		t.Fatalf("V2 compile: %v", err)
 	}
-	r2 := jitcallCall(c2.fn, &x2v, &f2v, &fcsr2, mem.Base(), mem.Mask())
+	r2 := jitcallCall(j, c2.fn, &x2v, &f2v, &fcsr2, mem.Base(), mem.Mask())
 
 	//t.Logf("V1: PC=0x%x IC=%d x[3]=%d x[6]=0x%x x[14]=0x%x", r1.PC, r1.IC, x1v[3], x1v[6], x1v[14])
 	//t.Logf("V2: PC=0x%x IC=%d x[3]=%d x[6]=0x%x x[14]=0x%x", r2.PC, r2.IC, x2v[3], x2v[6], x2v[14])
@@ -1094,13 +1101,13 @@ func TestSRL_Block61_V1vV2b(t *testing.T) {
 	if err != nil {
 		t.Fatalf("V1 compile: %v", err)
 	}
-	r1 := jitcallCall(c1.fn, &xv1, &fv1, &fc1, mem.Base(), mem.Mask())
+	r1 := jitcallCall(j, c1.fn, &xv1, &fv1, &fc1, mem.Base(), mem.Mask())
 
 	c2, err := j.jitCompile(&emitResult{block: blk, numInsns: 9})
 	if err != nil {
 		t.Fatalf("V2 compile: %v", err)
 	}
-	r2 := jitcallCall(c2.fn, &xv2, &fv2, &fc2, mem.Base(), mem.Mask())
+	r2 := jitcallCall(j, c2.fn, &xv2, &fv2, &fc2, mem.Base(), mem.Mask())
 
 	//t.Logf("V1: PC=0x%x IC=%d x[3]=%d x[6]=0x%x x[14]=0x%x", r1.PC, r1.IC, xv1[3], xv1[6], xv1[14])
 	//t.Logf("V2: PC=0x%x IC=%d x[3]=%d x[6]=0x%x x[14]=0x%x", r2.PC, r2.IC, xv2[3], xv2[6], xv2[14])
@@ -1608,14 +1615,14 @@ func testNativeTraceW(t *testing.T, elfPath string, targetBlock int) {
 	// Execute V1.
 	copy(cpu.x[:], xSnap[:])
 	cpu.pc = pcSnap
-	r1 := jitcallCall(blkV1.fn, &cpu.x, &cpu.f, &cpu.fcsr, cpu.mem.Base(), cpu.mem.Mask())
+	r1 := jitcallCall(jit, blkV1.fn, &cpu.x, &cpu.f, &cpu.fcsr, cpu.mem.Base(), cpu.mem.Mask())
 	var xV1 [32]uint64
 	copy(xV1[:], cpu.x[:])
 
 	// Execute V2.
 	copy(cpu.x[:], xSnap[:])
 	cpu.pc = pcSnap
-	r2 := jitcallCall(blkV2.fn, &cpu.x, &cpu.f, &cpu.fcsr, cpu.mem.Base(), cpu.mem.Mask())
+	r2 := jitcallCall(jit, blkV2.fn, &cpu.x, &cpu.f, &cpu.fcsr, cpu.mem.Base(), cpu.mem.Mask())
 	_ = r2
 	var xV2 [32]uint64
 	copy(xV2[:], cpu.x[:])

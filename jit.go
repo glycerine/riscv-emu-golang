@@ -38,10 +38,10 @@ type chainPatchInfo struct {
 // check still runs — sites cache whatever they last held — but the
 // self-modifying-code (SMC) stalls caused by repeated patching stop.
 type jalrICPatchInfo struct {
-	siteIdx     int
-	pcPatchOff  [2]int // byte offsets of cache_pc[0], cache_pc[1]
-	fnPatchOff  [2]int // byte offsets of cache_fn[0], cache_fn[1]
-	missStreak  uint32 // total patch attempts for this site
+	siteIdx    int
+	pcPatchOff [2]int // byte offsets of cache_pc[0], cache_pc[1]
+	fnPatchOff [2]int // byte offsets of cache_fn[0], cache_fn[1]
+	missStreak uint32 // total patch attempts for this site
 }
 
 // jalrICDeoptThreshold is the number of miss-patches a JALR IC site
@@ -224,7 +224,7 @@ type JIT struct {
 	// lazy-vs-AOT gap and by tests that want to drive the fallback path.
 	DisableAutoAOT bool
 
-	irAlloc   ir.RegAllocator
+	irAlloc    ir.RegAllocator
 	regPolicy  ir.RegPolicy
 	useABJIT   bool
 	abjitState *abjit.State
@@ -553,7 +553,7 @@ func (j *JIT) StepBlock(cpu *CPU) (ic uint64, err error) {
 		if j.useABJIT {
 			res = abjitDispatch(blk, cpu, j, 0, 0, 0, 0)
 		} else {
-			res = sandboxCall(blk.fn, cpu,
+			res = sandboxRv8Call(blk.fn, cpu,
 				cpu.mem.RegFileBase(), cpu.mem.StackTop(),
 				0, 0, 0, 0)
 		}
@@ -688,7 +688,7 @@ func (j *JIT) RunJIT(cpu *CPU) error {
 				regFile := cpu.mem.RegFileBase()
 				stackTop := cpu.mem.StackTop()
 				if seg := j.soleSegment; seg != nil {
-					res = sandboxCall(blk.fn, cpu, regFile, stackTop,
+					res = sandboxRv8Call(blk.fn, cpu, regFile, stackTop,
 						seg.decoderCacheBase, seg.decoderCacheMask,
 						seg.vaddrBegin, seg.vaddrSize)
 				} else if len(j.aotSegments) > 0 {
@@ -699,11 +699,11 @@ func (j *JIT) RunJIT(cpu *CPU) error {
 							seg = j.aotSegments[0]
 						}
 					}
-					res = sandboxCall(blk.fn, cpu, regFile, stackTop,
+					res = sandboxRv8Call(blk.fn, cpu, regFile, stackTop,
 						seg.decoderCacheBase, seg.decoderCacheMask,
 						seg.vaddrBegin, seg.vaddrSize)
 				} else {
-					res = sandboxCall(blk.fn, cpu, regFile, stackTop,
+					res = sandboxRv8Call(blk.fn, cpu, regFile, stackTop,
 						0, 0, 0, 0)
 				}
 			}

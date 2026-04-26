@@ -11,13 +11,13 @@ import (
 
 // TEMPORARY: bypass sandbox to isolate old-vs-new divergence.
 // Set to true to use the CGO sandbox trampoline; false uses the old Go asm trampoline.
-const useSandboxTrampoline = true
+const useRv8SandboxTrampoline = true
 
-func sandboxCall(fn uintptr, cpu *CPU,
+func sandboxRv8Call(fn uintptr, cpu *CPU,
 	regFile, stackTop uintptr,
 	dcBase uintptr, dcMask, vBegin, segSize uint64) jitcall.Result {
 
-	if !useSandboxTrampoline {
+	if !useRv8SandboxTrampoline {
 		return jitcall.Call(fn, &cpu.x, &cpu.f, &cpu.fcsr,
 			cpu.mem.Base(), cpu.mem.Mask())
 	}
