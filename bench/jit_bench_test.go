@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"riscv"
+	"riscv/ir"
 )
 
 func runJITBenchGuest(cpu *riscv.CPU) (exitCode int, insns uint64) {
@@ -45,6 +46,33 @@ func TestJIT_DispatchStats(t *testing.T) {
 
 func BenchmarkCPU_FullExecution_JIT_Fixed(b *testing.B) {
 	benchJITWith(b, "fixed")
+}
+
+func BenchmarkCPU_FullExecution_JIT_ABJIT(b *testing.B) {
+	benchJITELFWithPolicy(b, loadCPUELF(b), ir.PolicyABJIT)
+}
+
+func benchJITELFWithPolicy(b *testing.B, elfData []byte, policy ir.RegPolicy) {
+	b.Helper()
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	totalInsns := uint64(0)
+	for i := 0; i < b.N; i++ {
+		cpu, mem := newBenchCPU(b, elfData)
+		jit := riscv.NewJIT()
+		jit.SetRegPolicy(policy)
+		_, insns := runJITBenchGuestWith(cpu, jit)
+		totalInsns += insns
+		mem.Free()
+	}
+
+	b.StopTimer()
+	elapsed := b.Elapsed().Seconds()
+	if elapsed > 0 && totalInsns > 0 {
+		mips := float64(totalInsns) / elapsed / 1e6
+		b.ReportMetric(mips, "MIPS")
+	}
 }
 
 func benchJITWith(b *testing.B, strategy string) {
