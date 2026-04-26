@@ -200,34 +200,4 @@ re-scheduling and keep caches hot.
 also scheduler affinity.
 
 ~~~
-abjit go_regalloc branch, darwin: (abjit is the default now)
-
-make bench
-  Go JIT — Fixed Static Mapping (native):    3449 MIPS
-  Go interpreter (no JIT):                     467.6 MIPS
-
-make bench-cpu
-
-BenchmarkCPU_FullExecution_JIT_Fixed-8   	       1	 849419521 ns/op	      2973 MIPS	 2357432 B/op	   17325 allocs/op
-BenchmarkCPU_FullExecution_JIT_ABJIT-8   	       1	 836196708 ns/op	      3020 MIPS	 2355640 B/op	   17304 allocs/op
-PASS
-ok  	riscv/bench	37.269s
-(goivy-venv) jaten@jbook ~/ris (go_regalloc) $ 
-
-abjit go_regalloc branch, linux: (abjit is the default now)
-
-make bench
-
-  Go JIT — Fixed Static Mapping (native):    3374 MIPS
-  Go interpreter (no JIT):                     387.6 MIPS
-
-make bench-cpu
-
-BenchmarkCPU_FullExecution_JIT_Fixed-48                1        1096324770 ns/op
-2303 MIPS  2376264 B/op      17451 allocs/op
-
-BenchmarkCPU_FullExecution_JIT_ABJIT-48                1        1003534624 ns/op
-2516 MIPS  2374936 B/op      17443 allocs/op
-
-(goivy-venv) jaten@rog ~/ris (go_regalloc) $
 ~~~
