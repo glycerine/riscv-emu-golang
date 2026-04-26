@@ -2,6 +2,7 @@ package bench
 
 import (
 	"testing"
+	"time"
 
 	"riscv"
 )
@@ -56,18 +57,22 @@ func benchJITELFWithPolicy(b *testing.B, elfData []byte, policy riscv.RegPolicy)
 	b.ReportAllocs()
 	b.ResetTimer()
 
+	var tms []time.Duration
 	totalInsns := uint64(0)
 	for i := 0; i < b.N; i++ {
 		cpu, mem := newBenchCPU(b, elfData)
 		jit := riscv.NewJIT()
 		jit.SetRegPolicy(policy)
+		t0 := time.Now()
 		_, insns := runJITBenchGuestWith(cpu, jit)
+		tms = append(tms, time.Since(t0))
 		totalInsns += insns
 		mem.Free()
 	}
 
 	b.StopTimer()
 	elapsed := b.Elapsed().Seconds()
+	vv("elapsed = %v; totalInsns = %v; tms= '%#v'", elapsed, totalInsns, tms)
 	if elapsed > 0 && totalInsns > 0 {
 		mips := float64(totalInsns) / elapsed / 1e6
 		b.ReportMetric(mips, "MIPS")
@@ -107,19 +112,23 @@ func benchJITELF(b *testing.B, elfData []byte, strategy string) {
 	b.ReportAllocs()
 	b.ResetTimer()
 
+	var tms []time.Duration
 	totalInsns := uint64(0)
 	for i := 0; i < b.N; i++ {
 		cpu, mem := newBenchCPU(b, elfData)
 		jit := riscv.NewJIT()
 		jit.SetRegPolicy(riscv.PolicyRV8)
 		jit.SetAllocStrategy(strategy)
+		t0 := time.Now()
 		_, insns := runJITBenchGuestWith(cpu, jit)
+		tms = append(tms, time.Since(t0))
 		totalInsns += insns
 		mem.Free()
 	}
 
 	b.StopTimer()
 	elapsed := b.Elapsed().Seconds()
+	vv("tms = '%#v'", tms)
 	if elapsed > 0 && totalInsns > 0 {
 		mips := float64(totalInsns) / elapsed / 1e6
 		b.ReportMetric(mips, "MIPS")
