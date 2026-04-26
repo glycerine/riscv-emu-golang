@@ -34,7 +34,6 @@ func sandboxRv8Call(fn uintptr, cpu *CPU,
 	)
 	return jitcall.Result{
 		PC:        uint64(r.pc),
-		IC:        uint64(r.ic),
 		Status:    uint64(r.status),
 		FaultAddr: uint64(r.fault_addr),
 	}

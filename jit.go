@@ -576,42 +576,42 @@ func (j *JIT) StepBlock(cpu *CPU) (ic uint64, err error) {
 				0, 0, 0, 0)
 		}
 		if j.trace {
-			fmt.Fprintf(os.Stderr, "JIT pc=0x%x -> PC=0x%x IC=%d status=%d\n",
-				pc, res.PC, res.IC, res.Status)
+			fmt.Fprintf(os.Stderr, "JIT pc=0x%x -> PC=0x%x status=%d\n",
+				pc, res.PC, res.Status)
 		}
 		cpu.pc = res.PC
-		cpu.cycle += res.IC
+
 
 		switch int(res.Status) {
 		case jitOK:
-			return res.IC, nil
+			return 0, nil
 		case jitOKJalrMiss:
-			return res.IC, nil
+			return 0, nil
 		case jitMisalign:
 			if err := cpu.step(); err != nil {
-				return res.IC + 1, err
+				return 1, err
 			}
 			cpu.cycle++
-			return res.IC + 1, nil
+			return 1, nil
 		case jitEcall:
 			if cpu.mtvec != 0 {
 				cpu.mepc = cpu.pc
 				cpu.mcause = 8
 				cpu.mtval = 0
 				cpu.pc = cpu.mtvec
-				return res.IC, nil
+				return 0, nil
 			}
-			return res.IC, ErrEcall
+			return 0, ErrEcall
 		case jitEbreak:
-			return res.IC, ErrEbreak
+			return 0, ErrEbreak
 		case jitLoadFault:
-			return res.IC, &MemFault{Addr: res.FaultAddr, Width: 8, Kind: FaultLoad}
+			return 0, &MemFault{Addr: res.FaultAddr, Width: 8, Kind: FaultLoad}
 		case jitStoreFault:
-			return res.IC, &MemFault{Addr: res.FaultAddr, Width: 8, Kind: FaultStore}
+			return 0, &MemFault{Addr: res.FaultAddr, Width: 8, Kind: FaultStore}
 		default:
 			err = cpu.step()
 			cpu.cycle++
-			return res.IC + 1, err
+			return 1, err
 		}
 	}
 
@@ -640,17 +640,17 @@ func (j *JIT) StepBlock(cpu *CPU) (ic uint64, err error) {
 func (j *JIT) stepBlockResult(_ *CPU, res jitcall.Result) (uint64, error) {
 	switch int(res.Status) {
 	case jitOK:
-		return res.IC, nil
+		return 0, nil
 	case jitEcall:
-		return res.IC, ErrEcall
+		return 0, ErrEcall
 	case jitEbreak:
-		return res.IC, ErrEbreak
+		return 0, ErrEbreak
 	case jitLoadFault:
-		return res.IC, &MemFault{Addr: res.FaultAddr, Width: 8, Kind: FaultLoad}
+		return 0, &MemFault{Addr: res.FaultAddr, Width: 8, Kind: FaultLoad}
 	case jitStoreFault:
-		return res.IC, &MemFault{Addr: res.FaultAddr, Width: 8, Kind: FaultStore}
+		return 0, &MemFault{Addr: res.FaultAddr, Width: 8, Kind: FaultStore}
 	default:
-		return res.IC, nil
+		return 0, nil
 	}
 }
 
@@ -735,7 +735,7 @@ func (j *JIT) RunJIT(cpu *CPU) (err0 error) {
 				}
 			}
 			cpu.pc = res.PC
-			cpu.cycle += res.IC
+	
 
 			switch int(res.Status) {
 			case jitOK:

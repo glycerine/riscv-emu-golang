@@ -220,47 +220,18 @@ func TestFaultExit(t *testing.T) {
 	}
 }
 
-func TestBudgetCheck(t *testing.T) {
+func TestStopperLoad(t *testing.T) {
 	e := NewEmitter(nil)
-	target := e.NewLabel()
-	e.PlaceLabel(target)
-
-	e.MarkDirty(VReg(3))
 	before := len(e.Block.Instrs)
-	e.BudgetCheck(target, 0x80002000)
+	e.StopperLoad(0xDEAD_BEEF_0000)
 	after := len(e.Block.Instrs)
 
-	// Expected sequence:
-	//   BranchImm ic, MaxIC, GE, tooBig
-	//   Jump target
-	//   Label tooBig
-	//   Store (writeback x3)
-	//   Ret(targetPC, 0, VRegZero)
-	if after-before < 5 {
-		t.Fatalf("BudgetCheck emitted %d instrs, want >= 5", after-before)
+	if after-before != 1 {
+		t.Fatalf("StopperLoad emitted %d instrs, want 1", after-before)
 	}
-
-	bi := e.Block.Instrs[before]
-	if bi.Op != IRBranchImm || bi.Pred != GE || bi.Imm2 != int64(MaxIC) {
-		t.Errorf("BranchImm = %+v", bi)
-	}
-	if bi.A != e.ic {
-		t.Errorf("BranchImm.A = %v, want ic=%v", bi.A, e.ic)
-	}
-
-	jmp := e.Block.Instrs[before+1]
-	if jmp.Op != IRJump || jmp.Imm != int64(target) {
-		t.Errorf("Jump = %+v", jmp)
-	}
-
-	lbl := e.Block.Instrs[before+2]
-	if lbl.Op != IRLabel {
-		t.Errorf("expected Label, got %v", lbl.Op)
-	}
-
-	ret := e.Block.Instrs[after-1]
-	if ret.Op != IRRet || ret.Imm != 0x80002000 || ret.Imm2 != 0 {
-		t.Errorf("Ret = %+v", ret)
+	ins := e.Block.Instrs[before]
+	if ins.Op != IRStopperLoad || ins.Imm != 0xDEAD_BEEF_0000 {
+		t.Errorf("StopperLoad = %+v", ins)
 	}
 }
 
@@ -463,8 +434,9 @@ func TestEndToEnd_LoopWithBudget(t *testing.T) {
 	// ADDI x1, x1, 1
 	e.AddImm(e.XReg(1), e.XReg(1), 1)
 
-	// BNE x1, x2, L — backward branch with budget check.
-	e.BudgetCheck(loopTop, 0x80001000)
+	// Backward branch: stopper load + jump.
+	e.StopperLoad(0x1000)
+	e.Jump(loopTop)
 
 	n := len(e.Block.Instrs)
 	if n < 4 {

@@ -14,12 +14,6 @@ const JitOKJalrMiss = 6
 // reads/writes) and then continues JIT dispatch from the next PC.
 const JitMisalign = 7
 
-// MaxIC is the maximum instruction count before a backward branch forces
-// a block exit. This ensures GC preemption windows and prevents infinite loops
-// inside a single JIT block.
-const MaxIC = 1 << 16 // 1<<16 is the sweetspot: almost no SIGURG, 3628 MIPS on darwin.
-// const MaxIC = 1 << 24 // 2900 MIPS, CGO
-//const MaxIC = 1 << 28 // 3087 MIPS, CGO
 
 // MaskedLoad performs a bounds-checked guest memory load:
 //
@@ -157,19 +151,6 @@ func (e *Emitter) ChainableRet(targetPC uint64, exitIdx int) {
 func (e *Emitter) DynChainableRet(target VReg, siteIdx int) {
 	e.WriteBackAll()
 	e.JalrIC(target, siteIdx)
-}
-
-// BudgetCheck emits a backward-branch budget check:
-//
-//	if (ic >= MaxIC) { writeback; return(targetPC, 0, 0) }
-//	goto target
-func (e *Emitter) BudgetCheck(target Label, targetPC uint64) {
-	tooBig := e.NewLabel()
-	e.BranchImm(e.ic, int64(MaxIC), GE, tooBig)
-	e.Jump(target)
-	e.PlaceLabel(tooBig)
-	e.WriteBackAll()
-	e.Ret(targetPC, 0, VRegZero)
 }
 
 // StopperLoad emits a guard-page probe at a backward branch. The lowerer

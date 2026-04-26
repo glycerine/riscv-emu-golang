@@ -735,16 +735,16 @@ func TestSRL_ExactIR(t *testing.T) {
 	e.Shr(x14, x11, x12)
 
 	// IC increment
-	e.AddImm(e.IC(), e.IC(), 1)
+
 
 	// Const x7 = -2147483648
 	e.Const(x7, -2147483648)
 
 	// IC increment
-	e.AddImm(e.IC(), e.IC(), 1)
+
 
 	// IC increment
-	e.AddImm(e.IC(), e.IC(), 1)
+
 
 	// Branch NE x14, x7 -> taken (to fail exit)
 	failLabel := e.NewLabel()
@@ -806,10 +806,10 @@ func TestSRL_ExactIR_V2(t *testing.T) {
 	e.Load(x12, e.XBase(), 96, I64, false)
 	e.Load(x14, e.XBase(), 112, I64, false)
 	e.Shr(x14, x11, x12)
-	e.AddImm(e.IC(), e.IC(), 1)
+
 	e.Const(x7, -2147483648)
-	e.AddImm(e.IC(), e.IC(), 1)
-	e.AddImm(e.IC(), e.IC(), 1)
+
+
 	failLabel := e.NewLabel()
 	e.Branch(x14, x7, NE, failLabel)
 	e.Store(e.XBase(), 56, x7, I64)
@@ -853,10 +853,10 @@ func TestSRL_ExactIR_DumpAlloc(t *testing.T) {
 	e.Load(x12, e.XBase(), 96, I64, false)
 	e.Load(x14, e.XBase(), 112, I64, false)
 	e.Shr(x14, x11, x12)
-	e.AddImm(e.IC(), e.IC(), 1)
+
 	e.Const(x7, -2147483648)
-	e.AddImm(e.IC(), e.IC(), 1)
-	e.AddImm(e.IC(), e.IC(), 1)
+
+
 	failLabel := e.NewLabel()
 	e.Branch(x14, x7, NE, failLabel)
 	e.Store(e.XBase(), 56, x7, I64)
@@ -917,32 +917,32 @@ func TestSRL_Block61_V1vV2(t *testing.T) {
 
 	// SRL x14 = x1, x2
 	e.Shr(x14, x1, x2)
-	e.AddImm(e.IC(), e.IC(), 1)
+
 	// MOV x6 = x14
 	e.Mov(x6, x14)
-	e.AddImm(e.IC(), e.IC(), 1)
+
 	// ADDI x4 = x4, 1
 	e.AddImm(x4, x4, 1)
-	e.AddImm(e.IC(), e.IC(), 1)
+
 	// CONST x5 = 2
 	e.Const(x5, 2)
-	e.AddImm(e.IC(), e.IC(), 1)
-	e.AddImm(e.IC(), e.IC(), 1)
+
+
 	// BNE x4, x5 -> L7 (test count exit)
 	l7 := e.NewLabel()
 	e.Branch(x4, x5, NE, l7)
 	// CONST x7 = 16777216 (0x1000000)
 	e.Const(x7, 16777216)
-	e.AddImm(e.IC(), e.IC(), 1)
-	e.AddImm(e.IC(), e.IC(), 1)
+
+
 	// BNE x6, x7 -> L10 (test fail)
 	l10 := e.NewLabel()
 	e.Branch(x6, x7, NE, l10)
 	// Pass: const x3 = 26
 	e.Const(x3, 26)
-	e.AddImm(e.IC(), e.IC(), 1)
+
 	e.Const(x4, 0)
-	e.AddImm(e.IC(), e.IC(), 1)
+
 	// WriteBackAll + Ret (pass → pc=886)
 	e.Store(e.XBase(), 24, x3, I64)
 	e.Store(e.XBase(), 32, x4, I64)
@@ -1036,30 +1036,30 @@ func TestSRL_Block61_V1vV2b(t *testing.T) {
 	}
 
 	e.Shr(x14, x1, x2) // SRL x14 = x1, x2
-	e.AddImm(e.IC(), e.IC(), 1)
+
 	e.Mov(x6, x14) // MOV x6 = x14
-	e.AddImm(e.IC(), e.IC(), 1)
+
 	e.AddImm(x4, x4, 1) // ADDI x4 = x4 + 1
-	e.AddImm(e.IC(), e.IC(), 1)
+
 	e.Const(x5, 2) // CONST x5 = 2
-	e.AddImm(e.IC(), e.IC(), 1)
-	e.AddImm(e.IC(), e.IC(), 1)
+
+
 
 	l7 := e.NewLabel()
 	e.Branch(x4, x5, NE, l7) // BNE x4, x5 → L7
 
 	e.Const(x7, 0x1000000) // CONST x7 = 16777216
-	e.AddImm(e.IC(), e.IC(), 1)
-	e.AddImm(e.IC(), e.IC(), 1)
+
+
 
 	l10 := e.NewLabel()
 	e.Branch(x6, x7, NE, l10) // BNE x6, x7 → L10
 
 	// Pass exit
 	e.Const(x3, 26)
-	e.AddImm(e.IC(), e.IC(), 1)
+
 	e.Const(x4, 0)
-	e.AddImm(e.IC(), e.IC(), 1)
+
 	wb := func() {
 		for _, vr := range []VReg{x3, x4, x5, x6, x7, x14} {
 			e.Store(e.XBase(), int64(vr)*8, vr, I64)
@@ -1470,10 +1470,9 @@ func TestDumpBlock_ld_st_0x1a0(t *testing.T) {
 			branches++
 		}
 	}
-	// BudgetCheck emits: BranchImm + Jump + PlaceLabel + WriteBackAll-seq + Ret
-	// Count BranchImm with Imm2=4096 (MaxIC) as budget checks.
+	// Count stopper loads (replaced BudgetCheck).
 	for _, ins := range res.block.Instrs {
-		if ins.Op == IRBranchImm && ins.Imm2 == int64(MaxIC) {
+		if ins.Op == IRStopperLoad {
 			budgetChecks++
 		}
 	}
@@ -1615,7 +1614,7 @@ func testNativeTraceW(t *testing.T, elfPath string, targetBlock int) {
 	// Execute V1.
 	copy(cpu.x[:], xSnap[:])
 	cpu.pc = pcSnap
-	r1 := jitcallCall(jit, blkV1.fn, &cpu.x, &cpu.f, &cpu.fcsr, cpu.mem.Base(), cpu.mem.Mask())
+	_ = jitcallCall(jit, blkV1.fn, &cpu.x, &cpu.f, &cpu.fcsr, cpu.mem.Base(), cpu.mem.Mask())
 	var xV1 [32]uint64
 	copy(xV1[:], cpu.x[:])
 
@@ -1645,7 +1644,7 @@ func testNativeTraceW(t *testing.T, elfPath string, targetBlock int) {
 	// Run interpreter for the same IC steps.
 	copy(cpu.x[:], xSnap[:])
 	cpu.pc = pcSnap
-	interpIC := r1.IC
+	interpIC := uint64(res.numInsns)
 	var interpErr error
 	for i := uint64(0); i < interpIC; i++ {
 		interpErr = cpu.step()

@@ -455,9 +455,6 @@ func TestParamVRegs_MatchEmitter(t *testing.T) {
 	if e.FBase() != VRFBase {
 		t.Errorf("FBase = %v, want %v", e.FBase(), VRFBase)
 	}
-	if e.IC() != VRIC {
-		t.Errorf("IC = %v, want %v", e.IC(), VRIC)
-	}
 	if e.MemBase() != VRMemBase {
 		t.Errorf("MemBase = %v, want %v", e.MemBase(), VRMemBase)
 	}
@@ -606,7 +603,6 @@ func TestVRRegFile_Distinct(t *testing.T) {
 	seen := map[VReg]string{
 		VRXBase:   "VRXBase",
 		VRFBase:   "VRFBase",
-		VRIC:      "VRIC",
 		VRMemBase: "VRMemBase",
 		VRMemMask: "VRMemMask",
 	}

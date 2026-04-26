@@ -10,14 +10,14 @@ func TestEmitter_NewEmitter(t *testing.T) {
 	if len(e.Block.Instrs) != 0 {
 		t.Errorf("Block.Instrs has %d entries, want 0", len(e.Block.Instrs))
 	}
-	// 6 param VRegs should have been allocated (5 params + VRRegFile).
-	if e.nextTmp != VRegTempStart+6 {
-		t.Errorf("nextTmp = %d, want %d", e.nextTmp, VRegTempStart+6)
+	// 5 param VRegs should have been allocated (4 params + VRRegFile).
+	if e.nextTmp != VRegTempStart+5 {
+		t.Errorf("nextTmp = %d, want %d", e.nextTmp, VRegTempStart+5)
 	}
-	if e.xBase != VReg(64) || e.fBase != VReg(65) || e.ic != VReg(66) ||
-		e.memBase != VReg(67) || e.memMask != VReg(68) {
-		t.Errorf("param VRegs: xBase=%d fBase=%d ic=%d memBase=%d memMask=%d",
-			e.xBase, e.fBase, e.ic, e.memBase, e.memMask)
+	if e.xBase != VReg(64) || e.fBase != VReg(65) ||
+		e.memBase != VReg(66) || e.memMask != VReg(67) {
+		t.Errorf("param VRegs: xBase=%d fBase=%d memBase=%d memMask=%d",
+			e.xBase, e.fBase, e.memBase, e.memMask)
 	}
 }
 
@@ -81,13 +81,10 @@ func TestEmitter_ParamAccessors(t *testing.T) {
 	if e.FBase() != VReg(65) {
 		t.Errorf("FBase = %d", e.FBase())
 	}
-	if e.IC() != VReg(66) {
-		t.Errorf("IC = %d", e.IC())
-	}
-	if e.MemBase() != VReg(67) {
+	if e.MemBase() != VReg(66) {
 		t.Errorf("MemBase = %d", e.MemBase())
 	}
-	if e.MemMask() != VReg(68) {
+	if e.MemMask() != VReg(67) {
 		t.Errorf("MemMask = %d", e.MemMask())
 	}
 }

@@ -5,7 +5,6 @@
 
 typedef struct {
 	uint64_t pc;
-	uint64_t ic;
 	uint64_t status;
 	uint64_t fault_addr;
 } JitResult;

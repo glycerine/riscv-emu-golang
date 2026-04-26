@@ -45,9 +45,8 @@ JitResult jit_sandbox_call(
 
 	JitResult result;
 	result.pc         = *(uint64_t*)(sret + 0);
-	result.ic         = *(uint64_t*)(sret + 8);
-	result.status     = *(uint64_t*)(sret + 16);
-	result.fault_addr = *(uint64_t*)(sret + 24);
+	result.status     = *(uint64_t*)(sret + 8);
+	result.fault_addr = *(uint64_t*)(sret + 16);
 
 	/* Copy shadow register file → Go registers. */
 	memcpy(go_x, rf, 256);

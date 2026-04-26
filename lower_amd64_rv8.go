@@ -137,9 +137,6 @@ func (lc *lowerCtxRV8) emitPrologue() {
 	lc.emitMR(x86.AMOVQ, goasm.REG_AMD64_R8, goasm.REG_AMD64_DI, 128)
 	lc.emitMR(x86.AMOVQ, goasm.REG_AMD64_R9, goasm.REG_AMD64_DI, 136)
 
-	// Zero sret.IC for first entry. On chain entry, sret.IC holds the
-	// previous block's IC value (written by rv8ChainExit).
-	lc.emitMI(x86.AMOVQ, 0, goasm.REG_AMD64_DI, 8)
 
 	// Copy sret from RDI to RAX so first-entry and chain-entry share
 	// the same code path below (chain entry arrives with RAX=sret).
