@@ -1152,10 +1152,12 @@ func TestSRL_RealBlock_V1vV2(t *testing.T) {
 
 	cpu1 := NewCPU(*mem)
 	cpu1.SetPC(0)
+	cpu1.SetWatchAddr(ef.TohostAddr)
 	cpu1.Notes.Push(func(c *CPU, n Note) NoteDisposition { return NoteHandled })
 
 	cpu2 := NewCPU(*mem)
 	cpu2.SetPC(0)
+	cpu2.SetWatchAddr(ef.TohostAddr)
 	cpu2.Notes.Push(func(c *CPU, n Note) NoteDisposition { return NoteHandled })
 
 	watchAddr := ef.TohostAddr
