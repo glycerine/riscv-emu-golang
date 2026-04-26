@@ -222,10 +222,18 @@ func allocExec(size int) ([]byte, error) {
 }
 
 func allocHasFP(alloc *ir.Allocation) bool {
+	// Architectural FP VRegs 32-63 directly allocated.
 	for vr := ir.VReg(32); vr < 64; vr++ {
 		if int(vr) < len(alloc.Kind) && (alloc.Kind[vr] == ir.AllocReg || alloc.Kind[vr] == ir.AllocStack) {
 			return true
 		}
+	}
+	// FP base pointer (VRFBase) used — the block accesses f[] via memory
+	// loads/stores through the FP register file base, even though no
+	// architectural FP VReg is directly allocated.
+	vr := ir.VRFBase
+	if int(vr) < len(alloc.Kind) && (alloc.Kind[vr] == ir.AllocReg || alloc.Kind[vr] == ir.AllocStack) {
+		return true
 	}
 	return false
 }
