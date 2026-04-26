@@ -241,6 +241,7 @@ type JIT struct {
 	abjitState *abjit.State
 
 	stopperPage uintptr // InfiniteLoopStopperPage: mmap'd guard page for preemption
+	watchAddr   uint64  // tohost address; JIT blocks exit when a store hits this address
 
 	// Dispatch counters (for diagnostics).
 	DispatchOK       uint64 // jitOK returns to Go dispatch
@@ -678,6 +679,10 @@ func (j *JIT) RunJIT(cpu *CPU) (err0 error) {
 			}
 		}()
 	*/
+
+	// Propagate the tohost watch address so JIT blocks emit exit checks
+	// on stores to this address. Must happen before AOT compilation.
+	j.watchAddr = cpu.watchAddr
 
 	// AOT is the default: on the first RunJIT call for a JIT that has
 	// no segments yet, transparently translate every executable region

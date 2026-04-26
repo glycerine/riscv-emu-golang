@@ -65,8 +65,9 @@ type emitter struct {
 	visited        map[uint64]bool
 	regionEnd      uint64
 	gotoTargets    u64set
-	pcLabels    u64labelmap
-	stopperAddr int64 // InfiniteLoopStopperPage address for backward-branch probes
+	pcLabels       u64labelmap
+	stopperAddr    int64  // InfiniteLoopStopperPage address for backward-branch probes
+	watchAddr      uint64 // tohost address; stores here trigger a block exit
 	deferredExits  []deferredExit
 	deferredFaults []deferredFault
 	exitIdx        int      // counter for chain exit indices
@@ -271,14 +272,13 @@ func (e *emitter) emitLabel() {
 	e.irEm.PlaceLabel(e.getOrCreateLabel(e.pc))
 }
 
-
 // peek32 fetches the 32-bit instruction at the given PC without
 // advancing state. Returns (insn, true) on success.
 func (e *emitter) peek32(pc uint64) (uint32, bool) {
 	if pc >= e.regionEnd {
 		return 0, false
 	}
-	insn, f := e.mem.Fetch32(pc)
+	insn, f := e.mem.Fetch32U(pc)
 	if f != nil {
 		return 0, false
 	}
@@ -934,6 +934,7 @@ func (j *JIT) emitBlockRange(mem *GuestMemory, pc, endPC uint64) *emitResult {
 		gotoTargets: gt,
 		pcLabels:    newU64labelmap(),
 		stopperAddr: int64(j.stopperPage),
+		watchAddr:   j.watchAddr,
 	}
 
 	// Emit IR (populates regsUsed via xreg/xregDst calls).
@@ -1033,14 +1034,21 @@ func (e *emitter) emit32(insn uint32) {
 	case 0x17: // AUIPC
 		uimm := int64(int32(insn & 0xFFFFF000))
 		addr := int64(e.pc) + uimm
+		vv("AUIPC entry: pc=0x%x rd=%d addr=0x%x watchAddr=0x%x startPC=0x%x",
+			e.pc, rd, addr, e.watchAddr, e.startPC)
 
 		// Macro-op fusion: peek at the next instruction for AUIPC+X pairs.
 		if rd != 0 {
-			if next, ok := e.peek32(e.pc + 4); ok {
+			next, ok := e.peek32(e.pc + 4)
+			vv("AUIPC peek: pc=0x%x peek_ok=%v next=0x%x", e.pc, ok, next)
+			if ok {
 				nextOp := next & 0x7F
 				nextRd := (next >> 7) & 0x1F
 				nextRs1 := (next >> 15) & 0x1F
 				nextImm := int64(int32(next)) >> 20
+
+				vv("AUIPC fusion: pc=0x%x rd=%d addr=0x%x nextOp=0x%x nextRs1=%d e.watchAddr=0x%x",
+					e.pc, rd, addr, nextOp, nextRs1, e.watchAddr)
 
 				switch {
 				case nextOp == 0x13 && (next>>12)&7 == 0 && nextRd == rd && nextRs1 == rd:
@@ -1065,6 +1073,33 @@ func (e *emitter) emit32(insn uint32) {
 					funct3 := (next >> 12) & 7
 					e.emitLoadFused(rd, addr+nextImm, funct3)
 					return
+
+				case nextOp == 0x23 && nextRs1 == rd && e.watchAddr != 0:
+					// AUIPC+STORE where base == AUIPC result.
+					// Compute the store's effective address at compile time.
+					nextFunct3 := (next >> 12) & 7
+					storeImm := sImm(next)
+					storeAddr := addr + storeImm
+					vv("w.watchAddr = '%p'", e.watchAddr)
+
+					if storeAddr == int64(e.watchAddr) {
+						vv("recognized 'tohost'! check if non-zero write...")
+						nextRs2 := (next >> 20) & 0x1F
+						e.irEm.Const(e.xregDst(rd), addr)
+						e.advancePC(4)
+						e.emitStore(rd, nextRs2, storeImm, nextFunct3)
+						e.advancePC(4)
+						// tohost written: if stored value != 0, exit block.
+						if nextRs2 != 0 {
+							skip := e.irEm.NewLabel()
+							src := e.xreg(nextRs2)
+							e.irEm.Branch(src, VRegZero, EQ, skip)
+							e.irEm.WriteBackAll()
+							e.irEm.Ret(e.pc, jitOK, VRegZero)
+							e.irEm.PlaceLabel(skip)
+						}
+						return
+					}
 				}
 			}
 			e.irEm.Const(e.xregDst(rd), addr)
