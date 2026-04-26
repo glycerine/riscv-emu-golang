@@ -19,10 +19,11 @@ func TestLoadELF_Header(t *testing.T) {
 	}
 	defer mem.Free()
 
-	entry, err := LoadELFBytes(mem, data)
+	elf, err := LoadELFBytes(mem, data)
 	if err != nil {
 		t.Fatalf("LoadELFBytes: %v", err)
 	}
+	entry := elf.Entry
 	if entry == 0 {
 		// allowed now! in fact, preferred!
 		//	t.Error("entry point is 0")
@@ -92,8 +93,19 @@ func TestFindSymbolAddr(t *testing.T) {
 		t.Skip("riscv-elf-tests not present")
 	}
 
+	mem, merr := NewGuestMemory(Size4GB)
+	if merr != nil {
+		t.Fatal(merr)
+	}
+	defer mem.Free()
+
+	ef, lerr := LoadELFBytes(mem, data)
+	if lerr != nil {
+		t.Fatalf("LoadELFBytes: %v", lerr)
+	}
+
 	// tohost must be found
-	addr, ok := FindSymbolAddr(data, "tohost")
+	addr, ok := ef.FindSymbolAddr("tohost")
 	if !ok {
 		t.Fatal("tohost symbol not found")
 	}
@@ -103,20 +115,21 @@ func TestFindSymbolAddr(t *testing.T) {
 	t.Logf("tohost = 0x%x", addr)
 
 	// fromhost should also exist
-	addr2, ok2 := FindSymbolAddr(data, "fromhost")
+	addr2, ok2 := ef.FindSymbolAddr("fromhost")
 	if !ok2 {
 		t.Error("fromhost not found")
 	}
 	t.Logf("fromhost = 0x%x", addr2)
 
 	// nonexistent symbol returns false
-	_, ok3 := FindSymbolAddr(data, "no_such_symbol_xyz")
+	_, ok3 := ef.FindSymbolAddr("no_such_symbol_xyz")
 	if ok3 {
 		t.Error("unexpected match for nonexistent symbol")
 	}
 
-	// empty/garbage data returns false
-	_, ok4 := FindSymbolAddr([]byte{}, "tohost")
+	// empty/garbage data — construct an ELF with no data
+	emptyElf := &ELF{Data: []byte{}}
+	_, ok4 := emptyElf.FindSymbolAddr("tohost")
 	if ok4 {
 		t.Error("expected false for empty data")
 	}

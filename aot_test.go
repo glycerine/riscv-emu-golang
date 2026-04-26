@@ -262,13 +262,13 @@ func TestAOTInstall_RunDhrystone(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mem.Free()
-	entry, lerr := LoadELFBytes(mem, data)
+	elf, lerr := LoadELFBytes(mem, data)
 	if lerr != nil {
 		t.Fatalf("LoadELFBytes: %v", lerr)
 	}
 
 	cpu := NewCPU(*mem)
-	cpu.SetPC(entry)
+	cpu.SetPC(elf.Entry)
 	cpu.SetReg(2, 0x03F00000) // sp
 
 	o := NewOS()
@@ -361,12 +361,12 @@ func runDhrystoneCollectCounters(t *testing.T, data []byte, aot bool) (dispatchO
 		t.Fatal(err)
 	}
 	defer mem.Free()
-	entry, lerr := LoadELFBytes(mem, data)
+	elf, lerr := LoadELFBytes(mem, data)
 	if lerr != nil {
 		t.Fatal(lerr)
 	}
 	cpu := NewCPU(*mem)
-	cpu.SetPC(entry)
+	cpu.SetPC(elf.Entry)
 	cpu.SetReg(2, 0x03F00000)
 	o := NewOS()
 	o.HandleSyscall(93, LinuxExit)
@@ -667,13 +667,13 @@ func TestAOT_CrossSegmentJALR_Runs(t *testing.T) {
 	}
 	defer mem.Free()
 
-	entry, err := LoadELFBytes(mem, data)
+	elf, err := LoadELFBytes(mem, data)
 	if err != nil {
 		t.Fatalf("LoadELFBytes: %v", err)
 	}
 
 	cpu := NewCPU(*mem)
-	cpu.pc = entry
+	cpu.pc = elf.Entry
 	cpu.SetReg(2, 0x03F00000) // sp
 
 	o := NewOS()
@@ -808,12 +808,12 @@ func TestAOT_DynamicSegmentCreate(t *testing.T) {
 	}
 	defer mem.Free()
 
-	entry, err := LoadELFBytes(mem, data)
+	elf, err := LoadELFBytes(mem, data)
 	if err != nil {
 		t.Fatalf("LoadELFBytes: %v", err)
 	}
-	if entry != stubVA {
-		t.Fatalf("entry = 0x%x, want 0x%x", entry, stubVA)
+	if elf.Entry != stubVA {
+		t.Fatalf("entry = 0x%x, want 0x%x", elf.Entry, stubVA)
 	}
 
 	// Write the JIT code directly into guest memory and register the
@@ -826,7 +826,7 @@ func TestAOT_DynamicSegmentCreate(t *testing.T) {
 	mem.AddExecRegion(jitVA, jitVA+uint64(len(jitCode)*4), true /*isJIT*/)
 
 	cpu := NewCPU(*mem)
-	cpu.pc = entry
+	cpu.pc = elf.Entry
 	cpu.SetReg(2, 0x03F00000)
 
 	o := NewOS()

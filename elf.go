@@ -26,15 +26,15 @@ const (
 	pfR = 0x4 // PF_R (readable)
 )
 
-// ELF64Header is the 64-byte ELF file header.
-type elf64Header struct {
+// Elf64Header is the 64-byte ELF file header.
+type Elf64Header struct {
 	Ident     [16]byte
 	Type      uint16
 	Machine   uint16
 	Version   uint32
 	Entry     uint64
 	PhOff     uint64 // program header table file offset
-	ShOff     uint64 // section header table file offset (unused)
+	ShOff     uint64 // section header table file offset
 	Flags     uint32
 	EhSize    uint16
 	PhEntSize uint16
@@ -44,8 +44,8 @@ type elf64Header struct {
 	ShStrNdx  uint16
 }
 
-// ELF64 section header (64 bytes).
-type elf64Shdr struct {
+// Elf64Shdr is an ELF64 section header (64 bytes).
+type Elf64Shdr struct {
 	Name      uint32
 	Type      uint32
 	Flags     uint64
@@ -58,8 +58,8 @@ type elf64Shdr struct {
 	EntSize   uint64
 }
 
-// ELF64 symbol table entry (24 bytes).
-type elf64Sym struct {
+// Elf64Sym is an ELF64 symbol table entry (24 bytes).
+type Elf64Sym struct {
 	Name  uint32
 	Info  uint8
 	Other uint8
@@ -68,8 +68,8 @@ type elf64Sym struct {
 	Size  uint64
 }
 
-// ELF64 program header (56 bytes).
-type elf64Phdr struct {
+// Elf64Phdr is an ELF64 program header (56 bytes).
+type Elf64Phdr struct {
 	Type   uint32
 	Flags  uint32
 	Offset uint64 // file offset of segment data
@@ -80,53 +80,58 @@ type elf64Phdr struct {
 	Align  uint64
 }
 
+// ELF holds a parsed ELF64 RISC-V executable.
+type ELF struct {
+	Entry      uint64       // copy of Header.Entry (always valid, 0 if no header)
+	TohostAddr uint64       // address of "tohost" symbol (0 if not found)
+	Header     *Elf64Header // parsed file header
+	Shdrs      []*Elf64Shdr // parsed section headers
+	Data       []byte       // raw ELF bytes for symbol/string table access
+}
+
 // LoadELF reads an ELF64 RISC-V executable from path, loads all PT_LOAD
-// segments into mem, and returns the entry point address.
-//
-// Segments whose MemSz > FileSz have the extra bytes zero-filled (BSS).
-// The memory image must fit within mem; no dynamic linking is performed.
-func LoadELF(mem *GuestMemory, path string) (entry uint64, err error) {
-	f, err := os.Open(path)
+// segments into mem, and returns the parsed ELF.
+func LoadELF(mem *GuestMemory, path string) (*ELF, error) {
+	data, err := os.ReadFile(path)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	defer f.Close()
-	return loadELFReader(mem, f)
+	return LoadELFBytes(mem, data)
 }
 
 // LoadELFBytes loads an ELF64 RISC-V executable from an in-memory byte slice.
-func LoadELFBytes(mem *GuestMemory, data []byte) (entry uint64, err error) {
-	return loadELFReader(mem, &byteReader{data: data})
+func LoadELFBytes(mem *GuestMemory, data []byte) (*ELF, error) {
+	return loadELFReader(mem, &byteReader{data: data}, data)
 }
 
-func loadELFReader(mem *GuestMemory, r io.ReadSeeker) (uint64, error) {
+func loadELFReader(mem *GuestMemory, r io.ReadSeeker, data []byte) (*ELF, error) {
 	le := binary.LittleEndian
 
 	// ── read and validate ELF header ─────────────────────────────────────
-	var hdr elf64Header
+	var hdr Elf64Header
 	if err := binary.Read(r, le, &hdr); err != nil {
-		return 0, fmt.Errorf("elf: read header: %w", err)
+		return nil, fmt.Errorf("elf: read header: %w", err)
 	}
 	if string(hdr.Ident[:4]) != elfMagic {
-		return 0, errors.New("elf: not an ELF file")
+		return nil, errors.New("elf: not an ELF file")
 	}
 	if hdr.Ident[4] != elfClass64 {
-		return 0, errors.New("elf: not a 64-bit ELF")
+		return nil, errors.New("elf: not a 64-bit ELF")
 	}
 	if hdr.Ident[5] != elfDataLE {
-		return 0, errors.New("elf: not little-endian")
+		return nil, errors.New("elf: not little-endian")
 	}
 	if hdr.Type != elfTypeExec {
-		return 0, fmt.Errorf("elf: not an executable (type 0x%x)", hdr.Type)
+		return nil, fmt.Errorf("elf: not an executable (type 0x%x)", hdr.Type)
 	}
 	if hdr.Machine != elfMachRISCV {
-		return 0, fmt.Errorf("elf: not RISC-V (machine 0x%x)", hdr.Machine)
+		return nil, fmt.Errorf("elf: not RISC-V (machine 0x%x)", hdr.Machine)
 	}
 	if hdr.PhEntSize != 56 {
-		return 0, fmt.Errorf("elf: unexpected phentsize %d", hdr.PhEntSize)
+		return nil, fmt.Errorf("elf: unexpected phentsize %d", hdr.PhEntSize)
 	}
 	if hdr.PhNum == 0 {
-		return 0, errors.New("elf: no program headers")
+		return nil, errors.New("elf: no program headers")
 	}
 
 	// ── iterate program headers ───────────────────────────────────────────
@@ -134,11 +139,11 @@ func loadELFReader(mem *GuestMemory, r io.ReadSeeker) (uint64, error) {
 	for i := range int(hdr.PhNum) {
 		offset := int64(hdr.PhOff) + int64(i)*int64(hdr.PhEntSize)
 		if _, err := r.Seek(offset, io.SeekStart); err != nil {
-			return 0, fmt.Errorf("elf: seek to phdr %d: %w", i, err)
+			return nil, fmt.Errorf("elf: seek to phdr %d: %w", i, err)
 		}
-		var ph elf64Phdr
+		var ph Elf64Phdr
 		if err := binary.Read(r, le, &ph); err != nil {
-			return 0, fmt.Errorf("elf: read phdr %d: %w", i, err)
+			return nil, fmt.Errorf("elf: read phdr %d: %w", i, err)
 		}
 		if ph.Type != ptLoad {
 			continue // skip NOTE, GNU_STACK, RISCV_ATTRIBUTES, etc.
@@ -150,14 +155,14 @@ func loadELFReader(mem *GuestMemory, r io.ReadSeeker) (uint64, error) {
 		// Copy file bytes into guest memory.
 		if ph.FileSz > 0 {
 			if _, err := r.Seek(int64(ph.Offset), io.SeekStart); err != nil {
-				return 0, fmt.Errorf("elf: seek to segment %d data: %w", i, err)
+				return nil, fmt.Errorf("elf: seek to segment %d data: %w", i, err)
 			}
 			buf := make([]byte, ph.FileSz)
 			if _, err := io.ReadFull(r, buf); err != nil {
-				return 0, fmt.Errorf("elf: read segment %d: %w", i, err)
+				return nil, fmt.Errorf("elf: read segment %d: %w", i, err)
 			}
 			if f := mem.WriteBytes(ph.VAddr, buf); f != nil {
-				return 0, fmt.Errorf("elf: write segment %d to 0x%x: %v",
+				return nil, fmt.Errorf("elf: write segment %d to 0x%x: %v",
 					i, ph.VAddr, f)
 			}
 		}
@@ -167,7 +172,7 @@ func loadELFReader(mem *GuestMemory, r io.ReadSeeker) (uint64, error) {
 			bssStart := ph.VAddr + ph.FileSz
 			bssSize  := ph.MemSz - ph.FileSz
 			if f := mem.ZeroRange(bssStart, bssSize); f != nil {
-				return 0, fmt.Errorf("elf: zero BSS for segment %d: %v", i, f)
+				return nil, fmt.Errorf("elf: zero BSS for segment %d: %v", i, f)
 			}
 		}
 
@@ -180,9 +185,100 @@ func loadELFReader(mem *GuestMemory, r io.ReadSeeker) (uint64, error) {
 	}
 
 	if loaded == 0 {
-		return 0, errors.New("elf: no PT_LOAD segments found")
+		return nil, errors.New("elf: no PT_LOAD segments found")
 	}
-	return hdr.Entry, nil
+
+	// ── parse section headers ─────────────────────────────────────────────
+	var shdrs []*Elf64Shdr
+	if hdr.ShOff != 0 && hdr.ShNum != 0 && hdr.ShEntSize >= 64 && data != nil {
+		for i := 0; i < int(hdr.ShNum); i++ {
+			off := int(hdr.ShOff) + i*int(hdr.ShEntSize)
+			if off+64 > len(data) {
+				break
+			}
+			sh := new(Elf64Shdr)
+			if err := binary.Read(&byteReader{data: data[off:]}, le, sh); err != nil {
+				break
+			}
+			shdrs = append(shdrs, sh)
+		}
+	}
+
+	ef := &ELF{
+		Entry:  hdr.Entry,
+		Header: &hdr,
+		Shdrs:  shdrs,
+		Data:   data,
+	}
+
+	// Auto-detect tohost symbol.
+	if addr, ok := ef.FindSymbolAddr("tohost"); ok {
+		ef.TohostAddr = addr
+	}
+
+	return ef, nil
+}
+
+// FindSymbolAddr looks up a symbol by name in the ELF symbol table.
+// Uses pre-parsed Shdrs to locate SHT_SYMTAB; reads symbol entries
+// and string table from Data. Returns (0, false) if not found.
+func (ef *ELF) FindSymbolAddr(name string) (uint64, bool) {
+	if ef == nil || ef.Data == nil || len(ef.Shdrs) == 0 {
+		return 0, false
+	}
+	le := binary.LittleEndian
+	data := ef.Data
+
+	// Find SHT_SYMTAB section.
+	var symtab *Elf64Shdr
+	for _, sh := range ef.Shdrs {
+		if sh.Type == shtSymtab {
+			symtab = sh
+			break
+		}
+	}
+	if symtab == nil {
+		return 0, false
+	}
+
+	// Read the associated string table (sh_link points to STRTAB index).
+	if int(symtab.Link) >= len(ef.Shdrs) {
+		return 0, false
+	}
+	strtab := ef.Shdrs[symtab.Link]
+	if uint64(len(data)) < strtab.Offset+strtab.Size {
+		return 0, false
+	}
+	strData := data[strtab.Offset : strtab.Offset+strtab.Size]
+
+	// Iterate symbol entries.
+	entSize := int(symtab.EntSize)
+	if entSize < 24 {
+		entSize = 24
+	}
+	nSyms := int(symtab.Size) / entSize
+	for i := 0; i < nSyms; i++ {
+		off := int(symtab.Offset) + i*entSize
+		if off+24 > len(data) {
+			break
+		}
+		var sym Elf64Sym
+		if err := binary.Read(&byteReader{data: data[off:]}, le, &sym); err != nil {
+			break
+		}
+		nameOff := int(sym.Name)
+		if nameOff >= len(strData) {
+			continue
+		}
+		end := nameOff
+		for end < len(strData) && strData[end] != 0 {
+			end++
+		}
+		if string(strData[nameOff:end]) == name {
+			return sym.Value, true
+		}
+	}
+	return 0, false
 }
 
 // byteReader wraps a byte slice as an io.ReadSeeker.
@@ -216,96 +312,6 @@ func (b *byteReader) Seek(offset int64, whence int) (int64, error) {
 	return abs, nil
 }
 
-// FindSymbolAddr parses the ELF symbol table in data and returns the
-// address (st_value) of the named symbol. Returns (0, false) if the
-// symbol is not found or the binary has no symbol table.
-func FindSymbolAddr(data []byte, name string) (uint64, bool) {
-	le := binary.LittleEndian
-
-	// Validate ELF header minimally.
-	if len(data) < 64 {
-		return 0, false
-	}
-	if string(data[:4]) != elfMagic || data[4] != elfClass64 {
-		return 0, false
-	}
-
-	shOff := le.Uint64(data[40:])     // e_shoff
-	shEntSize := le.Uint16(data[58:]) // e_shentsize
-	shNum := le.Uint16(data[60:])     // e_shnum
-
-	if shOff == 0 || shNum == 0 || shEntSize < 64 {
-		return 0, false
-	}
-
-	// Find SHT_SYMTAB section.
-	var symtab elf64Shdr
-	found := false
-	for i := 0; i < int(shNum); i++ {
-		off := int(shOff) + i*int(shEntSize)
-		if off+64 > len(data) {
-			return 0, false
-		}
-		if err := binary.Read(&byteReader{data: data[off:]}, le, &symtab); err != nil {
-			return 0, false
-		}
-		if symtab.Type == shtSymtab {
-			found = true
-			break
-		}
-	}
-	if !found {
-		return 0, false
-	}
-
-	// Read the associated string table (sh_link points to STRTAB index).
-	strtabOff := int(shOff) + int(symtab.Link)*int(shEntSize)
-	if strtabOff+64 > len(data) {
-		return 0, false
-	}
-	var strtab elf64Shdr
-	if err := binary.Read(&byteReader{data: data[strtabOff:]}, le, &strtab); err != nil {
-		return 0, false
-	}
-	strData := data[strtab.Offset:]
-	if uint64(len(data)) < strtab.Offset+strtab.Size {
-		return 0, false
-	}
-	strData = strData[:strtab.Size]
-
-	// Iterate symbol entries.
-	entSize := int(symtab.EntSize)
-	if entSize < 24 {
-		entSize = 24 // Elf64_Sym is 24 bytes
-	}
-	nSyms := int(symtab.Size) / entSize
-	for i := 0; i < nSyms; i++ {
-		off := int(symtab.Offset) + i*entSize
-		if off+24 > len(data) {
-			break
-		}
-		var sym elf64Sym
-		if err := binary.Read(&byteReader{data: data[off:]}, le, &sym); err != nil {
-			break
-		}
-		// Look up name in string table.
-		nameOff := int(sym.Name)
-		if nameOff >= len(strData) {
-			continue
-		}
-		// Find null terminator.
-		end := nameOff
-		for end < len(strData) && strData[end] != 0 {
-			end++
-		}
-		symName := string(strData[nameOff:end])
-		if symName == name {
-			return sym.Value, true
-		}
-	}
-	return 0, false
-}
-
 // FindTextSection parses the ELF section headers in data and returns
 // the (virtual address, size) of the `.text` section. Returns false if
 // the ELF lacks a section header table or no `.text` section is found.
@@ -337,7 +343,7 @@ func FindTextSection(data []byte) (vaddr, size uint64, ok bool) {
 	if shstrOff+64 > len(data) {
 		return 0, 0, false
 	}
-	var shstr elf64Shdr
+	var shstr Elf64Shdr
 	if err := binary.Read(&byteReader{data: data[shstrOff:]}, le, &shstr); err != nil {
 		return 0, 0, false
 	}
@@ -352,7 +358,7 @@ func FindTextSection(data []byte) (vaddr, size uint64, ok bool) {
 		if off+64 > len(data) {
 			return 0, 0, false
 		}
-		var sh elf64Shdr
+		var sh Elf64Shdr
 		if err := binary.Read(&byteReader{data: data[off:]}, le, &sh); err != nil {
 			return 0, 0, false
 		}
@@ -417,7 +423,7 @@ func FindExecLoads(data []byte) ([]ExecLoad, bool) {
 		if off+56 > len(data) {
 			return nil, false
 		}
-		var ph elf64Phdr
+		var ph Elf64Phdr
 		if err := binary.Read(&byteReader{data: data[off:]}, le, &ph); err != nil {
 			return nil, false
 		}
