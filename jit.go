@@ -744,6 +744,7 @@ func (j *JIT) RunJIT(cpu *CPU) (err0 error) {
 				}
 			}
 			cpu.pc = res.PC
+			cpu.cycle += res.Cycles
 
 			switch int(res.Status) {
 			case jitOK:
