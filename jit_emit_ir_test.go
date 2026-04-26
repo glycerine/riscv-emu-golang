@@ -1566,13 +1566,14 @@ func testNativeTraceW(t *testing.T, elfPath string, targetBlock int) {
 		t.Fatal(err)
 	}
 	defer mem.Free()
-	_, err = LoadELF(mem, elfPath)
+	ef, err := LoadELF(mem, elfPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	// Run JIT until we reach the target block.
 	cpu := NewCPU(*mem)
+	cpu.SetWatchAddr(ef.TohostAddr)
 	cpu.SetPC(0)
 	cpu.Notes.Push(func(c *CPU, note Note) NoteDisposition { return NoteHandled })
 	jit := NewJIT()
