@@ -200,6 +200,7 @@ func (e *Emitter) StoreX(base, idx VReg, scale uint8, src VReg, t Type) {
 
 // NewLabel allocates a label ID without placing it. Use PlaceLabel to emit it.
 func (e *Emitter) NewLabel() Label {
+	// old, not unique across JIT lifetime:
 	//l := e.Block.NextLabel
 	//e.Block.NextLabel++
 	//return l
