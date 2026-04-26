@@ -168,6 +168,20 @@ darwin benchmarks:
   Go JIT — Fixed Static Mapping (native):    3172 MIPS
   Go interpreter (no JIT):                    427 MIPS
 
+still on default rv8, about to compare to ABJIT
+
+  cpu: Intel(R) Core(TM) i7-1068NG7 CPU @ 2.30GHz
+══════════════════════════════════════════════════════════════════
+
+  Strategy                                     MIPS
+  ──────────────────────────────────────────── ──────────
+  Go JIT — Fixed Static Mapping (native):    3415 MIPS
+  Go interpreter (no JIT):                     461.7 MIPS
+  libriscv — JIT (TCC):                      3842 MIPS
+  libriscv — interpreter (no JIT):           902.0 MIPS
+  native x86-64 (-O3 -march=native):           18035 MIPS  (140.0 ms)
+  wazero wasm aot-and-run                    8628.9 MIPS
+
 ~~~
 
 ### performance note
