@@ -386,15 +386,91 @@ func (lc *lowerCtxABJIT) emitSlowExitStub(targetPC uint64) *obj.Prog {
 	return first
 }
 
-// ── Syscall (cold path only) ──
+// ── Syscall (inline dispatch with cold fallback) ──
 
 func (lc *lowerCtxABJIT) abjitSyscall(ins *IRInstr) {
-	lc.abjitRet(&IRInstr{
-		Op:   IRRet,
-		Imm:  ins.Imm,
-		Imm2: 1,
-		A:    VRegZero,
+	// No CTab entry → cold path only.
+	if int(ins.Imm2) < 0 || int(ins.Imm2) >= len(lc.blk.CTab) {
+		lc.abjitRet(&IRInstr{Op: IRRet, Imm: ins.Imm, Imm2: 1, A: VRegZero})
+		return
+	}
+	sym := lc.blk.CTab[ins.Imm2]
+
+	// Stage IC to State BEFORE the CALL (call clobbers caller-saved regs).
+	lc.stageICToState()
+
+	// Set up SysV args: RDI=xBase(RBP), RSI=memBase, RDX=memMask.
+	lc.emit2(x86.AMOVQ, goasm.REG_AMD64_BP, goasm.REG_AMD64_DI)
+
+	memBaseHost := lc.hostReg(VRMemBase)
+	if memBaseHost >= 0 {
+		lc.emit2(x86.AMOVQ, memBaseHost, goasm.REG_AMD64_SI)
+	} else if int(VRMemBase) < len(lc.alloc.Kind) && lc.alloc.Kind[VRMemBase] == AllocStack {
+		lc.loadSpill(lc.alloc.SpillSlot[VRMemBase], goasm.REG_AMD64_SI)
+	} else {
+		lc.emitRM(x86.AMOVQ, goasm.REG_AMD64_BP, int64(abjitMemBaseOff), goasm.REG_AMD64_SI)
+	}
+
+	memMaskHost := lc.hostReg(VRMemMask)
+	if memMaskHost >= 0 {
+		lc.emit2(x86.AMOVQ, memMaskHost, goasm.REG_AMD64_DX)
+	} else if int(VRMemMask) < len(lc.alloc.Kind) && lc.alloc.Kind[VRMemMask] == AllocStack {
+		lc.loadSpill(lc.alloc.SpillSlot[VRMemMask], goasm.REG_AMD64_DX)
+	} else {
+		lc.emitRM(x86.AMOVQ, goasm.REG_AMD64_BP, int64(abjitMemMaskOff), goasm.REG_AMD64_DX)
+	}
+
+	// CALL dispatcher.
+	lc.loadImm(int64(sym.Addr), stgA)
+	p := lc.c.NewProg()
+	p.As = obj.ACALL
+	p.To.Type = obj.TYPE_REG
+	p.To.Reg = stgA
+	lc.c.Append(p)
+
+	// RAX = 0 → handled (hot path), non-zero → fallback (cold path).
+	lc.emit2(x86.ATESTQ, goasm.REG_AMD64_AX, goasm.REG_AMD64_AX)
+	slowJmp := lc.c.NewProg()
+	slowJmp.As = x86.AJNE
+	slowJmp.To.Type = obj.TYPE_BRANCH
+	lc.c.Append(slowJmp)
+
+	// ── Hot path: chain exit to post-ECALL block ──
+	// Guest registers were already written back by IRWriteback ops
+	// emitted before IRSyscall. No storeRegsBack needed.
+	lc.emitRI(x86.AADDQ, lc.frameSize, goasm.REG_AMD64_SP)
+
+	const sentinel = int64(0x7BADC0DE7BADC0DE)
+	movProg := lc.c.NewProg()
+	movProg.As = x86.AMOVQ
+	movProg.From.Type = obj.TYPE_CONST
+	movProg.From.Offset = sentinel
+	movProg.To.Type = obj.TYPE_REG
+	movProg.To.Reg = stgB
+	lc.c.Append(movProg)
+
+	lc.chainExits = append(lc.chainExits, chainExitInfo{
+		targetPC: uint64(ins.Imm),
+		movProg:  movProg,
 	})
+
+	jp := lc.c.NewProg()
+	jp.As = obj.AJMP
+	jp.To.Type = obj.TYPE_REG
+	jp.To.Reg = stgB
+	lc.c.Append(jp)
+
+	// ── Cold path: return to Go with jitEcall ──
+	slowNop := lc.c.NewProg()
+	slowNop.As = obj.ANOP
+	lc.c.Append(slowNop)
+	slowJmp.To.SetTarget(slowNop)
+
+	lc.loadImm(ins.Imm, stgB)
+	lc.emitMR(x86.AMOVQ, stgB, goasm.REG_AMD64_BP, abjitPCOff)
+	lc.emitMI(x86.AMOVQ, 1, goasm.REG_AMD64_BP, abjitStatusOff)
+	lc.emitMI(x86.AMOVQ, 0, goasm.REG_AMD64_BP, abjitFaultAddrOff)
+	lc.jmpExitThunk()
 }
 
 // ── JALR IC (simple miss return) ──
@@ -425,7 +501,7 @@ func (lc *lowerCtxABJIT) abjitJalrIC(ins *IRInstr) {
 	// Write State.PC = target (needed on both hit and miss).
 	lc.emitMR(x86.AMOVQ, stgB, goasm.REG_AMD64_BP, abjitPCOff)
 
-	// --- Decoder cache lookup ---
+	// --- Decoder cache lookup (L1 cache) ---
 	// Check dcBase != 0.
 	lc.emitRM(x86.AMOVQ, goasm.REG_AMD64_BP, abjitDCBaseOff, goasm.REG_AMD64_DX) // DX = dcBase
 	lc.emit2(x86.ATESTQ, goasm.REG_AMD64_DX, goasm.REG_AMD64_DX)
