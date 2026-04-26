@@ -18,7 +18,9 @@ import (
 var debugJIT bool
 
 // SetDebugJIT enables/disables emitBlock diagnostic logging.
-func SetDebugJIT(on bool) { debugJIT = on }
+func SetDebugJIT(on bool) {
+	debugJIT = on
+}
 
 // chainPatchInfo describes a chain exit that can be patched by Go.
 type chainPatchInfo struct {
@@ -44,6 +46,9 @@ type jalrICPatchInfo struct {
 	missStreak uint32 // total patch attempts for this site
 }
 
+// note: 2-slot inline caches were deprecated in favor
+// of 1024 entry L1 dispatch cache.
+//
 // jalrICDeoptThreshold is the number of miss-patches a JALR IC site
 // will accept before it gives up and stops patching. Rationale: a
 // monomorphic site settles with 1 patch; a bi-modal site with 2.
