@@ -1265,6 +1265,7 @@ func TestDebugV1V2_SRL(t *testing.T) {
 
 	cpu := NewCPU(*mem)
 	cpu.SetPC(0)
+	cpu.SetWatchAddr(ef.TohostAddr)
 	cpu.Notes.Push(func(c *CPU, n Note) NoteDisposition { return NoteHandled })
 
 	watchAddr := ef.TohostAddr
