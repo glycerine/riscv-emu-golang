@@ -108,7 +108,7 @@ func ABJITPinned() map[VReg]int16 {
 }
 
 // PolicyABJIT is the abjit register policy: 11-register pool (no R14),
-// RBP pinned to VRRegFile. Lower is nil until lower_amd64_abjit.go exists.
+// RBP pinned to VRRegFile, LowerAMD64_ABJIT lowerer.
 var PolicyABJIT = RegPolicy{
 	Name:   "abjit",
 	Pool:   ABJITPool,

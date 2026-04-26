@@ -155,8 +155,15 @@ func BenchmarkABJIT_RISCVTest_add(b *testing.B) {
 		b.Skip("rv64ui-p-add not found")
 	}
 	for i := 0; i < b.N; i++ {
-		mem, _ := NewGuestMemory(Size4GB)
-		entry, _ := LoadELFBytes(mem, data)
+		mem, merr := NewGuestMemory(Size4GB)
+		if merr != nil {
+			b.Fatal(merr)
+		}
+		entry, lerr := LoadELFBytes(mem, data)
+		if lerr != nil {
+			mem.Free()
+			b.Fatal(lerr)
+		}
 		cpu := NewCPU(*mem)
 		cpu.SetPC(entry)
 		if addr, ok := FindSymbolAddr(data, "tohost"); ok {

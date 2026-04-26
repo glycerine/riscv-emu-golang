@@ -78,6 +78,12 @@ func LowerAMD64_RV8(ctx *goasm.Ctx, b *Block, alloc *Allocation) (*LowerResult, 
 	// Total = spillSlots*8 + 24.
 	lc.sretOffset = int64(lc.stackSlots) * 8
 	lc.frameSize = lc.sretOffset + 24
+	// Sandbox trampoline leaves RSP ≡ 8 (mod 16). SUB frameSize must
+	// yield RSP ≡ 0 (mod 16) so inline CALLs (syscall dispatch)
+	// satisfy the SysV ABI 16-byte alignment requirement.
+	if lc.frameSize%16 == 0 {
+		lc.frameSize += 8
+	}
 
 	lc.emitPrologue()
 

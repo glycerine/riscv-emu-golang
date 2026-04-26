@@ -398,8 +398,10 @@ func (lc *lowerOps) spilledMemOp(v VReg) (base int16, off int64, ok bool) {
 
 // ── Register writeback ──
 
-// storeRegsBack writes all allocated RISC-V registers back to the
-// register file at [RBP + vr*8]. Called before returning.
+// storeRegsBack writes AllocReg RISC-V registers back to the register
+// file at [RBP + vr*8]. AllocStack registers are NOT written back here;
+// the allocator must ensure they were already flushed via IRWriteback
+// instructions before any exit point that calls storeRegsBack.
 func (lc *lowerOps) storeRegsBack() {
 	for vr := VReg(1); vr < 32; vr++ {
 		if int(vr) < len(lc.alloc.Kind) && lc.alloc.Kind[vr] == AllocReg {

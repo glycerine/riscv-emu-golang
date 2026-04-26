@@ -90,6 +90,12 @@ func LowerAMD64_ABJIT(ctx *goasm.Ctx, b *Block, alloc *Allocation) (*LowerResult
 	//   Total = spillSlots*8 + 24.
 	lc.sretOffset = int64(lc.stackSlots) * 8
 	lc.frameSize = lc.sretOffset + 24
+	// Trampoline leaves RSP ≡ 8 (mod 16). SUB frameSize must yield
+	// RSP ≡ 0 (mod 16) so that CALLs in abjitSyscall/abjitCall
+	// satisfy the SysV ABI 16-byte alignment requirement.
+	if lc.frameSize%16 == 0 {
+		lc.frameSize += 8
+	}
 
 	// Pre-create exit thunk NOP so forward JMP references work.
 	lc.exitThunk = lc.c.NewProg()
@@ -570,7 +576,7 @@ func (lc *lowerCtxABJIT) abjitJalrIC(ins *IRInstr) {
 
 func (lc *lowerCtxABJIT) abjitCall(ins *IRInstr) error {
 	if int(ins.Imm) >= len(lc.blk.CTab) {
-		return nil
+		return fmt.Errorf("ir.abjitCall: CTab index %d out of range (len=%d)", ins.Imm, len(lc.blk.CTab))
 	}
 	sym := lc.blk.CTab[ins.Imm]
 
@@ -593,6 +599,9 @@ func (lc *lowerCtxABJIT) abjitCall(ins *IRInstr) error {
 	}
 
 	saveSize := int64(len(liveInt)+len(liveFP)) * 8
+	if saveSize%16 != 0 {
+		saveSize += 8
+	}
 	if saveSize > 0 {
 		lc.emitRI(x86.ASUBQ, saveSize, goasm.REG_AMD64_SP)
 	}
