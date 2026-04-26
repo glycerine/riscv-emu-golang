@@ -28,6 +28,7 @@ type State struct {
 	DCMask     uint64
 	VAddrBegin uint64
 	SegSize    uint64
+	Cycles     uint64 // TSC cycles (RDTSC delta, written by exit thunk)
 }
 
 //go:noinline

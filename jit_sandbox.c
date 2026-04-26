@@ -40,13 +40,18 @@ JitResult jit_sandbox_call(
 	*(uint64_t*)(sret + 104) = vaddr_begin;
 	*(uint64_t*)(sret + 112) = seg_size;
 
+	uint64_t tsc_start = __builtin_ia32_rdtsc();
+
 	jit_trampoline_asm((void*)fn, sret, (void*)reg_file,
 		mem_base, mem_mask, sret);
+
+	uint64_t tsc_end = __builtin_ia32_rdtsc();
 
 	JitResult result;
 	result.pc         = *(uint64_t*)(sret + 0);
 	result.status     = *(uint64_t*)(sret + 8);
 	result.fault_addr = *(uint64_t*)(sret + 16);
+	result.cycles     = tsc_end - tsc_start;
 
 	/* Copy shadow register file → Go registers. */
 	memcpy(go_x, rf, 256);

@@ -580,6 +580,7 @@ func (j *JIT) StepBlock(cpu *CPU) (ic uint64, err error) {
 				pc, res.PC, res.Status)
 		}
 		cpu.pc = res.PC
+		cpu.cycle += res.Cycles
 
 		switch int(res.Status) {
 		case jitOK:

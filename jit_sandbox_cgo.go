@@ -36,5 +36,6 @@ func sandboxRv8Call(fn uintptr, cpu *CPU,
 		PC:        uint64(r.pc),
 		Status:    uint64(r.status),
 		FaultAddr: uint64(r.fault_addr),
+		Cycles:    uint64(r.cycles),
 	}
 }

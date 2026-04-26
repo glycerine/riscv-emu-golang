@@ -3,7 +3,7 @@
 // func Call(fn uintptr, x *[32]uint64, f *[32]uint64, fcsr *uint32,
 //           memBase uintptr, memMask uint64) Result
 //
-// Calls a TCC-compiled native block using the System V AMD64 ABI.
+// Calls a JIT-compiled native block using the System V AMD64 ABI.
 // No cgo overhead — just a plain CALL instruction.
 //
 // Go ABI0 stack layout (args + return):
@@ -13,7 +13,7 @@
 //   fcsr+24(FP)     *uint32     8 bytes
 //   memBase+32(FP)  uintptr     8 bytes
 //   memMask+40(FP)  uint64      8 bytes
-//   ret+48(FP)      Result      24 bytes (PC, Status, FaultAddr)
+//   ret+48(FP)      Result      32 bytes (PC, Status, FaultAddr, Cycles)
 //
 // System V AMD64 ABI — struct return > 16 bytes uses hidden sret pointer:
 //   RDI = hidden pointer to caller-allocated Result
@@ -24,16 +24,14 @@
 //   R9  = memMask
 //
 // Local frame layout (the callee-visible sret buffer is RDI = &frame[0]):
-//   [0, 24)   Result struct (PC, Status, FaultAddr)
+//   [0, 24)   Result fields: PC(0), Status(8), FaultAddr(16)
+//   [24, 32)  RDTSC start value (stashed by trampoline before CALL)
 //   [32, 80)  trampoline's own callee-save stashes (BX, BP, R12-R15)
 //   [80, 88)  fcsr pointer — written here once per Call so JIT code can
-//             access it via [RBX+80] even from chained blocks (where RCX
-//             is unavailable, having been released to the regalloc pool).
-//             Must agree with ir.amd64SretFcsrOffset.
-//   [88, …)   unused / TCC/JIT code may spill below its own RSP after
-//             the callee's prologue runs SubQ.
+//             access it via [RBX+80] even from chained blocks.
+//   [88, …)   unused / JIT code may spill below its own RSP.
 // NOSPLIT frame size 65536 is well above any reasonable callee usage.
-TEXT ·Call(SB), $65536-72
+TEXT ·Call(SB), $65536-80
 
 	// Save callee-saved registers that JIT/TCC code may clobber.
 	MOVQ	BX,  32(SP)
@@ -44,12 +42,7 @@ TEXT ·Call(SB), $65536-72
 	MOVQ	R15, 72(SP)
 
 	// Zero the entire sret metadata region [80..143] before publishing
-	// known values. JIT code reads from various offsets in this range
-	// (fcsr, decoder_cache params, memBase/memMask). Zeroing everything
-	// prevents any offset from containing stack garbage, eliminating a
-	// class of non-deterministic crashes. CallAOT overwrites 88-119
-	// with real decoder_cache values; the JIT prologue overwrites
-	// 128-143 with memBase/memMask from R8/R9.
+	// known values.
 	MOVQ	$0,  80(SP)
 	MOVQ	$0,  88(SP)
 	MOVQ	$0,  96(SP)
@@ -68,22 +61,35 @@ TEXT ·Call(SB), $65536-72
 	LEAQ	0(SP), DI           // RDI = hidden sret pointer (local Result buffer)
 	MOVQ	x+8(FP), SI        // RSI = x
 	MOVQ	f+16(FP), DX       // RDX = f
-	MOVQ	fcsr+24(FP), CX    // RCX = fcsr (legacy: also available as arg; newer lowerers read from [RBX+80])
+	MOVQ	fcsr+24(FP), CX    // RCX = fcsr
 	MOVQ	memBase+32(FP), R8  // R8  = memBase
 	MOVQ	memMask+40(FP), R9  // R9  = memMask
+
+	// RDTSC: record start cycle count before entering JIT code.
+	RDTSC
+	SHLQ	$32, DX
+	ORQ	DX, AX
+	MOVQ	AX, 24(SP)          // sret[24] = TSC start
 
 	// Call the JIT'd native function.
 	MOVQ	fn+0(FP), AX
 	CALL	AX
 
+	// RDTSC: record end cycle count, compute delta.
+	RDTSC
+	SHLQ	$32, DX
+	ORQ	DX, AX
+	SUBQ	24(SP), AX          // AX = end - start = cycles in native code
+
 	// Copy Result from local buffer at 0(SP) to Go return area.
-	// Result is 24 bytes = 3 quadwords.
-	MOVQ	0(SP),  AX
-	MOVQ	8(SP),  CX
-	MOVQ	16(SP), DX
-	MOVQ	AX, ret_PC+48(FP)
-	MOVQ	CX, ret_Status+56(FP)
-	MOVQ	DX, ret_FaultAddr+64(FP)
+	// Result is 32 bytes = 4 quadwords: PC, Status, FaultAddr, Cycles.
+	MOVQ	0(SP),  CX
+	MOVQ	8(SP),  DX
+	MOVQ	16(SP), SI
+	MOVQ	CX, ret_PC+48(FP)
+	MOVQ	DX, ret_Status+56(FP)
+	MOVQ	SI, ret_FaultAddr+64(FP)
+	MOVQ	AX, ret_Cycles+72(FP)
 
 	// Restore callee-saved registers.
 	MOVQ	32(SP), BX
@@ -112,8 +118,8 @@ TEXT ·Call(SB), $65536-72
 //   dcMask+56(FP)    uint64         8
 //   vBegin+64(FP)    uint64         8
 //   segSize+72(FP)   uint64         8
-//   ret+80(FP)       Result         24
-TEXT ·CallAOT(SB), $65536-104
+//   ret+80(FP)       Result         32
+TEXT ·CallAOT(SB), $65536-112
 
 	// Save callee-saved registers that JIT/TCC code may clobber.
 	MOVQ	BX,  32(SP)
@@ -141,21 +147,34 @@ TEXT ·CallAOT(SB), $65536-104
 	LEAQ	0(SP), DI           // RDI = hidden sret pointer
 	MOVQ	x+8(FP), SI         // RSI = x
 	MOVQ	f+16(FP), DX        // RDX = f
-	MOVQ	fcsr+24(FP), CX     // RCX = fcsr (legacy)
+	MOVQ	fcsr+24(FP), CX     // RCX = fcsr
 	MOVQ	memBase+32(FP), R8  // R8  = memBase
 	MOVQ	memMask+40(FP), R9  // R9  = memMask
+
+	// RDTSC: record start cycle count before entering JIT code.
+	RDTSC
+	SHLQ	$32, DX
+	ORQ	DX, AX
+	MOVQ	AX, 24(SP)          // sret[24] = TSC start
 
 	// Call the JIT'd native function.
 	MOVQ	fn+0(FP), AX
 	CALL	AX
 
+	// RDTSC: record end cycle count, compute delta.
+	RDTSC
+	SHLQ	$32, DX
+	ORQ	DX, AX
+	SUBQ	24(SP), AX          // AX = end - start = cycles in native code
+
 	// Copy Result from local buffer at 0(SP) to Go return area.
-	MOVQ	0(SP),  AX
-	MOVQ	8(SP),  CX
-	MOVQ	16(SP), DX
-	MOVQ	AX, ret_PC+80(FP)
-	MOVQ	CX, ret_Status+88(FP)
-	MOVQ	DX, ret_FaultAddr+96(FP)
+	MOVQ	0(SP),  CX
+	MOVQ	8(SP),  DX
+	MOVQ	16(SP), SI
+	MOVQ	CX, ret_PC+80(FP)
+	MOVQ	DX, ret_Status+88(FP)
+	MOVQ	SI, ret_FaultAddr+96(FP)
+	MOVQ	AX, ret_Cycles+104(FP)
 
 	// Restore callee-saved registers.
 	MOVQ	32(SP), BX

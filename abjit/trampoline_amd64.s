@@ -10,7 +10,8 @@
 //   SP+24     saved R12
 //   SP+32     saved R13
 //   SP+40     saved R15
-//   SP+48..   available stack for Go callbacks (~65KB)
+//   SP+48     RDTSC start value (stashed before JMP to JIT code)
+//   SP+56..   available stack for Go callbacks (~65KB)
 //
 TEXT ·callJIT(SB), 0, $65528-16
 	NO_LOCAL_POINTERS
@@ -19,6 +20,13 @@ TEXT ·callJIT(SB), 0, $65528-16
 	MOVQ R12, 24(SP)
 	MOVQ R13, 32(SP)
 	MOVQ R15, 40(SP)
+
+	// RDTSC: stash start cycle count at SP+48.
+	// Exit thunk reads this to compute the delta.
+	RDTSC
+	SHLQ $32, DX
+	ORQ  DX, AX
+	MOVQ AX, 48(SP)
 
 	MOVQ regFileBase+8(FP), BP
 	MOVQ code+0(FP), AX

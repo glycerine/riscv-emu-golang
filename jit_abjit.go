@@ -27,12 +27,14 @@ func abjitDispatch(blk *compiledBlock, cpu *CPU, j *JIT,
 	s.DCMask = dcMask
 	s.VAddrBegin = vBegin
 	s.SegSize = segSize
+
 	abjit.CallJIT(blk.fn, s.RegFileBase())
 
 	res := jitcall.Result{
 		PC:        s.PC,
 		Status:    s.Status,
 		FaultAddr: s.FaultAddr,
+		Cycles:    s.Cycles,
 	}
 
 	cpu.x = s.X
