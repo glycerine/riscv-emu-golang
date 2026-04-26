@@ -241,3 +241,12 @@ BenchmarkCPU_FullExecution_JIT_Rv8-48                  1         985023960 ns/op
 BenchmarkCPU_FullExecution_JIT_ABJIT-48                1         843590039 ns/op
               2993 MIPS  2374776 B/op      17441 allocs/op
 ~~~
+
+without any fake IC 
+
+~~~
+for 2524935201 riscv instuctions:
+
+darwin 9399 MIPS (269 msec) 
+Linux  7129 MIPS (354 msec)
+~~~
