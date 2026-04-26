@@ -19,8 +19,12 @@ type State struct {
 	F       [32]uint64
 	FCSR    uint32
 	_       uint32
-	MemBase uintptr
-	MemMask uint64
+	MemBase   uintptr
+	MemMask   uint64
+	PC        uint64
+	IC        uint64
+	Status    uint64
+	FaultAddr uint64
 }
 
 //go:noinline

@@ -274,6 +274,10 @@ func TestStateLayout(t *testing.T) {
 		{"FCSR", unsafe.Offsetof(s.FCSR), 512},
 		{"MemBase", unsafe.Offsetof(s.MemBase), 520},
 		{"MemMask", unsafe.Offsetof(s.MemMask), 528},
+		{"PC", unsafe.Offsetof(s.PC), 536},
+		{"IC", unsafe.Offsetof(s.IC), 544},
+		{"Status", unsafe.Offsetof(s.Status), 552},
+		{"FaultAddr", unsafe.Offsetof(s.FaultAddr), 560},
 	}
 	for _, c := range checks {
 		if c.got != c.want {

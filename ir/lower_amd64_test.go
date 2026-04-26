@@ -413,11 +413,13 @@ func TestLower_AllOpsHandled(t *testing.T) {
 	}
 
 	lc := &lowerCtxRV8{
-		blk:       &Block{CTab: []CSym{{Name: "test", Addr: 0x12345}}},
-		alloc:     &Allocation{Kind: make([]AllocKind, 256), SpillSlot: make([]int16, 256)},
-		c:         goasm.New(goasm.AMD64),
-		labelProg: make(map[Label]*obj.Prog),
-		pending:   make(map[Label][]*obj.Prog),
+		lowerOps: lowerOps{
+			blk:       &Block{CTab: []CSym{{Name: "test", Addr: 0x12345}}},
+			alloc:     &Allocation{Kind: make([]AllocKind, 256), SpillSlot: make([]int16, 256)},
+			c:         goasm.New(goasm.AMD64),
+			labelProg: make(map[Label]*obj.Prog),
+			pending:   make(map[Label][]*obj.Prog),
+		},
 	}
 	lc.c.Append(lc.c.NewATEXT())
 
