@@ -2,7 +2,7 @@
 
 ## Context
 
-IC (instruction counter) causes 5-6x performance loss: pinned register, `ic++` per instruction, budget check at every backward branch. Replace with a guard page: at backward branches, emit a load from a stopper page. Normally readable (L1 hit, ~free). To preempt, `mprotect(PROT_NONE)` — the load faults, SIGSEGV handler redirects execution to a return stub.
+IC (instruction counter) causes 5-6x performance loss: occupies a register allocation slot, emits `ic++` per instruction, emits a budget check at every backward branch. Replace with a guard page: at backward branches, emit a load from a stopper page. Normally readable (L1 hit, ~free). To preempt, `mprotect(PROT_NONE)` — the load faults, and the existing `defer/recover` in `RunJIT()` (jit.go:655) catches the panic. No custom signal handler needed.
 
 ## Part 1: Allocate InfiniteLoopStopperPage
 
@@ -10,202 +10,89 @@ IC (instruction counter) causes 5-6x performance loss: pinned register, `ic++` p
 
 Standalone C mmap, independent of GuestMemory (works for both Rv8 and Abjit).
 
+C helpers (inline in cgo preamble):
+- `stopper_alloc()` → `mmap(NULL, 4096, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANON, -1, 0)`
+- `stopper_free(p)` → `munmap(p, 4096)`
+- `stopper_arm(p)` → `mprotect(p, 4096, PROT_NONE)`
+- `stopper_disarm(p)` → `mprotect(p, 4096, PROT_READ|PROT_WRITE)`
+
+Add to JIT struct (`jit.go`):
 ```go
-/*
-#include <sys/mman.h>
-#include <signal.h>
-#include <string.h>
-
-static void* stopper_alloc() {
-    return mmap(NULL, 4096, PROT_READ|PROT_WRITE,
-                MAP_PRIVATE|MAP_ANON, -1, 0);
-}
-static void stopper_free(void* p) { munmap(p, 4096); }
-static void stopper_arm(void* p)  { mprotect(p, 4096, PROT_NONE); }
-static void stopper_disarm(void* p) { mprotect(p, 4096, PROT_READ|PROT_WRITE); }
-*/
+stopperPage uintptr
 ```
 
-Add to JIT struct:
-```go
-stopperPage uintptr // address of the guard page
+Go methods on JIT:
+- `initStopperPage()` — allocate via `stopper_alloc()`, called during JIT init
+- `freeStopperPage()` — called during JIT cleanup
+- `RequestPreemption()` — calls `stopper_arm()` → PROT_NONE
+- `ClearPreemption()` — calls `stopper_disarm()` → PROT_READ|PROT_WRITE
+
+**Recovery path**: When the JIT loads from the armed page, SIGSEGV occurs. Go's runtime converts this to a panic. The existing `defer/recover` at `jit.go:655` catches it. `RunJIT` returns an error (e.g. `ErrPreempted`). The caller calls `ClearPreemption()` to disarm the page before re-entering JIT.
+
+**Files**: `jit_stopper.go` (new), `jit.go` (add field + init/cleanup)
+
+## Part 2: Emit stopper load at backward branches
+
+### 2a. Stopper probe in emitted native code
+
+At each backward branch, instead of BudgetCheck, emit a TEST from the stopper page. This is a single native instruction that reads memory but **does not dirty any GP register** — it only touches EFLAGS (SF, ZF, PF), which are volatile across branches anyway.
+
+On the fast path (page readable), it costs ~1 cycle (L1 hit). When armed (PROT_NONE), the read phase faults and `defer/recover` catches the panic.
+
+In the IR, replace `BudgetCheck` with a new `IRStopperLoad`:
+```
+IRStopperLoad  Imm=stopperPageAddr
 ```
 
-Methods:
-- `NewStopperPage() uintptr` — alloc via `stopper_alloc()`
-- `FreeStopperPage()` — free via `stopper_free()`
-- `RequestPreemption()` — `stopper_arm()` → PROT_NONE
-- `ClearPreemption()` — `stopper_disarm()` → PROT_READ|PROT_WRITE
+Semantics: probe (read) the qword at `Imm`. No GP register modified. If the page is PROT_NONE, execution never reaches the next instruction.
 
-**File**: `jit_stopper.go` (new)
-**File**: `jit.go` — add `stopperPage` field, allocate in JIT init, free in cleanup
+### 2b. Lowering IRStopperLoad
 
-### 1b. SIGSEGV handler
-
-Install a C signal handler via `sigaction` that intercepts SIGSEGV when the faulting address is the stopper page. The handler modifies the ucontext to redirect RIP to a preemption return stub.
-
-In `jit_stopper.go` (C preamble) or a new `jit_stopper.c`:
-
-```c
-#include <signal.h>
-#include <ucontext.h>
-
-static void* g_stopper_page = NULL;
-static void* g_preempt_stub = NULL;  // address of return thunk
-
-static void stopper_sigaction(int sig, siginfo_t* info, void* ctx) {
-    if (info->si_addr >= g_stopper_page &&
-        info->si_addr < g_stopper_page + 4096) {
-        // Fault is on stopper page — redirect to preempt stub.
-        ucontext_t* uc = (ucontext_t*)ctx;
-#ifdef __APPLE__
-        uc->uc_mcontext->__ss.__rip = (uint64_t)g_preempt_stub;
-#else
-        uc->uc_mcontext.gregs[REG_RIP] = (uint64_t)g_preempt_stub;
-#endif
-        // Disarm the page so the stub doesn't re-fault.
-        stopper_disarm(g_stopper_page);
-        return;
-    }
-    // Not our page — chain to previous handler or re-raise.
-}
-
-static struct sigaction g_old_sigaction;
-
-static void stopper_install_handler(void* page, void* stub) {
-    g_stopper_page = page;
-    g_preempt_stub = stub;
-    struct sigaction sa;
-    memset(&sa, 0, sizeof(sa));
-    sa.sa_sigaction = stopper_sigaction;
-    sa.sa_flags = SA_SIGINFO | SA_RESTART;
-    sigaction(SIGSEGV, &sa, &g_old_sigaction);
-    // Also SIGBUS on macOS (mprotect faults can be SIGBUS).
-    sigaction(SIGBUS, &sa, NULL);
-}
-```
-
-**Critical**: Go's runtime also uses SIGSEGV. We must chain: if the fault isn't on our page, forward to the previous handler (`g_old_sigaction`). Go installs its handler at runtime init, so our handler installed later takes priority and chains back.
-
-**Preempt stub**: A small piece of native code (emitted once per JIT or as a static assembly stub) that:
-1. Writes `jitPreempted` status to the appropriate location (sret for Rv8, State for Abjit)
-2. Writes the current PC (tricky — see below)
-3. Returns via RET (pops back through the trampoline)
-
-The stub doesn't need to write back registers — the dispatch loop re-enters the interpreter which re-loads from x[]/f[]. Actually, **the stub must write back dirty registers**. But dirty regs are in host registers, and we don't know which ones are dirty at the point of the fault.
-
-**Simpler approach**: The signal handler sets a flag. The preempt stub is placed right after the stopper load in the generated code:
-
+**Rv8 lowerer** (`lower_amd64_ops.go`):
 ```asm
-; At each backward branch:
-    MOV RAX, [stopperPageAddr]   ; faults if armed
-    ; execution continues here (stopper was readable)
-    JMP loop_target
+MOVQ stopperAddr, RAX    ; MOV imm64 → RAX (10 bytes, uses staging reg)
+TESTQ RAX, (RAX)         ; read from page, result → EFLAGS only; faults if armed
 ```
 
-When the SIGSEGV fires, the handler advances RIP past the `MOV` to a **bail-out sequence** that does writeback + return. But this bail-out must be emitted per backward branch site, which is what BudgetCheck already does.
+Uses RAX (stgA) only to hold the address. The TESTQ reads `[RAX]` and ANDs it with RAX, writing only EFLAGS. Since this is emitted right before an unconditional JMP to the loop target, EFLAGS are immediately dead.
 
-**Better approach**: Each backward branch site already has the BudgetCheck pattern:
-```
-BudgetCheck: if (ic >= MaxIC) { writeback; return }
-             goto target
-```
+Note: RAX is the staging register — it's always scratch and never holds a live value across instructions in both lowerers.
 
-Replace with:
-```
-StopperCheck: MOV scratch, [stopperPageAddr]   ; L1 hit or SIGSEGV
-              TEST scratch, scratch             ; always 0 when readable
-              JNZ preempt_exit                  ; never taken on fast path
-              JMP target
-preempt_exit: writeback; return jitPreempted
-```
+**Abjit lowerer** (`lower_amd64_abjit.go`): same pattern using stgA.
 
-And the signal handler, instead of redirecting RIP, simply **writes a non-zero value to the first word of the stopper page and disarms it** (restores PROT_READ|PROT_WRITE). The faulting MOV instruction is retried by the kernel, this time it succeeds and reads the non-zero value, the TEST/JNZ takes the preempt_exit path cleanly.
+**Total native cost per backward branch**: 13 bytes (10-byte MOV imm64 + 3-byte TESTQ). Zero GP register impact.
 
-This is much simpler: no RIP manipulation in the signal handler, no need for a separate stub, and the writeback happens normally through the emitted code.
+**ARM64 note** (for when we port): Use `LDR XZR, [Xn]` — loads into the zero register which discards the value. The CPU still performs the full memory read (TLB walk, page table check), so PROT_NONE faults as expected. Zero change to X0-X30. Add this as a comment next to the amd64 TESTQ emission.
 
-```c
-static void stopper_sigaction(int sig, siginfo_t* info, void* ctx) {
-    if (info->si_addr >= g_stopper_page &&
-        info->si_addr < g_stopper_page + 4096) {
-        // Disarm: make readable again, but write a poison value.
-        stopper_disarm(g_stopper_page);
-        *(volatile uint64_t*)g_stopper_page = 1;  // non-zero = preempt
-        // The kernel retries the faulting instruction, which now
-        // succeeds and reads 1. The JIT's TEST+JNZ takes the exit path.
-        return;
-    }
-    // Chain to Go's handler.
-    if (g_old_sigaction.sa_flags & SA_SIGINFO) {
-        g_old_sigaction.sa_sigaction(sig, info, ctx);
-    } else if (g_old_sigaction.sa_handler != SIG_DFL &&
-               g_old_sigaction.sa_handler != SIG_IGN) {
-        g_old_sigaction.sa_handler(sig);
-    }
-}
-```
+### 2c. Replace BudgetCheck calls in jit_emit_ir.go
 
-And `ClearPreemption()` resets the word to 0 (it's already PROT_READ|PROT_WRITE after the handler disarmed it).
+Add `stopperAddr int64` field to `emitter` struct. Passed from `JIT.stopperPage` at block emission time.
 
-**File**: `jit_stopper.go` (new) or `jit_stopper.c` (new) + `jit_stopper.go` (Go wrapper)
-
-## Part 2: New IR op + lowering
-
-### 2a. Add IRStopperCheck
-
-**File**: `ir.go` — add opcode:
+In `emitBranch()` (~line 2624, backward branch path):
 ```go
-IRStopperCheck // Imm = stopper page addr, Imm2 = targetPC; jumps to Label(A) or exits
+// Before:
+e.irEm.BudgetCheck(targetLabel, target)
+
+// After:
+e.irEm.StopperLoad(e.stopperAddr)
+e.irEm.Jump(targetLabel)
 ```
 
-**File**: `highlevel.go` — add emitter method:
+In `emitJAL()` (~line 2543, backward unconditional jump):
 ```go
-func (e *Emitter) StopperCheck(target Label, targetPC uint64, stopperAddr int64) {
-    preempt := e.NewLabel()
-    tmp := e.Tmp()
-    e.Const(tmp, stopperAddr)
-    e.LoadAbsolute(tmp, tmp, I64)         // tmp = *stopperAddr
-    e.BranchImm(tmp, 0, NE, preempt)     // if non-zero, preempt
-    e.Jump(target)
-    e.PlaceLabel(preempt)
-    e.WriteBackAll()
-    e.Ret(targetPC, jitPreempted, VRegZero)
-}
+// Before:
+e.irEm.BudgetCheck(targetLabel, target)
+
+// After:
+e.irEm.StopperLoad(e.stopperAddr)
+e.irEm.Jump(targetLabel)
 ```
 
-Or implement as a single IR op that the lowerer handles directly (avoids allocating a temp VReg for the address):
-
-**File**: `lower_amd64_ops.go` — add lowering for IRStopperCheck:
-```asm
-MOV RAX, imm64           ; stopperPageAddr
-MOV RAX, [RAX]           ; load from page (faults if armed)
-TEST RAX, RAX
-JNZ preempt_label
-JMP target_label
-preempt_label:
-  <writeback>
-  <ret with jitPreempted>
-```
-
-**File**: `lower_amd64_abjit.go` — same lowering for Abjit path
-
-### 2b. Replace BudgetCheck with StopperCheck
-
-**File**: `jit_emit_ir.go`:
-- `emitBranch()` (~line 2631): replace `e.irEm.BudgetCheck(targetLabel, target)` with `e.irEm.StopperCheck(targetLabel, target, stopperAddr)`
-- `emitJAL()` (~line 2543): same replacement
-- Add `stopperAddr int64` field to `emitter` struct, passed from JIT
-
-### 2c. Add jitPreempted status
-
-**File**: `highlevel.go` or `jit.go`:
-```go
-const jitPreempted = 8
-```
+**Files**: `ir.go`, `highlevel.go` (or `emit.go`), `lower_amd64_ops.go`, `lower_amd64_abjit.go`, `jit_emit_ir.go`
 
 ## Part 3: Remove IC entirely
 
-### 3a. Simplify advancePC (jit_emit_ir.go)
+### 3a. Simplify advancePC (`jit_emit_ir.go`)
 
 ```go
 func (e *emitter) advancePC(size uint64) {
@@ -214,95 +101,165 @@ func (e *emitter) advancePC(size uint64) {
 }
 ```
 
-Delete: `emitICplusplus()`, `icEmitted` field, the IC logic in `emitBranch()` (lines 2607-2608).
+Delete:
+- `emitICplusplus()` function (line 274-276)
+- `icEmitted` field from `emitter` struct
+- IC logic in `emitBranch()`: remove `e.emitICplusplus()` (line 2607) and `e.icEmitted = true` (line 2608)
 
-### 3b. Remove IC VReg (emit.go, lower_amd64.go)
+### 3b. Remove IC VReg allocation (`emit.go`, `lower_amd64.go`)
 
-- `emit.go`: Remove `ic` field, `IC()` method, the `e.Tmp()` call for IC
-- `lower_amd64.go`: Delete `VRIC`, renumber:
-  ```
-  VRXBase   = VRegTempStart + 0  // t64
-  VRFBase   = VRegTempStart + 1  // t65
-  VRMemBase = VRegTempStart + 2  // t66 (was +3)
-  VRMemMask = VRegTempStart + 3  // t67 (was +4)
-  VRRegFile = VRegTempStart + 4  // t68 (was +5)
-  ```
+**`emit.go`**: Remove `ic` field, `IC()` method, and the `e.Tmp()` call that allocated VRIC (line 46: `e.ic = e.Tmp()`).
 
-### 3c. Remove IC from Rv8 lowerer (lower_amd64_rv8.go)
+Currently NewEmitter allocates 6 parameter VRegs via `e.Tmp()`:
+```
+t64 = VRXBase
+t65 = VRFBase
+t66 = VRIC        ← DELETE this one
+t67 = VRMemBase
+t68 = VRMemMask
+t69 = VRRegFile
+```
 
-- Delete `stageICToScratch()` function
-- Remove all `icStaged` calls (~5 sites)
-- Remove IC load from prologue (lines ~189-205)
+After removal, only 5 calls to `e.Tmp()`:
+```
+t64 = VRXBase
+t65 = VRFBase
+t66 = VRMemBase   (was t67)
+t67 = VRMemMask   (was t68)
+t68 = VRRegFile   (was t69)
+```
 
-### 3d. Remove IC from Abjit lowerer (lower_amd64_abjit.go)
+**`lower_amd64.go`**: Update constants:
+```go
+const (
+    VRXBase   = VReg(VRegTempStart + 0) // t64
+    VRFBase   = VReg(VRegTempStart + 1) // t65
+    VRMemBase = VReg(VRegTempStart + 2) // t66 (was +3)
+    VRMemMask = VReg(VRegTempStart + 3) // t67 (was +4)
+)
+const VRRegFile = VReg(VRegTempStart + 4) // t68 (was +5)
+```
+
+Delete `VRIC` entirely.
+
+### 3c. Return freed register to allocator pools
+
+Currently VRIC competes with guest registers for a host register in the allocator. With VRIC gone, the allocator automatically has one more VReg fewer to assign, meaning more host registers available for guest regs.
+
+**No pool changes needed** — the pools (`RV8Pool` returns 12 int regs, `ABJITPool` returns 11 int regs) define *available host registers*, which haven't changed. What changes is *demand*: one fewer VReg (VRIC) competing for those host registers. The allocator will naturally assign the freed slot to a guest register that was previously spilled.
+
+To verify this is working: after the change, check that blocks which previously spilled a guest register now keep it in a host register. Can be verified by dumping `Allocation.Kind` for a test block before/after.
+
+**Files**: `emit.go`, `lower_amd64.go`
+
+### 3d. Remove IC from Rv8 lowerer (`lower_amd64_rv8.go`)
+
+- Delete `stageICToScratch()` function entirely
+- Remove all `icStaged := lc.stageICToScratch()` calls (~5 sites: rv8Ret, rv8RetDyn, rv8ChainExit, rv8Syscall, rv8JalrIC)
+- Remove IC load from prologue (lines ~189-205: loading sret.IC into VRIC's host reg)
+- Remove IC writes to sret buffer (stores to `sretOffset+8`)
+- Note: `sretOffset+8` is also used as scratch for RDX spill during DIV (`lower_amd64_ops.go:767`). That usage is unrelated to IC and stays — just add a comment clarifying it's a scratch slot.
+
+### 3e. Remove IC from Abjit lowerer (`lower_amd64_abjit.go`)
 
 - Delete `stageICToState()` function
-- Remove all calls (~5 sites)
+- Remove all calls to it (~5 sites: abjitRet, abjitRetDyn, abjitChainExit, abjitSyscall, abjitJalrIC)
 - Remove IC load from prologue (lines ~168-180)
-- Update all hardcoded offsets after removing IC from State struct
+- Update hardcoded offset constants after State.IC removal (Part 3h shifts offsets)
 
-### 3e. Delete BudgetCheck + MaxIC (highlevel.go)
+### 3f. Delete BudgetCheck + MaxIC (`highlevel.go`)
 
-Delete `BudgetCheck()` method and `MaxIC` constant.
+- Delete `BudgetCheck()` method (lines 162-173)
+- Delete `MaxIC` constant (line 20)
 
-### 3f. Remove IC from Result struct + trampolines
+### 3g. Remove IC from Result struct + trampolines
 
-- `internal/jitcall/call.go`: Remove `IC` field, Result becomes 24 bytes:
-  ```go
-  type Result struct {
-      PC        uint64 // offset 0
-      Status    uint64 // offset 8
-      FaultAddr uint64 // offset 16
-  }
-  ```
-- `internal/jitcall/call_amd64.s`: Copy 3 qwords, adjust offsets
-- `jit_sandbox_amd64.S`: Same
-- `jit_sandbox.c`: Update comments
+**`internal/jitcall/call.go`**: Remove `IC` field. Result becomes 24 bytes:
+```go
+type Result struct {
+    PC        uint64 // offset 0
+    Status    uint64 // offset 8  (was 16)
+    FaultAddr uint64 // offset 16 (was 24)
+}
+```
 
-### 3g. Remove IC from Abjit State (abjit/abjit.go)
+**`internal/jitcall/call_amd64.s`**: In both `Call` and `CallAOT`:
+- Copy 3 qwords from sret to Go return area (not 4)
+- Adjust return field offsets: `ret_Status` and `ret_FaultAddr` shift by -8
+- sret buffer layout: offset 0=PC, 8=Status (was IC), 16=FaultAddr (was Status), slot at 24 becomes unused
 
-Remove `IC uint64` field. Update all offset constants in `lower_amd64_abjit.go`.
+**`jit_sandbox_amd64.S`**: Same sret layout adjustment for sandbox trampoline.
 
-### 3h. Update dispatch loop (jit.go, jit_abjit.go)
+**`jit_sandbox.c`**: Update sret layout comments.
 
-- Remove `cpu.cycle += res.IC`
-- Change `return res.IC, err` → `return 0, err` (or estimate from numInsns)
-- Handle `jitPreempted` status: return to Go dispatch loop
-- `jit_abjit.go`: Remove `s.IC = 0` and `IC: s.IC`
+**Rv8 lowerer** (`lower_amd64_rv8.go`): All writes of Status/FaultAddr to sret must use new offsets (shift by -8):
+- Status: `sretOffset+8` (was `sretOffset+16`)
+- FaultAddr: `sretOffset+16` (was `sretOffset+24`)
+
+**Abjit lowerer** (`lower_amd64_abjit.go`): Offset constants for State.Status, State.FaultAddr shift after IC removal.
+
+### 3h. Remove IC from Abjit State (`abjit/abjit.go`)
+
+Remove `IC uint64` field from State struct. This shifts all subsequent field offsets by -8:
+```
+PC:         536 (unchanged)
+Status:     544 (was 552)
+FaultAddr:  552 (was 560)
+DCBase:     560 (was 568)
+DCMask:     568 (was 576)
+VAddrBegin: 576 (was 584)
+SegSize:    584 (was 592)
+```
+
+Update all hardcoded offset constants in `lower_amd64_abjit.go`.
+
+### 3i. Update dispatch loop (`jit.go`, `jit_abjit.go`)
+
+**`jit.go`**:
+- Remove all `res.IC` references
+- Remove `cpu.cycle += res.IC` (or replace with estimate from `blk.numInsns`)
+- Change all `return res.IC, err` → `return 0, err` (or remove IC from return type if desired)
+- In `RunJIT` recover block: detect stopper page fault (check error message or add a sentinel) and return `ErrPreempted`
+
+**`jit_abjit.go`**:
+- Remove `s.IC = 0` (line 30)
+- Remove `IC: s.IC` from Result construction (line 36)
 
 ## Execution order
 
-1. Add stopper page allocation + signal handler (Part 1)
-2. Add IRStopperCheck + lowering (Part 2a)
-3. Replace BudgetCheck → StopperCheck at backward branches (Part 2b)
-4. Remove emitICplusplus / simplify advancePC (Part 3a)
-5. Remove IC VReg (Part 3b)
-6. Remove IC from both lowerers (Part 3c, 3d)
-7. Delete BudgetCheck + MaxIC (Part 3e)
-8. Remove IC from Result + trampolines (Part 3f)
-9. Remove IC from Abjit State (Part 3g)
-10. Update dispatch loop (Part 3h)
+1. Add stopper page allocation + arm/disarm API (Part 1)
+2. Add IRStopperLoad IR op + lowering for both Rv8 and Abjit (Part 2a, 2b)
+3. Replace BudgetCheck → StopperLoad+Jump at backward branches (Part 2c)
+4. Remove emitICplusplus, simplify advancePC (Part 3a)
+5. Remove IC VReg allocation, renumber constants (Part 3b)
+6. Verify freed register helps allocator (Part 3c)
+7. Remove IC from Rv8 lowerer (Part 3d)
+8. Remove IC from Abjit lowerer (Part 3e)
+9. Delete BudgetCheck + MaxIC (Part 3f)
+10. Remove IC from Result struct + trampolines (Part 3g) — most invasive
+11. Remove IC from Abjit State + update offsets (Part 3h)
+12. Update dispatch loop (Part 3i)
 
-Steps 3-10 are tightly coupled — do as one atomic change.
+Steps 3-12 are tightly coupled — do as one atomic change.
 
 ## Files to modify
 
 | File | Changes |
 |------|---------|
-| `jit_stopper.go` (new) | C mmap page, signal handler, arm/disarm/clear API |
-| `jit.go` | stopperPage field, jitPreempted const, dispatch loop |
+| `jit_stopper.go` (new) | C mmap page, arm/disarm API |
+| `jit.go` | stopperPage field, init/cleanup, dispatch loop, recover handling |
 | `jit_emit_ir.go` | Remove emitICplusplus, simplify advancePC, replace BudgetCheck |
-| `ir.go` | Add IRStopperCheck opcode |
-| `highlevel.go` | Add StopperCheck, remove BudgetCheck + MaxIC |
-| `emit.go` | Remove IC Tmp() alloc + IC() method |
+| `ir.go` | Add IRStopperLoad opcode |
+| `highlevel.go` | Add StopperLoad emitter, remove BudgetCheck + MaxIC |
+| `emit.go` | Remove IC Tmp() alloc, IC() method, ic field |
 | `lower_amd64.go` | Delete VRIC, renumber VRMemBase/VRMemMask/VRRegFile |
-| `lower_amd64_rv8.go` | Remove stageICToScratch, IC prologue, IC sret writes |
-| `lower_amd64_abjit.go` | Remove stageICToState, IC prologue, update offsets |
-| `lower_amd64_ops.go` | Add IRStopperCheck lowering |
-| `abjit/abjit.go` | Remove IC from State |
+| `lower_amd64_rv8.go` | Remove stageICToScratch, IC prologue, IC sret writes, update sret offsets |
+| `lower_amd64_abjit.go` | Remove stageICToState, IC prologue, update all State offsets |
+| `lower_amd64_ops.go` | Add IRStopperLoad lowering |
+| `abjit/abjit.go` | Remove IC from State, shifts all subsequent offsets |
 | `jit_abjit.go` | Remove IC references |
 | `internal/jitcall/call.go` | Remove IC from Result (24 bytes now) |
-| `internal/jitcall/call_amd64.s` | Update sret copy offsets |
+| `internal/jitcall/call_amd64.s` | Update sret copy (3 qwords), adjust offsets |
 | `jit_sandbox_amd64.S` | Update sret layout |
 | `jit_sandbox.c` | Update sret comments |
 
@@ -311,8 +268,10 @@ Steps 3-10 are tightly coupled — do as one atomic change.
 ```bash
 go test -v -run TestJIT .
 go test -v ./...
-make bench-quick            # expect major speedup from IC removal
-make bench-cpu              # MIPS should improve dramatically
+make bench-quick            # expect major speedup
+make bench-cpu              # MIPS metric improvement
 ```
 
-Test preemption: run guest infinite loop, goroutine calls `RequestPreemption()` after timeout, verify JIT returns with `jitPreempted`.
+Test preemption: guest infinite loop + goroutine calls `RequestPreemption()` after timeout → `RunJIT` returns via `recover` with preemption error. Caller calls `ClearPreemption()` before re-entering.
+
+Test register pressure improvement: compare `Allocation.Kind` dump for a register-heavy block before/after — one fewer spill expected.
