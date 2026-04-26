@@ -683,7 +683,6 @@ test:
 	@echo "── unit tests ──────────────────────────────────────────────────"
 	GOCPU_VIZJIT_OFF=1 cd $(ROOT) && $(GO) test -count=1 -v 2>&1
 	GOCPU_VIZJIT_OFF=1 cd $(ROOT) && $(GO) test -count=1 -v ./bench/ 2>&1
-	GOCPU_VIZJIT_OFF=1 cd $(ROOT) && $(GO) test -count=1 -v ./ir/ 2>&1
 
 # ── clean ──────────────────────────────────────────────────────────────────
 
@@ -811,22 +810,22 @@ fuzz-all:
 	@echo "── [2/12] FuzzPeepholeTermination ($(FUZZ_LONG_TIME)) ──"
 	cd $(ROOT) && $(GO) test \
 	    -run FuzzPeepholeTermination -fuzz=FuzzPeepholeTermination \
-	    -fuzztime=$(FUZZ_LONG_TIME) ./ir/ 2>&1 || true
+	    -fuzztime=$(FUZZ_LONG_TIME)  2>&1 || true
 	@echo ""
 	@echo "── [3/12] FuzzEmitterSequences ($(FUZZ_LONG_TIME)) ──"
 	cd $(ROOT) && $(GO) test \
 	    -run FuzzEmitterSequences -fuzz=FuzzEmitterSequences \
-	    -fuzztime=$(FUZZ_LONG_TIME) ./ir/ 2>&1 || true
+	    -fuzztime=$(FUZZ_LONG_TIME)  2>&1 || true
 	@echo ""
 	@echo "── [4/12] FuzzBlockStructure ($(FUZZ_LONG_TIME)) ──"
 	cd $(ROOT) && $(GO) test \
 	    -run FuzzBlockStructure -fuzz=FuzzBlockStructure \
-	    -fuzztime=$(FUZZ_LONG_TIME) ./ir/ 2>&1 || true
+	    -fuzztime=$(FUZZ_LONG_TIME)  2>&1 || true
 	@echo ""
 	@echo "── [5/12] FuzzHighLevelHelpers ($(FUZZ_LONG_TIME)) ──"
 	cd $(ROOT) && $(GO) test \
 	    -run FuzzHighLevelHelpers -fuzz=FuzzHighLevelHelpers \
-	    -fuzztime=$(FUZZ_LONG_TIME) ./ir/ 2>&1 || true
+	    -fuzztime=$(FUZZ_LONG_TIME)  2>&1 || true
 	@echo ""
 	@echo "── [6/12] FuzzALUVsLibriscv ($(FUZZ_LONG_TIME)) ──"
 	cd $(ROOT) && FUZZ_TIMEOUT=1 $(GO) test \
