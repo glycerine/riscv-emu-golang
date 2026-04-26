@@ -316,7 +316,7 @@ func (lc *lowerOps) directReg(v VReg) int16 {
 		return -1
 	}
 	switch v {
-	case VRXBase, VRFBase, VRIC, VRMemBase, VRMemMask, VRRegFile:
+	case VRXBase, VRFBase, VRMemBase, VRMemMask, VRRegFile:
 		return -1
 	}
 	hr := lc.hostReg(v)

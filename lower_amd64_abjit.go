@@ -25,13 +25,12 @@ const (
 	abjitMemBaseOff    = 520
 	abjitMemMaskOff    = 528
 	abjitPCOff         = 536
-	abjitICOff         = 544
-	abjitStatusOff     = 552
-	abjitFaultAddrOff  = 560
-	abjitDCBaseOff     = 568
-	abjitDCMaskOff     = 576
-	abjitVAddrBeginOff = 584
-	abjitSegSizeOff    = 592
+	abjitStatusOff     = 544
+	abjitFaultAddrOff  = 552
+	abjitDCBaseOff     = 560
+	abjitDCMaskOff     = 568
+	abjitVAddrBeginOff = 576
+	abjitSegSizeOff    = 584
 )
 
 type lowerCtxABJIT struct {
@@ -165,20 +164,6 @@ func (lc *lowerCtxABJIT) emitPrologue() {
 		}
 	}
 
-	// Load IC from State.IC.
-	if int(VRIC) < len(lc.alloc.Kind) {
-		lc.emitRM(x86.AMOVQ, goasm.REG_AMD64_BP, abjitICOff, stgA)
-		switch lc.alloc.Kind[VRIC] {
-		case AllocReg:
-			host := lc.rIdx.lookup(VRIC, 0)
-			if host >= 0 {
-				lc.emit2(x86.AMOVQ, stgA, host)
-			}
-		case AllocStack:
-			lc.storeSpill(stgA, lc.alloc.SpillSlot[VRIC])
-		}
-	}
-
 	// Load memBase/memMask from State (AFTER regs, so they win on
 	// host register conflicts).
 	if int(VRMemBase) < len(lc.alloc.Kind) {
@@ -233,24 +218,6 @@ func (lc *lowerCtxABJIT) emitExitThunk() {
 	lc.c.Append(p)
 }
 
-// ── IC staging ──
-
-func (lc *lowerCtxABJIT) stageICToState() {
-	if int(VRIC) >= len(lc.alloc.Kind) {
-		return
-	}
-	switch lc.alloc.Kind[VRIC] {
-	case AllocReg:
-		hr := lc.hostReg(VRIC)
-		if hr >= 0 {
-			lc.emitMR(x86.AMOVQ, hr, goasm.REG_AMD64_BP, abjitICOff)
-		}
-	case AllocStack:
-		lc.loadSpill(lc.alloc.SpillSlot[VRIC], stgA)
-		lc.emitMR(x86.AMOVQ, stgA, goasm.REG_AMD64_BP, abjitICOff)
-	}
-}
-
 // jmpExitThunk emits ADD RSP, frameSize; JMP exitThunk.
 func (lc *lowerCtxABJIT) jmpExitThunk() {
 	lc.emitRI(x86.AADDQ, lc.frameSize, goasm.REG_AMD64_SP)
@@ -290,7 +257,7 @@ func (lc *lowerCtxABJIT) lowerInstr(ins *IRInstr) error {
 // ── Ret ──
 
 func (lc *lowerCtxABJIT) abjitRet(ins *IRInstr) {
-	lc.stageICToState()
+
 	lc.storeRegsBack()
 
 	lc.loadImm(ins.Imm, stgB)
@@ -318,7 +285,7 @@ func (lc *lowerCtxABJIT) abjitRetDyn(ins *IRInstr) {
 		}
 	}
 
-	lc.stageICToState()
+
 	lc.storeRegsBack()
 
 	if pcStaged {
@@ -346,7 +313,7 @@ func (lc *lowerCtxABJIT) abjitRetDyn(ins *IRInstr) {
 // ── Chain exit ──
 
 func (lc *lowerCtxABJIT) abjitChainExit(ins *IRInstr) {
-	lc.stageICToState()
+
 	lc.storeRegsBack()
 
 	lc.emitRI(x86.AADDQ, lc.frameSize, goasm.REG_AMD64_SP)
@@ -403,7 +370,7 @@ func (lc *lowerCtxABJIT) abjitSyscall(ins *IRInstr) {
 	sym := lc.blk.CTab[ins.Imm2]
 
 	// Stage IC to State BEFORE the CALL (call clobbers caller-saved regs).
-	lc.stageICToState()
+
 
 	// Set up SysV args: RDI=xBase(RBP), RSI=memBase, RDX=memMask.
 	lc.emit2(x86.AMOVQ, goasm.REG_AMD64_BP, goasm.REG_AMD64_DI)
@@ -494,7 +461,7 @@ func (lc *lowerCtxABJIT) abjitJalrIC(ins *IRInstr) {
 		}
 	}
 
-	lc.stageICToState()
+
 	lc.storeRegsBack()
 
 	// Load target into RCX.

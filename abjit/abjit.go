@@ -22,7 +22,6 @@ type State struct {
 	MemBase    uintptr
 	MemMask    uint64
 	PC         uint64
-	IC         uint64
 	Status     uint64
 	FaultAddr  uint64
 	DCBase     uintptr

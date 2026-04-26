@@ -13,7 +13,7 @@
 //   fcsr+24(FP)     *uint32     8 bytes
 //   memBase+32(FP)  uintptr     8 bytes
 //   memMask+40(FP)  uint64      8 bytes
-//   ret+48(FP)      Result      32 bytes
+//   ret+48(FP)      Result      24 bytes (PC, Status, FaultAddr)
 //
 // System V AMD64 ABI — struct return > 16 bytes uses hidden sret pointer:
 //   RDI = hidden pointer to caller-allocated Result
@@ -24,7 +24,7 @@
 //   R9  = memMask
 //
 // Local frame layout (the callee-visible sret buffer is RDI = &frame[0]):
-//   [0, 32)   Result struct (PC, IC, Status, FaultAddr)
+//   [0, 24)   Result struct (PC, Status, FaultAddr)
 //   [32, 80)  trampoline's own callee-save stashes (BX, BP, R12-R15)
 //   [80, 88)  fcsr pointer — written here once per Call so JIT code can
 //             access it via [RBX+80] even from chained blocks (where RCX
@@ -33,7 +33,7 @@
 //   [88, …)   unused / TCC/JIT code may spill below its own RSP after
 //             the callee's prologue runs SubQ.
 // NOSPLIT frame size 65536 is well above any reasonable callee usage.
-TEXT ·Call(SB), $65536-80
+TEXT ·Call(SB), $65536-72
 
 	// Save callee-saved registers that JIT/TCC code may clobber.
 	MOVQ	BX,  32(SP)
@@ -77,15 +77,13 @@ TEXT ·Call(SB), $65536-80
 	CALL	AX
 
 	// Copy Result from local buffer at 0(SP) to Go return area.
-	// Result is 32 bytes = 4 quadwords. Use named subfields for go vet.
+	// Result is 24 bytes = 3 quadwords.
 	MOVQ	0(SP),  AX
 	MOVQ	8(SP),  CX
 	MOVQ	16(SP), DX
-	MOVQ	24(SP), SI
 	MOVQ	AX, ret_PC+48(FP)
-	MOVQ	CX, ret_IC+56(FP)
-	MOVQ	DX, ret_Status+64(FP)
-	MOVQ	SI, ret_FaultAddr+72(FP)
+	MOVQ	CX, ret_Status+56(FP)
+	MOVQ	DX, ret_FaultAddr+64(FP)
 
 	// Restore callee-saved registers.
 	MOVQ	32(SP), BX
@@ -114,8 +112,8 @@ TEXT ·Call(SB), $65536-80
 //   dcMask+56(FP)    uint64         8
 //   vBegin+64(FP)    uint64         8
 //   segSize+72(FP)   uint64         8
-//   ret+80(FP)       Result         32
-TEXT ·CallAOT(SB), $65536-112
+//   ret+80(FP)       Result         24
+TEXT ·CallAOT(SB), $65536-104
 
 	// Save callee-saved registers that JIT/TCC code may clobber.
 	MOVQ	BX,  32(SP)
@@ -155,11 +153,9 @@ TEXT ·CallAOT(SB), $65536-112
 	MOVQ	0(SP),  AX
 	MOVQ	8(SP),  CX
 	MOVQ	16(SP), DX
-	MOVQ	24(SP), SI
 	MOVQ	AX, ret_PC+80(FP)
-	MOVQ	CX, ret_IC+88(FP)
-	MOVQ	DX, ret_Status+96(FP)
-	MOVQ	SI, ret_FaultAddr+104(FP)
+	MOVQ	CX, ret_Status+88(FP)
+	MOVQ	DX, ret_FaultAddr+96(FP)
 
 	// Restore callee-saved registers.
 	MOVQ	32(SP), BX
