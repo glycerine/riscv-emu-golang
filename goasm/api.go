@@ -241,10 +241,30 @@ func (c *Ctx) Assemble() (out []byte, err error) {
 
 // DumpProgs returns a human-readable listing of all appended Progs.
 // Skips the ATEXT pseudo-instruction (which may not be fully initialized).
+// NOP instructions that serve as branch targets are replaced with a
+// label line showing their byte offset (e.g. "L_0x2e:"); other NOPs
+// are omitted entirely. This matches what the assembler emits — it
+// eliminates NOPs, so showing them would misalign with machine code.
 func (c *Ctx) DumpProgs() string {
+	// First pass: collect NOP Progs that are branch targets.
+	nopTargets := map[*obj.Prog]bool{}
+	for p := c.firstProg; p != nil; p = p.Link {
+		if p.To.Type == obj.TYPE_BRANCH {
+			if t := p.To.Target(); t != nil && t.As == obj.ANOP {
+				nopTargets[t] = true
+			}
+		}
+	}
+
 	var sb strings.Builder
 	for p := c.firstProg; p != nil; p = p.Link {
 		if p.As == obj.ATEXT {
+			continue
+		}
+		if p.As == obj.ANOP {
+			if nopTargets[p] {
+				fmt.Fprintf(&sb, "L_0x%x:\n", p.Pc)
+			}
 			continue
 		}
 		fmt.Fprintf(&sb, "%s\n", p.InstructionString())
