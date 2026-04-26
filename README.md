@@ -200,6 +200,8 @@ re-scheduling and keep caches hot.
 also scheduler affinity.
 
 ~~~
+make bench
+
 darwin
 
   Go JIT — rv8 Fixed Static Mapping (native): 3462 MIPS
@@ -216,4 +218,26 @@ cpu: AMD Ryzen Threadripper 3960X 24-Core Processor
   libriscv — interpreter (no JIT):            795.8 MIPS
   native x86-64 (-O3 -march=native):         21041 MIPS  (120.0 ms)
   wazero wasm aot-and-run                    18384.9 MIPS
+~~~
+
+~~~
+make bench-cpu
+
+goos: darwin
+goarch: amd64
+pkg: riscv/bench
+cpu: Intel(R) Core(TM) i7-1068NG7 CPU @ 2.30GHz
+
+BenchmarkCPU_FullExecution_JIT_Rv8-8     	       1	 837820510 ns/op	      3014 MIPS	 2369224 B/op	   17590 allocs/op
+BenchmarkCPU_FullExecution_JIT_ABJIT-8   	       1	 829903924 ns/op	      3042 MIPS	 2356184 B/op	   17311 allocs/op
+
+goos: linux
+goarch: amd64
+pkg: riscv/bench
+cpu: AMD Ryzen Threadripper 3960X 24-Core Processor 
+
+BenchmarkCPU_FullExecution_JIT_Rv8-48                  1         985023960 ns/op
+              2563 MIPS  2389736 B/op      17726 allocs/op
+BenchmarkCPU_FullExecution_JIT_ABJIT-48                1         843590039 ns/op
+              2993 MIPS  2374776 B/op      17441 allocs/op
 ~~~
