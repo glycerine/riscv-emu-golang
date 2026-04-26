@@ -42,12 +42,6 @@ func (j *JIT) jitCompile(res *emitResult) (*compiledBlock, error) {
 		return nil, fmt.Errorf("jit lower: %w", lowerErr)
 	}
 
-	// VizJit: capture Prog listing before Assemble when active.
-	var vizProgs string
-	if _, on := vizJitEnabled(); on {
-		vizProgs = ctx.DumpProgs()
-	}
-
 	// Step 4: Assemble to native bytes.
 	code, err := ctx.Assemble()
 	if err != nil {
@@ -64,8 +58,10 @@ func (j *JIT) jitCompile(res *emitResult) (*compiledBlock, error) {
 	}
 	copy(execMem, code)
 
-	// VizJit dump (no-op when disabled).
-	if vizProgs != "" {
+	// VizJit dump — DumpProgs after Assemble so branch targets show
+	// resolved byte offsets.
+	if _, on := vizJitEnabled(); on {
+		vizProgs := ctx.DumpProgs()
 		vizJitDump(res.startPC, res.endPC, nil, res.block, vizProgs,
 			len(code), uintptr(unsafe.Pointer(&execMem[0])))
 	}
@@ -162,9 +158,6 @@ func (j *JIT) jitCompileDebug(res *emitResult) (*compiledBlock, *compileDebugInf
 		return nil, nil, fmt.Errorf("jit lower: %w", lowerErr)
 	}
 
-	// Capture Prog listing before assembly.
-	progDump := ctx.DumpProgs()
-
 	code, err := ctx.Assemble()
 	if err != nil {
 		return nil, nil, fmt.Errorf("jit assemble: %w", err)
@@ -172,6 +165,9 @@ func (j *JIT) jitCompileDebug(res *emitResult) (*compiledBlock, *compileDebugInf
 	if len(code) == 0 {
 		return nil, nil, fmt.Errorf("jit: assembler produced empty output")
 	}
+
+	// Post-assembly DumpProgs so branch targets show resolved byte offsets.
+	progDump := ctx.DumpProgs()
 
 	execMem, err := allocExec(len(code))
 	if err != nil {

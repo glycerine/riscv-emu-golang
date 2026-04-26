@@ -10,5 +10,6 @@ require (
 
 require (
 	4d63.com/embedfiles v0.0.0-20190311033909-995e0740726f // indirect
+	golang.org/x/arch v0.26.0 // indirect
 	golang.org/x/sys v0.38.0 // indirect
 )

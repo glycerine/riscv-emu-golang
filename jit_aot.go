@@ -63,19 +63,18 @@ func (j *JIT) jitCompileAOTSegment(
 			continue // lowering failed — skip
 		}
 
-		// Capture Prog listing before Assemble (which consumes
-		// prog encoding state). Only when VizJit is active —
-		// DumpProgs is cheap but non-zero.
+		code, err := ctx.Assemble()
+		if err != nil || len(code) == 0 {
+			continue
+		}
+
+		// Capture Prog listing after Assemble so branch targets show
+		// resolved byte offsets instead of 0.
 		var progs string
 		var vizBlock *Block
 		if _, on := vizJitEnabled(); on {
 			progs = ctx.DumpProgs()
 			vizBlock = res.block
-		}
-
-		code, err := ctx.Assemble()
-		if err != nil || len(code) == 0 {
-			continue
 		}
 
 		compiles = append(compiles, &aotBlockCompile{
