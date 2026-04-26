@@ -239,7 +239,7 @@ func (j *JIT) jitCompileAOTSegment(
 				continue
 			}
 			blockBase := codeBase + uintptr(bc.baseOffset)
-			vizJitDump(bc.startPC, bc.endPC, mem, bc.block, bc.progs, len(bc.bytes), blockBase)
+			vizJitDump(bc.startPC, bc.endPC, mem, bc.block, bc.progs, bc.bytes, blockBase)
 			indexLines = append(indexLines,
 				fmt.Sprintf("0x%08x  %s.gocpu.asm.pc_0x%08x.asm", bc.startPC, getVizJitTag(), bc.startPC))
 		}

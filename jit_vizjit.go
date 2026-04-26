@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 
+	"golang.org/x/arch/x86/x86asm"
 	"riscv/goasm"
 )
 
@@ -200,14 +201,14 @@ func vizJitEnabled() (string, bool) {
 // mem:            guest memory to fetch instruction bytes.
 // block:          IR block (for the IR listing).
 // progs:          goasm Ctx.DumpProgs() output (host assembly).
-// codeLen:        size of assembled host bytes.
+// code:           assembled machine code bytes (for x86 disassembly).
 // codeBase:       base address of host code (0 if not yet placed).
 func vizJitDump(
 	startPC, endPC uint64,
 	mem *GuestMemory,
 	block *Block,
 	progs string,
-	codeLen int,
+	code []byte,
 	codeBase uintptr,
 	allocs ...*Allocation,
 ) {
@@ -226,9 +227,9 @@ func vizJitDump(
 	fmt.Fprintf(&sb, "# byte range: 0x%08x..0x%08x (%d bytes)\n",
 		startPC, endPC, endPC-startPC)
 	if codeBase != 0 {
-		fmt.Fprintf(&sb, "# host code:  0x%x, %d bytes\n", codeBase, codeLen)
+		fmt.Fprintf(&sb, "# host code:  0x%x, %d bytes\n", codeBase, len(code))
 	} else {
-		fmt.Fprintf(&sb, "# host code:  %d bytes\n", codeLen)
+		fmt.Fprintf(&sb, "# host code:  %d bytes\n", len(code))
 	}
 	sb.WriteString("\n")
 
@@ -284,6 +285,14 @@ func vizJitDump(
 	if !strings.HasSuffix(progs, "\n") {
 		sb.WriteByte('\n')
 	}
+	sb.WriteByte('\n')
+
+	sb.WriteString("== Host (x86-64 machine code) ==\n")
+	if len(code) > 0 {
+		vizJitDisasmX86(&sb, code, uint64(codeBase))
+	} else {
+		sb.WriteString("(no machine code available)\n")
+	}
 
 	_ = os.WriteFile(path, []byte(sb.String()), 0o644)
 }
@@ -299,6 +308,32 @@ func vizJitDumpIndex(lines []string) {
 	tag := getVizJitTag()
 	path := filepath.Join(dir, fmt.Sprintf("%s.gocpu.asm.index.txt", tag))
 	_ = os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644)
+}
+
+// ── x86-64 machine code disassembly ───────────────────────────────────
+
+func vizJitDisasmX86(sb *strings.Builder, code []byte, basePC uint64) {
+	offset := 0
+	for offset < len(code) {
+		inst, err := x86asm.Decode(code[offset:], 64)
+		if err != nil {
+			fmt.Fprintf(sb, "%06x  %-24s  ??\n", basePC+uint64(offset),
+				fmt.Sprintf("%02x", code[offset]))
+			offset++
+			continue
+		}
+		raw := code[offset : offset+inst.Len]
+		var hexBytes strings.Builder
+		for i, b := range raw {
+			if i > 0 {
+				hexBytes.WriteByte(' ')
+			}
+			fmt.Fprintf(&hexBytes, "%02x", b)
+		}
+		text := x86asm.GoSyntax(inst, basePC+uint64(offset), nil)
+		fmt.Fprintf(sb, "%06x  %-24s  %s\n", basePC+uint64(offset), hexBytes.String(), text)
+		offset += inst.Len
+	}
 }
 
 // ── RISC-V disassembly ─────────────────────────────────────────────────

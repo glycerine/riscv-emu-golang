@@ -90,15 +90,15 @@ func TestBloat_BenchGuest_0x10de(t *testing.T) {
 		t.Fatalf("LowerAMD64_RV8: %v", err)
 	}
 
-	// Capture Progs listing BEFORE Assemble (which finalizes encoding).
-	var progs string
-	if testing.Verbose() {
-		progs = ctx.DumpProgs()
-	}
-
 	code, err := ctx.Assemble()
 	if err != nil {
 		t.Fatalf("Assemble: %v", err)
+	}
+
+	// Capture Progs listing after Assemble so branch targets are resolved.
+	var progs string
+	if testing.Verbose() {
+		progs = ctx.DumpProgs()
 	}
 
 	hostBytes := len(code)
@@ -119,7 +119,7 @@ func TestBloat_BenchGuest_0x10de(t *testing.T) {
 			VIZJIT_DIR = t.TempDir()
 			defer func() { VIZJIT_DIR = savedDir }()
 		}
-		vizJitDump(res.startPC, res.endPC, mem, res.block, progs, hostBytes, 0, alloc)
+		vizJitDump(res.startPC, res.endPC, mem, res.block, progs, code, 0, alloc)
 		t.Logf("VizJit dump written under %s (set GOCPU_VIZJIT=<dir> to keep)", VIZJIT_DIR)
 	}
 

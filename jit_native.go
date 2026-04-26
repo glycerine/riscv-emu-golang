@@ -63,7 +63,7 @@ func (j *JIT) jitCompile(res *emitResult) (*compiledBlock, error) {
 	if _, on := vizJitEnabled(); on {
 		vizProgs := ctx.DumpProgs()
 		vizJitDump(res.startPC, res.endPC, nil, res.block, vizProgs,
-			len(code), uintptr(unsafe.Pointer(&execMem[0])))
+			code, uintptr(unsafe.Pointer(&execMem[0])))
 	}
 
 	codeBase := uintptr(unsafe.Pointer(&execMem[0]))
