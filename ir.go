@@ -405,11 +405,14 @@ func (ins IRInstr) String() string {
 
 // Block holds the IR for a single JIT block.
 type Block struct {
-	Instrs    []IRInstr
-	Labels    map[Label]int // label ID -> index in Instrs where IRLabel sits
-	NextLabel Label         // fresh label allocator
-	CTab      []CSym        // external call symbols
-	VRegLive  []VRegLiveness
+	Instrs []IRInstr
+	Labels map[Label]int // label ID -> index in Instrs where IRLabel sits
+
+	// use JIT wide labels now: JIT.lastLabelSerial; Emitter points to this.
+	//NextLabel Label         // fresh label allocator
+
+	CTab     []CSym // external call symbols
+	VRegLive []VRegLiveness
 
 	maxVreg VReg // uint16
 }

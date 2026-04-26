@@ -1,11 +1,16 @@
 package riscv
 
+import (
+// "sync/atomic"
+)
+
 // Emitter wraps a Block and exposes helper methods for building IR.
 type Emitter struct {
-	j       *JIT
-	Block   *Block
-	dirty   []bool // dirty[vr] = true if vr written but not written back
-	nextTmp VReg   // next temporary VReg to allocate
+	j               *JIT
+	lastLabelSerial *int64
+	Block           *Block
+	dirty           []bool // dirty[vr] = true if vr written but not written back
+	nextTmp         VReg   // next temporary VReg to allocate
 
 	// Parameter VRegs — set during NewEmitter, represent the JIT block's
 	// function arguments (pinned to host regs by the register allocator).
@@ -27,6 +32,13 @@ func NewEmitter(j *JIT) *Emitter {
 		dirty:   make([]bool, initialDirtySize),
 		nextTmp: VRegTempStart,
 	}
+	if j == nil {
+		var lastSerialTestProxy int64
+		e.lastLabelSerial = &lastSerialTestProxy
+	} else {
+		e.lastLabelSerial = &(j.lastLabelSerial)
+	}
+
 	// Pre-allocate parameter VRegs. These correspond to the JIT block's
 	// function signature: block_entry(x[], f[], fcsr, mem_base, mem_mask).
 	e.xBase = e.Tmp()   // t64 = VRXBase
@@ -188,9 +200,12 @@ func (e *Emitter) StoreX(base, idx VReg, scale uint8, src VReg, t Type) {
 
 // NewLabel allocates a label ID without placing it. Use PlaceLabel to emit it.
 func (e *Emitter) NewLabel() Label {
-	l := e.Block.NextLabel
-	e.Block.NextLabel++
-	return l
+	//l := e.Block.NextLabel
+	//e.Block.NextLabel++
+	//return l
+	(*e.lastLabelSerial)++
+	sn := *(e.lastLabelSerial)
+	return Label(sn)
 }
 
 // PlaceLabel emits an IRLabel for a previously allocated label.

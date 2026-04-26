@@ -437,7 +437,7 @@ func TestEmitter_StoreX(t *testing.T) {
 func TestEmitter_NewLabel_PlaceLabel(t *testing.T) {
 	e := NewEmitter(nil)
 	l := e.NewLabel()
-	if l != 0 {
+	if l != 1 {
 		t.Errorf("first label = %d, want 0", l)
 	}
 	e.PlaceLabel(l)
@@ -448,8 +448,8 @@ func TestEmitter_NewLabel_PlaceLabel(t *testing.T) {
 	if idx != 0 {
 		t.Errorf("label index = %d, want 0", idx)
 	}
-	if e.Block.NextLabel != 1 {
-		t.Errorf("NextLabel = %d, want 1", e.Block.NextLabel)
+	if *e.lastLabelSerial != 1 {
+		t.Errorf("*lastLabelSerial = %d, want 1", *e.lastLabelSerial)
 	}
 }
 

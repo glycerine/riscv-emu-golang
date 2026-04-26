@@ -189,6 +189,12 @@ type blockCacheEntry struct {
 
 // JIT holds the cache of compiled basic blocks.
 type JIT struct {
+
+	// unique jump labels (at least for the lifetime
+	// of this JIT instance, to allow alot of
+	// cross assembly jumping.
+	lastLabelSerial int64
+
 	// aotSegments holds all AOT-compiled segments installed so far
 	// (one per PT_LOAD R-X in the ELF, plus any dynamically-created
 	// segments from guest JIT-style code). Empty in pure lazy mode.
@@ -244,7 +250,9 @@ type JIT struct {
 	JalrICDeopts     uint64 // JALR IC sites that crossed the deopt threshold
 }
 
-// NewJIT creates a new JIT translation cache using the Fixed Static Mapping allocator.
+// NewJIT creates a new JIT translation cache using the Fixed
+// Static Mapping allocator. The current default register
+// allocation policy is PolicyABJIT (compare PolicyRV8); see lower_amd64.go
 func NewJIT() *JIT {
 	j := &JIT{
 		noJIT:   make(map[uint64]bool),

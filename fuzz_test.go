@@ -62,8 +62,7 @@ func FuzzPeepholeTermination(f *testing.F) {
 			switch op {
 			case IRLabel:
 				// Emit a label safely.
-				e.emit(IRInstr{Op: IRLabel, Imm: int64(e.Block.NextLabel)})
-				e.Block.NextLabel++
+				e.emit(IRInstr{Op: IRLabel, Imm: int64(e.NewLabel())})
 			case IRStore:
 				e.emit(IRInstr{Op: IRStore, T: I32, A: a, B: dst, Imm: immByte})
 			case IRRet:

@@ -228,9 +228,6 @@ func TestNewBlock(t *testing.T) {
 	if len(b.Instrs) != 0 {
 		t.Errorf("NewBlock().Instrs has %d entries, want 0", len(b.Instrs))
 	}
-	if b.NextLabel != 0 {
-		t.Errorf("NewBlock().NextLabel = %d, want 0", b.NextLabel)
-	}
 }
 
 func TestWidthToType(t *testing.T) {
