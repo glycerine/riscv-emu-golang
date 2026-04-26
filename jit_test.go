@@ -317,9 +317,10 @@ func TestJIT_CycleCount(t *testing.T) {
 	jit := NewJIT()
 	jit.RunJIT(cpu)
 
-	// 5 ADDIs + 1 ECALL = 6
-	if cpu.Cycle() != 6 {
-		t.Errorf("cycle count = %d, want 6", cpu.Cycle())
+	// IC removed — JIT no longer tracks per-instruction cycle counts.
+	// Verify execution correctness only.
+	if cpu.Reg(1) != 1 || cpu.Reg(5) != 5 {
+		t.Errorf("x1=%d x5=%d, want 1 and 5", cpu.Reg(1), cpu.Reg(5))
 	}
 }
 
@@ -355,12 +356,12 @@ func TestJIT_CycleCount_Loop(t *testing.T) {
 	cpu2.Notes.Push(ecallStop)
 	jit := NewJIT()
 	jit.RunJIT(cpu2)
-	jitCycles := cpu2.Cycle()
 
-	if interpCycles != jitCycles {
-		t.Errorf("cycle mismatch: interp=%d jit=%d", interpCycles, jitCycles)
+	// IC removed — JIT no longer tracks cycles. Verify result correctness.
+	if cpu1.Reg(11) != cpu2.Reg(11) {
+		t.Errorf("fib(5) result mismatch: interp x11=%d jit x11=%d", cpu1.Reg(11), cpu2.Reg(11))
 	}
-	t.Logf("fib(5) cycles: %d", jitCycles)
+	t.Logf("fib(5) interp cycles: %d, jit x11=%d", interpCycles, cpu2.Reg(11))
 }
 
 // ── Test 3: Load/Store through JIT ───────────────────────────────────────
@@ -932,10 +933,6 @@ func TestJIT_InstructionBudget(t *testing.T) {
 	if cpu.Reg(1) != 100000 {
 		t.Errorf("x1 = %d, want 100000", cpu.Reg(1))
 	}
-	// 100000 iterations × 2 instructions (ADDI+BLT) + 1 ECALL = 200001
-	if cpu.Cycle() != 200001 {
-		t.Errorf("cycles = %d, want 200001", cpu.Cycle())
-	}
 }
 
 // TestJIT_InstructionBudget_JForward_Loop verifies a loop formed by an
@@ -965,11 +962,6 @@ func TestJIT_InstructionBudget_JForward_Loop(t *testing.T) {
 
 	if cpu.Reg(1) != 50000 {
 		t.Errorf("x1 = %d, want 50000", cpu.Reg(1))
-	}
-	// 50000 iterations: ADDI + BEQ + JAL for 49999 iters, ADDI + BEQ (taken) for last iter
-	// = 49999*3 + 2 + 1 (ECALL) = 150000
-	if cpu.Cycle() != 150000 {
-		t.Errorf("cycles = %d, want 150000", cpu.Cycle())
 	}
 }
 
