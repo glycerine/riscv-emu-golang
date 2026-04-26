@@ -565,6 +565,9 @@ func (j *JIT) insertBlock(pc uint64, blk *compiledBlock) {
 
 // StepBlock executes one dispatch cycle and returns.
 func (j *JIT) StepBlock(cpu *CPU) (ic uint64, err error) {
+	if j.watchAddr == 0 && cpu.watchAddr != 0 {
+		j.watchAddr = cpu.watchAddr
+	}
 	pc := cpu.pc
 
 	blk := j.lookupBlock(pc)
