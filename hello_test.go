@@ -32,13 +32,13 @@ func TestHelloGoCPU(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mem.Free()
-	entry, err := LoadELFBytes(mem, data)
+	elf, err := LoadELFBytes(mem, data)
 	if err != nil {
 		t.Fatalf("LoadELFBytes: %v", err)
 	}
 
 	cpu := NewCPU(*mem)
-	cpu.SetPC(entry)
+	cpu.SetPC(elf.Entry)
 	cpu.SetReg(2, 0x03F00000) // sp near top of 64 MiB
 
 	var out bytes.Buffer
@@ -83,13 +83,13 @@ func TestHelloGoCPU_JIT_DirectSyscall(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mem.Free()
-	entry, err := LoadELFBytes(mem, data)
+	elf, err := LoadELFBytes(mem, data)
 	if err != nil {
 		t.Fatalf("LoadELFBytes: %v", err)
 	}
 
 	cpu := NewCPU(*mem)
-	cpu.SetPC(entry)
+	cpu.SetPC(elf.Entry)
 	cpu.SetReg(2, 0x03F00000)
 
 	// The Go OS layer is still installed for exit(93/94) — the

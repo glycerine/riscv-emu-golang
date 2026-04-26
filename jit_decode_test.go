@@ -84,12 +84,12 @@ func TestInlineEcall_HelloEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mem.Free()
-	entry, err := LoadELFBytes(mem, data)
+	elf, err := LoadELFBytes(mem, data)
 	if err != nil {
 		t.Fatalf("LoadELFBytes: %v", err)
 	}
 	cpu := NewCPU(*mem)
-	cpu.SetPC(entry)
+	cpu.SetPC(elf.Entry)
 	cpu.SetReg(2, 0x03F00000)
 
 	cleanup := InstallLinuxOS(cpu, io.Discard)

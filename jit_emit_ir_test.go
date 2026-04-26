@@ -394,13 +394,14 @@ func TestSubELF_Block39(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mem.Free()
-	entry, err := LoadELF(mem, "riscv-elf-tests/rv64ui-p-sub")
+	elf, err := LoadELF(mem, "riscv-elf-tests/rv64ui-p-sub")
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	cpu := NewCPU(*mem)
-	cpu.SetPC(entry)
+	cpu.SetPC(elf.Entry)
+	cpu.SetWatchAddr(elf.TohostAddr)
 	cpu.Notes.Push(ecallStop)
 
 	jit := NewJIT()
@@ -552,14 +553,14 @@ func TestLW_ELF_Block39(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mem.Free()
-	entry, err := LoadELF(mem, "riscv-elf-tests/rv64ui-p-lw")
+	elf, err := LoadELF(mem, "riscv-elf-tests/rv64ui-p-lw")
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	// Run with JIT, tracing enabled
 	cpu := NewCPU(*mem)
-	cpu.SetPC(entry)
+	cpu.SetPC(elf.Entry)
 	cpu.Notes.Push(ecallStop)
 	jit := NewJIT()
 	// jit.trace = true // uncomment to debug
@@ -1143,7 +1144,7 @@ func TestSRL_RealBlock_V1vV2(t *testing.T) {
 	}
 	defer mem.Free()
 
-	_, err = LoadELFBytes(mem, data)
+	ef, err := LoadELFBytes(mem, data)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1156,10 +1157,7 @@ func TestSRL_RealBlock_V1vV2(t *testing.T) {
 	cpu2.SetPC(0)
 	cpu2.Notes.Push(func(c *CPU, n Note) NoteDisposition { return NoteHandled })
 
-	var watchAddr uint64
-	if addr, ok := FindSymbolAddr(data, "tohost"); ok {
-		watchAddr = addr
-	}
+	watchAddr := ef.TohostAddr
 
 	jitV1 := NewJIT()
 	jitV2 := NewJIT()
@@ -1256,7 +1254,7 @@ func TestDebugV1V2_SRL(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mem.Free()
-	_, err = LoadELFBytes(mem, data)
+	ef, err := LoadELFBytes(mem, data)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1265,10 +1263,7 @@ func TestDebugV1V2_SRL(t *testing.T) {
 	cpu.SetPC(0)
 	cpu.Notes.Push(func(c *CPU, n Note) NoteDisposition { return NoteHandled })
 
-	var watchAddr uint64
-	if addr, ok := FindSymbolAddr(data, "tohost"); ok {
-		watchAddr = addr
-	}
+	watchAddr := ef.TohostAddr
 
 	jit := NewJIT()
 
@@ -1512,16 +1507,13 @@ func TestDispatchTrace_sraw(t *testing.T) {
 		t.Fatal(merr)
 	}
 	defer mem.Free()
-	entry, lerr := LoadELFBytes(mem, data)
+	elf, lerr := LoadELFBytes(mem, data)
 	if lerr != nil {
 		t.Fatalf("LoadELF: %v", lerr)
 	}
 	cpu := NewCPU(*mem)
-	cpu.SetPC(entry)
-	if addr, ok := FindSymbolAddr(data, "tohost"); ok {
-		cpu.SetWatchAddr(addr)
-		//t.Logf("tohost=0x%x", addr)
-	}
+	cpu.SetPC(elf.Entry)
+	cpu.SetWatchAddr(elf.TohostAddr)
 	cpu.Notes.Push(func(c *CPU, n Note) NoteDisposition {
 		if IsEcall(n) {
 			//t.Logf("ECALL at pc=0x%x a7=%d a0=%d", n.PC, c.Reg(17), c.Reg(10))

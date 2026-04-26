@@ -45,16 +45,14 @@ func runABJITRISCVTest(t *testing.T, elfPath string) {
 	}
 	defer mem.Free()
 
-	entry, lerr := LoadELFBytes(mem, data)
+	elf, lerr := LoadELFBytes(mem, data)
 	if lerr != nil {
 		t.Fatalf("LoadELF: %v", lerr)
 	}
 
 	cpu := NewCPU(*mem)
-	cpu.SetPC(entry)
-	if addr, ok := FindSymbolAddr(data, "tohost"); ok {
-		cpu.SetWatchAddr(addr)
-	}
+	cpu.SetPC(elf.Entry)
+	cpu.SetWatchAddr(elf.TohostAddr)
 
 	exitCode, err := runABJITWithOS(cpu)
 	if err != nil {
@@ -158,16 +156,14 @@ func BenchmarkABJIT_RISCVTest_add(b *testing.B) {
 		if merr != nil {
 			b.Fatal(merr)
 		}
-		entry, lerr := LoadELFBytes(mem, data)
+		elf, lerr := LoadELFBytes(mem, data)
 		if lerr != nil {
 			mem.Free()
 			b.Fatal(lerr)
 		}
 		cpu := NewCPU(*mem)
-		cpu.SetPC(entry)
-		if addr, ok := FindSymbolAddr(data, "tohost"); ok {
-			cpu.SetWatchAddr(addr)
-		}
+		cpu.SetPC(elf.Entry)
+		cpu.SetWatchAddr(elf.TohostAddr)
 		_, _ = runABJITWithOS(cpu)
 		mem.Free()
 	}

@@ -20,13 +20,13 @@ func runOS(t *testing.T, insns []uint32) (exitCode int, err error) {
 	}
 	defer mem.Free()
 
-	entry, lerr := LoadELFBytes(mem, elf)
+	ef, lerr := LoadELFBytes(mem, elf)
 	if lerr != nil {
 		t.Fatal(lerr)
 	}
 
 	cpu := NewCPU(*mem)
-	cpu.SetPC(entry)
+	cpu.SetPC(ef.Entry)
 	return RunWithOS(cpu)
 }
 
@@ -288,9 +288,9 @@ func TestNoteChain_Stacked_OSWithDebug(t *testing.T) {
 
 	mem, _ := NewGuestMemory(128 * 1024)
 	defer mem.Free()
-	entry, _ := LoadELFBytes(mem, elf)
+	ef, _ := LoadELFBytes(mem, elf)
 	cpu := NewCPU(*mem)
-	cpu.SetPC(entry)
+	cpu.SetPC(ef.Entry)
 
 	// RunWithOS installs OS handler first; we then push spy as innermost.
 	noted := []Note{}
@@ -357,10 +357,10 @@ func TestNoteChain_InfiniteNesting(t *testing.T) {
 	elf := BuildELF(codeVA, insns)
 	mem, _ := NewGuestMemory(128 * 1024)
 	defer mem.Free()
-	entry, _ := LoadELFBytes(mem, elf)
+	ef, _ := LoadELFBytes(mem, elf)
 
 	cpu := NewCPU(*mem)
-	cpu.SetPC(entry)
+	cpu.SetPC(ef.Entry)
 
 	breakpointHit := false
 	cpu.Notes.Push(func(cpu *CPU, n Note) NoteDisposition {
@@ -436,13 +436,13 @@ func newTestCPUSimple(t *testing.T, memSize uint64, codeVA uint64, insns []uint3
 	if err != nil {
 		t.Fatal(err)
 	}
-	entry, err := LoadELFBytes(mem, elf)
+	ef, err := LoadELFBytes(mem, elf)
 	if err != nil {
 		mem.Free()
 		t.Fatal(err)
 	}
 	cpu := NewCPU(*mem)
-	cpu.SetPC(entry)
+	cpu.SetPC(ef.Entry)
 	return cpu, mem
 }
 
@@ -691,13 +691,13 @@ func TestECALL_TrapHandler_WritesTohost(t *testing.T) {
 	}
 	defer mem.Free()
 
-	entry, err := LoadELFBytes(mem, elf)
+	ef, err := LoadELFBytes(mem, elf)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	cpu := NewCPU(*mem)
-	cpu.SetPC(entry)
+	cpu.SetPC(ef.Entry)
 	cpu.SetWatchAddr(tohostVA)
 
 	// Run with tohost polling. The trap handler writes gp=1 to tohost,
@@ -764,10 +764,10 @@ func TestECALL_TrapHandler_Fail(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mem.Free()
-	entry, _ := LoadELFBytes(mem, elf)
+	ef, _ := LoadELFBytes(mem, elf)
 
 	cpu := NewCPU(*mem)
-	cpu.SetPC(entry)
+	cpu.SetPC(ef.Entry)
 	cpu.SetWatchAddr(tohostVA)
 
 	var exitCode int

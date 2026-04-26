@@ -46,13 +46,13 @@ func newBenchCPU(tb testing.TB, elfData []byte) (*riscv.CPU, *riscv.GuestMemory)
 	if err != nil {
 		tb.Fatal(err)
 	}
-	entry, err := riscv.LoadELFBytes(mem, elfData)
+	elf, err := riscv.LoadELFBytes(mem, elfData)
 	if err != nil {
 		mem.Free()
 		tb.Fatal(err)
 	}
 	cpu := riscv.NewCPU(*mem)
-	cpu.SetPC(entry)
+	cpu.SetPC(elf.Entry)
 	cpu.SetReg(2, 0x03F00000) // sp — near top of 64MB, zero-filled (argc=0)
 
 	o := riscv.NewOS()

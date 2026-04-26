@@ -113,12 +113,12 @@ func FuzzALUVsLibriscv(f *testing.F) {
 		}
 		defer mem.Free()
 
-		entry, err := riscv.LoadELFBytes(mem, elf)
+		ef, err := riscv.LoadELFBytes(mem, elf)
 		if err != nil {
 			return
 		}
 		cpu := riscv.NewCPU(*mem)
-		cpu.SetPC(entry)
+		cpu.SetPC(ef.Entry)
 		cpu.SetReg(2, a)
 		cpu.SetReg(3, b)
 

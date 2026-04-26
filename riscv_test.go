@@ -148,17 +148,14 @@ func runRISCVTest(t *testing.T, elfPath string) {
 	}
 	defer mem.Free()
 
-	entry, lerr := LoadELFBytes(mem, data)
+	elf, lerr := LoadELFBytes(mem, data)
 	if lerr != nil {
 		t.Fatalf("LoadELF: %v", lerr)
 	}
 
 	cpu := NewCPU(*mem)
-	cpu.SetPC(entry)
-	// Standard tohost exit detection: poll this address for non-zero writes.
-	if addr, ok := FindSymbolAddr(data, "tohost"); ok {
-		cpu.SetWatchAddr(addr)
-	}
+	cpu.SetPC(elf.Entry)
+	cpu.SetWatchAddr(elf.TohostAddr)
 
 	exitCode, err := RunWithOS(cpu)
 	if err != nil {
@@ -268,16 +265,14 @@ func runRISCVTestJIT(t *testing.T, elfPath string) {
 	}
 	defer mem.Free()
 
-	entry, lerr := LoadELFBytes(mem, data)
+	elf, lerr := LoadELFBytes(mem, data)
 	if lerr != nil {
 		t.Fatalf("LoadELF: %v", lerr)
 	}
 
 	cpu := NewCPU(*mem)
-	cpu.SetPC(entry)
-	if addr, ok := FindSymbolAddr(data, "tohost"); ok {
-		cpu.SetWatchAddr(addr)
-	}
+	cpu.SetPC(elf.Entry)
+	cpu.SetWatchAddr(elf.TohostAddr)
 
 	exitCode, err := runJITWithOS(cpu)
 	if err != nil {
@@ -386,12 +381,12 @@ func runLockstep(t *testing.T, elfPath string) {
 		t.Fatal(err)
 	}
 	defer jitMem.Free()
-	jitEntry, err := LoadELFBytes(jitMem, data)
+	jitElf, err := LoadELFBytes(jitMem, data)
 	if err != nil {
 		t.Fatalf("LoadELF (jit): %v", err)
 	}
 	jitCPU := NewCPU(*jitMem)
-	jitCPU.SetPC(jitEntry)
+	jitCPU.SetPC(jitElf.Entry)
 
 	// Interpreter side
 	interpMem, err := NewGuestMemory(lockstepMemSize)
@@ -399,12 +394,12 @@ func runLockstep(t *testing.T, elfPath string) {
 		t.Fatal(err)
 	}
 	defer interpMem.Free()
-	interpEntry, err := LoadELFBytes(interpMem, data)
+	interpElf, err := LoadELFBytes(interpMem, data)
 	if err != nil {
 		t.Fatalf("LoadELF (interp): %v", err)
 	}
 	interpCPU := NewCPU(*interpMem)
-	interpCPU.SetPC(interpEntry)
+	interpCPU.SetPC(interpElf.Entry)
 
 	//t.Logf("jitMem base=%#x interpMem base=%#x size=%#x", jitMem.Base(), interpMem.Base(), jitMem.Size())
 

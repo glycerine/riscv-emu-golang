@@ -30,18 +30,18 @@ func collectIRBlocks(tb testing.TB, elfData []byte, maxBlocks int) ([]*riscv.Emi
 		tb.Fatal(err)
 	}
 
-	entry, err := riscv.LoadELFBytes(mem, elfData)
+	elf, err := riscv.LoadELFBytes(mem, elfData)
 	if err != nil {
 		mem.Free()
 		tb.Fatal(err)
 	}
 
 	var results []*riscv.EmitBlockResult
-	pc := entry
+	pc := elf.Entry
 	seen := make(map[uint64]bool)
 
 	jit := riscv.NewJIT()
-	for len(results) < maxBlocks && pc < entry+0x1000000 {
+	for len(results) < maxBlocks && pc < elf.Entry+0x1000000 {
 		if seen[pc] {
 			pc += 4
 			continue

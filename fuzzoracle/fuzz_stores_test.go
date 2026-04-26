@@ -97,7 +97,7 @@ func FuzzStoresVsLibriscv(f *testing.F) {
 		}
 		defer mem.Free()
 
-		entry, err := riscv.LoadELFBytes(mem, elf)
+		ef, err := riscv.LoadELFBytes(mem, elf)
 		if err != nil {
 			return
 		}
@@ -105,7 +105,7 @@ func FuzzStoresVsLibriscv(f *testing.F) {
 			return
 		}
 		cpu := riscv.NewCPU(*mem)
-		cpu.SetPC(entry)
+		cpu.SetPC(ef.Entry)
 		cpu.SetReg(2, baseAddr)
 		cpu.SetReg(3, rs2val)
 

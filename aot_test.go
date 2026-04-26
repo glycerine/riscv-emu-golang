@@ -579,12 +579,12 @@ func TestAOT_MultiSegment_Install(t *testing.T) {
 	}
 	defer mem.Free()
 
-	entry, err := LoadELFBytes(mem, data)
+	elf, err := LoadELFBytes(mem, data)
 	if err != nil {
 		t.Fatalf("LoadELFBytes: %v", err)
 	}
-	if entry != segAVA {
-		t.Fatalf("entry = 0x%x, want 0x%x", entry, segAVA)
+	if elf.Entry != segAVA {
+		t.Fatalf("entry = 0x%x, want 0x%x", elf.Entry, segAVA)
 	}
 
 	j := NewJIT()
