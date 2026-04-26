@@ -263,7 +263,7 @@ func (c *Ctx) DumpProgs() string {
 		}
 		if p.As == obj.ANOP {
 			if nopTargets[p] {
-				fmt.Fprintf(&sb, "ANOP_p.Pc 0x%x (decimal %v):\n", p.Pc, int64(p.Pc))
+				fmt.Fprintf(&sb, " nopTarget ANOP p.Pc 0x%x (decimal %v):\n", p.Pc, int64(p.Pc))
 			}
 			continue
 		}
