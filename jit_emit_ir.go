@@ -13,9 +13,6 @@ import (
 // Zero means normal sorted order. Non-zero rotates by this offset.
 //var testIterStart int
 
-const rasEnabled = true
-
-
 // emitResult holds the generated IR block and metadata.
 type emitResult struct {
 	block         *ir.Block
@@ -73,8 +70,8 @@ type emitter struct {
 	icEmitted      bool
 	deferredExits  []deferredExit
 	deferredFaults []deferredFault
-	exitIdx        int // counter for chain exit indices
-	jalrSiteIdx    int // counter for JALR inline-cache site indices
+	exitIdx        int      // counter for chain exit indices
+	jalrSiteIdx    int      // counter for JALR inline-cache site indices
 	callStack      []uint64 // RAS: expected return addresses for inlined calls
 }
 
@@ -545,8 +542,8 @@ func (e *emitter) emitDivW(dst, a, b ir.VReg, signed, wantRem bool) {
 
 // emitFMinMax emits FMIN/FMAX with full RISC-V spec compliance:
 //
-//   §11.3 NaN: both-NaN → canonical qNaN; one-NaN → the non-NaN operand.
-//   §11.6 signed-zero ordering: -0.0 < +0.0.
+//	§11.3 NaN: both-NaN → canonical qNaN; one-NaN → the non-NaN operand.
+//	§11.6 signed-zero ordering: -0.0 < +0.0.
 //
 // Emits an FP-typed dst (XMM); caller is responsible for boxing.
 func (e *emitter) emitFMinMax(dst, a, b ir.VReg, t ir.Type, isMax bool) {
@@ -2002,8 +1999,8 @@ func (e *emitter) emitFPLoad(rd, rs1 uint32, imm int64, funct3 uint32) {
 
 	// Misaligned path: OOB check, then byte-by-byte load, then NaN-box if FLW.
 	if CheckSandboxBounds {
-			e.emitOOBCheck(addr, width, faultLabel)
-		}
+		e.emitOOBCheck(addr, width, faultLabel)
+	}
 	t := ir.WidthToType(width)
 	tmp := e.irEm.Tmp()
 	e.irEm.MisalignedLoad(tmp, addr, t)
@@ -2065,8 +2062,8 @@ func (e *emitter) emitFPStore(rs1, rs2 uint32, imm int64, funct3 uint32) {
 
 	// Misaligned path: OOB check first.
 	if CheckSandboxBounds {
-			e.emitOOBCheck(addr, width, faultLabel)
-		}
+		e.emitOOBCheck(addr, width, faultLabel)
+	}
 	t := ir.WidthToType(width)
 	if funct3 == 2 {
 		tmp := e.irEm.Tmp()
@@ -2207,7 +2204,7 @@ func (e *emitter) emitFPOpS(rd, rs1, rs2, funct3, funct5 uint32) {
 		b := e.unboxF32(rs2)
 		result := e.irEm.Tmp()
 		e.emitFMinMax(result, a, b, ir.F32, funct3 == 1) // funct3=0: MIN, 1: MAX
-		e.boxF32(rd, result) // FMinMax emits canon on the two-NaN path internally
+		e.boxF32(rd, result)                             // FMinMax emits canon on the two-NaN path internally
 	case 0x08: // FCVT.S.D
 		a := e.freg(rs1)
 		result := e.irEm.Tmp()
@@ -2556,7 +2553,7 @@ func (e *emitter) emitJAL(rd uint32, offset int64, insnSize uint64) {
 	// RAS: for JAL ra, try to inline the callee. The return address
 	// is already stored in rd above; push it so emitJALR can predict
 	// the return and avoid the decoder_cache lookup.
-	if rasEnabled && rd == 1 && len(e.callStack) < 4 &&
+	if rd == 1 && len(e.callStack) < 4 &&
 		target < e.regionEnd && !e.visited[target] {
 		e.callStack = append(e.callStack, e.pc)
 		e.pc = target
