@@ -15,16 +15,20 @@ import "unsafe"
 //	Offset 520: memBase   — 8 bytes
 //	Offset 528: memMask   — 8 bytes
 type State struct {
-	X       [32]uint64
-	F       [32]uint64
-	FCSR    uint32
-	_       uint32
-	MemBase   uintptr
-	MemMask   uint64
-	PC        uint64
-	IC        uint64
-	Status    uint64
-	FaultAddr uint64
+	X          [32]uint64
+	F          [32]uint64
+	FCSR       uint32
+	_          uint32
+	MemBase    uintptr
+	MemMask    uint64
+	PC         uint64
+	IC         uint64
+	Status     uint64
+	FaultAddr  uint64
+	DCBase     uintptr
+	DCMask     uint64
+	VAddrBegin uint64
+	SegSize    uint64
 }
 
 //go:noinline
@@ -43,4 +47,10 @@ func Run(cb *CodeBuilder, s *State) {
 // CallJIT calls JIT-compiled native code with the given register file base.
 func CallJIT(code, regFileBase uintptr) {
 	callJIT(code, regFileBase)
+}
+
+// GocallAddr returns the address of the CALL R10 instruction in the
+// trampoline, used by the IR lowerer to emit gocall sequences.
+func GocallAddr() uintptr {
+	return gocallAddr
 }

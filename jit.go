@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"os"
+	"riscv/abjit"
 	"riscv/internal/jitcall"
 	"riscv/ir"
 	"sync/atomic"
@@ -223,8 +224,9 @@ type JIT struct {
 	DisableAutoAOT bool
 
 	irAlloc   ir.RegAllocator
-	regPolicy ir.RegPolicy
-	useABJIT  bool
+	regPolicy  ir.RegPolicy
+	useABJIT   bool
+	abjitState *abjit.State
 
 	// Dispatch counters (for diagnostics).
 	DispatchOK       uint64 // jitOK returns to Go dispatch
@@ -385,6 +387,7 @@ func (j *JIT) Close() {
 		}
 	}
 	j.lazyBlocks = nil
+	j.abjitState = nil
 }
 
 // InvalidateSegment removes the segment containing pc from the
@@ -653,7 +656,27 @@ func (j *JIT) RunJIT(cpu *CPU) error {
 		if blk != nil {
 			var res jitcall.Result
 			if j.useABJIT {
-				res = abjitDispatch(blk.fn, cpu)
+				var dcBase uintptr
+				var dcMask, vBegin, segSz uint64
+				if seg := j.soleSegment; seg != nil {
+					dcBase = seg.decoderCacheBase
+					dcMask = seg.decoderCacheMask
+					vBegin = seg.vaddrBegin
+					segSz = seg.vaddrSize
+				} else if len(j.aotSegments) > 0 {
+					seg := blk.segment
+					if seg == nil {
+						seg = j.hotSegment
+					}
+					if seg == nil {
+						seg = j.aotSegments[0]
+					}
+					dcBase = seg.decoderCacheBase
+					dcMask = seg.decoderCacheMask
+					vBegin = seg.vaddrBegin
+					segSz = seg.vaddrSize
+				}
+				res = abjitDispatch(blk.fn, cpu, j, dcBase, dcMask, vBegin, segSz)
 			} else {
 				regFile := cpu.mem.RegFileBase()
 				stackTop := cpu.mem.StackTop()

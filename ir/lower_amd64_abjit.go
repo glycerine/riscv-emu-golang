@@ -22,12 +22,16 @@ import (
 
 // State field offsets relative to RBP (must match abjit.State layout).
 const (
-	abjitMemBaseOff   = 520
-	abjitMemMaskOff   = 528
-	abjitPCOff        = 536
-	abjitICOff        = 544
-	abjitStatusOff    = 552
-	abjitFaultAddrOff = 560
+	abjitMemBaseOff    = 520
+	abjitMemMaskOff    = 528
+	abjitPCOff         = 536
+	abjitICOff         = 544
+	abjitStatusOff     = 552
+	abjitFaultAddrOff  = 560
+	abjitDCBaseOff     = 568
+	abjitDCMaskOff     = 576
+	abjitVAddrBeginOff = 584
+	abjitSegSizeOff    = 592
 )
 
 type lowerCtxABJIT struct {
@@ -396,29 +400,93 @@ func (lc *lowerCtxABJIT) abjitSyscall(ins *IRInstr) {
 // ── JALR IC (simple miss return) ──
 
 func (lc *lowerCtxABJIT) abjitJalrIC(ins *IRInstr) {
+	// Save target PC to scratch before storeRegsBack clobbers registers.
+	pcSaveOff := lc.sretOffset + 16
 	if ins.A != VRegZero {
 		hr := lc.hostReg(ins.A)
 		if hr >= 0 {
-			lc.emitMR(x86.AMOVQ, hr, goasm.REG_AMD64_SP, lc.sretOffset+16)
+			lc.emitMR(x86.AMOVQ, hr, goasm.REG_AMD64_SP, pcSaveOff)
 		} else {
 			a := lc.stageInt(ins.A, 0)
-			lc.emitMR(x86.AMOVQ, a, goasm.REG_AMD64_SP, lc.sretOffset+16)
+			lc.emitMR(x86.AMOVQ, a, goasm.REG_AMD64_SP, pcSaveOff)
 		}
 	}
 
 	lc.stageICToState()
 	lc.storeRegsBack()
 
+	// Load target into RCX.
 	if ins.A != VRegZero {
-		lc.emitRM(x86.AMOVQ, goasm.REG_AMD64_SP, lc.sretOffset+16, stgB)
-		lc.emitMR(x86.AMOVQ, stgB, goasm.REG_AMD64_BP, abjitPCOff)
+		lc.emitRM(x86.AMOVQ, goasm.REG_AMD64_SP, pcSaveOff, stgB) // RCX = target
 	} else {
-		lc.emitMI(x86.AMOVQ, 0, goasm.REG_AMD64_BP, abjitPCOff)
+		lc.emit2(x86.AXORQ, stgB, stgB)
 	}
+
+	// Write State.PC = target (needed on both hit and miss).
+	lc.emitMR(x86.AMOVQ, stgB, goasm.REG_AMD64_BP, abjitPCOff)
+
+	// --- Decoder cache lookup ---
+	// Check dcBase != 0.
+	lc.emitRM(x86.AMOVQ, goasm.REG_AMD64_BP, abjitDCBaseOff, goasm.REG_AMD64_DX) // DX = dcBase
+	lc.emit2(x86.ATESTQ, goasm.REG_AMD64_DX, goasm.REG_AMD64_DX)
+	missJmp1 := lc.c.NewProg()
+	missJmp1.As = x86.AJEQ
+	missJmp1.To.Type = obj.TYPE_BRANCH
+	lc.c.Append(missJmp1)
+
+	// Bounds check: (target - vaddrBegin) < segSize (unsigned).
+	lc.emit2(x86.AMOVQ, stgB, goasm.REG_AMD64_DX)                                  // DX = target
+	lc.emitRM(x86.AMOVQ, goasm.REG_AMD64_BP, abjitVAddrBeginOff, stgA)              // RAX = vaddrBegin
+	lc.emit2(x86.ASUBQ, stgA, goasm.REG_AMD64_DX)                                   // DX = target - vaddrBegin
+	lc.emitRM(x86.AMOVQ, goasm.REG_AMD64_BP, abjitSegSizeOff, stgA)                 // RAX = segSize
+	lc.emit2(x86.ACMPQ, goasm.REG_AMD64_DX, stgA)                                   // cmp offset, segSize
+	missJmp2 := lc.c.NewProg()
+	missJmp2.As = x86.AJCC // JAE unsigned
+	missJmp2.To.Type = obj.TYPE_BRANCH
+	lc.c.Append(missJmp2)
+
+	// Index: ((target - vaddrBegin) * 4) & dcMask.
+	lc.emitRI(x86.ASHLQ, 2, goasm.REG_AMD64_DX)
+	lc.emitRM(x86.AMOVQ, goasm.REG_AMD64_BP, abjitDCMaskOff, stgA) // RAX = dcMask
+	lc.emit2(x86.AANDQ, stgA, goasm.REG_AMD64_DX)
+
+	// Load entry: DX = *(dcBase + DX).
+	lc.emitRM(x86.AMOVQ, goasm.REG_AMD64_BP, abjitDCBaseOff, stgA) // RAX = dcBase
+	p := lc.c.NewProg()
+	p.As = x86.AMOVQ
+	p.From.Type = obj.TYPE_MEM
+	p.From.Reg = stgA
+	p.From.Index = goasm.REG_AMD64_DX
+	p.From.Scale = 1
+	p.To.Type = obj.TYPE_REG
+	p.To.Reg = goasm.REG_AMD64_DX
+	lc.c.Append(p)
+
+	// Check entry != 0.
+	lc.emit2(x86.ATESTQ, goasm.REG_AMD64_DX, goasm.REG_AMD64_DX)
+	missJmp3 := lc.c.NewProg()
+	missJmp3.As = x86.AJEQ
+	missJmp3.To.Type = obj.TYPE_BRANCH
+	lc.c.Append(missJmp3)
+
+	// HIT: dealloc frame, jump to cached chainEntry.
+	lc.emitRI(x86.AADDQ, lc.frameSize, goasm.REG_AMD64_SP)
+	jp := lc.c.NewProg()
+	jp.As = obj.AJMP
+	jp.To.Type = obj.TYPE_REG
+	jp.To.Reg = goasm.REG_AMD64_DX
+	lc.c.Append(jp)
+
+	// MISS: write status and exit.
+	missNop := lc.c.NewProg()
+	missNop.As = obj.ANOP
+	lc.c.Append(missNop)
+	missJmp1.To.SetTarget(missNop)
+	missJmp2.To.SetTarget(missNop)
+	missJmp3.To.SetTarget(missNop)
 
 	lc.emitMI(x86.AMOVQ, int64(JitOKJalrMiss), goasm.REG_AMD64_BP, abjitStatusOff)
 	lc.emitMI(x86.AMOVQ, int64(ins.Imm), goasm.REG_AMD64_BP, abjitFaultAddrOff)
-
 	lc.jmpExitThunk()
 }
 

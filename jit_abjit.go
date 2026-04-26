@@ -3,41 +3,42 @@ package riscv
 import (
 	"riscv/abjit"
 	"riscv/internal/jitcall"
-	"unsafe"
 )
 
-const abjitShadowSize = 568
-
 // abjitDispatch executes a JIT-compiled block via the abjit trampoline.
-// It copies CPU state to the shadow register file page, executes the
-// block, reads the result, copies state back, and restores the guest
-// memory that was under the shadow.
-func abjitDispatch(fn uintptr, cpu *CPU) jitcall.Result {
-	rf := cpu.mem.RegFileBase()
+// Uses a persistent heap-allocated State buffer instead of the shadow
+// register file page, eliminating the save/restore of guest memory.
+func abjitDispatch(fn uintptr, cpu *CPU, j *JIT,
+	dcBase uintptr, dcMask, vBegin, segSize uint64) jitcall.Result {
 
-	var saved [abjitShadowSize]byte
-	saved = *(*[abjitShadowSize]byte)(unsafe.Pointer(rf))
+	if j.abjitState == nil {
+		j.abjitState = abjit.NewState()
+	}
+	s := j.abjitState
 
-	*(*[32]uint64)(unsafe.Pointer(rf)) = cpu.x
-	*(*[32]uint64)(unsafe.Pointer(rf + 256)) = cpu.f
-	*(*uint32)(unsafe.Pointer(rf + 512)) = cpu.fcsr
-	*(*uintptr)(unsafe.Pointer(rf + 520)) = cpu.mem.Base()
-	*(*uint64)(unsafe.Pointer(rf + 528)) = cpu.mem.Mask()
+	s.X = cpu.x
+	s.F = cpu.f
+	s.FCSR = cpu.fcsr
+	s.MemBase = cpu.mem.Base()
+	s.MemMask = cpu.mem.Mask()
+	s.DCBase = dcBase
+	s.DCMask = dcMask
+	s.VAddrBegin = vBegin
+	s.SegSize = segSize
+	s.IC = 0
 
-	abjit.CallJIT(fn, rf)
+	abjit.CallJIT(fn, s.RegFileBase())
 
 	res := jitcall.Result{
-		PC:        *(*uint64)(unsafe.Pointer(rf + 536)),
-		IC:        *(*uint64)(unsafe.Pointer(rf + 544)),
-		Status:    *(*uint64)(unsafe.Pointer(rf + 552)),
-		FaultAddr: *(*uint64)(unsafe.Pointer(rf + 560)),
+		PC:        s.PC,
+		IC:        s.IC,
+		Status:    s.Status,
+		FaultAddr: s.FaultAddr,
 	}
 
-	cpu.x = *(*[32]uint64)(unsafe.Pointer(rf))
-	cpu.f = *(*[32]uint64)(unsafe.Pointer(rf + 256))
-	cpu.fcsr = *(*uint32)(unsafe.Pointer(rf + 512))
-
-	*(*[abjitShadowSize]byte)(unsafe.Pointer(rf)) = saved
+	cpu.x = s.X
+	cpu.f = s.F
+	cpu.fcsr = s.FCSR
 
 	return res
 }
