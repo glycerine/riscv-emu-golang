@@ -282,6 +282,47 @@ which converts between ABI0 and ABIInternal. System V callee-saved registers
    in RBX, RBP, R12, R13, R15, calls a Go function, and checks the values
    survive. Verify R9 is correctly restored by the gocall handler.
 
+* results
+
+~~~
+Phase 0 frame verification complete. Key findings:
+
+ - Exit = ADD RSP, 0xFFF8; POP BP; RET (not ADD RSP, 0x10000)
+ - CALL R10 = {0x41, 0xFF, 0xD2} at offset +0x59 from callJIT start
+ - FP is at SP + 0x10000 (64KB above SP, as expected for 65528 + 8 byte frame)
+ - RBP save at SP+0x10 is Go's frame pointer, not the 
+   caller's original BP. The caller's BP is on the stack 
+   via PUSH BP and recovered by POP BP in the exit.
+           
+ Want me to continue with the R14 liveness test and callee-save verification next, or
+ jump straight to Phase 1 implementation?
+  
+Phase 0 results, after R14 liveness test
+
+  ┌──────────────────────────────┬─────────┐
+  │            Metric            │ Latency │
+  ├──────────────────────────────┼─────────┤
+  │ abjit trampoline entry/exit  │ 2.8 ns  │
+  ├──────────────────────────────┼─────────┤
+  │ abjit with one Go callback   │ 4.0 ns  │
+  ├──────────────────────────────┼─────────┤
+  │ CGO call (bridge2 benchmark) │ 34 ns   │
+  ├──────────────────────────────┼─────────┤
+  │ bridge2 SPSC ring round-trip │ 186 ns  │
+  └──────────────────────────────┴─────────┘
+
+  Phase 0 verified:
+  1. Trampoline works: 2.8ns entry/exit — 12x faster than CGO
+  2. Callbacks work: 4.0ns round-trip including a Go function call — 8.5x faster than CGO
+  3. Callee-saves preserved: RBX, R12, R13, R15 all survive Go callbacks (Go DOES
+  preserve these)
+  4. R9 restored correctly by gocall handler after callbacks
+  5. GC-safe: 100 iterations of runtime.GC() during callbacks — no crash
+  6. Critical lesson: State must be heap-allocated. callJIT's 65KB frame triggers
+  morestack, which moves stack memory. Any uintptr to stack data becomes stale.
+ 
+~~~
+
 ### Phase 1: Minimal trampoline + benchmark
 
 - `trampoline_amd64.s` + `trampoline.go`
