@@ -239,6 +239,8 @@ type JIT struct {
 	useABJIT   bool
 	abjitState *abjit.State
 
+	stopperPage uintptr // InfiniteLoopStopperPage: mmap'd guard page for preemption
+
 	// Dispatch counters (for diagnostics).
 	DispatchOK       uint64 // jitOK returns to Go dispatch
 	DispatchOther    uint64 // non-OK returns (ecall, fault, etc.)
@@ -259,6 +261,9 @@ func NewJIT() *JIT {
 		irAlloc: NewFixedStaticAllocator(),
 	}
 	j.SetRegPolicy(PolicyABJIT)
+	if err := j.initStopperPage(); err != nil {
+		panic("NewJIT: " + err.Error())
+	}
 	return j
 }
 
@@ -402,6 +407,7 @@ func (j *JIT) Close() {
 	}
 	j.lazyBlocks = nil
 	j.abjitState = nil
+	j.freeStopperPage()
 }
 
 // InvalidateSegment removes the segment containing pc from the

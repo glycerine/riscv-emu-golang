@@ -8,14 +8,13 @@ import "riscv/goasm"
 const (
 	VRXBase   = VReg(VRegTempStart + 0) // t64
 	VRFBase   = VReg(VRegTempStart + 1) // t65
-	VRIC      = VReg(VRegTempStart + 2) // t66
-	VRMemBase = VReg(VRegTempStart + 3) // t67
-	VRMemMask = VReg(VRegTempStart + 4) // t68
+	VRMemBase = VReg(VRegTempStart + 2) // t66
+	VRMemMask = VReg(VRegTempStart + 3) // t67
 )
 
 // VRRegFile is the parameter VReg for the register file base pointer,
 // pinned to RBP in the rv8 layout.
-const VRRegFile = VReg(VRegTempStart + 5) // t69
+const VRRegFile = VReg(VRegTempStart + 4) // t68
 
 // RegPolicy bundles register allocation choices for a target configuration.
 // Pool, Pinned, and Lower must all be non-nil before the policy is used

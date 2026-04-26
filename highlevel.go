@@ -172,6 +172,17 @@ func (e *Emitter) BudgetCheck(target Label, targetPC uint64) {
 	e.Ret(targetPC, 0, VRegZero)
 }
 
+// StopperLoad emits a guard-page probe at a backward branch. The lowerer
+// emits TESTQ RAX,(RAX) on amd64 which reads from the stopper page without
+// dirtying any GP register. If the page is armed (PROT_NONE) the read faults
+// and RunJIT's defer/recover returns ErrPreempted.
+//
+// ARM64 note: use LDR XZR, [Xn] — loads into the zero register, discards
+// the value. Full TLB/page-table walk still occurs, so PROT_NONE faults.
+func (e *Emitter) StopperLoad(addr int64) {
+	e.emit(IRInstr{Op: IRStopperLoad, Imm: addr})
+}
+
 // ClearDirtySyscallRegs clears dirty flags for a0 (x10) and a1 (x11)
 // only. Called before IRSyscall so the subsequent ReloadSyscallRegs
 // picks up the dispatcher's return values from x[].

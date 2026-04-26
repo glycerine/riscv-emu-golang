@@ -251,6 +251,9 @@ const (
 	IRFCvtFromU // Dst(FP) = convert(A(uint))
 	IRFCvtFF    // Dst = convert(A)  F32↔F64       T=dst, U=src
 
+	// Guard page probe (preemption check at backward branches).
+	IRStopperLoad // probe [Imm]; faults if page armed. No GP reg modified.
+
 	// Pseudo-ops
 	IRMarkLive  // declares A live here (allocator hint)
 	IRMarkDead  // declares A dead here (allocator hint)
@@ -337,9 +340,10 @@ var irOpNames = [...]string{
 	IRFCvtFromI: "fcvt_from_i",
 	IRFCvtFromU: "fcvt_from_u",
 	IRFCvtFF:    "fcvt_ff",
-	IRMarkLive:  "mark_live",
-	IRMarkDead:  "mark_dead",
-	IRWriteback: "writeback",
+	IRStopperLoad: "stopper_load",
+	IRMarkLive:    "mark_live",
+	IRMarkDead:    "mark_dead",
+	IRWriteback:   "writeback",
 }
 
 // IRInstr is one IR operation. Fixed-size struct (no slices) for cache locality.
@@ -395,6 +399,8 @@ func (ins IRInstr) String() string {
 		return fmt.Sprintf("%s resumePC=0x%x ctab=%d", ins.Op, uint64(ins.Imm), ins.Imm2)
 	case IRChainExit:
 		return fmt.Sprintf("%s targetPC=0x%x exitIdx=%d", ins.Op, uint64(ins.Imm), ins.Imm2)
+	case IRStopperLoad:
+		return fmt.Sprintf("%s addr=0x%x", ins.Op, uint64(ins.Imm))
 	default:
 		if ins.B != VRegZero {
 			return fmt.Sprintf("%s.%s %s = %s, %s", ins.Op, ins.T, ins.Dst, ins.A, ins.B)

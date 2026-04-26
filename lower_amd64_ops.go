@@ -1524,6 +1524,9 @@ func (lc *lowerOps) lowerInstrCommon(ins *IRInstr) (bool, error) {
 	case IRFCvtFF:
 		lc.opsFCvtFF(ins)
 
+	case IRStopperLoad:
+		lc.opsStopperLoad(ins)
+
 	// Pseudo-ops
 	case IRMarkLive, IRMarkDead, IRWriteback:
 		// no-op
@@ -1536,6 +1539,26 @@ func (lc *lowerOps) lowerInstrCommon(ins *IRInstr) (bool, error) {
 		return false, nil
 	}
 	return true, nil
+}
+
+// opsStopperLoad emits the guard-page probe for backward-branch preemption.
+// On amd64: MOVQ imm64,RAX; TESTQ RAX,(RAX). The TESTQ reads [RAX] and
+// ANDs with RAX, writing only EFLAGS — no GP register is dirtied beyond the
+// staging register (RAX) which is always scratch.
+//
+// ARM64 note: use LDR XZR, [Xn] — loads into the zero register, discards
+// the value. Full TLB/page-table walk still occurs, so PROT_NONE faults.
+func (lc *lowerOps) opsStopperLoad(ins *IRInstr) {
+	lc.loadImm(ins.Imm, stgA)
+	// TESTQ RAX, (RAX): From=reg, To=mem(base=RAX, offset=0).
+	p := lc.c.NewProg()
+	p.As = x86.ATESTQ
+	p.From.Type = obj.TYPE_REG
+	p.From.Reg = stgA
+	p.To.Type = obj.TYPE_MEM
+	p.To.Reg = stgA
+	p.To.Offset = 0
+	lc.c.Append(p)
 }
 
 // Ensure imports are used.

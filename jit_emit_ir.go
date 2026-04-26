@@ -65,8 +65,8 @@ type emitter struct {
 	visited        map[uint64]bool
 	regionEnd      uint64
 	gotoTargets    u64set
-	pcLabels       u64labelmap
-	icEmitted      bool
+	pcLabels    u64labelmap
+	stopperAddr int64 // InfiniteLoopStopperPage address for backward-branch probes
 	deferredExits  []deferredExit
 	deferredFaults []deferredFault
 	exitIdx        int      // counter for chain exit indices
@@ -271,9 +271,6 @@ func (e *emitter) emitLabel() {
 	e.irEm.PlaceLabel(e.getOrCreateLabel(e.pc))
 }
 
-func (e *emitter) emitICplusplus() {
-	e.irEm.AddImm(e.irEm.IC(), e.irEm.IC(), 1)
-}
 
 // peek32 fetches the 32-bit instruction at the given PC without
 // advancing state. Returns (insn, true) on success.
@@ -328,11 +325,6 @@ func (e *emitter) emitLoadFused(rd uint32, guestAddr int64, funct3 uint32) {
 func (e *emitter) advancePC(size uint64) {
 	e.numInsns++
 	e.pc += size
-	if e.icEmitted {
-		e.icEmitted = false
-	} else {
-		e.emitICplusplus()
-	}
 }
 
 func (e *emitter) emitReturn(pc uint64, status int) {
@@ -941,6 +933,7 @@ func (j *JIT) emitBlockRange(mem *GuestMemory, pc, endPC uint64) *emitResult {
 		regionEnd:   endPC,
 		gotoTargets: gt,
 		pcLabels:    newU64labelmap(),
+		stopperAddr: int64(j.stopperPage),
 	}
 
 	// Emit IR (populates regsUsed via xreg/xregDst calls).
@@ -2540,10 +2533,9 @@ func (e *emitter) emitJAL(rd uint32, offset int64, insnSize uint64) {
 		// and whether the target was already emitted (visited).
 		backward := target < origPC || e.visited[target]
 		if backward {
-			e.irEm.BudgetCheck(targetLabel, target)
-		} else {
-			e.irEm.Jump(targetLabel)
+			e.irEm.StopperLoad(e.stopperAddr)
 		}
+		e.irEm.Jump(targetLabel)
 		e.gotoTargets.add(target)
 		e.pc = target
 		return
@@ -2604,9 +2596,6 @@ func (e *emitter) emitBranch(rs1, rs2, funct3 uint32, offset int64) {
 	target := e.pc + uint64(offset)
 	pred, _ := branchPred(funct3)
 
-	e.emitICplusplus()
-	e.icEmitted = true
-
 	a := e.xreg(rs1)
 	b := e.xreg(rs2)
 
@@ -2626,9 +2615,10 @@ func (e *emitter) emitBranch(rs1, rs2, funct3 uint32, offset int64) {
 			takenLabel := e.irEm.NewLabel()
 			continueLabel := e.irEm.NewLabel()
 			e.irEm.Branch(a, b, pred, takenLabel)
-			e.irEm.Jump(continueLabel) // not taken: skip budget check
+			e.irEm.Jump(continueLabel) // not taken: skip stopper probe
 			e.irEm.PlaceLabel(takenLabel)
-			e.irEm.BudgetCheck(targetLabel, target)
+			e.irEm.StopperLoad(e.stopperAddr)
+			e.irEm.Jump(targetLabel)
 			e.irEm.PlaceLabel(continueLabel)
 		} else {
 			e.irEm.Branch(a, b, pred, targetLabel)

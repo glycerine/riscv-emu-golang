@@ -183,26 +183,8 @@ func (lc *lowerCtxRV8) emitPrologue() {
 
 	// Initialize parameter VRegs that can't be resolved statically.
 	// VRXBase/VRFBase/VRRegFile are handled in stageInt (always RBP-based).
-	// VRIC, VRMemBase, VRMemMask need explicit initialization here.
+	// VRMemBase, VRMemMask need explicit initialization here.
 	lc.emitRM(x86.AMOVQ, goasm.REG_AMD64_SP, lc.sretOffset, stgB) // RCX = sret
-
-	// Load IC from sret.IC. On first entry this is 0 (zeroed in the
-	// first-entry path). On chain entry this carries forward from the
-	// previous block (written by rv8ChainExit before frame dealloc).
-	// Must happen AFTER RISC-V reg loads since those may clobber IC's
-	// host register.
-	if int(VRIC) < len(lc.alloc.Kind) {
-		lc.emitRM(x86.AMOVQ, stgB, 8, stgA) // RAX = sret.IC
-		switch lc.alloc.Kind[VRIC] {
-		case AllocReg:
-			host := lc.rIdx.lookup(VRIC, 0)
-			if host >= 0 {
-				lc.emit2(x86.AMOVQ, stgA, host)
-			}
-		case AllocStack:
-			lc.storeSpill(stgA, lc.alloc.SpillSlot[VRIC])
-		}
-	}
 
 	// Load VRMemBase/VRMemMask from sret buffer AFTER RISC-V regs,
 	// because a RISC-V reg may share the same host register and we

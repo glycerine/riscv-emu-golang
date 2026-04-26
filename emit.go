@@ -16,7 +16,6 @@ type Emitter struct {
 	// function arguments (pinned to host regs by the register allocator).
 	xBase   VReg // pointer to x[32] array
 	fBase   VReg // pointer to f[32] array
-	ic      VReg // instruction counter
 	memBase VReg // guest memory base
 	memMask VReg // guest memory mask
 }
@@ -40,13 +39,12 @@ func NewEmitter(j *JIT) *Emitter {
 	}
 
 	// Pre-allocate parameter VRegs. These correspond to the JIT block's
-	// function signature: block_entry(x[], f[], fcsr, mem_base, mem_mask).
+	// function signature: block_entry(x[], f[], mem_base, mem_mask).
 	e.xBase = e.Tmp()   // t64 = VRXBase
 	e.fBase = e.Tmp()   // t65 = VRFBase
-	e.ic = e.Tmp()      // t66 = VRIC
-	e.memBase = e.Tmp() // t67 = VRMemBase
-	e.memMask = e.Tmp() // t68 = VRMemMask
-	e.Tmp()             // t69 = VRRegFile (reserved, pinned to RBP)
+	e.memBase = e.Tmp() // t66 = VRMemBase
+	e.memMask = e.Tmp() // t67 = VRMemMask
+	e.Tmp()             // t68 = VRRegFile (reserved, pinned to RBP)
 	return e
 }
 
@@ -81,9 +79,6 @@ func (e *Emitter) XBase() VReg { return e.xBase }
 
 // FBase returns the VReg holding the pointer to the f[32] register array.
 func (e *Emitter) FBase() VReg { return e.fBase }
-
-// IC returns the VReg holding the instruction counter.
-func (e *Emitter) IC() VReg { return e.ic }
 
 // MemBase returns the VReg holding the guest memory base pointer.
 func (e *Emitter) MemBase() VReg { return e.memBase }

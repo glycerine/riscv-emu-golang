@@ -409,6 +409,7 @@ func TestLower_AllOpsHandled(t *testing.T) {
 		IRFAdd, IRFSub, IRFMul, IRFDiv, IRFSqrt, IRFCmp,
 		IRFNeg, IRFAbs,
 		IRFCvtToI, IRFCvtToU, IRFCvtFromI, IRFCvtFromU, IRFCvtFF,
+		IRStopperLoad,
 		IRMarkLive, IRMarkDead, IRWriteback,
 	}
 
