@@ -1034,21 +1034,19 @@ func (e *emitter) emit32(insn uint32) {
 	case 0x17: // AUIPC
 		uimm := int64(int32(insn & 0xFFFFF000))
 		addr := int64(e.pc) + uimm
-		vv("AUIPC entry: pc=0x%x rd=%d addr=0x%x watchAddr=0x%x startPC=0x%x",
-			e.pc, rd, addr, e.watchAddr, e.startPC)
+		//vv("AUIPC entry: pc=0x%x rd=%d addr=0x%x watchAddr=0x%x startPC=0x%x", e.pc, rd, addr, e.watchAddr, e.startPC)
 
 		// Macro-op fusion: peek at the next instruction for AUIPC+X pairs.
 		if rd != 0 {
 			next, ok := e.peek32(e.pc + 4)
-			vv("AUIPC peek: pc=0x%x peek_ok=%v next=0x%x", e.pc, ok, next)
+			//vv("AUIPC peek: pc=0x%x peek_ok=%v next=0x%x", e.pc, ok, next)
 			if ok {
 				nextOp := next & 0x7F
 				nextRd := (next >> 7) & 0x1F
 				nextRs1 := (next >> 15) & 0x1F
 				nextImm := int64(int32(next)) >> 20
 
-				vv("AUIPC fusion: pc=0x%x rd=%d addr=0x%x nextOp=0x%x nextRs1=%d e.watchAddr=0x%x",
-					e.pc, rd, addr, nextOp, nextRs1, e.watchAddr)
+				//vv("AUIPC fusion: pc=0x%x rd=%d addr=0x%x nextOp=0x%x nextRs1=%d e.watchAddr=0x%x", e.pc, rd, addr, nextOp, nextRs1, e.watchAddr)
 
 				switch {
 				case nextOp == 0x13 && (next>>12)&7 == 0 && nextRd == rd && nextRs1 == rd:
@@ -1080,10 +1078,10 @@ func (e *emitter) emit32(insn uint32) {
 					nextFunct3 := (next >> 12) & 7
 					storeImm := sImm(next)
 					storeAddr := addr + storeImm
-					vv("w.watchAddr = '%p'", e.watchAddr)
+					//vv("w.watchAddr = '%p'", e.watchAddr)
 
 					if storeAddr == int64(e.watchAddr) {
-						vv("recognized 'tohost'! check if non-zero write...")
+						//vv("recognized 'tohost'! check if non-zero write...")
 						nextRs2 := (next >> 20) & 0x1F
 						e.irEm.Const(e.xregDst(rd), addr)
 						e.advancePC(4)
