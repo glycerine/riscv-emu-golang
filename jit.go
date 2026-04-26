@@ -222,7 +222,8 @@ type JIT struct {
 	// lazy-vs-AOT gap and by tests that want to drive the fallback path.
 	DisableAutoAOT bool
 
-	irAlloc ir.RegAllocator
+	irAlloc   ir.RegAllocator
+	regPolicy ir.RegPolicy
 
 	// Dispatch counters (for diagnostics).
 	DispatchOK       uint64 // jitOK returns to Go dispatch
@@ -238,8 +239,9 @@ type JIT struct {
 // NewJIT creates a new JIT translation cache using the Fixed Static Mapping allocator.
 func NewJIT() *JIT {
 	return &JIT{
-		noJIT:   make(map[uint64]bool),
-		irAlloc: ir.NewFixedStaticAllocator(),
+		noJIT:     make(map[uint64]bool),
+		irAlloc:   ir.NewFixedStaticAllocator(),
+		regPolicy: ir.PolicyRV8,
 	}
 }
 
@@ -248,6 +250,14 @@ func NewJIT() *JIT {
 func (j *JIT) SetAllocStrategy(name string) {
 	j.irAlloc = ir.NewFixedStaticAllocator()
 	// Clear block cache — compiled blocks used the old allocator.
+	j.cache = [blockCacheSize]blockCacheEntry{}
+	j.noJIT = make(map[uint64]bool)
+}
+
+// SetRegPolicy switches the register allocation policy and clears
+// cached blocks (they were compiled with the old policy).
+func (j *JIT) SetRegPolicy(p ir.RegPolicy) {
+	j.regPolicy = p
 	j.cache = [blockCacheSize]blockCacheEntry{}
 	j.noJIT = make(map[uint64]bool)
 }
@@ -342,7 +352,8 @@ func (j *JIT) CloneShared() *JIT {
 	child := &JIT{
 		aotSegments: append([]*DecodedExecuteSegment(nil), j.aotSegments...),
 		noJIT:       make(map[uint64]bool),
-		irAlloc:     j.irAlloc, // stateless; sharing is safe
+		irAlloc:     j.irAlloc,   // stateless; sharing is safe
+		regPolicy:   j.regPolicy, // struct copy; function pointers are safe to share
 	}
 	for _, s := range child.aotSegments {
 		s.Retain()

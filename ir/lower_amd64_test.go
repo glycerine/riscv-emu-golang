@@ -612,6 +612,157 @@ func TestVRRegFile_Distinct(t *testing.T) {
 	}
 }
 
+// ── ABJIT policy tests ──
+
+func TestABJITPool(t *testing.T) {
+	b := NewBlock()
+	b.Instrs = []IRInstr{
+		{Op: IRAdd, T: I64, Dst: VReg(1), A: VReg(2), B: VReg(3)},
+	}
+	b.maxVreg = MaxVReg(b)
+	pool := ABJITPool(b)
+
+	if len(pool.IntRegs) != 11 {
+		t.Fatalf("want 11 int regs, got %d", len(pool.IntRegs))
+	}
+	if len(pool.FPRegs) != 14 {
+		t.Errorf("want 14 FP regs, got %d", len(pool.FPRegs))
+	}
+
+	for _, r := range pool.IntRegs {
+		if r == goasm.REG_AMD64_R14 {
+			t.Error("pool must not contain R14 (Go goroutine pointer)")
+		}
+	}
+
+	excluded := map[int16]string{
+		goasm.REG_AMD64_AX: "RAX",
+		goasm.REG_AMD64_CX: "RCX",
+		goasm.REG_AMD64_BP: "RBP",
+		goasm.REG_AMD64_SP: "RSP",
+	}
+	for _, r := range pool.IntRegs {
+		if name, bad := excluded[r]; bad {
+			t.Errorf("pool must not contain %s", name)
+		}
+	}
+
+	want := map[int16]bool{
+		goasm.REG_AMD64_DX:  true,
+		goasm.REG_AMD64_BX:  true,
+		goasm.REG_AMD64_SI:  true,
+		goasm.REG_AMD64_DI:  true,
+		goasm.REG_AMD64_R8:  true,
+		goasm.REG_AMD64_R9:  true,
+		goasm.REG_AMD64_R10: true,
+		goasm.REG_AMD64_R11: true,
+		goasm.REG_AMD64_R12: true,
+		goasm.REG_AMD64_R13: true,
+		goasm.REG_AMD64_R15: true,
+	}
+	for _, r := range pool.IntRegs {
+		if !want[r] {
+			t.Errorf("unexpected register %d in pool", r)
+		}
+	}
+}
+
+func TestABJITPinned(t *testing.T) {
+	pinned := ABJITPinned()
+	if len(pinned) != 1 {
+		t.Fatalf("want 1 pinned VReg, got %d", len(pinned))
+	}
+	got, ok := pinned[VRRegFile]
+	if !ok {
+		t.Fatal("VRRegFile not in pinned map")
+	}
+	if got != goasm.REG_AMD64_BP {
+		t.Errorf("VRRegFile pinned to %d, want RBP (%d)", got, goasm.REG_AMD64_BP)
+	}
+}
+
+func TestPolicyRV8(t *testing.T) {
+	p := PolicyRV8
+	if p.Name != "rv8" {
+		t.Errorf("name = %q, want %q", p.Name, "rv8")
+	}
+	if p.Pool == nil {
+		t.Fatal("Pool is nil")
+	}
+	if p.Pinned == nil {
+		t.Fatal("Pinned is nil")
+	}
+	if p.Lower == nil {
+		t.Fatal("Lower is nil")
+	}
+
+	b := NewBlock()
+	b.Instrs = []IRInstr{{Op: IRAdd, T: I64, Dst: VReg(1), A: VReg(2), B: VReg(3)}}
+	b.maxVreg = MaxVReg(b)
+	pool := p.Pool(b)
+	if len(pool.IntRegs) != 12 {
+		t.Errorf("Pool().IntRegs = %d, want 12", len(pool.IntRegs))
+	}
+
+	pinned := p.Pinned()
+	if len(pinned) != 1 {
+		t.Errorf("Pinned() = %d entries, want 1", len(pinned))
+	}
+}
+
+func TestPolicyABJIT(t *testing.T) {
+	p := PolicyABJIT
+	if p.Name != "abjit" {
+		t.Errorf("name = %q, want %q", p.Name, "abjit")
+	}
+	if p.Pool == nil {
+		t.Fatal("Pool is nil")
+	}
+	if p.Pinned == nil {
+		t.Fatal("Pinned is nil")
+	}
+	if p.Lower != nil {
+		t.Error("Lower should be nil (not yet implemented)")
+	}
+
+	b := NewBlock()
+	b.Instrs = []IRInstr{{Op: IRAdd, T: I64, Dst: VReg(1), A: VReg(2), B: VReg(3)}}
+	b.maxVreg = MaxVReg(b)
+	pool := p.Pool(b)
+	if len(pool.IntRegs) != 11 {
+		t.Errorf("Pool().IntRegs = %d, want 11", len(pool.IntRegs))
+	}
+}
+
+func TestABJITPool_R14Excluded(t *testing.T) {
+	b := NewBlock()
+	b.Instrs = []IRInstr{{Op: IRAdd, T: I64, Dst: VReg(1), A: VReg(2), B: VReg(3)}}
+	b.maxVreg = MaxVReg(b)
+
+	rv8Pool := RV8Pool(b)
+	abjitPool := ABJITPool(b)
+
+	hasR14 := func(pool RegPool) bool {
+		for _, r := range pool.IntRegs {
+			if r == goasm.REG_AMD64_R14 {
+				return true
+			}
+		}
+		return false
+	}
+	if !hasR14(rv8Pool) {
+		t.Error("RV8Pool should include R14")
+	}
+	if hasR14(abjitPool) {
+		t.Error("ABJITPool must not include R14")
+	}
+
+	if len(abjitPool.IntRegs) != len(rv8Pool.IntRegs)-1 {
+		t.Errorf("abjit=%d, rv8=%d, want abjit=rv8-1",
+			len(abjitPool.IntRegs), len(rv8Pool.IntRegs))
+	}
+}
+
 // ── Stage 4: rv8 ALU ops ──
 
 func TestRV8Lower_Add(t *testing.T) {

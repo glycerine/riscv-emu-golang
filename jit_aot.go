@@ -52,13 +52,13 @@ func (j *JIT) jitCompileAOTSegment(
 		if res == nil || res.numInsns == 0 {
 			continue // untranslatable; decoder_cache slot stays 0
 		}
-		pool := ir.RV8Pool(res.block)
-		pinned := ir.RV8Pinned()
+		pool := j.regPolicy.Pool(res.block)
+		pinned := j.regPolicy.Pinned()
 		alloc := j.irAlloc.Allocate(res.block, pool, pinned, nil)
 
 		ctx := goasm.New(goasm.AMD64)
 		ctx.Append(ctx.NewATEXT())
-		lowerResult, lowerErr := ir.LowerAMD64_RV8(ctx, res.block, alloc)
+		lowerResult, lowerErr := j.regPolicy.Lower(ctx, res.block, alloc)
 		if lowerErr != nil {
 			continue // lowering failed — skip
 		}

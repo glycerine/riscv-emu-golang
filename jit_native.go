@@ -31,14 +31,14 @@ func (j *JIT) jitCompile(res *emitResult) (*compiledBlock, error) {
 		return nil, fmt.Errorf("jit: nil block")
 	}
 
-	pool := ir.RV8Pool(res.block)
-	pinned := ir.RV8Pinned()
+	pool := j.regPolicy.Pool(res.block)
+	pinned := j.regPolicy.Pinned()
 	alloc := j.irAlloc.Allocate(res.block, pool, pinned, nil)
 
 	ctx := getJITCtx()
 	ctx.Append(ctx.NewATEXT())
 
-	lowerResult, lowerErr := ir.LowerAMD64_RV8(ctx, res.block, alloc)
+	lowerResult, lowerErr := j.regPolicy.Lower(ctx, res.block, alloc)
 	if lowerErr != nil {
 		return nil, fmt.Errorf("jit lower: %w", lowerErr)
 	}
@@ -147,14 +147,14 @@ func (j *JIT) jitCompileDebug(res *emitResult) (*compiledBlock, *compileDebugInf
 		return nil, nil, fmt.Errorf("jit: nil block")
 	}
 
-	pool := ir.RV8Pool(res.block)
-	pinned := ir.RV8Pinned()
+	pool := j.regPolicy.Pool(res.block)
+	pinned := j.regPolicy.Pinned()
 	alloc := j.irAlloc.Allocate(res.block, pool, pinned, nil)
 
 	ctx := goasm.New(goasm.AMD64)
 	ctx.Append(ctx.NewATEXT())
 
-	lowerResult, lowerErr := ir.LowerAMD64_RV8(ctx, res.block, alloc)
+	lowerResult, lowerErr := j.regPolicy.Lower(ctx, res.block, alloc)
 	if lowerErr != nil {
 		return nil, nil, fmt.Errorf("jit lower: %w", lowerErr)
 	}
