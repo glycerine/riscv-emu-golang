@@ -681,8 +681,8 @@ bench-summary:
 
 test:
 	@echo "── unit tests ──────────────────────────────────────────────────"
-	GOCPU_VIZJIT_OFF=1 cd $(ROOT) && $(GO) test -count=1 -v 2>&1
 	GOCPU_VIZJIT_OFF=1 cd $(ROOT) && $(GO) test -count=1 -v ./bench/ 2>&1
+	GOCPU_VIZJIT_OFF=1 cd $(ROOT) && $(GO) test -count=1 -v 2>&1
 
 # ── clean ──────────────────────────────────────────────────────────────────
 
