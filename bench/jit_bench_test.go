@@ -104,6 +104,7 @@ func benchJITELF(b *testing.B, elfData []byte, strategy string) {
 	for i := 0; i < b.N; i++ {
 		cpu, mem := newBenchCPU(b, elfData)
 		jit := riscv.NewJIT()
+		jit.SetRegPolicy(ir.PolicyRV8)
 		jit.SetAllocStrategy(strategy)
 		_, insns := runJITBenchGuestWith(cpu, jit)
 		totalInsns += insns
