@@ -164,7 +164,7 @@ endif
 	@echo "    make bench-setup"
 	@echo ""
 	@echo "  Benchmarks:"
-	@echo "    make bench-alloc      JIT allocator comparison (Fixed vs libriscv)"
+	@echo "    make bench-alloc      JIT allocator comparison (rv8 vs abjit vs libriscv)"
 	@echo "    make bench-quick      fast head-to-head (<1s)"
 	@echo "    make bench            full comparison (ours + libriscv)"
 	@echo "    make bench-ours       our GuestMemory only (no libriscv needed)"
@@ -173,9 +173,9 @@ endif
 	@echo "    make bench-smoke      quick sanity check (~3s)"
 	@echo "    make bench-coremark   CoreMark RV64 (cached vs uncached interpreter)"
 	@echo "    make bench-dhrystone  Dhrystone RV64 (cached vs uncached interpreter)"
-	@echo "    make bench-jit-coremark   CoreMark under JIT (Fixed)"
-	@echo "    make bench-jit-dhrystone  Dhrystone under JIT (Fixed)"
-	@echo "    make bench-chain-ref      chain-counter reference (all 3 workloads)"
+	@echo "    make bench-jit-coremark   CoreMark under JIT (rv8 vs abjit)"
+	@echo "    make bench-jit-dhrystone  Dhrystone under JIT (rv8 vs abjit)"
+	@echo "    make bench-chain-ref      chain-counter reference, abjit (all 3 workloads)"
 	@echo ""
 	@echo "  Guest ELFs (normally auto-built by the bench targets):"
 	@echo "    make coremark-elf        build bench/coremark.elf from xendor/coremark"
@@ -521,21 +521,21 @@ bench-dhrystone: dhrystone-elf
 	        ./bench/ 2>&1
 
 bench-jit-coremark: coremark-elf
-	@echo "── CoreMark (JIT, Fixed) ──────────────────────────────────────"
+	@echo "── CoreMark (JIT, rv8 vs abjit) ───────────────────────────────"
 	cd $(ROOT) && CM_ELF=$(CM_ELF) \
 	    $(GO) test -count=1 -benchtime=1x -benchmem \
 	        -run='^$$' -bench='^BenchmarkJIT_CoreMark' \
 	        ./bench/ 2>&1
 
 bench-jit-dhrystone: dhrystone-elf
-	@echo "── Dhrystone (JIT, Fixed) ─────────────────────────────────────"
+	@echo "── Dhrystone (JIT, rv8 vs abjit) ──────────────────────────────"
 	cd $(ROOT) && DHRY_ELF=$(DHRY_ELF) \
 	    $(GO) test -count=1 -benchtime=1x -benchmem \
 	        -run='^$$' -bench='^BenchmarkJIT_Dhrystone' \
 	        ./bench/ 2>&1
 
 bench-chain-ref: coremark-elf dhrystone-elf
-	@echo "── Chain-counter reference (bench_guest + CoreMark + Dhrystone) ─"
+	@echo "── Chain-counter reference, abjit (bench_guest + CoreMark + Dhrystone) ─"
 	cd $(ROOT) && CM_ELF=$(CM_ELF) DHRY_ELF=$(DHRY_ELF) \
 	    $(GO) test -count=1 -v \
 	        -run='^TestJIT_(ChainReference|CoreMark_ChainReference|Dhrystone_ChainReference)$$' \
@@ -594,7 +594,7 @@ NATIVE_RETIRED := 2524935201
 bench:
 	@echo ""
 	@echo "══════════════════════════════════════════════════════════════════"
-	@echo "  JIT ALLOCATOR COMPARISON — $$(date '+%Y-%m-%d %H:%M')  [$(PLATFORM)]"
+	@echo "  JIT COMPARISON (rv8 vs abjit) — $$(date '+%Y-%m-%d %H:%M')  [$(PLATFORM)]"
 	@echo "  cpu: $(CPU_INFO)"
 	@echo "══════════════════════════════════════════════════════════════════"
 	@echo ""
@@ -603,7 +603,7 @@ bench:
 	@printf "  %-44s " "Go JIT — rv8 Fixed Static Mapping (native):"
 	@cd $(ROOT) && BENCH_ELF=$(GUEST_ELF) \
 	    $(GO) test $(PGO_FLAG) -count=1 -benchtime=1x -benchmem \
-	        -run='^$$' -bench='^BenchmarkCPU_FullExecution_JIT_Fixed$$' \
+	        -run='^$$' -bench='^BenchmarkCPU_FullExecution_JIT_Rv8$$' \
 	        ./bench/ 2>&1 \
 	    | awk '/MIPS/{for(i=1;i<=NF;i++){if($$i=="MIPS"){print p" MIPS";next}; p=$$i}}' \
 	    || echo "(failed)"

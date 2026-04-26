@@ -44,7 +44,7 @@ func TestJIT_DispatchStats(t *testing.T) {
 	t.Logf("  noJIT set size:  %d", jit.NoJITSize())
 }
 
-func BenchmarkCPU_FullExecution_JIT_Fixed(b *testing.B) {
+func BenchmarkCPU_FullExecution_JIT_Rv8(b *testing.B) {
 	benchJITWith(b, "fixed")
 }
 
@@ -82,14 +82,22 @@ func benchJITWith(b *testing.B, strategy string) {
 
 // ── CoreMark JIT benchmarks ───────────────────────────────────────────────
 
-func BenchmarkJIT_CoreMark_Fixed(b *testing.B) {
+func BenchmarkJIT_CoreMark_Rv8(b *testing.B) {
 	benchJITELF(b, loadELFFrom(b, "CM_ELF", "coremark.elf"), "fixed")
+}
+
+func BenchmarkJIT_CoreMark_ABJIT(b *testing.B) {
+	benchJITELFWithPolicy(b, loadELFFrom(b, "CM_ELF", "coremark.elf"), ir.PolicyABJIT)
 }
 
 // ── Dhrystone JIT benchmarks ──────────────────────────────────────────────
 
-func BenchmarkJIT_Dhrystone_Fixed(b *testing.B) {
+func BenchmarkJIT_Dhrystone_Rv8(b *testing.B) {
 	benchJITELF(b, loadELFFrom(b, "DHRY_ELF", "dhrystone.elf"), "fixed")
+}
+
+func BenchmarkJIT_Dhrystone_ABJIT(b *testing.B) {
+	benchJITELFWithPolicy(b, loadELFFrom(b, "DHRY_ELF", "dhrystone.elf"), ir.PolicyABJIT)
 }
 
 // benchJITELF runs the JIT benchmark loop against an arbitrary guest

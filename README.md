@@ -200,4 +200,20 @@ re-scheduling and keep caches hot.
 also scheduler affinity.
 
 ~~~
+darwin
+
+  Go JIT — rv8 Fixed Static Mapping (native): 3462 MIPS
+  Go JIT — abjit (native):                    3367 MIPS
+  Go interpreter (no JIT):                     464.7 MIPS
+
+linux
+cpu: AMD Ryzen Threadripper 3960X 24-Core Processor
+
+  Go JIT — rv8 Fixed Static Mapping (native): 3218 MIPS
+  Go JIT — abjit (native):                    3348 MIPS
+  Go interpreter (no JIT):                     378.8 MIPS
+  libriscv — JIT (TCC):                       3409 MIPS
+  libriscv — interpreter (no JIT):            795.8 MIPS
+  native x86-64 (-O3 -march=native):         21041 MIPS  (120.0 ms)
+  wazero wasm aot-and-run                    18384.9 MIPS
 ~~~
