@@ -39,3 +39,8 @@ func (s *State) RegFileBase() uintptr {
 func Run(cb *CodeBuilder, s *State) {
 	callJIT(cb.Addr(), s.RegFileBase())
 }
+
+// CallJIT calls JIT-compiled native code with the given register file base.
+func CallJIT(code, regFileBase uintptr) {
+	callJIT(code, regFileBase)
+}

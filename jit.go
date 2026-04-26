@@ -224,6 +224,7 @@ type JIT struct {
 
 	irAlloc   ir.RegAllocator
 	regPolicy ir.RegPolicy
+	useABJIT  bool
 
 	// Dispatch counters (for diagnostics).
 	DispatchOK       uint64 // jitOK returns to Go dispatch
@@ -258,6 +259,7 @@ func (j *JIT) SetAllocStrategy(name string) {
 // cached blocks (they were compiled with the old policy).
 func (j *JIT) SetRegPolicy(p ir.RegPolicy) {
 	j.regPolicy = p
+	j.useABJIT = p.Name == "abjit"
 	j.cache = [blockCacheSize]blockCacheEntry{}
 	j.noJIT = make(map[uint64]bool)
 }
@@ -354,6 +356,7 @@ func (j *JIT) CloneShared() *JIT {
 		noJIT:       make(map[uint64]bool),
 		irAlloc:     j.irAlloc,   // stateless; sharing is safe
 		regPolicy:   j.regPolicy, // struct copy; function pointers are safe to share
+		useABJIT:    j.useABJIT,
 	}
 	for _, s := range child.aotSegments {
 		s.Retain()
@@ -649,26 +652,30 @@ func (j *JIT) RunJIT(cpu *CPU) error {
 		blk := j.lookupBlock(pc)
 		if blk != nil {
 			var res jitcall.Result
-			regFile := cpu.mem.RegFileBase()
-			stackTop := cpu.mem.StackTop()
-			if seg := j.soleSegment; seg != nil {
-				res = sandboxCall(blk.fn, cpu, regFile, stackTop,
-					seg.decoderCacheBase, seg.decoderCacheMask,
-					seg.vaddrBegin, seg.vaddrSize)
-			} else if len(j.aotSegments) > 0 {
-				seg := blk.segment
-				if seg == nil {
-					seg = j.hotSegment
-					if seg == nil {
-						seg = j.aotSegments[0]
-					}
-				}
-				res = sandboxCall(blk.fn, cpu, regFile, stackTop,
-					seg.decoderCacheBase, seg.decoderCacheMask,
-					seg.vaddrBegin, seg.vaddrSize)
+			if j.useABJIT {
+				res = abjitDispatch(blk.fn, cpu)
 			} else {
-				res = sandboxCall(blk.fn, cpu, regFile, stackTop,
-					0, 0, 0, 0)
+				regFile := cpu.mem.RegFileBase()
+				stackTop := cpu.mem.StackTop()
+				if seg := j.soleSegment; seg != nil {
+					res = sandboxCall(blk.fn, cpu, regFile, stackTop,
+						seg.decoderCacheBase, seg.decoderCacheMask,
+						seg.vaddrBegin, seg.vaddrSize)
+				} else if len(j.aotSegments) > 0 {
+					seg := blk.segment
+					if seg == nil {
+						seg = j.hotSegment
+						if seg == nil {
+							seg = j.aotSegments[0]
+						}
+					}
+					res = sandboxCall(blk.fn, cpu, regFile, stackTop,
+						seg.decoderCacheBase, seg.decoderCacheMask,
+						seg.vaddrBegin, seg.vaddrSize)
+				} else {
+					res = sandboxCall(blk.fn, cpu, regFile, stackTop,
+						0, 0, 0, 0)
+				}
 			}
 			cpu.pc = res.PC
 			cpu.cycle += res.IC
