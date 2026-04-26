@@ -179,4 +179,3 @@ This pins the goroutine to one thread and thus avoids
 re-scheduling and keep caches hot.
 
 also scheduler affinity.
-
