@@ -1,0 +1,19 @@
+# folders
+sav
+rom
+.git
+art
+
+# dev dependencies
+*.exe
+todo.md
+
+# other
+*.json
+# config.toml
+
+*.pprof
+*.syso
+
+log.csv
+notes.md
