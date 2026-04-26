@@ -1393,12 +1393,13 @@ func TestMetaIterOrder_AllUI(t *testing.T) {
 						t.Fatal(err)
 					}
 					defer mem.Free()
-					_, err = LoadELF(mem, path)
+					ef, err := LoadELF(mem, path)
 					if err != nil {
 						t.Fatal(err)
 					}
 
 					cpu := NewCPU(*mem)
+					cpu.SetWatchAddr(ef.TohostAddr)
 					cpu.SetPC(0)
 					cpu.Notes.Push(func(c *CPU, n Note) NoteDisposition { return NoteHandled })
 					jit := NewJIT()

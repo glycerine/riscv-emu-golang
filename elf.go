@@ -214,6 +214,7 @@ func loadELFReader(mem *GuestMemory, r io.ReadSeeker, data []byte) (*ELF, error)
 	// Auto-detect tohost symbol.
 	if addr, ok := ef.FindSymbolAddr("tohost"); ok {
 		ef.TohostAddr = addr
+		mem.TohostAddr = addr
 	}
 
 	return ef, nil

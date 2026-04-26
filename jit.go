@@ -568,6 +568,9 @@ func (j *JIT) StepBlock(cpu *CPU) (ic uint64, err error) {
 	if j.watchAddr == 0 && cpu.watchAddr != 0 {
 		j.watchAddr = cpu.watchAddr
 	}
+	if cpu.mem.TohostAddr != 0 && cpu.watchAddr == 0 {
+		panic("JIT: ELF has tohost symbol but cpu.SetWatchAddr was never called — JIT blocks with tohost writes will hang")
+	}
 	pc := cpu.pc
 
 	blk := j.lookupBlock(pc)
@@ -686,6 +689,9 @@ func (j *JIT) RunJIT(cpu *CPU) (err0 error) {
 	// Propagate the tohost watch address so JIT blocks emit exit checks
 	// on stores to this address. Must happen before AOT compilation.
 	j.watchAddr = cpu.watchAddr
+	if cpu.mem.TohostAddr != 0 && cpu.watchAddr == 0 {
+		panic("JIT: ELF has tohost symbol but cpu.SetWatchAddr was never called — JIT blocks with tohost writes will hang")
+	}
 
 	// AOT is the default: on the first RunJIT call for a JIT that has
 	// no segments yet, transparently translate every executable region

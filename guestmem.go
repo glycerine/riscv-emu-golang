@@ -186,6 +186,11 @@ type GuestMemory struct {
 	// AddExecRegion / RemoveExecRegion / FindExecRegion in guestmem_exec.go.
 	// The list stays small (≤ handful of entries); linear scan is fine.
 	execRegions []ExecRegion
+
+	// TohostAddr is the address of the "tohost" symbol found during ELF
+	// loading. Non-zero means the loaded binary uses the HTIF tohost
+	// protocol and the JIT must be configured with a matching watchAddr.
+	TohostAddr uint64
 }
 
 // NewGuestMemory allocates a guest address space of the given size.
