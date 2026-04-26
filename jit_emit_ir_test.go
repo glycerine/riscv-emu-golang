@@ -561,6 +561,7 @@ func TestLW_ELF_Block39(t *testing.T) {
 	// Run with JIT, tracing enabled
 	cpu := NewCPU(*mem)
 	cpu.SetPC(elf.Entry)
+	cpu.SetWatchAddr(elf.TohostAddr)
 	cpu.Notes.Push(ecallStop)
 	jit := NewJIT()
 	// jit.trace = true // uncomment to debug
@@ -1201,7 +1202,7 @@ func TestSRL_Block39_Alloc(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mem.Free()
-	_, err = LoadELF(mem, "riscv-elf-tests/rv64ui-p-srl")
+	ef, err := LoadELF(mem, "riscv-elf-tests/rv64ui-p-srl")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1209,6 +1210,7 @@ func TestSRL_Block39_Alloc(t *testing.T) {
 	// Block 39 starts near the beginning of the test code.
 	// Find it by running StepBlock until we get a large block.
 	cpu := NewCPU(*mem)
+	cpu.SetWatchAddr(ef.TohostAddr)
 	cpu.SetPC(0)
 	cpu.Notes.Push(func(c *CPU, n Note) NoteDisposition { return NoteHandled })
 	jit := NewJIT()
@@ -1292,16 +1294,18 @@ func TestDebugV1V2_SRL_DumpAlloc(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mem.Free()
-	_, err = LoadELF(mem, "riscv-elf-tests/rv64ui-p-srl")
+	ef, err := LoadELF(mem, "riscv-elf-tests/rv64ui-p-srl")
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	j := NewJIT()
+	_ = j
 
 	// The failing block is at pc=0x322. But emitBlock starts at a block
 	// boundary, not necessarily 0x322. Let me find it by running to that PC.
 	cpu := NewCPU(*mem)
+	cpu.SetWatchAddr(ef.TohostAddr)
 	cpu.SetPC(0)
 	cpu.Notes.Push(func(c *CPU, n Note) NoteDisposition { return NoteHandled })
 	jit := NewJIT()
@@ -1337,7 +1341,7 @@ func TestMetaIterOrder_SRL(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mem.Free()
-	_, err = LoadELF(mem, "riscv-elf-tests/rv64ui-p-srl")
+	ef, err := LoadELF(mem, "riscv-elf-tests/rv64ui-p-srl")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1346,6 +1350,7 @@ func TestMetaIterOrder_SRL(t *testing.T) {
 		testIterStart = offset
 		t.Run(fmt.Sprintf("offset=%d", offset), func(t *testing.T) {
 			cpu := NewCPU(*mem)
+			cpu.SetWatchAddr(ef.TohostAddr)
 			cpu.SetPC(0)
 			cpu.Notes.Push(func(c *CPU, n Note) NoteDisposition { return NoteHandled })
 			jit := NewJIT()
@@ -1422,12 +1427,14 @@ func TestDumpBlock_ld_st_0x1a0(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mem.Free()
-	_, err = LoadELF(mem, "riscv-elf-tests/rv64ui-p-ld_st")
+	ef, err := LoadELF(mem, "riscv-elf-tests/rv64ui-p-ld_st")
 	if err != nil {
 		t.Fatal(err)
 	}
+	_ = ef
 
 	jit := NewJIT()
+	jit.watchAddr = ef.TohostAddr
 
 	// Try to find a block covering 0x1a0.
 	var res *emitResult
