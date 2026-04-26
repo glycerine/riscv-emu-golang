@@ -2534,6 +2534,10 @@ func (e *emitter) emitJAL(rd uint32, offset int64, insnSize uint64) {
 		backward := target < origPC || e.visited[target]
 		if backward {
 			e.irEm.StopperLoad(e.stopperAddr)
+			e.irEm.Jump(targetLabel)
+			e.gotoTargets.add(target)
+			e.terminated = true
+			return
 		}
 		e.irEm.Jump(targetLabel)
 		e.gotoTargets.add(target)

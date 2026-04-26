@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"math"
 	"testing"
+	"time"
 )
 
 // ── Instruction encoding helpers ─────────────────────────────────────────
@@ -963,6 +964,58 @@ func TestJIT_InstructionBudget_JForward_Loop(t *testing.T) {
 	if cpu.Reg(1) != 50000 {
 		t.Errorf("x1 = %d, want 50000", cpu.Reg(1))
 	}
+}
+
+// ── Test 17: Stopper page preemption of infinite loop ────────────────────
+
+// TestJIT_StopperPage_InfiniteLoop verifies that RequestPreemption can
+// break a JIT-compiled infinite loop. The guest runs a tight backward
+// branch with no exit. A goroutine arms the stopper page after a short
+// delay. The TESTQ probe at the backward branch faults (SIGSEGV), Go
+// converts it to a panic, and the test's recover catches it.
+func TestJIT_StopperPage_InfiniteLoop(t *testing.T) {
+	//   0x1000: ADDI x1, x1, 1      # counter++
+	//   0x1004: JAL  x0, -4          # infinite backward jump to 0x1000
+	cpu, mem := newTestCPU(t, Size64MB, 0x1000, []uint32{
+		ienc(opOPIMM, 0, 1, 1, 1), // ADDI x1, x1, 1
+		jenc(0, -4),               // JAL x0, -4
+	})
+	defer mem.Free()
+	cpu.SetReg(1, 0)
+
+	jit := NewJIT()
+
+	// Arm the stopper page after 50ms from a separate goroutine.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		time.Sleep(50 * time.Millisecond)
+		jit.RequestPreemption()
+	}()
+
+	// RunJIT will panic when the stopper page faults. Recover it.
+	var panicked bool
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				panicked = true
+			}
+		}()
+		jit.RunJIT(cpu)
+	}()
+
+	<-done
+	jit.ClearPreemption()
+
+	if !panicked {
+		t.Fatal("expected RunJIT to panic from stopper page fault, but it returned normally")
+	}
+
+	// The loop should have run for some iterations before being stopped.
+	if cpu.Reg(1) == 0 {
+		t.Error("x1 = 0; loop never executed")
+	}
+	t.Logf("loop ran %d iterations before preemption", cpu.Reg(1))
 }
 
 // ── Test 14: Fault address correctness ───────────────────────────────────

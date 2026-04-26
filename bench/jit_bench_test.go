@@ -113,6 +113,7 @@ func benchJITELF(b *testing.B, elfData []byte, strategy string) {
 	b.ResetTimer()
 
 	var tms []time.Duration
+	var ins []int64
 	totalInsns := uint64(0)
 	for i := 0; i < b.N; i++ {
 		cpu, mem := newBenchCPU(b, elfData)
@@ -121,6 +122,7 @@ func benchJITELF(b *testing.B, elfData []byte, strategy string) {
 		jit.SetAllocStrategy(strategy)
 		t0 := time.Now()
 		_, insns := runJITBenchGuestWith(cpu, jit)
+		ins = append(ins, int64(insns))
 		tms = append(tms, time.Since(t0))
 		totalInsns += insns
 		mem.Free()
@@ -128,7 +130,7 @@ func benchJITELF(b *testing.B, elfData []byte, strategy string) {
 
 	b.StopTimer()
 	elapsed := b.Elapsed().Seconds()
-	vv("tms = '%#v'", tms)
+	vv("tms = '%#v' ; ins = '%#v'", tms, ins)
 	if elapsed > 0 && totalInsns > 0 {
 		mips := float64(totalInsns) / elapsed / 1e6
 		b.ReportMetric(mips, "MIPS")

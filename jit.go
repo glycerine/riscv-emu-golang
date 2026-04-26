@@ -8,6 +8,7 @@ import (
 	"os"
 	"riscv/abjit"
 	"riscv/internal/jitcall"
+	"runtime/debug"
 	"sync/atomic"
 	"syscall"
 	"unsafe"
@@ -657,6 +658,9 @@ func (j *JIT) stepBlockResult(_ *CPU, res jitcall.Result) (uint64, error) {
 // RunJIT executes the CPU using JIT-compiled blocks where possible,
 // falling back to the interpreter for untranslatable instructions.
 func (j *JIT) RunJIT(cpu *CPU) (err0 error) {
+	old := debug.SetPanicOnFault(true)
+	defer debug.SetPanicOnFault(old)
+
 	/*
 		defer func() {
 			r := recover()
