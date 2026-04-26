@@ -8,7 +8,7 @@
 //   go test -run='TestLower_CodeSize' -v ./bench/
 //
 // To regenerate the ELF:
-//   GOOS=linux GOARCH=riscv64 CGO_ENABLED=0 go build -o ~/ris/test_data/gc_riscv64 cmd/compile
+//   GOOS=linux GOARCH=riscv64 CGO_ENABLED=0 go build -o ~/ris/testvectors/gc_riscv64 cmd/compile
 
 package bench
 
@@ -20,7 +20,7 @@ import (
 	"riscv/goasm"
 )
 
-const defaultGcELF = "/Users/jaten/ris/test_data/gc_riscv64"
+const defaultGcELF = "/Users/jaten/ris/testvectors/gc_riscv64"
 
 // collectIRBlocks loads a RISC-V ELF and collects IR blocks by scanning PCs.
 func collectIRBlocks(tb testing.TB, elfData []byte, maxBlocks int) ([]*riscv.EmitBlockResult, *riscv.GuestMemory) {
