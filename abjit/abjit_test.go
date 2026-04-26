@@ -1,98 +1,10 @@
 package abjit
 
 import (
-	"encoding/binary"
 	"runtime"
 	"testing"
 	"unsafe"
 )
-
-// heapU64 allocates a uint64 slice on the heap (never stack).
-// Critical: callJIT's 65KB frame triggers morestack, which copies
-// the goroutine stack. Any uintptr pointing to stack memory becomes
-// stale after the copy. Heap memory doesn't move.
-//
-//go:noinline
-func heapU64(n int) []uint64 {
-	s := make([]uint64, n)
-	return s
-}
-
-// ---------------------------------------------------------------------------
-// Minimal x86_64 code builder for Phase 0 hand-assembled tests
-// ---------------------------------------------------------------------------
-
-type codeBuilder struct {
-	buf []byte
-	off int
-}
-
-func (c *codeBuilder) emit(b ...byte) {
-	copy(c.buf[c.off:], b)
-	c.off += len(b)
-}
-
-func (c *codeBuilder) imm64(v uint64) {
-	binary.LittleEndian.PutUint64(c.buf[c.off:], v)
-	c.off += 8
-}
-
-func (c *codeBuilder) movabs(reg int, imm uint64) {
-	if reg >= 8 {
-		c.emit(0x49)
-	} else {
-		c.emit(0x48)
-	}
-	c.emit(0xB8 + byte(reg&7))
-	c.imm64(imm)
-}
-
-// storeRegToR9 emits MOV [R9+disp8], srcReg (64-bit).
-func (c *codeBuilder) storeRegToR9(srcReg, disp int) {
-	rex := byte(0x49) // REX.W + REX.B (R9 base)
-	if srcReg >= 8 {
-		rex |= 0x04 // REX.R
-	}
-	c.emit(rex, 0x89)
-	regBits := byte(srcReg&7) << 3
-	const rmR9 = 0x01 // R9 & 7
-	if disp == 0 {
-		c.emit(regBits | rmR9) // mod=00
-	} else {
-		c.emit(0x40 | regBits | rmR9, byte(disp)) // mod=01, disp8
-	}
-}
-
-// callback emits the 5-instruction gocall sequence (34 bytes).
-//
-//	MOVABS gocallAddr, R11      (10B)
-//	LEA    R10, [RIP+17]        ( 7B)  ← resume = after JMP R11
-//	MOV    [RSP], R10           ( 4B)
-//	MOVABS goFuncAddr, R10      (10B)
-//	JMP    R11                  ( 3B)
-//	                              34B total, resume point here
-func (c *codeBuilder) callback(goFunc uintptr) {
-	c.movabs(11, uint64(gocallAddr))                       // R11 = gocall
-	c.emit(0x4C, 0x8D, 0x15, 0x11, 0x00, 0x00, 0x00)      // LEA R10, [RIP+17]
-	c.emit(0x4C, 0x89, 0x14, 0x24)                         // MOV [RSP], R10
-	c.movabs(10, uint64(goFunc))                           // R10 = Go func
-	c.emit(0x41, 0xFF, 0xE3)                               // JMP R11
-}
-
-// exit emits the exit sequence: restore callee-saves, undo frame, return.
-func (c *codeBuilder) exit() {
-	c.emit(0x48, 0x8B, 0x5C, 0x24, 0x08)                   // MOV RBX, [RSP+0x08]
-	c.emit(0x4C, 0x8B, 0x64, 0x24, 0x18)                   // MOV R12, [RSP+0x18]
-	c.emit(0x4C, 0x8B, 0x6C, 0x24, 0x20)                   // MOV R13, [RSP+0x20]
-	c.emit(0x4C, 0x8B, 0x7C, 0x24, 0x28)                   // MOV R15, [RSP+0x28]
-	c.emit(0x48, 0x81, 0xC4, 0xF8, 0xFF, 0x00, 0x00)       // ADD RSP, 0xFFF8
-	c.emit(0x5D)                                            // POP RBP
-	c.emit(0xC3)                                            // RET
-}
-
-// ---------------------------------------------------------------------------
-// Callback targets
-// ---------------------------------------------------------------------------
 
 var callbackFlag bool
 
@@ -107,221 +19,115 @@ func gcCallback() {
 }
 
 // ---------------------------------------------------------------------------
-// Phase 0 Tests
+// Phase 0 tests (updated for 2-arg callJIT + RBP-based access)
 // ---------------------------------------------------------------------------
 
-// TestBasicEntryExit verifies the trampoline can enter JIT code that
-// immediately exits without crashing.
 func TestBasicEntryExit(t *testing.T) {
-	code, err := mmapExec(4096)
+	cb, err := NewCodeBuilder()
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer munmapExec(code)
+	defer cb.Free()
 
-	cb := &codeBuilder{buf: code}
-	cb.exit()
+	cb.Exit()
 
-	state := heapU64(8)
-	callJIT(
-		uintptr(unsafe.Pointer(&code[0])),
-		uintptr(unsafe.Pointer(&state[0])),
-		0,
-	)
+	state := NewState()
+	callJIT(cb.Addr(), state.RegFileBase())
 	t.Log("basic entry/exit OK")
 }
 
-// TestCallback verifies the gocall mechanism: JIT code calls a Go function
-// via the gocall label, then resumes and exits.
 func TestCallback(t *testing.T) {
-	code, err := mmapExec(4096)
+	cb, err := NewCodeBuilder()
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer munmapExec(code)
+	defer cb.Free()
 
 	callbackFlag = false
-	cb := &codeBuilder{buf: code}
-	cb.callback(funcAddr(nosplitCallback))
-	cb.exit()
+	cb.Callback(funcAddr(nosplitCallback))
+	cb.Exit()
 
-	state := heapU64(8)
-	callJIT(
-		uintptr(unsafe.Pointer(&code[0])),
-		uintptr(unsafe.Pointer(&state[0])),
-		0,
-	)
+	state := NewState()
+	callJIT(cb.Addr(), state.RegFileBase())
 	if !callbackFlag {
 		t.Fatal("callback was not called")
 	}
-	t.Log("callback OK")
 }
 
-// TestR9Valid verifies R9 is correctly loaded by the trampoline
-// (no callbacks — just store R9 and exit).
-func TestR9Valid(t *testing.T) {
-	code, err := mmapExec(4096)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer munmapExec(code)
-
-	cb := &codeBuilder{buf: code}
-	cb.storeRegToR9(9, 0)  // state[0] = R9
-	cb.exit()
-
-	state := heapU64(8)
-	stateAddr := uintptr(unsafe.Pointer(&state[0]))
-	callJIT(uintptr(unsafe.Pointer(&code[0])), stateAddr, 0)
-
-	if state[0] != uint64(stateAddr) {
-		t.Errorf("R9 = 0x%X, want 0x%X (state addr)", state[0], stateAddr)
-	} else {
-		t.Logf("R9 = 0x%X ✓", state[0])
-	}
-}
-
-// TestStoreNoCallback verifies register store encoding works
-// without any callback in the path.
 func TestStoreNoCallback(t *testing.T) {
-	code, err := mmapExec(4096)
+	cb, err := NewCodeBuilder()
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer munmapExec(code)
+	defer cb.Free()
 
-	cb := &codeBuilder{buf: code}
-	cb.movabs(3, 0xAAAAAAAAAAAAAAAA) // RBX = sentinel
-	cb.storeRegToR9(3, 0)            // state[0] = RBX
-	cb.movabs(8, 0x1234567812345678) // R8 = sentinel
-	cb.storeRegToR9(8, 8)            // state[1] = R8
-	cb.exit()
+	cb.Movabs(RBX, 0xAAAAAAAAAAAAAAAA)
+	cb.StoreToRBP(RBX, 0)
+	cb.Movabs(R8, 0x1234567812345678)
+	cb.StoreToRBP(R8, 8)
+	cb.Exit()
 
-	state := heapU64(8)
-	callJIT(uintptr(unsafe.Pointer(&code[0])), uintptr(unsafe.Pointer(&state[0])), 0)
+	state := NewState()
+	callJIT(cb.Addr(), state.RegFileBase())
 
-	if state[0] != 0xAAAAAAAAAAAAAAAA {
-		t.Errorf("state[0] (RBX) = 0x%X, want 0xAAAAAAAAAAAAAAAA", state[0])
-	} else {
-		t.Logf("state[0] (RBX) = 0x%X ✓", state[0])
+	if state.X[0] != 0xAAAAAAAAAAAAAAAA {
+		t.Errorf("X[0] = 0x%X, want 0xAAAAAAAAAAAAAAAA", state.X[0])
 	}
-	if state[1] != 0x1234567812345678 {
-		t.Errorf("state[1] (R8) = 0x%X, want 0x1234567812345678", state[1])
-	} else {
-		t.Logf("state[1] (R8) = 0x%X ✓", state[1])
+	if state.X[1] != 0x1234567812345678 {
+		t.Errorf("X[1] = 0x%X, want 0x1234567812345678", state.X[1])
 	}
 }
 
-// TestAbsoluteStore bypasses R9 entirely — loads the state address
-// via MOVABS and stores a sentinel. Isolates whether R9 is the problem.
 func TestAbsoluteStore(t *testing.T) {
-	code, err := mmapExec(4096)
+	cb, err := NewCodeBuilder()
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer munmapExec(code)
+	defer cb.Free()
 
-	state := heapU64(8)
-	stateAddr := uint64(uintptr(unsafe.Pointer(&state[0])))
+	state := NewState()
+	stateAddr := uint64(state.RegFileBase())
 
-	cb := &codeBuilder{buf: code}
-	cb.movabs(0, stateAddr)            // RAX = &state[0]
-	cb.movabs(1, 0xDEADBEEFDEADBEEF)  // RCX = sentinel
-	cb.emit(0x48, 0x89, 0x08)          // MOV [RAX], RCX
-	cb.exit()
-
-	callJIT(uintptr(unsafe.Pointer(&code[0])), uintptr(unsafe.Pointer(&state[0])), 0)
-
-	if state[0] != 0xDEADBEEFDEADBEEF {
-		t.Errorf("absolute store: state[0] = 0x%X, want 0xDEADBEEFDEADBEEF", state[0])
-	} else {
-		t.Logf("absolute store works ✓: 0x%X", state[0])
-	}
-}
-
-// TestR9ViaLoad loads the value at SP+0x10010 (where trampoline reads
-// cpuState from) and stores it via absolute address, to verify what's
-// actually at that stack location.
-func TestR9ViaLoad(t *testing.T) {
-	code, err := mmapExec(4096)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer munmapExec(code)
-
-	state := heapU64(8)
-	stateAddr := uint64(uintptr(unsafe.Pointer(&state[0])))
-
-	cb := &codeBuilder{buf: code}
-	// Load R9 into RAX (to inspect its value)
-	cb.emit(0x4C, 0x89, 0xC8) // MOV RAX, R9  (REX.WR, 89, ModRM: 11,001,000)
-	// Store RAX to absolute address
-	cb.movabs(1, stateAddr)    // RCX = &state[0]
-	cb.emit(0x48, 0x89, 0x01)  // MOV [RCX], RAX
-	cb.exit()
-
-	callJIT(uintptr(unsafe.Pointer(&code[0])), uintptr(unsafe.Pointer(&state[0])), 0)
-
-	t.Logf("R9 value = 0x%X, expected = 0x%X", state[0], stateAddr)
-	if state[0] == stateAddr {
-		t.Log("R9 is correct ✓")
-	} else if state[0] == 0 {
-		t.Error("R9 is zero — trampoline didn't load it")
-	} else {
-		t.Errorf("R9 points elsewhere — possible ABI wrapper issue")
-	}
-}
-
-// TestDumpAndVerify dumps the JIT code bytes and verifies each instruction
-// by comparing against known-good encodings.
-func TestDumpAndVerify(t *testing.T) {
-	code, err := mmapExec(4096)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer munmapExec(code)
-
-	state := heapU64(8)
-	stateAddr := uint64(uintptr(unsafe.Pointer(&state[0])))
-	t.Logf("stateAddr = 0x%X", stateAddr)
-
-	cb := &codeBuilder{buf: code}
-	start := cb.off
-	cb.movabs(0, stateAddr) // RAX = &state[0]
-	t.Logf("after movabs RAX: off=%d bytes=% x", cb.off, code[start:cb.off])
-
-	start = cb.off
-	cb.movabs(1, 0xDEADBEEFDEADBEEF) // RCX = sentinel
-	t.Logf("after movabs RCX: off=%d bytes=% x", cb.off, code[start:cb.off])
-
-	start = cb.off
+	cb.Movabs(RAX, stateAddr)
+	cb.Movabs(RCX, 0xDEADBEEFDEADBEEF)
 	cb.emit(0x48, 0x89, 0x08) // MOV [RAX], RCX
-	t.Logf("after MOV [RAX],RCX: off=%d bytes=% x", cb.off, code[start:cb.off])
+	cb.Exit()
 
-	start = cb.off
-	cb.exit()
-	t.Logf("after exit: off=%d bytes=% x", cb.off, code[start:cb.off])
-
-	t.Logf("full code (%d bytes): % x", cb.off, code[:cb.off])
-
-	// Verify the code is actually in the mmap'd page
-	t.Logf("code[0] addr = 0x%X", uintptr(unsafe.Pointer(&code[0])))
-	t.Logf("code[0:3] = % x (should be 48 b8 ...)", code[0:3])
-
-	callJIT(uintptr(unsafe.Pointer(&code[0])), uintptr(unsafe.Pointer(&state[0])), 0)
-
-	t.Logf("state[0] = 0x%X (want 0xDEADBEEFDEADBEEF)", state[0])
+	callJIT(cb.Addr(), state.RegFileBase())
+	if state.X[0] != 0xDEADBEEFDEADBEEF {
+		t.Errorf("X[0] = 0x%X, want 0xDEADBEEFDEADBEEF", state.X[0])
+	}
 }
 
-// TestCalleeSaveVerification loads sentinel values into callee-saved
-// registers (RBX, R13, R15), does a callback, then checks the values
-// survived. System V ABI guarantees these are preserved by the callee.
-func TestCalleeSaveVerification(t *testing.T) {
-	code, err := mmapExec(4096)
+func TestDumpAndVerify(t *testing.T) {
+	cb, err := NewCodeBuilder()
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer munmapExec(code)
+	defer cb.Free()
+
+	state := NewState()
+	stateAddr := uint64(state.RegFileBase())
+
+	cb.Movabs(RAX, stateAddr)
+	cb.Movabs(RCX, 0xDEADBEEFDEADBEEF)
+	cb.emit(0x48, 0x89, 0x08) // MOV [RAX], RCX
+	cb.Exit()
+
+	t.Logf("code (%d bytes): % x", cb.Len(), cb.buf[:cb.Len()])
+
+	callJIT(cb.Addr(), state.RegFileBase())
+	if state.X[0] != 0xDEADBEEFDEADBEEF {
+		t.Errorf("X[0] = 0x%X, want 0xDEADBEEFDEADBEEF", state.X[0])
+	}
+}
+
+func TestCalleeSaveVerification(t *testing.T) {
+	cb, err := NewCodeBuilder()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cb.Free()
 
 	const (
 		sentRBX = 0xAAAAAAAAAAAAAAAA
@@ -331,190 +137,256 @@ func TestCalleeSaveVerification(t *testing.T) {
 	)
 
 	callbackFlag = false
-	cb := &codeBuilder{buf: code}
+	cb.Movabs(RBX, sentRBX)
+	cb.Movabs(R13, sentR13)
+	cb.Movabs(R15, sentR15)
+	cb.Movabs(R12, sentR12)
 
-	// Load sentinels — do this AFTER trampoline has saved the originals
-	cb.movabs(3, sentRBX)  // RBX = 0xAAAA...
-	cb.movabs(13, sentR13) // R13 = 0xBBBB...
-	cb.movabs(15, sentR15) // R15 = 0xCCCC...
-	cb.movabs(12, sentR12) // R12 = 0xDDDD...
+	cb.Callback(funcAddr(nosplitCallback))
 
-	// Do callback — Go function may clobber caller-saved regs but
-	// must preserve RBX, RBP, R12, R13, R15 (System V callee-saved).
-	cb.callback(funcAddr(nosplitCallback))
+	cb.StoreToRBP(RBX, 0)
+	cb.StoreToRBP(R13, 8)
+	cb.StoreToRBP(R15, 16)
+	cb.StoreToRBP(R12, 24)
+	cb.Exit()
 
-	// After callback: store register values to state via R9
-	cb.storeRegToR9(3, 0)   // state[0] = RBX
-	cb.storeRegToR9(13, 8)  // state[1] = R13
-	cb.storeRegToR9(15, 16) // state[2] = R15
-	cb.storeRegToR9(12, 24) // state[3] = R12
-
-	cb.exit()
-
-	state := heapU64(8)
-	callJIT(
-		uintptr(unsafe.Pointer(&code[0])),
-		uintptr(unsafe.Pointer(&state[0])),
-		0,
-	)
+	state := NewState()
+	callJIT(cb.Addr(), state.RegFileBase())
 
 	if !callbackFlag {
 		t.Fatal("callback was not called")
 	}
-	check := func(name string, idx int, want uint64) {
-		if state[idx] != want {
-			t.Errorf("%s not preserved: got 0x%X, want 0x%X", name, state[idx], want)
-		} else {
-			t.Logf("%s preserved: 0x%X ✓", name, state[idx])
+	check := func(name string, got, want uint64) {
+		if got != want {
+			t.Errorf("%s not preserved: got 0x%X, want 0x%X", name, got, want)
 		}
 	}
-	check("RBX", 0, sentRBX)
-	check("R13", 1, sentR13)
-	check("R15", 2, sentR15)
-	check("R12", 3, sentR12)
+	check("RBX", state.X[0], sentRBX)
+	check("R13", state.X[1], sentR13)
+	check("R15", state.X[2], sentR15)
+	check("R12", state.X[3], sentR12)
 }
 
-// TestR9Restoration verifies that R9 (CPU state pointer) is correctly
-// restored by the gocall handler after a callback clobbers it.
-func TestR9Restoration(t *testing.T) {
-	code, err := mmapExec(4096)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer munmapExec(code)
-
-	cb := &codeBuilder{buf: code}
-
-	// Store R9 before callback → state[0]
-	cb.storeRegToR9(9, 0)
-
-	// Callback (may clobber R9; gocall handler restores it)
-	callbackFlag = false
-	cb.callback(funcAddr(nosplitCallback))
-
-	// Store R9 after callback → state[1]
-	cb.storeRegToR9(9, 8)
-
-	cb.exit()
-
-	state := heapU64(8)
-	stateAddr := uintptr(unsafe.Pointer(&state[0]))
-	callJIT(
-		uintptr(unsafe.Pointer(&code[0])),
-		stateAddr,
-		0,
-	)
-
-	if !callbackFlag {
-		t.Fatal("callback was not called")
-	}
-	if state[0] != uint64(stateAddr) {
-		t.Errorf("R9 before callback: got 0x%X, want 0x%X", state[0], stateAddr)
-	} else {
-		t.Logf("R9 before callback: 0x%X ✓", state[0])
-	}
-	if state[1] != uint64(stateAddr) {
-		t.Errorf("R9 after callback: got 0x%X, want 0x%X", state[1], stateAddr)
-	} else {
-		t.Logf("R9 after callback: 0x%X ✓ (correctly restored by gocall handler)", state[1])
-	}
-}
-
-// TestGCSafety calls runtime.GC() inside a callback from JIT code.
-// This exercises the exact scenario that crashes without proper
-// NO_LOCAL_POINTERS and frame setup.
 func TestGCSafety(t *testing.T) {
-	code, err := mmapExec(4096)
+	cb, err := NewCodeBuilder()
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer munmapExec(code)
+	defer cb.Free()
 
 	callbackFlag = false
-	cb := &codeBuilder{buf: code}
-	cb.callback(funcAddr(gcCallback))
-	cb.exit()
+	cb.Callback(funcAddr(gcCallback))
+	cb.Exit()
 
-	state := heapU64(8)
-	callJIT(
-		uintptr(unsafe.Pointer(&code[0])),
-		uintptr(unsafe.Pointer(&state[0])),
-		0,
-	)
+	state := NewState()
+	callJIT(cb.Addr(), state.RegFileBase())
 	if !callbackFlag {
 		t.Fatal("callback was not called")
 	}
-	t.Log("GC during callback: no crash ✓")
 }
 
-// TestGCSafetyStress runs the GC callback many times to shake out
-// any intermittent races.
 func TestGCSafetyStress(t *testing.T) {
-	code, err := mmapExec(4096)
+	cb, err := NewCodeBuilder()
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer munmapExec(code)
+	defer cb.Free()
 
-	cb := &codeBuilder{buf: code}
-	cb.callback(funcAddr(gcCallback))
-	cb.exit()
+	cb.Callback(funcAddr(gcCallback))
+	cb.Exit()
 
-	state := heapU64(8)
+	state := NewState()
 	for i := 0; i < 100; i++ {
 		callbackFlag = false
-		callJIT(
-			uintptr(unsafe.Pointer(&code[0])),
-			uintptr(unsafe.Pointer(&state[0])),
-			0,
-		)
+		callJIT(cb.Addr(), state.RegFileBase())
 		if !callbackFlag {
 			t.Fatalf("iteration %d: callback not called", i)
 		}
 	}
-	t.Log("100 GC callbacks: no crash ✓")
 }
 
-// BenchmarkTrampolineOverhead measures raw entry/exit cost of callJIT
-// with JIT code that immediately exits.
+// ---------------------------------------------------------------------------
+// Phase 2 new tests
+// ---------------------------------------------------------------------------
+
+func TestRBPValid(t *testing.T) {
+	cb, err := NewCodeBuilder()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cb.Free()
+
+	cb.MovRegReg(RAX, RBP)
+	cb.StoreToRBP(RAX, 0)
+	cb.Exit()
+
+	state := NewState()
+	rfBase := state.RegFileBase()
+	callJIT(cb.Addr(), rfBase)
+
+	if state.X[0] != uint64(rfBase) {
+		t.Errorf("RBP = 0x%X, want 0x%X", state.X[0], rfBase)
+	}
+}
+
+func TestRBPPreservedAcrossCallback(t *testing.T) {
+	cb, err := NewCodeBuilder()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cb.Free()
+
+	cb.MovRegReg(RAX, RBP)
+	cb.StoreToRBP(RAX, 0)
+
+	callbackFlag = false
+	cb.Callback(funcAddr(nosplitCallback))
+
+	cb.MovRegReg(RAX, RBP)
+	cb.StoreToRBP(RAX, 8)
+
+	cb.Exit()
+
+	state := NewState()
+	rfBase := state.RegFileBase()
+	callJIT(cb.Addr(), rfBase)
+
+	if !callbackFlag {
+		t.Fatal("callback not called")
+	}
+	if state.X[0] != uint64(rfBase) {
+		t.Errorf("RBP before callback: 0x%X, want 0x%X", state.X[0], rfBase)
+	}
+	if state.X[1] != uint64(rfBase) {
+		t.Errorf("RBP after callback: 0x%X, want 0x%X", state.X[1], rfBase)
+	}
+}
+
+func TestStateLayout(t *testing.T) {
+	var s State
+	checks := []struct {
+		name string
+		got  uintptr
+		want uintptr
+	}{
+		{"X", unsafe.Offsetof(s.X), 0},
+		{"F", unsafe.Offsetof(s.F), 256},
+		{"FCSR", unsafe.Offsetof(s.FCSR), 512},
+		{"MemBase", unsafe.Offsetof(s.MemBase), 520},
+		{"MemMask", unsafe.Offsetof(s.MemMask), 528},
+	}
+	for _, c := range checks {
+		if c.got != c.want {
+			t.Errorf("%s offset = %d, want %d", c.name, c.got, c.want)
+		}
+	}
+}
+
+func TestLoadFromRBP(t *testing.T) {
+	cb, err := NewCodeBuilder()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cb.Free()
+
+	cb.LoadFromRBP(RAX, 5*8)
+	cb.StoreToRBP(RAX, 0)
+	cb.Exit()
+
+	state := NewState()
+	state.X[5] = 0x42
+	callJIT(cb.Addr(), state.RegFileBase())
+
+	if state.X[0] != 0x42 {
+		t.Errorf("X[0] = 0x%X, want 0x42", state.X[0])
+	}
+}
+
+func TestAddReg(t *testing.T) {
+	cb, err := NewCodeBuilder()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cb.Free()
+
+	cb.LoadFromRBP(RAX, 10*8)
+	cb.LoadFromRBP(RCX, 11*8)
+	cb.AddReg(RAX, RCX)
+	cb.StoreToRBP(RAX, 0)
+	cb.Exit()
+
+	state := NewState()
+	state.X[10] = 100
+	state.X[11] = 200
+	callJIT(cb.Addr(), state.RegFileBase())
+
+	if state.X[0] != 300 {
+		t.Errorf("X[0] = %d, want 300", state.X[0])
+	}
+}
+
+func TestRunAPI(t *testing.T) {
+	cb, err := NewCodeBuilder()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cb.Free()
+
+	cb.LoadFromRBP(RAX, 1*8)
+	cb.LoadFromRBP(RCX, 2*8)
+	cb.AddReg(RAX, RCX)
+	cb.StoreToRBP(RAX, 0)
+	cb.Exit()
+
+	state := NewState()
+	state.X[1] = 7
+	state.X[2] = 35
+	Run(cb, state)
+
+	if state.X[0] != 42 {
+		t.Errorf("X[0] = %d, want 42", state.X[0])
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Benchmarks
+// ---------------------------------------------------------------------------
+
 func BenchmarkTrampolineOverhead(b *testing.B) {
-	code, err := mmapExec(4096)
+	cb, err := NewCodeBuilder()
 	if err != nil {
 		b.Fatal(err)
 	}
-	defer munmapExec(code)
+	defer cb.Free()
 
-	cb := &codeBuilder{buf: code}
-	cb.exit()
+	cb.Exit()
 
-	state := heapU64(8)
-	codeAddr := uintptr(unsafe.Pointer(&code[0]))
-	stateAddr := uintptr(unsafe.Pointer(&state[0]))
+	state := NewState()
+	codeAddr := cb.Addr()
+	rfBase := state.RegFileBase()
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		callJIT(codeAddr, stateAddr, 0)
+		callJIT(codeAddr, rfBase)
 	}
 }
 
-// BenchmarkCallbackRoundTrip measures callJIT + one callback + exit.
 func BenchmarkCallbackRoundTrip(b *testing.B) {
-	code, err := mmapExec(4096)
+	cb, err := NewCodeBuilder()
 	if err != nil {
 		b.Fatal(err)
 	}
-	defer munmapExec(code)
+	defer cb.Free()
 
-	cb := &codeBuilder{buf: code}
-	cb.callback(funcAddr(nosplitCallback))
-	cb.exit()
+	cb.Callback(funcAddr(nosplitCallback))
+	cb.Exit()
 
-	state := heapU64(8)
-	codeAddr := uintptr(unsafe.Pointer(&code[0]))
-	stateAddr := uintptr(unsafe.Pointer(&state[0]))
+	state := NewState()
+	codeAddr := cb.Addr()
+	rfBase := state.RegFileBase()
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		callJIT(codeAddr, stateAddr, 0)
+		callJIT(codeAddr, rfBase)
 	}
 }

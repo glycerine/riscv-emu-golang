@@ -1,4 +1,4 @@
 package abjit
 
-func callJIT(code, cpuState, sandboxSP uintptr)
+func callJIT(code, regFileBase uintptr)
 func callJITImplAddr() uintptr
