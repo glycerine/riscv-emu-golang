@@ -8,9 +8,25 @@ import (
 	"os"
 )
 
-// testIterStart is set by tests to rotate gotoTargets iteration order.
-// Zero means normal sorted order. Non-zero rotates by this offset.
-//var testIterStart int
+// maxBlockIRInsns limits the total IR instructions per block. Each RISC-V
+// instruction expands to ~5-10 IR ops; very large blocks hit O(N*L) in the
+// register allocator's spill phase where L is average interval length.
+// 4096 IR instructions covers ~500-800 RISC-V instructions — large enough
+// for good optimization, small enough for fast compilation.
+const maxBlockIRInsns = 2048
+
+// PerBlockCapTimeToSplit is the soft cap on guest instructions per JIT
+// block. After exceeding this threshold, the emitter terminates the block
+// at the next natural break point (JALR, ECALL, unconditional jump, etc.)
+// as determined by classifyFlow(). Set to 0 to disable the cap entirely.
+// Follows the libriscv model (ITS_TIME_TO_SPLIT = 5000 for TCC).
+var PerBlockCapTimeToSplit int64 = 5000
+
+// isStoppingFlow returns true for flow classes that are natural block
+// boundaries: unconditional jumps, calls, and terminators.
+func isStoppingFlow(fc flowClass) bool {
+	return fc >= flowJump // flowJump=2, flowCall=3, flowTerm=4
+}
 
 // emitResult holds the generated IR block and metadata.
 type emitResult struct {
@@ -61,28 +77,28 @@ type deferredFault struct {
 // values to leak into x[]. A proper fix requires path-sensitive
 // WriteBackAll, which is out of scope for Phase 5-B.
 type emitter struct {
-	mem            *GuestMemory
-	startPC        uint64
-	pc             uint64
-	irEm           *Emitter
-	numInsns       int
-	regsUsed       uint32 // bit i set iff xreg(i) or xregDst(i) was called
-	terminated     bool
-	visited        map[uint64]bool
-	regionEnd      uint64
-	gotoTargets    u64set
-	pcLabels       u64labelmap
-	stopperAddr    int64  // InfiniteLoopStopperPage address for backward-branch probes
-	watchAddr      uint64 // tohost address; stores here trigger a block exit
+	mem              *GuestMemory
+	startPC          uint64
+	pc               uint64
+	irEm             *Emitter
+	numInsns         int
+	regsUsed         uint32 // bit i set iff xreg(i) or xregDst(i) was called
+	terminated       bool
+	visited          map[uint64]bool
+	regionEnd        uint64
+	gotoTargets      u64set
+	pcLabels         u64labelmap
+	stopperAddr      int64  // InfiniteLoopStopperPage address for backward-branch probes
+	watchAddr        uint64 // tohost address; stores here trigger a block exit
 	lockstepMode     bool
 	lockstepBudget   int64
 	budgetExits      []budgetExit
 	sharedBudgetExit Label
 	deferredExits    []deferredExit
-	deferredFaults []deferredFault
-	exitIdx        int      // counter for chain exit indices
-	jalrSiteIdx    int      // counter for JALR inline-cache site indices
-	callStack      []uint64 // RAS: expected return addresses for inlined calls
+	deferredFaults   []deferredFault
+	exitIdx          int      // counter for chain exit indices
+	jalrSiteIdx      int      // counter for JALR inline-cache site indices
+	callStack        []uint64 // RAS: expected return addresses for inlined calls
 }
 
 // ── Register access helpers ────────────────────────────────────────────
@@ -994,6 +1010,25 @@ func (j *JIT) emitBlockRange(mem *GuestMemory, pc, endPC uint64) *emitResult {
 
 	// Emit IR (populates regsUsed via xreg/xregDst calls).
 	for !e.terminated && e.pc < e.regionEnd {
+		// Block size cap (libriscv hybrid model): after exceeding the
+		// soft cap, stop at the next natural break point (flowTerm,
+		// flowCall, or flowJump). Hard cap at 2x prevents unbounded
+		// growth if no natural break appears.
+		if PerBlockCapTimeToSplit > 0 &&
+			int64(e.numInsns) >= PerBlockCapTimeToSplit {
+
+			if int64(e.numInsns) >= PerBlockCapTimeToSplit*2 {
+				break
+			}
+			if len(irEm.Block.Instrs) >= maxBlockIRInsns {
+				break
+			}
+			fc, _, _ := classifyFlow(e.mem, e.pc)
+			if isStoppingFlow(fc) {
+				break
+			}
+		}
+
 		if e.visited[e.pc] {
 			e.irEm.Jump(e.getOrCreateLabel(e.pc))
 			e.gotoTargets.add(e.pc)
