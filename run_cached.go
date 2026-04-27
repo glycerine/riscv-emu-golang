@@ -5,7 +5,7 @@ import (
 	"unsafe"
 )
 
-// RunCached is the fast-path dispatch loop. It uses a DecoderCache keyed by
+// runCached is the fast-path dispatch loop. It uses a DecoderCache keyed by
 // PC so each instruction pays for fetch + decode only once (on first visit)
 // and subsequent visits dispatch straight from pre-decoded fields.
 //
@@ -19,7 +19,7 @@ import (
 // removing per-instruction polling from the hot loop.
 const pollBatch = 10240
 
-// Flat dispatch opcodes for the RunCached megaswitch. Each constant
+// Flat dispatch opcodes for the runCached megaswitch. Each constant
 // uniquely identifies one instruction handler. Assigned at decode time
 // by flattenSlotOp so the megaswitch is a single-level jump table —
 // one indirect branch per dispatch, zero nesting.
@@ -99,7 +99,7 @@ const (
 	opREMW  uint8 = 57
 	opREMUW uint8 = 58
 
-	opFENCE uint8 = 59
+	opFENCE  uint8 = 59
 	opIAUIPC uint8 = 60
 	opILUI   uint8 = 61
 	opIJAL   uint8 = 62
@@ -120,8 +120,9 @@ const (
 
 // RunDefault is the "just run the guest" entry point used by cpu.Run().
 // It allocates a fresh 256 KB decoder cache based at the current PC and
-// hands off to RunCached. Callers needing cross-call cache reuse or custom
-// sizing should build their own *DecoderCache and call RunCached directly.
+// hands off to runCached. Callers needing cross-call cache reuse or custom
+// sizing should build their own *DecoderCache and call runCached directly
+// (WAT? THIS DIRECTLY CONTRADICTS THE FOLLOWING!??)
 //
 // ── Why this helper exists (performance footgun) ─────────────────────────
 //
@@ -129,12 +130,12 @@ const (
 // reasons, not a semantic one. Bisection (see git history around the
 // "recover 419 MIPS" change) established that:
 //
-//	cpu.Run()   =>  calls RunCached directly                =>  ~314 MIPS
+//	cpu.Run()   =>  calls runCached directly                =>  ~314 MIPS
 //	cpu.Run()   =>  calls RunDefault   (defined here)       =>  ~406 MIPS
 //
-// Same RunCached source, same CPU struct, same benchmarks. The ~25%
+// Same runCached source, same CPU struct, same benchmarks. The ~25%
 // slowdown is visible even in benchmarks that never call cpu.Run() (e.g.
-// BenchmarkCPU_FullExecution_Cached calls riscv.RunCached directly from
+// BenchmarkCPU_FullExecution_Cached calls riscv.runCached directly from
 // the bench package). Per-line pprof listing shows the hit is spread
 // across the top of the megaswitch: `switch slot.op`, the hot RVC cases
 // (C.ADDI / C.MV / C.ADD / C.BNEZ), and the slot.next fallback — a
@@ -142,29 +143,29 @@ const (
 //
 // The likely mechanism is some package-level analysis in the Go compiler
 // (inliner cost model, call-graph weighting, function ordering) that
-// changes how RunCached is compiled once it has an in-file caller inside
+// changes how runCached is compiled once it has an in-file caller inside
 // cpu.go. The threshold isn't documented and isn't stable across Go
-// versions. What IS stable: keeping every RunCached callsite inside
+// versions. What IS stable: keeping every runCached callsite inside
 // run_cached.go preserves the fast codegen.
 //
 // Rules for maintainers:
-//   - Do NOT call RunCached from any file in this package other than
+//   - Do NOT call runCached from any file in this package other than
 //     run_cached.go. Route through RunDefault (or add a new helper here).
 //   - When adding a new "default run" entry point on CPU or elsewhere,
 //     have it land in run_cached.go and chain from there.
 //   - Regression gate: BenchmarkCPU_FullExecution_Cached must stay
 //     ≥ 400 MIPS on the baseline developer machine (i7 Ice Lake class).
 //     If it drops without an obvious source-level explanation, look for
-//     a new cross-file call into RunCached.
+//     a new cross-file call into runCached.
 func RunDefault(cpu *CPU, nc *NoteChain) error {
 	base := cpu.pc &^ uint64(0xFFF)
 	if base > 0x1000 {
 		base -= 0x1000
 	}
-	return RunCached(cpu, NewDecoderCache(base, 256<<10), nc)
+	return runCached(cpu, NewDecoderCache(base, 256<<10), nc)
 }
 
-func RunCached(cpu *CPU, cache *DecoderCache, nc *NoteChain) error {
+func runCached(cpu *CPU, cache *DecoderCache, nc *NoteChain) error {
 	// pc stays in a local across the inner loop; cpu.pc is only written when
 	// we exit the inner loop (watchAddr / note delivery) or when a delegate
 	// / slow-path callee needs it (they read/write c.pc for fault context).
@@ -955,7 +956,7 @@ func slowStep(cpu *CPU, cache *DecoderCache, slot *DecodedInsn, pc uint64) (uint
 //
 // After decoding, if the instruction is non-block-ending and the fall-through
 // PC lands inside the cache range, wires slot.next to the successor slot so
-// RunCached can skip cache.lookup on the linear-flow path.
+// runCached can skip cache.lookup on the linear-flow path.
 //
 //go:nosplit
 func populateSlot(cpu *CPU, cache *DecoderCache, slot *DecodedInsn, pc uint64) {
@@ -984,7 +985,7 @@ func populateSlot(cpu *CPU, cache *DecoderCache, slot *DecodedInsn, pc uint64) {
 	}
 	flattenSlotOp(slot)
 	// Wire up slot.next for non-block-end successors whose PC is in-range.
-	// Block-ending insns normally leave next==nil so RunCached does a
+	// Block-ending insns normally leave next==nil so runCached does a
 	// cache.lookup after they execute — but for unconditional direct-target
 	// branches (JAL, C.J) the target is a decode-time constant, so we can
 	// pre-resolve it and chain straight to the target slot (Phase E).

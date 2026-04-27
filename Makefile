@@ -29,7 +29,7 @@
         coremark-elf dhrystone-elf bench-coremark bench-dhrystone \
         bench-jit-coremark bench-jit-dhrystone bench-chain-ref \
         darwin-perf bench-wasm build-luajit-riscv \
-        hello hello-elfs quad
+        hello hello-elfs quad standard
 
 # ── platform detection ─────────────────────────────────────────────────────
 
@@ -677,30 +677,6 @@ bench-summary:
 	    || echo "    (run make bench first)"
 	@echo ""
 
-# ── quad: AotJIT vs LazyJIT on four workloads (wall time only) ────────────
-# MIPS metric is intentionally omitted — IC counting is disabled for perf.
-quad:
-	@echo "── quad: AotJIT vs LazyJIT ─────────────────────────────────────"
-	@echo ""
-	@echo "── 1/4: BenchGuest (fib/sieve) ──"
-	cd $(ROOT) && $(GO) test -count=1 -benchtime=1x -benchmem \
-	    -run='^$$' -bench='^Benchmark(AotJIT|LazyJIT)_BenchGuest$$' \
-	    ./bench/ 2>&1
-	@echo ""
-	@echo "── 2/4: CoreMark ──"
-	cd $(ROOT) && $(GO) test -count=1 -benchtime=1x -benchmem \
-	    -run='^$$' -bench='^Benchmark(AotJIT|LazyJIT)_CoreMark$$' \
-	    ./bench/ 2>&1
-	@echo ""
-	@echo "── 3/4: Dhrystone ──"
-	cd $(ROOT) && $(GO) test -count=1 -benchtime=1x -benchmem \
-	    -run='^$$' -bench='^Benchmark(AotJIT|LazyJIT)_Dhrystone$$' \
-	    ./bench/ 2>&1
-	@echo ""
-	@echo "── 4/4: RISC-V test ELFs (all rv64ui) ──"
-	cd $(ROOT) && $(GO) test -count=1 -benchtime=1x -benchmem -timeout=120s \
-	    -run='^$$' -bench='^BenchmarkRVTests_UI_(AotJIT|LazyJIT)$$' \
-	    ./bench/ 2>&1
 
 # ── unit tests ─────────────────────────────────────────────────────────────
 
@@ -914,3 +890,32 @@ hello-lib:
 	# diff ~/ris/debug_vizjit_dir/<tag>.gocpu.asm.pc_<X>.asm ~/ris/debug_libriscv_dir/<tag>.libriscv.asm.pc_<X>.asm
 	GOCPU_VIZJIT=~/ris/debug_vizjit_dir \
         go run -tags libriscv ./bench/hellobench/ # -only=libriscv
+
+
+# ── quad: AotJIT vs LazyJIT on four workloads (wall time only) ────────────
+# MIPS metric is intentionally omitted — IC counting is disabled for perf.
+quad:
+	@echo "── quad: AotJIT vs LazyJIT ─────────────────────────────────────"
+	@echo ""
+	@echo "── 1/4: BenchGuest (fib/sieve) ──"
+	cd $(ROOT) && $(GO) test -count=1 -benchtime=1x -benchmem \
+	    -run='^$$' -bench='^Benchmark(AotJIT|LazyJIT)_BenchGuest$$' \
+	    ./bench/ 2>&1
+	@echo ""
+	@echo "── 2/4: CoreMark ──"
+	cd $(ROOT) && $(GO) test -count=1 -benchtime=1x -benchmem \
+	    -run='^$$' -bench='^Benchmark(AotJIT|LazyJIT)_CoreMark$$' \
+	    ./bench/ 2>&1
+	@echo ""
+	@echo "── 3/4: Dhrystone ──"
+	cd $(ROOT) && $(GO) test -count=1 -benchtime=1x -benchmem \
+	    -run='^$$' -bench='^Benchmark(AotJIT|LazyJIT)_Dhrystone$$' \
+	    ./bench/ 2>&1
+	@echo ""
+	make standard
+
+standard:
+	@echo "── 4/4: RISC-V test ELFs (all rv64ui) ──"
+	cd $(ROOT) && $(GO) test -count=1 -benchtime=1x -benchmem -timeout=120s \
+	    -run='^$$' -bench='^BenchmarkRVTests_UI_(AotJIT|LazyJIT)$$' \
+	    ./bench/ 2>&1

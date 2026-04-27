@@ -134,10 +134,13 @@ func BenchmarkRVTests_UI_AotJIT(b *testing.B) {
 			t0 := time.Now()
 			cpu, mem := newRVTestCPU(b, e.data)
 			jit := riscv.NewJIT()
+			vv("jit.InstallAOT: %v", e.name)
 			if err := jit.InstallAOT(mem, e.data); err != nil {
 				b.Fatalf("InstallAOT: %v", err)
 			}
+			vv("runJITBenchGuestWith: %v", e.name)
 			runJITBenchGuestWith(cpu, jit)
+			vv("back from runJITBenchGuestWith: %v", e.name)
 			mem.Free()
 			fmt.Fprintf(os.Stderr, "  AotJIT  [%2d/%d] %-12s %v\n", j+1, len(elfs), e.name, time.Since(t0))
 		}
@@ -158,6 +161,36 @@ func BenchmarkRVTests_UI_LazyJIT(b *testing.B) {
 			runJITBenchGuestWith(cpu, jit)
 			mem.Free()
 			fmt.Fprintf(os.Stderr, "  LazyJIT [%2d/%d] %-12s %v\n", j+1, len(elfs), e.name, time.Since(t0))
+		}
+	}
+}
+
+// just get 'add' benchmark working AOT
+
+func BenchmarkRVTests_UI_AotJIT2(b *testing.B) {
+	elfs := loadRVTestELFs(b)
+
+	for j, e := range elfs {
+		if e.name != "add" {
+			continue
+		}
+
+		b.ReportAllocs()
+		b.ResetTimer()
+
+		for i := 0; i < b.N; i++ {
+			t0 := time.Now()
+			cpu, mem := newRVTestCPU(b, e.data)
+			jit := riscv.NewJIT()
+			vv("b.N=%v jit.InstallAOT: %v", b.N, e.name)
+			if err := jit.InstallAOT(mem, e.data); err != nil {
+				b.Fatalf("InstallAOT: %v", err)
+			}
+			vv("runJITBenchGuestWith: %v", e.name) // seen
+			runJITBenchGuestWith(cpu, jit)
+			vv("back from runJITBenchGuestWith: %v", e.name)
+			mem.Free()
+			fmt.Fprintf(os.Stderr, "  AotJIT  [%2d/%d] %-12s %v\n", j+1, len(elfs), e.name, time.Since(t0))
 		}
 	}
 }
