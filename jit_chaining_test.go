@@ -394,3 +394,54 @@ func TestRAS_MismatchFallsBackToJalrIC(t *testing.T) {
 		t.Errorf("x11 = %d, want 0 (return site should not have executed)", cpu.Reg(11))
 	}
 }
+
+// TestLazyJIT_JALR_NoGoRoundTrip verifies that lazy-compiled blocks
+// (no AOT, no decoder cache) don't round-trip back to Go on every
+// JALR once the target has been seen. Uses x5 (not ra/x1) to bypass
+// the RAS return-address prediction, forcing the JALR IC path.
+func TestLazyJIT_JALR_NoGoRoundTrip(t *testing.T) {
+	const codeVA = uint64(0x1000)
+	const loopCount = uint64(100)
+
+	// entry (0x1000):
+	//   addi x12, x12, 1           ; bump loop counter
+	//   jal  x5, +12               ; call func via x5 (not ra → no RAS)
+	//   blt  x12, x13, -8          ; loop back to addi
+	//   ecall                       ; done
+	// func (0x1010):
+	//   addi x10, x10, 1           ; accumulate
+	//   jalr x0, x5, 0             ; return via x5 (no RAS prediction)
+	insns := []uint32{
+		/* 0x1000 */ ienc(opOPIMM, 0, 12, 12, 1),
+		/* 0x1004 */ jenc(5, 12),
+		/* 0x1008 */ benc(opBRANCH, 4, 12, 13, -8),
+		/* 0x100C */ instrECALL,
+		/* 0x1010 */ ienc(opOPIMM, 0, 10, 10, 1),
+		/* 0x1014 */ ienc(opJALR, 0, 0, 5, 0),
+	}
+
+	cpu, mem := newTestCPU(t, Size64MB, codeVA, insns)
+	defer mem.Free()
+	cpu.SetReg(12, 0)
+	cpu.SetReg(13, loopCount)
+	cpu.Notes.Push(ecallStop)
+
+	jit := NewJIT()
+	jit.DisableAutoAOT = true
+	jit.RunJIT(cpu)
+
+	if cpu.Reg(10) != loopCount {
+		t.Fatalf("x10 = %d, want %d", cpu.Reg(10), loopCount)
+	}
+
+	// With a working 2-slot IC, the JALR at 0x1014 targets 0x1008
+	// every iteration (monomorphic). After 1-2 cold misses the IC
+	// should absorb all subsequent hits. Expect at most a handful
+	// of misses, not one per iteration.
+	maxExpected := uint64(5)
+	if jit.JalrICMisses > maxExpected {
+		t.Errorf("JalrICMisses = %d (want <= %d); lazy JALR is round-tripping to Go on every call",
+			jit.JalrICMisses, maxExpected)
+	}
+	t.Logf("JalrICMisses=%d (loop ran %d iterations)", jit.JalrICMisses, loopCount)
+}

@@ -128,6 +128,14 @@ func LowerAMD64_ABJIT(ctx *goasm.Ctx, b *Block, alloc *Allocation) (*LowerResult
 			StubProg: lc.chainExits[i].stubProg,
 		})
 	}
+	for i := range lc.jalrICs {
+		result.JalrICs = append(result.JalrICs, JalrICDesc{
+			SiteIdx:  lc.jalrICs[i].siteIdx,
+			PcMov:    lc.jalrICs[i].pcMov,
+			FnMov:    lc.jalrICs[i].fnMov,
+			StubProg: lc.jalrICs[i].stubProg,
+		})
+	}
 	return result, nil
 }
 
@@ -558,13 +566,95 @@ func (lc *lowerCtxABJIT) abjitJalrIC(ins *IRInstr) {
 	jp.To.Reg = goasm.REG_AMD64_DX
 	lc.c.Append(jp)
 
-	// MISS: write status and exit.
+	// --- 2-slot inline cache (fallback for lazy blocks where dcBase=0) ---
+	// All decoder-cache miss paths land here. stgB (RCX) still holds
+	// the target PC.
+	try2SlotNop := lc.c.NewProg()
+	try2SlotNop.As = obj.ANOP
+	lc.c.Append(try2SlotNop)
+	missJmp1.To.SetTarget(try2SlotNop)
+	missJmp2.To.SetTarget(try2SlotNop)
+	missJmp3.To.SetTarget(try2SlotNop)
+
+	const sentinel = int64(0x7BADC0DE7BADC0DE)
+
+	// Slot 0: MOVABS RAX, <cache_pc0>; CMP target, RAX; JEQ hit0
+	pcMov0 := lc.c.NewProg()
+	pcMov0.As = x86.AMOVQ
+	pcMov0.From.Type = obj.TYPE_CONST
+	pcMov0.From.Offset = sentinel
+	pcMov0.To.Type = obj.TYPE_REG
+	pcMov0.To.Reg = stgA
+	lc.c.Append(pcMov0)
+
+	lc.emit2(x86.ACMPQ, stgB, stgA)
+	jeq0 := lc.c.NewProg()
+	jeq0.As = x86.AJEQ
+	jeq0.To.Type = obj.TYPE_BRANCH
+	lc.c.Append(jeq0)
+
+	// Slot 1: MOVABS RAX, <cache_pc1>; CMP target, RAX; JNE miss
+	pcMov1 := lc.c.NewProg()
+	pcMov1.As = x86.AMOVQ
+	pcMov1.From.Type = obj.TYPE_CONST
+	pcMov1.From.Offset = sentinel
+	pcMov1.To.Type = obj.TYPE_REG
+	pcMov1.To.Reg = stgA
+	lc.c.Append(pcMov1)
+
+	lc.emit2(x86.ACMPQ, stgB, stgA)
+	jne1 := lc.c.NewProg()
+	jne1.As = x86.AJNE
+	jne1.To.Type = obj.TYPE_BRANCH
+	lc.c.Append(jne1)
+
+	// Hit slot 1: dealloc frame, MOVABS RAX = cache_fn1, JMP RAX
+	lc.emitRI(x86.AADDQ, lc.frameSize, goasm.REG_AMD64_SP)
+	fnMov1 := lc.c.NewProg()
+	fnMov1.As = x86.AMOVQ
+	fnMov1.From.Type = obj.TYPE_CONST
+	fnMov1.From.Offset = sentinel
+	fnMov1.To.Type = obj.TYPE_REG
+	fnMov1.To.Reg = stgA
+	lc.c.Append(fnMov1)
+	jmpHit1 := lc.c.NewProg()
+	jmpHit1.As = obj.AJMP
+	jmpHit1.To.Type = obj.TYPE_REG
+	jmpHit1.To.Reg = stgA
+	lc.c.Append(jmpHit1)
+
+	// Hit slot 0:
+	hit0Nop := lc.c.NewProg()
+	hit0Nop.As = obj.ANOP
+	lc.c.Append(hit0Nop)
+	jeq0.To.SetTarget(hit0Nop)
+
+	lc.emitRI(x86.AADDQ, lc.frameSize, goasm.REG_AMD64_SP)
+	fnMov0 := lc.c.NewProg()
+	fnMov0.As = x86.AMOVQ
+	fnMov0.From.Type = obj.TYPE_CONST
+	fnMov0.From.Offset = sentinel
+	fnMov0.To.Type = obj.TYPE_REG
+	fnMov0.To.Reg = stgA
+	lc.c.Append(fnMov0)
+	jmpHit0 := lc.c.NewProg()
+	jmpHit0.As = obj.AJMP
+	jmpHit0.To.Type = obj.TYPE_REG
+	jmpHit0.To.Reg = stgA
+	lc.c.Append(jmpHit0)
+
+	// MISS: both slots missed — return to Go.
 	missNop := lc.c.NewProg()
 	missNop.As = obj.ANOP
 	lc.c.Append(missNop)
-	missJmp1.To.SetTarget(missNop)
-	missJmp2.To.SetTarget(missNop)
-	missJmp3.To.SetTarget(missNop)
+	jne1.To.SetTarget(missNop)
+
+	lc.jalrICs = append(lc.jalrICs, jalrICInfo{
+		siteIdx:  int(ins.Imm),
+		pcMov:    [2]*obj.Prog{pcMov0, pcMov1},
+		fnMov:    [2]*obj.Prog{fnMov0, fnMov1},
+		stubProg: missNop,
+	})
 
 	lc.emitMI(x86.AMOVQ, int64(JitOKJalrMiss), goasm.REG_AMD64_BP, abjitStatusOff)
 	lc.emitMI(x86.AMOVQ, int64(ins.Imm), goasm.REG_AMD64_BP, abjitFaultAddrOff)
