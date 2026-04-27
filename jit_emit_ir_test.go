@@ -388,6 +388,25 @@ func TestSrc1EqDest(t *testing.T) {
 }
 
 // TestSubELF_Block39 runs the sub ELF to block 39 and checks what happens.
+//
+// had a bug/brittleness issue:
+//
+// === RUN   TestSubELF_Block39
+// jit_emit_ir_test.go:420: block 39 starts at PC=0x4, gp=1
+//
+// jit_emit_ir_test.go:441: emitBlock returned nil for block 39
+// --- FAIL: TestSubELF_Block39 (0.02s)
+//
+// The root cause: after 39 StepBlock calls with cap=50,
+// the CPU lands at PC=0x4 — a csrr
+// t5, mcause instruction in the trap handler that the
+// JIT correctly can't translate. The
+// test is brittle because it hardcodes 39 iterations
+// and assumes the resulting PC is
+// always JIT-able.
+// The fix: add an interpreter-step retry loop (mirroring
+// StepBlock's own fallback logic)
+// so non-JIT-able instructions are stepped past rather than causing a fatal.
 func TestSubELF_Block39(t *testing.T) {
 	mem, err := NewGuestMemory(Size1MB)
 	if err != nil {
