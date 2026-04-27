@@ -181,6 +181,28 @@ func (e *Emitter) MemBudget(delta int, budget int64, overflowLabel Label) {
 	})
 }
 
+// ZeroIC emits XOR R15, R15 to zero the IC register at block entry.
+func (e *Emitter) ZeroIC() { e.emit(IRInstr{Op: IRZeroIC}) }
+
+// IncIC emits INC R15 to count one RISC-V instruction.
+func (e *Emitter) IncIC() { e.emit(IRInstr{Op: IRIncIC}) }
+
+// SpillIC emits MOV [RBP+IC_offset], R15 to write the IC register to State.
+func (e *Emitter) SpillIC() { e.emit(IRInstr{Op: IRSpillIC}) }
+
+// RegBudget emits CMP R15, budget; JGE overflowLabel.
+func (e *Emitter) RegBudget(budget int64, overflowLabel Label) {
+	e.emit(IRInstr{Op: IRRegBudget, Imm2: budget, Dst: VReg(overflowLabel)})
+}
+
+// SetPC emits MOV [RBP+PC_offset], $pc — used by budget cold paths.
+func (e *Emitter) SetPC(pc uint64) {
+	e.emit(IRInstr{Op: IRSetPC, Imm: int64(pc)})
+}
+
+// RetBudget emits the shared budget exit: status=0, exitinfo=0, restore SP, return.
+func (e *Emitter) RetBudget() { e.emit(IRInstr{Op: IRRetBudget}) }
+
 // ClearDirtySyscallRegs clears dirty flags for a0 (x10) and a1 (x11)
 // only. Called before IRSyscall so the subsequent ReloadSyscallRegs
 // picks up the dispatcher's return values from x[].

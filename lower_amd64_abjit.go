@@ -260,6 +260,10 @@ func (lc *lowerCtxABJIT) lowerInstr(ins *IRInstr) error {
 		return lc.abjitCall(ins)
 	case IRSyscall:
 		lc.abjitSyscall(ins)
+	case IRSetPC:
+		lc.abjitSetPC(ins)
+	case IRRetBudget:
+		lc.abjitRetBudget()
 	default:
 		return fmt.Errorf("ir.LowerAMD64_ABJIT: unhandled op %v at index %d",
 			ins.Op, lc.idx)
@@ -285,6 +289,21 @@ func (lc *lowerCtxABJIT) abjitRet(ins *IRInstr) {
 		lc.emitMI(x86.AMOVQ, 0, goasm.REG_AMD64_BP, abjitFaultAddrOff)
 	}
 
+	lc.jmpExitThunk()
+}
+
+// abjitSetPC emits MOV QWORD [RBP+PC_offset], $imm.
+// Used by budget cold paths to write the unexecuted instruction's PC.
+func (lc *lowerCtxABJIT) abjitSetPC(ins *IRInstr) {
+	lc.emitMI(x86.AMOVQ, ins.Imm, goasm.REG_AMD64_BP, abjitPCOff)
+}
+
+// abjitRetBudget emits the shared budget exit: status=0, exitinfo=0,
+// restore SP, jump to exit thunk. PC is already in State (set by SetPC).
+func (lc *lowerCtxABJIT) abjitRetBudget() {
+	lc.storeRegsBack()
+	lc.emitMI(x86.AMOVQ, 0, goasm.REG_AMD64_BP, abjitStatusOff)
+	lc.emitMI(x86.AMOVQ, 0, goasm.REG_AMD64_BP, abjitFaultAddrOff)
 	lc.jmpExitThunk()
 }
 

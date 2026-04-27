@@ -421,7 +421,7 @@ func runLockstep(t *testing.T, elfPath string) {
 
 	jit := NewJIT()
 	jit.DebugOneBlockLockstepMode = true
-	jit.LockstepModeBudget = 1e9 // beq green. sw red.
+	jit.LockstepModeBudget = 1 // single-step: exact per-instruction comparison
 	//jit.LockstepModeBudget = 1_000_065_536 // "add" takes: 38.3 sec
 	//jit.LockstepModeBudget = 1 << 6 // "add" takes: 32.69 sec. sw red. beq red.
 	//jit.LockstepModeBudget = 65_536 // "add" takes: 32.69 sec. sw red.

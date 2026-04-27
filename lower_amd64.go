@@ -16,6 +16,9 @@ const (
 // pinned to RBP in the rv8 layout.
 const VRRegFile = VReg(VRegTempStart + 4) // t68
 
+// VRIC is the instruction-counter VReg, pinned to R15 in lockstep mode.
+const VRIC = VReg(VRegTempStart + 5) // t69
+
 // RegPolicy bundles register allocation choices for a target configuration.
 // Pool, Pinned, and Lower must all be non-nil before the policy is used
 // for compilation.

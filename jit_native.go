@@ -32,6 +32,10 @@ func (j *JIT) jitCompile(res *emitResult, mem ...*GuestMemory) (*compiledBlock, 
 
 	pool := j.regPolicy.Pool(res.block)
 	pinned := j.regPolicy.Pinned()
+	if j.DebugOneBlockLockstepMode {
+		pool.IntRegs = removeReg(pool.IntRegs, goasm.REG_AMD64_R15)
+		pinned[VRIC] = goasm.REG_AMD64_R15
+	}
 	alloc := j.irAlloc.Allocate(res.block, pool, pinned, nil)
 
 	ctx := getJITCtx()
@@ -153,6 +157,10 @@ func (j *JIT) jitCompileDebug(res *emitResult) (*compiledBlock, *compileDebugInf
 
 	pool := j.regPolicy.Pool(res.block)
 	pinned := j.regPolicy.Pinned()
+	if j.DebugOneBlockLockstepMode {
+		pool.IntRegs = removeReg(pool.IntRegs, goasm.REG_AMD64_R15)
+		pinned[VRIC] = goasm.REG_AMD64_R15
+	}
 	alloc := j.irAlloc.Allocate(res.block, pool, pinned, nil)
 
 	ctx := goasm.New(goasm.AMD64)
@@ -237,6 +245,16 @@ func allocHasFP(alloc *Allocation) bool {
 		return true
 	}
 	return false
+}
+
+func removeReg(regs []int16, target int16) []int16 {
+	out := make([]int16, 0, len(regs))
+	for _, r := range regs {
+		if r != target {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 // allocRWAnon allocates anonymous mmap with PROT_READ|PROT_WRITE

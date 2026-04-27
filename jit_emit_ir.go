@@ -27,6 +27,12 @@ type deferredExit struct {
 	targetPC uint64
 }
 
+// budgetExit holds a per-instruction budget cold path for lockstep mode.
+type budgetExit struct {
+	label Label
+	pc    uint64 // the instruction we did NOT execute — resume here
+}
+
 // deferredFault holds a per-load/store fault exit to emit at finalize time.
 // Each load/store registers one so the fault tail returns its own PC and the
 // live VReg holding the faulting guest address (matches jit_emit.go behavior).
@@ -68,10 +74,11 @@ type emitter struct {
 	pcLabels       u64labelmap
 	stopperAddr    int64  // InfiniteLoopStopperPage address for backward-branch probes
 	watchAddr      uint64 // tohost address; stores here trigger a block exit
-	lockstepMode   bool
-	lockstepBudget int64
-	backEdgeIC     int    // instructions since last back-edge or block entry
-	deferredExits  []deferredExit
+	lockstepMode     bool
+	lockstepBudget   int64
+	budgetExits      []budgetExit
+	sharedBudgetExit Label
+	deferredExits    []deferredExit
 	deferredFaults []deferredFault
 	exitIdx        int      // counter for chain exit indices
 	jalrSiteIdx    int      // counter for JALR inline-cache site indices
@@ -272,8 +279,17 @@ func (e *emitter) getOrCreateLabel(pc uint64) Label {
 }
 
 func (e *emitter) emitLabel() {
-	e.flushAndResetIC()
 	e.irEm.PlaceLabel(e.getOrCreateLabel(e.pc))
+}
+
+func (e *emitter) emitBudgetCheck() {
+	if !e.lockstepMode {
+		return
+	}
+	coldLabel := e.irEm.NewLabel()
+	e.irEm.RegBudget(e.lockstepBudget, coldLabel)
+	e.irEm.IncIC()
+	e.budgetExits = append(e.budgetExits, budgetExit{coldLabel, e.pc})
 }
 
 // peek32 fetches the 32-bit instruction at the given PC without
@@ -328,29 +344,19 @@ func (e *emitter) emitLoadFused(rd uint32, guestAddr int64, funct3 uint32) {
 
 func (e *emitter) advancePC(size uint64) {
 	e.numInsns++
-	if e.lockstepMode {
-		e.backEdgeIC++
-	}
 	e.pc += size
 }
 
-// flushAndResetIC emits the current backEdgeIC to State.IC and resets
-// the counter. Called at branch points where a new execution path begins.
-func (e *emitter) flushAndResetIC() {
-	if e.lockstepMode && e.backEdgeIC > 0 {
-		e.irEm.MemAdd(abjitStateICOffset, int64(e.backEdgeIC))
-		e.backEdgeIC = 0
+func (e *emitter) spillIC() {
+	if e.lockstepMode {
+		e.irEm.SpillIC()
 	}
 }
 
 func (e *emitter) emitReturn(pc uint64, status int) {
-	e.flushIC()
+	e.spillIC()
 	e.irEm.WriteBackAll()
 	e.irEm.Ret(pc, status, VRegZero)
-}
-
-func (e *emitter) flushIC() {
-	e.flushAndResetIC()
 }
 
 // emitSyscall emits the ECALL fast path: writeback all dirty regs,
@@ -366,6 +372,7 @@ func (e *emitter) emitSyscall(resumePC uint64, dispatcherAddr uintptr) {
 		e.emitReturn(resumePC, jitEcall)
 		return
 	}
+	e.spillIC()
 	e.irEm.WriteBackAll()
 	e.irEm.Syscall(resumePC, dispatcherAddr)
 }
@@ -391,7 +398,7 @@ func (e *emitter) allocFaultLabel(addr VReg, status int) Label {
 // For dynamic-target returns (JALR) use emitReturn / IRRetDyn instead —
 // those stay as Go round-trips.
 func (e *emitter) emitChainableReturn(pc uint64) {
-	e.flushIC()
+	e.spillIC()
 	e.irEm.WriteBackAll()
 	e.irEm.ChainExit(pc, e.exitIdx)
 	e.exitIdx++
@@ -741,8 +748,27 @@ func (e *emitter) finalize() *emitResult {
 	// receives the faulting instruction's PC and the actual fault address.
 	for _, df := range e.deferredFaults {
 		e.irEm.PlaceLabel(df.label)
+		e.spillIC()
 		e.irEm.WriteBackAll()
 		e.irEm.Ret(df.pc, df.status, df.addrVR)
+	}
+
+	// Per-instruction budget cold paths + shared exit stub (lockstep mode).
+	if e.lockstepMode && len(e.budgetExits) > 0 {
+		for _, be := range e.budgetExits {
+			e.irEm.PlaceLabel(be.label)
+			e.irEm.SetPC(be.pc)
+			e.irEm.Jump(e.sharedBudgetExit)
+		}
+		e.irEm.PlaceLabel(e.sharedBudgetExit)
+		e.irEm.SpillIC()
+		e.irEm.WriteBackAll()
+		e.irEm.RetBudget()
+	}
+
+	if e.lockstepMode {
+		vv("LOCKSTEP emit: startPC=0x%x endPC=0x%x numInsns=%d budgetExits=%d",
+			e.startPC, e.pc, e.numInsns, len(e.budgetExits))
 	}
 
 	return &emitResult{
@@ -961,6 +987,11 @@ func (j *JIT) emitBlockRange(mem *GuestMemory, pc, endPC uint64) *emitResult {
 		lockstepBudget: j.LockstepModeBudget,
 	}
 
+	if e.lockstepMode {
+		e.sharedBudgetExit = e.irEm.NewLabel()
+		e.irEm.ZeroIC()
+	}
+
 	// Emit IR (populates regsUsed via xreg/xregDst calls).
 	for !e.terminated && e.pc < e.regionEnd {
 		if e.visited[e.pc] {
@@ -1046,6 +1077,7 @@ func (e *emitter) emit32(insn uint32) {
 	iimm := int64(int32(insn)) >> 20
 
 	e.emitLabel()
+	e.emitBudgetCheck()
 
 	switch opcode {
 	case 0x37: // LUI
@@ -1077,6 +1109,9 @@ func (e *emitter) emit32(insn uint32) {
 					// AUIPC+ADDI → la (load address): single Const.
 					e.irEm.Const(e.xregDst(rd), addr+nextImm)
 					e.advancePC(4)
+					if e.lockstepMode {
+						e.irEm.IncIC()
+					}
 					e.advancePC(4)
 					return
 
@@ -1085,12 +1120,18 @@ func (e *emitter) emit32(insn uint32) {
 					target := addr + nextImm
 					e.irEm.Const(e.xregDst(rd), int64(e.pc)+4)
 					e.advancePC(4)
+					if e.lockstepMode {
+						e.irEm.IncIC()
+					}
 					e.emitJALR(nextRd, rd, target-int64(e.pc), 4)
 					return
 
 				case nextOp == 0x03 && nextRs1 == rd && nextRd == rd:
 					// AUIPC+LOAD → load from absolute guest address.
 					e.advancePC(4)
+					if e.lockstepMode {
+						e.irEm.IncIC()
+					}
 					e.advancePC(4)
 					funct3 := (next >> 12) & 7
 					e.emitLoadFused(rd, addr+nextImm, funct3)
@@ -1109,6 +1150,9 @@ func (e *emitter) emit32(insn uint32) {
 						nextRs2 := (next >> 20) & 0x1F
 						e.irEm.Const(e.xregDst(rd), addr)
 						e.advancePC(4)
+						if e.lockstepMode {
+							e.irEm.IncIC()
+						}
 						e.emitStore(rd, nextRs2, storeImm, nextFunct3)
 						e.advancePC(4)
 						// tohost written: if stored value != 0, exit block.
@@ -1116,6 +1160,7 @@ func (e *emitter) emit32(insn uint32) {
 							skip := e.irEm.NewLabel()
 							src := e.xreg(nextRs2)
 							e.irEm.Branch(src, VRegZero, EQ, skip)
+							e.spillIC()
 							e.irEm.WriteBackAll()
 							e.irEm.Ret(e.pc, jitOK, VRegZero)
 							e.irEm.PlaceLabel(skip)
@@ -1277,6 +1322,9 @@ func (e *emitter) emitOpImm(rd, rs1 uint32, imm int64, funct3, funct7 uint32) {
 					if nOp == 0x13 && nF3 == 5 && nF6 == 0 && nShamt == 32 && nRd == rd && nRs1 == rd {
 						e.irEm.Zext(e.xregDst(rd), e.xreg(rs1), I32)
 						e.advancePC(4)
+						if e.lockstepMode {
+							e.irEm.IncIC()
+						}
 						e.advancePC(4)
 						return
 					}
@@ -1417,6 +1465,9 @@ func (e *emitter) emitOpImm32(rd, rs1 uint32, imm int64, funct3, funct7 uint32) 
 						e.irEm.Zext(dst, t, I32)
 					}
 					e.advancePC(4) // consumed SLLI
+					if e.lockstepMode {
+						e.irEm.IncIC()
+					}
 					e.advancePC(4) // consumed SRLI
 					return
 				}
@@ -2590,24 +2641,12 @@ func (e *emitter) emitJAL(rd uint32, offset int64, insnSize uint64) {
 		// and whether the target was already emitted (visited).
 		backward := target < origPC || e.visited[target]
 		if backward {
-			if e.lockstepMode {
-				exitLabel := e.irEm.NewLabel()
-				e.irEm.MemBudget(e.backEdgeIC, e.lockstepBudget, exitLabel)
-				e.backEdgeIC = 0
-				e.irEm.StopperLoad(e.stopperAddr)
-				e.irEm.Jump(targetLabel)
-				e.irEm.PlaceLabel(exitLabel)
-				e.irEm.WriteBackAll()
-				e.irEm.Ret(target, jitOK, VRegZero)
-			} else {
-				e.irEm.StopperLoad(e.stopperAddr)
-				e.irEm.Jump(targetLabel)
-			}
+			e.irEm.StopperLoad(e.stopperAddr)
+			e.irEm.Jump(targetLabel)
 			e.gotoTargets.add(target)
 			e.terminated = true
 			return
 		}
-		e.flushAndResetIC()
 		e.irEm.Jump(targetLabel)
 		e.gotoTargets.add(target)
 		e.pc = target
@@ -2645,6 +2684,7 @@ func (e *emitter) emitJALR(rd, rs1 uint32, imm int64, insnSize uint64) {
 		e.irEm.AddImm(tgt, e.xreg(rs1), 0)
 		e.irEm.AndImm(tgt, tgt, ^int64(1))
 		e.advancePC(insnSize)
+		e.spillIC()
 		e.irEm.DynChainableRet(tgt, e.jalrSiteIdx)
 		e.jalrSiteIdx++
 
@@ -2660,6 +2700,7 @@ func (e *emitter) emitJALR(rd, rs1 uint32, imm int64, insnSize uint64) {
 		e.irEm.Const(e.xregDst(rd), int64(e.pc+insnSize))
 	}
 	e.advancePC(insnSize)
+	e.spillIC()
 	e.irEm.DynChainableRet(tgt, e.jalrSiteIdx)
 	e.jalrSiteIdx++
 	e.terminated = true
@@ -2688,21 +2729,10 @@ func (e *emitter) emitBranch(rs1, rs2, funct3 uint32, offset int64) {
 			takenLabel := e.irEm.NewLabel()
 			continueLabel := e.irEm.NewLabel()
 			e.irEm.Branch(a, b, pred, takenLabel)
-			e.irEm.Jump(continueLabel) // not taken: skip stopper probe
+			e.irEm.Jump(continueLabel)
 			e.irEm.PlaceLabel(takenLabel)
-			if e.lockstepMode {
-				exitLabel := e.irEm.NewLabel()
-				e.irEm.MemBudget(e.backEdgeIC, e.lockstepBudget, exitLabel)
-				e.backEdgeIC = 0
-				e.irEm.StopperLoad(e.stopperAddr)
-				e.irEm.Jump(targetLabel)
-				e.irEm.PlaceLabel(exitLabel)
-				e.irEm.WriteBackAll()
-				e.irEm.Ret(target, jitOK, VRegZero)
-			} else {
-				e.irEm.StopperLoad(e.stopperAddr)
-				e.irEm.Jump(targetLabel)
-			}
+			e.irEm.StopperLoad(e.stopperAddr)
+			e.irEm.Jump(targetLabel)
 			e.irEm.PlaceLabel(continueLabel)
 		} else {
 			e.irEm.Branch(a, b, pred, targetLabel)
@@ -2719,6 +2749,7 @@ func (e *emitter) emitBranch(rs1, rs2, funct3 uint32, offset int64) {
 
 func (e *emitter) emitRVC(insn uint16) {
 	e.emitLabel()
+	e.emitBudgetCheck()
 	quad := insn & 0x3
 	funct3 := insn >> 13
 

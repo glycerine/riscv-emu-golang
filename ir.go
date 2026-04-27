@@ -263,6 +263,14 @@ const (
 	// Modifies only EFLAGS — no GP registers touched.
 	IRMemBudget
 
+	// Per-instruction lockstep IC ops (R15 dedicated).
+	IRZeroIC     // XOR R15, R15 — emitted at block entry
+	IRIncIC      // INC R15 — emitted before each RISC-V instruction
+	IRSpillIC    // MOV [RBP+IC_offset], R15 — emitted at every exit
+	IRRegBudget  // CMP R15, Imm2; JGE Label(Dst) — per-instruction budget gate
+	IRSetPC      // MOV [RBP+PC_offset], Imm — budget cold path
+	IRRetBudget  // status=0, exitinfo=0, restore SP, return (PC already set)
+
 	// Pseudo-ops
 	IRMarkLive  // declares A live here (allocator hint)
 	IRMarkDead  // declares A dead here (allocator hint)
@@ -352,6 +360,12 @@ var irOpNames = [...]string{
 	IRStopperLoad: "stopper_load",
 	IRMemAdd:      "mem_add",
 	IRMemBudget:   "mem_budget",
+	IRZeroIC:      "zero_ic",
+	IRIncIC:       "inc_ic",
+	IRSpillIC:     "spill_ic",
+	IRRegBudget:   "reg_budget",
+	IRSetPC:       "set_pc",
+	IRRetBudget:   "ret_budget",
 	IRMarkLive:    "mark_live",
 	IRMarkDead:    "mark_dead",
 	IRWriteback:   "writeback",
@@ -417,6 +431,18 @@ func (ins IRInstr) String() string {
 	case IRMemBudget:
 		return fmt.Sprintf("%s delta=%d budget=%d overflow=L%d",
 			ins.Op, ins.Imm, ins.Imm2, ins.Dst)
+	case IRZeroIC:
+		return "zero_ic"
+	case IRIncIC:
+		return "inc_ic"
+	case IRSpillIC:
+		return "spill_ic"
+	case IRRegBudget:
+		return fmt.Sprintf("%s budget=%d overflow=L%d", ins.Op, ins.Imm2, ins.Dst)
+	case IRSetPC:
+		return fmt.Sprintf("%s pc=0x%x", ins.Op, uint64(ins.Imm))
+	case IRRetBudget:
+		return "ret_budget"
 	default:
 		if ins.B != VRegZero {
 			return fmt.Sprintf("%s.%s %s = %s, %s", ins.Op, ins.T, ins.Dst, ins.A, ins.B)

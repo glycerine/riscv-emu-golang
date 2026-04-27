@@ -1531,6 +1531,15 @@ func (lc *lowerOps) lowerInstrCommon(ins *IRInstr) (bool, error) {
 	case IRMemBudget:
 		lc.opsMemBudget(ins)
 
+	case IRZeroIC:
+		lc.opsZeroIC()
+	case IRIncIC:
+		lc.opsIncIC()
+	case IRSpillIC:
+		lc.opsSpillIC()
+	case IRRegBudget:
+		lc.opsRegBudget(ins)
+
 	// Pseudo-ops
 	case IRMarkLive, IRMarkDead, IRWriteback:
 		// no-op
@@ -1609,6 +1618,51 @@ func (lc *lowerOps) opsMemBudget(ins *IRInstr) {
 	p3.To.Type = obj.TYPE_BRANCH
 	lc.c.Append(p3)
 	lc.bindLabel(Label(ins.Dst), p3)
+}
+
+func (lc *lowerOps) opsZeroIC() {
+	p := lc.c.NewProg()
+	p.As = x86.AXORQ
+	p.From.Type = obj.TYPE_REG
+	p.From.Reg = goasm.REG_AMD64_R15
+	p.To.Type = obj.TYPE_REG
+	p.To.Reg = goasm.REG_AMD64_R15
+	lc.c.Append(p)
+}
+
+func (lc *lowerOps) opsIncIC() {
+	p := lc.c.NewProg()
+	p.As = x86.AINCQ
+	p.To.Type = obj.TYPE_REG
+	p.To.Reg = goasm.REG_AMD64_R15
+	lc.c.Append(p)
+}
+
+func (lc *lowerOps) opsSpillIC() {
+	p := lc.c.NewProg()
+	p.As = x86.AMOVQ
+	p.From.Type = obj.TYPE_REG
+	p.From.Reg = goasm.REG_AMD64_R15
+	p.To.Type = obj.TYPE_MEM
+	p.To.Reg = goasm.REG_AMD64_BP
+	p.To.Offset = abjitStateICOffset
+	lc.c.Append(p)
+}
+
+func (lc *lowerOps) opsRegBudget(ins *IRInstr) {
+	p1 := lc.c.NewProg()
+	p1.As = x86.ACMPQ
+	p1.From.Type = obj.TYPE_REG
+	p1.From.Reg = goasm.REG_AMD64_R15
+	p1.To.Type = obj.TYPE_CONST
+	p1.To.Offset = ins.Imm2
+	lc.c.Append(p1)
+
+	p2 := lc.c.NewProg()
+	p2.As = x86.AJGE
+	p2.To.Type = obj.TYPE_BRANCH
+	lc.c.Append(p2)
+	lc.bindLabel(Label(ins.Dst), p2)
 }
 
 // Ensure imports are used.
