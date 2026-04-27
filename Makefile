@@ -29,7 +29,7 @@
         coremark-elf dhrystone-elf bench-coremark bench-dhrystone \
         bench-jit-coremark bench-jit-dhrystone bench-chain-ref \
         darwin-perf bench-wasm build-luajit-riscv \
-        hello hello-elfs
+        hello hello-elfs quad
 
 # ── platform detection ─────────────────────────────────────────────────────
 
@@ -676,6 +676,31 @@ bench-summary:
 	    | grep -v '^$$' | head -4 | sed 's/^/    /' \
 	    || echo "    (run make bench first)"
 	@echo ""
+
+# ── quad: AotJIT vs LazyJIT on four workloads (wall time only) ────────────
+# MIPS metric is intentionally omitted — IC counting is disabled for perf.
+quad:
+	@echo "── quad: AotJIT vs LazyJIT ─────────────────────────────────────"
+	@echo ""
+	@echo "── 1/4: BenchGuest (fib/sieve) ──"
+	cd $(ROOT) && $(GO) test -count=1 -benchtime=1x -benchmem \
+	    -run='^$$' -bench='^Benchmark(AotJIT|LazyJIT)_BenchGuest$$' \
+	    ./bench/ 2>&1
+	@echo ""
+	@echo "── 2/4: CoreMark ──"
+	cd $(ROOT) && CM_ELF=bench/coremark.elf $(GO) test -count=1 -benchtime=1x -benchmem \
+	    -run='^$$' -bench='^Benchmark(AotJIT|LazyJIT)_CoreMark$$' \
+	    ./bench/ 2>&1
+	@echo ""
+	@echo "── 3/4: Dhrystone ──"
+	cd $(ROOT) && DHRY_ELF=bench/dhrystone.elf $(GO) test -count=1 -benchtime=1x -benchmem \
+	    -run='^$$' -bench='^Benchmark(AotJIT|LazyJIT)_Dhrystone$$' \
+	    ./bench/ 2>&1
+	@echo ""
+	@echo "── 4/4: RISC-V test ELFs (all rv64ui) ──"
+	cd $(ROOT) && $(GO) test -count=1 -benchtime=1x -benchmem \
+	    -run='^$$' -bench='^BenchmarkRVTests_UI_(AotJIT|LazyJIT)$$' \
+	    ./bench/ 2>&1
 
 # ── unit tests ─────────────────────────────────────────────────────────────
 
