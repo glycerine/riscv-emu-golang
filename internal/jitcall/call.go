@@ -32,9 +32,12 @@ func statusToString(status uint64) string {
 		return "store_fault"
 	case 5:
 		return "illegal"
+
+		// we see alot of case 6, what does it mean?
+		// case 6:
+		// return "what?"
 	}
-	panic("bad: unknown status")
-	return "bad: unknown status"
+	return fmt.Sprintf("unknown status: 0x%x", status)
 }
 
 func (r *Result) String() string {

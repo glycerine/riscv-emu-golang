@@ -17,8 +17,8 @@ func abjitDispatch(
 
 ) jitcall.Result {
 
-	vv("top abjitDispatch()")
-	defer vv("end abjitDispatch()")
+	//vv("top abjitDispatch()")
+	//defer vv("end abjitDispatch()")
 
 	if j.abjitState == nil {
 		j.abjitState = abjit.NewState()
@@ -38,7 +38,7 @@ func abjitDispatch(
 	s.SegSize = segSize
 	s.IC = 0
 
-	vv("about to call abjit.CallJIT, the assembly trampoline")
+	//vv("about to call abjit.CallJIT, the assembly trampoline")
 
 	abjit.CallJIT(blk.fn, s.RegFileBase())
 
@@ -50,7 +50,7 @@ func abjitDispatch(
 		Cycles:    s.Cycles,
 	}
 
-	vv("back from abjit.CallJIT, the call to the assembly trampoline. res = '%v'", &res)
+	//vv("back from abjit.CallJIT, the call to the assembly trampoline. res = '%v'", &res)
 
 	cpu.x = s.X
 	if blk.hasFP {

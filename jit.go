@@ -703,7 +703,7 @@ func (j *JIT) RunJIT(cpu *CPU) (err0 error) {
 		panic("JIT: ELF has tohost symbol but cpu.SetWatchAddr was never called — JIT blocks with tohost writes will hang")
 	}
 
-	vv("RunJIT(): j.DisableAutoAOT = %v", j.DisableAutoAOT)
+	//vv("RunJIT(): j.DisableAutoAOT = %v", j.DisableAutoAOT)
 
 	// AOT is the default: on the first RunJIT call for a JIT that has
 	// no segments yet, transparently translate every executable region
@@ -713,7 +713,7 @@ func (j *JIT) RunJIT(cpu *CPU) (err0 error) {
 	// Set DisableAutoAOT on the JIT to force the lazy path end-to-end.
 	if !j.DisableAutoAOT && len(j.aotSegments) == 0 && len(cpu.mem.ExecRegions()) > 0 {
 		err := j.InstallAOTFromMem(&cpu.mem)
-		vv("j.InstallAOTFromMem err = '%v'", err)
+		//vv("j.InstallAOTFromMem err = '%v'", err)
 		panicOn(err)
 	}
 
@@ -724,7 +724,7 @@ func (j *JIT) RunJIT(cpu *CPU) (err0 error) {
 		// Hence they will enver exit if we don't check.
 		if cpu.watchAddr != 0 {
 			if v, _ := cpu.mem.Load64(cpu.watchAddr); v != 0 {
-				vv("watchAddr has non-zero: about to panic with &ExitCode v = %v", v)
+				//vv("watchAddr has non-zero: about to panic with &ExitCode v = %v", v)
 				panic(&ExitError{Code: tohostExitCode(v)})
 			}
 		}
@@ -733,7 +733,7 @@ func (j *JIT) RunJIT(cpu *CPU) (err0 error) {
 
 		blk := j.lookupBlock(pc)
 		if blk != nil {
-			vv("lookupBlock cache hit. pc = 0x%x", pc)
+			//vv("lookupBlock cache hit. pc = 0x%x", pc)
 
 			var res jitcall.Result
 			if j.useABJIT {
@@ -875,7 +875,7 @@ func (j *JIT) RunJIT(cpu *CPU) (err0 error) {
 			}
 		}
 
-		vv("lookupBlock cache miss. No compiled block. pc = 0x%x", pc)
+		//vv("lookupBlock cache miss. No compiled block. pc = 0x%x", pc)
 
 		// No compiled block. If pc falls inside a registered ExecRegion
 		// that isn't yet covered by any AOT segment (e.g., the guest
