@@ -287,7 +287,7 @@ func runRISCVTestJIT(t *testing.T, elfPath string) {
 	}
 }
 
-func TestRISCVTests_UI_JIT(t *testing.T) {
+func TestRISCVTests_UI_JIT_AOT(t *testing.T) {
 	entries, err := filepath.Glob(filepath.Join(rvTestsDir, "rv64ui-p-*"))
 	if err != nil || len(entries) == 0 {
 		t.Skip("rv64ui ELFs not found")
@@ -298,7 +298,7 @@ func TestRISCVTests_UI_JIT(t *testing.T) {
 	}
 }
 
-func TestRISCVTests_UM_JIT(t *testing.T) {
+func TestRISCVTests_UM_JIT_AOT(t *testing.T) {
 	entries, err := filepath.Glob(filepath.Join(rvTestsDir, "rv64um-p-*"))
 	if err != nil || len(entries) == 0 {
 		t.Skip("rv64um ELFs not found")
@@ -309,7 +309,7 @@ func TestRISCVTests_UM_JIT(t *testing.T) {
 	}
 }
 
-func TestRISCVTests_UA_JIT(t *testing.T) {
+func TestRISCVTests_UA_JIT_AOT(t *testing.T) {
 	entries, err := filepath.Glob(filepath.Join(rvTestsDir, "rv64ua-p-*"))
 	if err != nil || len(entries) == 0 {
 		t.Skip("rv64ua ELFs not found")
@@ -324,7 +324,7 @@ func TestRISCVTests_UA_JIT(t *testing.T) {
 // back to fcsr. FP arithmetic works correctly, but riscv-tests check fflags
 // via CSR reads which see stale values. Enabling these requires capturing
 // host fflags after each FP operation.
-func TestRISCVTests_UF_JIT(t *testing.T) {
+func TestRISCVTests_UF_JIT_AOT(t *testing.T) {
 	t.Skip("JIT does not propagate fflags — FP compliance tests fail on flag checks")
 	entries, err := filepath.Glob(filepath.Join(rvTestsDir, "rv64uf-p-*"))
 	if err != nil || len(entries) == 0 {
@@ -336,7 +336,7 @@ func TestRISCVTests_UF_JIT(t *testing.T) {
 	}
 }
 
-func TestRISCVTests_UD_JIT(t *testing.T) {
+func TestRISCVTests_UD_JIT_AOT(t *testing.T) {
 	t.Skip("JIT does not propagate fflags — FP compliance tests fail on flag checks")
 	entries, err := filepath.Glob(filepath.Join(rvTestsDir, "rv64ud-p-*"))
 	if err != nil || len(entries) == 0 {
@@ -348,7 +348,7 @@ func TestRISCVTests_UD_JIT(t *testing.T) {
 	}
 }
 
-func TestRISCVTests_UC_JIT(t *testing.T) {
+func TestRISCVTests_UC_JIT_AOT(t *testing.T) {
 	entries, err := filepath.Glob(filepath.Join(rvTestsDir, "rv64uc-p-*"))
 	if err != nil || len(entries) == 0 {
 		t.Skip("rv64uc ELFs not found")
