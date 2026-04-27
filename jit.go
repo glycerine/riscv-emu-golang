@@ -599,9 +599,9 @@ func (j *JIT) StepBlock(cpu *CPU) (ic uint64, err error) {
 		if ic == 0 {
 			ic = uint64(blk.numInsns)
 		}
-		if j.DebugOneBlockLockstepMode {
-			vv("StepBlock: pc=0x%x -> PC=0x%x status=%d res.IC=%d blk.numInsns=%d ic=%d", pc, res.PC, res.Status, res.IC, blk.numInsns, ic)
-		}
+		//if j.DebugOneBlockLockstepMode {
+		//	vv("StepBlock: pc=0x%x -> PC=0x%x status=%d res.IC=%d blk.numInsns=%d ic=%d", pc, res.PC, res.Status, res.IC, blk.numInsns, ic)
+		//}
 
 		switch int(res.Status) {
 		case jitOK:

@@ -766,10 +766,10 @@ func (e *emitter) finalize() *emitResult {
 		e.irEm.RetBudget()
 	}
 
-	if e.lockstepMode {
-		vv("LOCKSTEP emit: startPC=0x%x endPC=0x%x numInsns=%d budgetExits=%d",
-			e.startPC, e.pc, e.numInsns, len(e.budgetExits))
-	}
+	//if e.lockstepMode {
+	//	vv("LOCKSTEP emit: startPC=0x%x endPC=0x%x numInsns=%d budgetExits=%d",
+	//		e.startPC, e.pc, e.numInsns, len(e.budgetExits))
+	//}
 
 	return &emitResult{
 		block:         e.irEm.Block,
