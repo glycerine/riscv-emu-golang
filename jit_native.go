@@ -25,7 +25,7 @@ func getJITCtx() *goasm.Ctx {
 }
 
 // jitCompile compiles an IR block to native code and returns a compiledBlock.
-func (j *JIT) jitCompile(res *emitResult) (*compiledBlock, error) {
+func (j *JIT) jitCompile(res *emitResult, mem ...*GuestMemory) (*compiledBlock, error) {
 	if res.block == nil {
 		return nil, fmt.Errorf("jit: nil block")
 	}
@@ -62,7 +62,11 @@ func (j *JIT) jitCompile(res *emitResult) (*compiledBlock, error) {
 	// resolved byte offsets.
 	if _, on := vizJitEnabled(); on {
 		vizProgs := ctx.DumpProgs()
-		vizJitDump(res.startPC, res.endPC, nil, res.block, vizProgs,
+		var vizMem *GuestMemory
+		if len(mem) > 0 {
+			vizMem = mem[0]
+		}
+		vizJitDump(res.startPC, res.endPC, vizMem, res.block, vizProgs,
 			code, uintptr(unsafe.Pointer(&execMem[0])))
 	}
 

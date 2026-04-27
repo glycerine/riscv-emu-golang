@@ -640,7 +640,7 @@ func (j *JIT) StepBlock(cpu *CPU) (ic uint64, err error) {
 	if !j.InterpOnly && !j.noJIT[pc] {
 		res := j.emitBlock(&cpu.mem, pc)
 		if res != nil && res.numInsns > 0 {
-			compiled, cerr := j.jitCompile(res)
+			compiled, cerr := j.jitCompile(res, &cpu.mem)
 			if cerr == nil {
 				j.insertBlock(pc, compiled)
 				return j.StepBlock(cpu) // retry with compiled block
@@ -886,7 +886,7 @@ func (j *JIT) RunJIT(cpu *CPU) (err0 error) {
 		if !j.InterpOnly && !j.noJIT[pc] {
 			res := j.emitBlock(&cpu.mem, pc)
 			if res != nil && res.numInsns > 0 {
-				blk, err := j.jitCompile(res)
+				blk, err := j.jitCompile(res, &cpu.mem)
 				if err == nil {
 					j.DispatchCompile++
 					j.insertBlock(pc, blk)
