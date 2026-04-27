@@ -121,7 +121,7 @@ const (
 // load/store where the mask changes the address (addr != addr & mask)
 // returns FaultSandboxEscape instead of silently wrapping. Use for
 // debugging aliasing bugs.
-var CheckSandboxBounds bool // = true
+var CheckSandboxBounds bool = true
 
 func (k FaultKind) String() string {
 	switch k {

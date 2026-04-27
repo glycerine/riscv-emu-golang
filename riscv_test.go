@@ -367,12 +367,12 @@ func TestRISCVTests_UC_JIT(t *testing.T) {
 //const lockstepMemSize = Size64MB
 
 // const lockstepMemSize = Size32KB // mismatching, probably aliasing
-// const lockstepMemSize = Size64KB // way faster than 64MB but aliasing
-// const lockstepMemSize = Size128KB // beq, sw, sb, sd, sh, ... fail.
+const lockstepMemSize = Size64KB // way faster than 64MB but aliasing
+//const lockstepMemSize = Size128KB // beq, sw, sb, sd, sh, ... fail.
 // const lockstepMemSize = Size256KB // ditto
 // const lockstepMemSize = Size512KB // ditto
 // const lockstepMemSize = Size1MB // ditto. why is beq failing??
-const lockstepMemSize = Size64MB
+//const lockstepMemSize = Size64MB
 
 func runLockstep(t *testing.T, elfPath string) {
 	//t.Helper()
@@ -421,13 +421,21 @@ func runLockstep(t *testing.T, elfPath string) {
 
 	jit := NewJIT()
 	jit.DebugOneBlockLockstepMode = true
+	jit.LockstepModeBudget = 1e9 // beq green. sw red.
 	//jit.LockstepModeBudget = 1_000_065_536 // "add" takes: 38.3 sec
-	//jit.LockstepModeBudget = 65_536 // "add" takes: 32.69 sec
+	//jit.LockstepModeBudget = 1 << 6 // "add" takes: 32.69 sec. sw red. beq red.
+	//jit.LockstepModeBudget = 65_536 // "add" takes: 32.69 sec. sw red.
+	//jit.LockstepModeBudget = 5036 // beq green with 64KB guestmem. sw red.
+	//jit.LockstepModeBudget = 500 // beq green with 64KB,nStops = 242158, but red: fence_i, jal, sb, sd, sh, sw
+	//jit.LockstepModeBudget = 350 // beq green w  64KB,nStops = 236188
+	//jit.LockstepModeBudget = 200 // beq red with 64KB guestmem
+	//jit.LockstepModeBudget = 100 // beq red with 64KB guestmem
 	//jit.LockstepModeBudget = 536 // "add" takes: 30.35 sec
-	jit.LockstepModeBudget = 50 // "add" takes: 29.7 sec
+	//jit.LockstepModeBudget = 50 // "add" takes: 29.7 sec
 	maxCycles := uint64(10_000_000)
 	blockNum := 0
 
+	nStops := 0
 	for jitCPU.Cycle() < maxCycles {
 		if jitCPU.pc != interpCPU.pc {
 			t.Fatalf("block %d: PC desync BEFORE dispatch: jit=0x%x interp=0x%x",
@@ -453,6 +461,7 @@ func runLockstep(t *testing.T, elfPath string) {
 			interpCPU.cycle++
 		}
 
+		nStops++
 		// Compare ALL registers FIRST (before exit check)
 		regMismatch := false
 		for r := 0; r < 32; r++ {
@@ -515,7 +524,7 @@ func runLockstep(t *testing.T, elfPath string) {
 		blockNum++
 	}
 
-	//t.Logf("lockstep complete: %d blocks, %d instructions", blockNum, jitCPU.Cycle())
+	t.Logf("lockstep complete: %d blocks, %d instructions; nStops = %v", blockNum, jitCPU.Cycle(), nStops)
 }
 
 func TestRISCVTests_Lockstep_UI(t *testing.T) {
