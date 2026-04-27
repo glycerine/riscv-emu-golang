@@ -2,6 +2,10 @@
 // JIT-compiled native code blocks from Go.
 package jitcall
 
+import (
+	"fmt"
+)
+
 // Result is the return value from a JIT-compiled block.
 // The first four fields are written by assembly trampolines at fixed
 // offsets — do not reorder them. IC is populated by Go dispatch code
@@ -12,6 +16,36 @@ type Result struct {
 	FaultAddr uint64 // guest address that faulted (when Status >= 3)
 	Cycles    uint64 // TSC cycles spent in native code (RDTSC delta)
 	IC        uint64 // instruction count (from State.IC, lockstep mode only)
+}
+
+func statusToString(status uint64) string {
+	switch status {
+	case 0:
+		return "ok"
+	case 1:
+		return "ecall"
+	case 2:
+		return "ebreak"
+	case 3:
+		return "load_fault"
+	case 4:
+		return "store_fault"
+	case 5:
+		return "illegal"
+	}
+	panic("bad: unknown status")
+	return "bad: unknown status"
+}
+
+func (r *Result) String() string {
+	return fmt.Sprintf(`
+&jitcall.Result{
+              PC: 0x%x
+          Status: %v
+       FaultAddr: 0x%x
+          Cycles: %v
+              IC: %v
+}`, r.PC, statusToString(r.Status), r.FaultAddr, r.Cycles, r.IC)
 }
 
 // Call invokes a JIT-compiled block via direct function pointer.
@@ -27,11 +61,11 @@ func Call(fn uintptr, x *[32]uint64, f *[32]uint64, fcsr *uint32,
 // sequences can perform a mask-bounded decoder_cache lookup without
 // going through Go:
 //
-//   [RBX+88]  = decoder_cache base  (host pointer to segment's
-//                                    DecoderData[] mmap)
-//   [RBX+96]  = decoder_cache mask  (power-of-two size - 1)
-//   [RBX+104] = vaddrBegin          (current segment's guest-VA start)
-//   [RBX+112] = segSize             (current segment's guest-VA size)
+//	[RBX+88]  = decoder_cache base  (host pointer to segment's
+//	                                 DecoderData[] mmap)
+//	[RBX+96]  = decoder_cache mask  (power-of-two size - 1)
+//	[RBX+104] = vaddrBegin          (current segment's guest-VA start)
+//	[RBX+112] = segSize             (current segment's guest-VA size)
 //
 // When the JIT has no AOT segment installed, callers may either use
 // the plain Call (which doesn't write those slots) or use CallAOT

@@ -8,8 +8,17 @@ import (
 // abjitDispatch executes a JIT-compiled block via the abjit trampoline.
 // Uses a persistent heap-allocated State buffer instead of the shadow
 // register file page, eliminating the save/restore of guest memory.
-func abjitDispatch(blk *compiledBlock, cpu *CPU, j *JIT,
-	dcBase uintptr, dcMask, vBegin, segSize uint64) jitcall.Result {
+func abjitDispatch(
+	blk *compiledBlock,
+	cpu *CPU,
+	j *JIT,
+	dcBase uintptr,
+	dcMask, vBegin, segSize uint64,
+
+) jitcall.Result {
+
+	vv("top abjitDispatch()")
+	defer vv("end abjitDispatch()")
 
 	if j.abjitState == nil {
 		j.abjitState = abjit.NewState()
@@ -29,6 +38,8 @@ func abjitDispatch(blk *compiledBlock, cpu *CPU, j *JIT,
 	s.SegSize = segSize
 	s.IC = 0
 
+	vv("about to call abjit.CallJIT, the assembly trampoline")
+
 	abjit.CallJIT(blk.fn, s.RegFileBase())
 
 	res := jitcall.Result{
@@ -38,6 +49,8 @@ func abjitDispatch(blk *compiledBlock, cpu *CPU, j *JIT,
 		FaultAddr: s.FaultAddr,
 		Cycles:    s.Cycles,
 	}
+
+	vv("back from abjit.CallJIT, the call to the assembly trampoline. res = '%s'", res)
 
 	cpu.x = s.X
 	if blk.hasFP {

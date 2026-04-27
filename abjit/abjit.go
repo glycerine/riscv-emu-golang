@@ -42,11 +42,13 @@ func (s *State) RegFileBase() uintptr {
 }
 
 func Run(cb *CodeBuilder, s *State) {
+	// call the assembly trampoline
 	callJIT(cb.Addr(), s.RegFileBase())
 }
 
 // CallJIT calls JIT-compiled native code with the given register file base.
 func CallJIT(code, regFileBase uintptr) {
+	// call the assembly trampoline
 	callJIT(code, regFileBase)
 }
 
