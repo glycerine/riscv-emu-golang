@@ -158,11 +158,15 @@ const (
 //     If it drops without an obvious source-level explanation, look for
 //     a new cross-file call into runCached.
 func RunDefault(cpu *CPU, nc *NoteChain) error {
+
+	// Cache covers [entry-4K, entry+256K). Anything outside falls back to step().
 	base := cpu.pc &^ uint64(0xFFF)
 	if base > 0x1000 {
 		base -= 0x1000
 	}
-	return runCached(cpu, NewDecoderCache(base, 256<<10), nc)
+	cache := NewDecoderCache(base, 256<<10)
+	err := runCached(cpu, cache, nc)
+	return err
 }
 
 func runCached(cpu *CPU, cache *DecoderCache, nc *NoteChain) error {
