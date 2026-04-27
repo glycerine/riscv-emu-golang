@@ -37,7 +37,7 @@ var InlineSyscall bool
 // VReg is a virtual register index. 0 is reserved for "discard" (sink writes,
 // zero reads — mirrors RISC-V's x0). Emitter allocates fresh VRegs via Tmp()
 // or uses fixed IDs 1..31 for guest x1..x31, and 32..63 for f0..f31.
-type VReg uint16
+type VReg uint64
 
 const (
 	VRegZero      VReg = 0  // discard / x0

@@ -17,11 +17,11 @@ func NewFixedStaticAllocator() *FixedStaticAllocator {
 // rv8-faithful: the first 12 entries match the rv8 static register mapping
 // (ra, sp, t0, t1, a0-a7). Remaining registers spill to [RBP+r*8].
 var intPriority = []VReg{
-	1, 2, 5, 6,                     // ra, sp, t0, t1
+	1, 2, 5, 6, // ra, sp, t0, t1
 	10, 11, 12, 13, 14, 15, 16, 17, // a0-a7
-	8, 9,                            // s0/fp, s1
-	7, 28, 29, 30, 31,               // t2-t6
-	3, 4,                            // gp, tp
+	8, 9, // s0/fp, s1
+	7, 28, 29, 30, 31, // t2-t6
+	3, 4, // gp, tp
 	18, 19, 20, 21, 22, 23, 24, 25, 26, 27, // s2-s11
 }
 
@@ -37,6 +37,10 @@ var fpPriority = []VReg{
 
 // Allocate produces a register assignment using fixed static mapping.
 func (f *FixedStaticAllocator) Allocate(b *Block, pool RegPool, pinned map[VReg]int16, freq []float64) *Allocation {
+
+	//vv("FixedStaticAllocator.Allocate() top. b.maxVreg=%d numInstrs=%d VRegTempStart=%d", b.maxVreg, len(b.Instrs), VRegTempStart)
+	//defer vv("FixedStaticAllocator.Allocate() done.")
+
 	if len(b.Instrs) == 0 {
 		return &Allocation{
 			Kind:      []AllocKind{AllocUnused},
@@ -52,6 +56,7 @@ func (f *FixedStaticAllocator) Allocate(b *Block, pool RegPool, pinned map[VReg]
 		}
 	}
 	numVRegs := int(mv) + 1
+	//vv("Allocate: mv=%d numVRegs=%d VRegTempStart=%d loopIters=%d", mv, numVRegs, VRegTempStart, numVRegs-int(VRegTempStart))
 
 	// Discover which VRegs are actually used in the block.
 	used := make([]bool, numVRegs)
@@ -151,6 +156,7 @@ func (f *FixedStaticAllocator) Allocate(b *Block, pool RegPool, pinned map[VReg]
 	// 4. Handle temps (VReg >= VRegTempStart) that aren't pinned.
 	//    These are JIT-internal temporaries. Assign from remaining pool registers.
 	stackSlots := int16(0)
+	//vv("FixedStaticAllocator.Allocate() begin: for vr := VRegTempStart loop")
 	for vr := VRegTempStart; int(vr) < numVRegs; vr++ {
 		if !used[vr] {
 			continue
@@ -184,6 +190,7 @@ func (f *FixedStaticAllocator) Allocate(b *Block, pool RegPool, pinned map[VReg]
 		spillSlot[vr] = stackSlots
 		stackSlots++
 	}
+	//vv("finsihed, on to 5.")
 
 	// 5. Spill all remaining used VRegs that weren't assigned.
 	for vr := 1; vr < numVRegs; vr++ {

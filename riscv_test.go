@@ -437,14 +437,20 @@ func runLockstep(t *testing.T, elfPath string) {
 
 	nStops := 0
 	for jitCPU.Cycle() < maxCycles {
+
 		if jitCPU.pc != interpCPU.pc {
 			t.Fatalf("block %d: PC desync BEFORE dispatch: jit=0x%x interp=0x%x",
 				blockNum, jitCPU.pc, interpCPU.pc)
 		}
 
+		//vv("just before jit.StepBlock(jitCPU) in runLockstep: elfPath '%v'; jitPC = 0x%x and interpCPU.pc = 0x%x ; jitCPU = '%#v'", elfPath, jitCPU.pc, interpCPU.pc, jitCPU)
+
 		// JIT: one dispatch cycle
 		jitIC, jitErr := jit.StepBlock(jitCPU)
+
 		targetPC := jitCPU.pc
+
+		//vv("just before interp in runLockstep: elfPath '%v'; we just did jit.StepBlock() and now targetPC = 0x%x", elfPath, targetPC)
 
 		// Interpreter: run IC steps (approximate), then catch up to exact PC.
 		var interpErr error
@@ -461,7 +467,11 @@ func runLockstep(t *testing.T, elfPath string) {
 			interpCPU.cycle++
 		}
 
+		if nStops%5000 == 0 { // saw 300
+			vv("runLockstep: elfPath '%v'; nStops = %v; we just ran: jitCPU.pc = 0x%x", elfPath, nStops, jitCPU.pc)
+		}
 		nStops++
+
 		// Compare ALL registers FIRST (before exit check)
 		regMismatch := false
 		for r := 0; r < 32; r++ {
