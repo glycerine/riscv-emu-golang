@@ -1,9 +1,12 @@
 package bench
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"riscv"
 )
@@ -75,19 +78,25 @@ func BenchmarkLazyJIT_BenchGuest(b *testing.B) {
 
 const rvTestsDir = "../riscv-elf-tests"
 
-func loadRVTestELFs(tb testing.TB) [][]byte {
+type rvTestELF struct {
+	name string
+	data []byte
+}
+
+func loadRVTestELFs(tb testing.TB) []rvTestELF {
 	tb.Helper()
 	entries, err := filepath.Glob(filepath.Join(rvTestsDir, "rv64ui-p-*"))
 	if err != nil || len(entries) == 0 {
 		tb.Skip("rv64ui ELFs not found — run make riscv-tests")
 	}
-	var elfs [][]byte
+	var elfs []rvTestELF
 	for _, path := range entries {
 		data, err := os.ReadFile(path)
 		if err != nil {
 			tb.Fatalf("read %s: %v", path, err)
 		}
-		elfs = append(elfs, data)
+		name := strings.TrimPrefix(filepath.Base(path), "rv64ui-p-")
+		elfs = append(elfs, rvTestELF{name: name, data: data})
 	}
 	return elfs
 }
@@ -121,14 +130,16 @@ func BenchmarkRVTests_UI_AotJIT(b *testing.B) {
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		for _, data := range elfs {
-			cpu, mem := newRVTestCPU(b, data)
+		for j, e := range elfs {
+			t0 := time.Now()
+			cpu, mem := newRVTestCPU(b, e.data)
 			jit := riscv.NewJIT()
-			if err := jit.InstallAOT(mem, data); err != nil {
+			if err := jit.InstallAOT(mem, e.data); err != nil {
 				b.Fatalf("InstallAOT: %v", err)
 			}
 			runJITBenchGuestWith(cpu, jit)
 			mem.Free()
+			fmt.Fprintf(os.Stderr, "  AotJIT  [%2d/%d] %-12s %v\n", j+1, len(elfs), e.name, time.Since(t0))
 		}
 	}
 }
@@ -139,12 +150,14 @@ func BenchmarkRVTests_UI_LazyJIT(b *testing.B) {
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		for _, data := range elfs {
-			cpu, mem := newRVTestCPU(b, data)
+		for j, e := range elfs {
+			t0 := time.Now()
+			cpu, mem := newRVTestCPU(b, e.data)
 			jit := riscv.NewJIT()
 			jit.DisableAutoAOT = true
 			runJITBenchGuestWith(cpu, jit)
 			mem.Free()
+			fmt.Fprintf(os.Stderr, "  LazyJIT [%2d/%d] %-12s %v\n", j+1, len(elfs), e.name, time.Since(t0))
 		}
 	}
 }
