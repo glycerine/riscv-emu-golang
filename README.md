@@ -200,7 +200,7 @@ re-scheduling and keep caches hot.
 also scheduler affinity.
 
 ~~~
-make bench
+$ make bench
 
 darwin
 
