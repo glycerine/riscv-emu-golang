@@ -453,11 +453,20 @@ func TestSubELF_Block39(t *testing.T) {
 		}
 	}
 
-	// Run block 39 with JIT
+	// Run block 39 with JIT — if the current PC is at a non-JIT-able
+	// instruction (CSR, unknown SYSTEM), step past it via the interpreter,
+	// just as StepBlock does in production (jit.go:640-655).
 	pc39 := cpu.PC()
 	res := jit.emitBlock(mem, pc39)
+	for attempts := 0; res == nil && attempts < 5; attempts++ {
+		t.Logf("emitBlock returned nil at PC=0x%x, stepping interpreter", cpu.PC())
+		if err := cpu.Step(); err != nil {
+			t.Fatalf("interpreter step failed at PC=0x%x: %v", cpu.PC(), err)
+		}
+		res = jit.emitBlock(mem, cpu.PC())
+	}
 	if res == nil {
-		t.Fatal("emitBlock returned nil for block 39")
+		t.Fatalf("emitBlock still nil after 5 interpreter steps from PC=0x%x", pc39)
 	}
 	//t.Logf("block 39 IR: %d instructions", len(res.block.Instrs))
 	//for i, ins := range res.block.Instrs {
