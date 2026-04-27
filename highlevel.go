@@ -187,6 +187,9 @@ func (e *Emitter) ZeroIC() { e.emit(IRInstr{Op: IRZeroIC}) }
 // IncIC emits INC R15 to count one RISC-V instruction.
 func (e *Emitter) IncIC() { e.emit(IRInstr{Op: IRIncIC}) }
 
+// DecIC emits DEC R15 to undo IncIC for non-emitted terminators.
+func (e *Emitter) DecIC() { e.emit(IRInstr{Op: IRDecIC}) }
+
 // SpillIC emits MOV [RBP+IC_offset], R15 to write the IC register to State.
 func (e *Emitter) SpillIC() { e.emit(IRInstr{Op: IRSpillIC}) }
 

@@ -266,6 +266,7 @@ const (
 	// Per-instruction lockstep IC ops (R15 dedicated).
 	IRZeroIC     // XOR R15, R15 — emitted at block entry
 	IRIncIC      // INC R15 — emitted before each RISC-V instruction
+	IRDecIC      // DEC R15 — undo IncIC for non-emitted terminators
 	IRSpillIC    // MOV [RBP+IC_offset], R15 — emitted at every exit
 	IRRegBudget  // CMP R15, Imm2; JGE Label(Dst) — per-instruction budget gate
 	IRSetPC      // MOV [RBP+PC_offset], Imm — budget cold path
@@ -362,6 +363,7 @@ var irOpNames = [...]string{
 	IRMemBudget:   "mem_budget",
 	IRZeroIC:      "zero_ic",
 	IRIncIC:       "inc_ic",
+	IRDecIC:       "dec_ic",
 	IRSpillIC:     "spill_ic",
 	IRRegBudget:   "reg_budget",
 	IRSetPC:       "set_pc",
@@ -435,6 +437,8 @@ func (ins IRInstr) String() string {
 		return "zero_ic"
 	case IRIncIC:
 		return "inc_ic"
+	case IRDecIC:
+		return "dec_ic"
 	case IRSpillIC:
 		return "spill_ic"
 	case IRRegBudget:

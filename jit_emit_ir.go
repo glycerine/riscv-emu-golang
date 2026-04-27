@@ -1111,6 +1111,7 @@ func (e *emitter) emit32(insn uint32) {
 	funct7 := insn >> 25
 	iimm := int64(int32(insn)) >> 20
 
+	savedNumInsns := e.numInsns
 	e.emitLabel()
 	e.emitBudgetCheck()
 
@@ -1317,6 +1318,10 @@ func (e *emitter) emit32(insn uint32) {
 	default:
 		// Unknown opcode — end block before this instruction.
 		e.terminated = true
+	}
+
+	if e.terminated && e.numInsns == savedNumInsns && e.lockstepMode {
+		e.irEm.DecIC()
 	}
 }
 
@@ -2783,6 +2788,7 @@ func (e *emitter) emitBranch(rs1, rs2, funct3 uint32, offset int64) {
 // ── RVC ────────────────────────────────────────────────────────────────
 
 func (e *emitter) emitRVC(insn uint16) {
+	savedNumInsns := e.numInsns
 	e.emitLabel()
 	e.emitBudgetCheck()
 	quad := insn & 0x3
@@ -2800,6 +2806,10 @@ func (e *emitter) emitRVC(insn uint16) {
 	}
 	if !e.terminated {
 		e.advancePC(2)
+	}
+
+	if e.terminated && e.numInsns == savedNumInsns && e.lockstepMode {
+		e.irEm.DecIC()
 	}
 }
 

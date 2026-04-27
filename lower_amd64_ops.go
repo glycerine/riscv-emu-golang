@@ -1535,6 +1535,8 @@ func (lc *lowerOps) lowerInstrCommon(ins *IRInstr) (bool, error) {
 		lc.opsZeroIC()
 	case IRIncIC:
 		lc.opsIncIC()
+	case IRDecIC:
+		lc.opsDecIC()
 	case IRSpillIC:
 		lc.opsSpillIC()
 	case IRRegBudget:
@@ -1633,6 +1635,14 @@ func (lc *lowerOps) opsZeroIC() {
 func (lc *lowerOps) opsIncIC() {
 	p := lc.c.NewProg()
 	p.As = x86.AINCQ
+	p.To.Type = obj.TYPE_REG
+	p.To.Reg = goasm.REG_AMD64_R15
+	lc.c.Append(p)
+}
+
+func (lc *lowerOps) opsDecIC() {
+	p := lc.c.NewProg()
+	p.As = x86.ADECQ
 	p.To.Type = obj.TYPE_REG
 	p.To.Reg = goasm.REG_AMD64_R15
 	lc.c.Append(p)
