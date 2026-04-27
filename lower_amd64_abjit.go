@@ -207,18 +207,6 @@ func (lc *lowerCtxABJIT) emitExitThunk() {
 	// Append pre-created NOP (forward references already point here).
 	lc.c.Append(lc.exitThunk)
 
-	// RDTSC end: compute cycle delta and store in State.Cycles.
-	// RSP is at the trampoline frame level; [RSP+48] holds the start TSC.
-	// RBP still points at the State struct. RAX/RDX are scratch.
-	p := lc.c.NewProg()
-	p.As = x86.ARDTSC
-	lc.c.Append(p)
-	lc.emitRI(x86.ASHLQ, 32, goasm.REG_AMD64_DX)
-	lc.emit2(x86.AORQ, goasm.REG_AMD64_DX, goasm.REG_AMD64_AX) // RAX = full 64-bit TSC end
-	lc.emitRM(x86.AMOVQ, goasm.REG_AMD64_SP, 48, goasm.REG_AMD64_DX) // RDX = TSC start
-	lc.emit2(x86.ASUBQ, goasm.REG_AMD64_DX, goasm.REG_AMD64_AX)      // RAX = end - start
-	lc.emitMR(x86.AMOVQ, goasm.REG_AMD64_AX, goasm.REG_AMD64_BP, abjitCyclesOff) // State.Cycles = delta
-
 	// Restore callee-saves from trampoline frame.
 	// RSP is at trampoline level (caller already deallocated spill frame).
 	lc.emitRM(x86.AMOVQ, goasm.REG_AMD64_SP, 8, goasm.REG_AMD64_BX)

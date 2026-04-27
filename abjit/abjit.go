@@ -28,7 +28,7 @@ type State struct {
 	DCMask     uint64
 	VAddrBegin uint64
 	SegSize    uint64
-	Cycles     uint64 // TSC cycles (RDTSC delta, written by exit thunk)
+	Cycles     uint64 // Reserved for future per-block instruction count (not currently populated)
 	IC         uint64 // instruction count (accumulated by back-edge budget checks)
 }
 

@@ -326,7 +326,7 @@ Heap-allocated Go struct, pointed to by RBP during JIT execution:
 | 568 | `DCMask` | 8B | Decoder cache mask |
 | 576 | `VAddrBegin` | 8B | Segment guest-VA start |
 | 584 | `SegSize` | 8B | Segment guest-VA size |
-| 592 | `Cycles` | 8B | RDTSC delta |
+| 592 | `Cycles` | 8B | Reserved (future per-block IC) |
 | 600 | `IC` | 8B | Instruction count |
 
 ### Guest Memory Model
@@ -341,7 +341,7 @@ Heap-allocated Go struct, pointed to by RBP during JIT execution:
 
 | Register | Points to | Purpose |
 |----------|-----------|---------|
-| RSP | Go goroutine stack | 65KB frame from trampoline; callee-saves, RDTSC, Go callbacks |
+| RSP | Go goroutine stack | 65KB frame from trampoline; callee-saves, Go callbacks |
 | RBP | `abjit.State` base | All guest register and metadata access via `[RBP+offset]` |
 | Guest x2 (sp) | GuestMemory region | RISC-V stack pointer, stored in `State.X[2]`, sandboxed |
 | R12 | (reserved) | Future sandbox stack; currently saved/restored but unused |

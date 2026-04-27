@@ -25,7 +25,7 @@
 //
 // Local frame layout (the callee-visible sret buffer is RDI = &frame[0]):
 //   [0, 24)   Result fields: PC(0), Status(8), FaultAddr(16)
-//   [24, 32)  RDTSC start value (stashed by trampoline before CALL)
+//   [24, 32)  (unused, was RDTSC start)
 //   [32, 80)  trampoline's own callee-save stashes (BX, BP, R12-R15)
 //   [80, 88)  fcsr pointer — written here once per Call so JIT code can
 //             access it via [RBX+80] even from chained blocks.
@@ -65,21 +65,9 @@ TEXT ·Call(SB), $65536-80
 	MOVQ	memBase+32(FP), R8  // R8  = memBase
 	MOVQ	memMask+40(FP), R9  // R9  = memMask
 
-	// RDTSC: record start cycle count before entering JIT code.
-	RDTSC
-	SHLQ	$32, DX
-	ORQ	DX, AX
-	MOVQ	AX, 24(SP)          // sret[24] = TSC start
-
 	// Call the JIT'd native function.
 	MOVQ	fn+0(FP), AX
 	CALL	AX
-
-	// RDTSC: record end cycle count, compute delta.
-	RDTSC
-	SHLQ	$32, DX
-	ORQ	DX, AX
-	SUBQ	24(SP), AX          // AX = end - start = cycles in native code
 
 	// Copy Result from local buffer at 0(SP) to Go return area.
 	// Result is 32 bytes = 4 quadwords: PC, Status, FaultAddr, Cycles.
@@ -89,7 +77,7 @@ TEXT ·Call(SB), $65536-80
 	MOVQ	CX, ret_PC+48(FP)
 	MOVQ	DX, ret_Status+56(FP)
 	MOVQ	SI, ret_FaultAddr+64(FP)
-	MOVQ	AX, ret_Cycles+72(FP)
+	MOVQ	$0, ret_Cycles+72(FP)
 
 	// Restore callee-saved registers.
 	MOVQ	32(SP), BX
@@ -151,21 +139,9 @@ TEXT ·CallAOT(SB), $65536-112
 	MOVQ	memBase+32(FP), R8  // R8  = memBase
 	MOVQ	memMask+40(FP), R9  // R9  = memMask
 
-	// RDTSC: record start cycle count before entering JIT code.
-	RDTSC
-	SHLQ	$32, DX
-	ORQ	DX, AX
-	MOVQ	AX, 24(SP)          // sret[24] = TSC start
-
 	// Call the JIT'd native function.
 	MOVQ	fn+0(FP), AX
 	CALL	AX
-
-	// RDTSC: record end cycle count, compute delta.
-	RDTSC
-	SHLQ	$32, DX
-	ORQ	DX, AX
-	SUBQ	24(SP), AX          // AX = end - start = cycles in native code
 
 	// Copy Result from local buffer at 0(SP) to Go return area.
 	MOVQ	0(SP),  CX
@@ -174,7 +150,7 @@ TEXT ·CallAOT(SB), $65536-112
 	MOVQ	CX, ret_PC+80(FP)
 	MOVQ	DX, ret_Status+88(FP)
 	MOVQ	SI, ret_FaultAddr+96(FP)
-	MOVQ	AX, ret_Cycles+104(FP)
+	MOVQ	$0, ret_Cycles+104(FP)
 
 	// Restore callee-saved registers.
 	MOVQ	32(SP), BX
