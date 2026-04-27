@@ -688,17 +688,17 @@ quad:
 	    ./bench/ 2>&1
 	@echo ""
 	@echo "── 2/4: CoreMark ──"
-	cd $(ROOT) && CM_ELF=bench/coremark.elf $(GO) test -count=1 -benchtime=1x -benchmem \
+	cd $(ROOT) && $(GO) test -count=1 -benchtime=1x -benchmem \
 	    -run='^$$' -bench='^Benchmark(AotJIT|LazyJIT)_CoreMark$$' \
 	    ./bench/ 2>&1
 	@echo ""
 	@echo "── 3/4: Dhrystone ──"
-	cd $(ROOT) && DHRY_ELF=bench/dhrystone.elf $(GO) test -count=1 -benchtime=1x -benchmem \
+	cd $(ROOT) && $(GO) test -count=1 -benchtime=1x -benchmem \
 	    -run='^$$' -bench='^Benchmark(AotJIT|LazyJIT)_Dhrystone$$' \
 	    ./bench/ 2>&1
 	@echo ""
 	@echo "── 4/4: RISC-V test ELFs (all rv64ui) ──"
-	cd $(ROOT) && $(GO) test -count=1 -benchtime=1x -benchmem \
+	cd $(ROOT) && $(GO) test -count=1 -benchtime=1x -benchmem -timeout=120s \
 	    -run='^$$' -bench='^BenchmarkRVTests_UI_(AotJIT|LazyJIT)$$' \
 	    ./bench/ 2>&1
 
