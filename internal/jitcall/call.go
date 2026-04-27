@@ -3,12 +3,15 @@
 package jitcall
 
 // Result is the return value from a JIT-compiled block.
-// All fields are uint64 for simple assembly access.
+// The first four fields are written by assembly trampolines at fixed
+// offsets — do not reorder them. IC is populated by Go dispatch code
+// (abjitDispatch), not by assembly.
 type Result struct {
 	PC        uint64 // next PC to execute
 	Status    uint64 // 0=ok, 1=ecall, 2=ebreak, 3=load_fault, 4=store_fault, 5=illegal
 	FaultAddr uint64 // guest address that faulted (when Status >= 3)
 	Cycles    uint64 // TSC cycles spent in native code (RDTSC delta)
+	IC        uint64 // instruction count (from State.IC, lockstep mode only)
 }
 
 // Call invokes a JIT-compiled block via direct function pointer.

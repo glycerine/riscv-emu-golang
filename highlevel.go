@@ -164,6 +164,23 @@ func (e *Emitter) StopperLoad(addr int64) {
 	e.emit(IRInstr{Op: IRStopperLoad, Imm: addr})
 }
 
+// MemAdd emits ADD QWORD [RBP+offset], delta. No GP registers modified.
+func (e *Emitter) MemAdd(offset int64, delta int64) {
+	e.emit(IRInstr{Op: IRMemAdd, Imm: offset, Imm2: delta})
+}
+
+// MemBudget emits a batched IC budget check for lockstep mode.
+// delta is the instruction count to add. budget is the limit.
+// overflowLabel is jumped to when budget is exceeded.
+func (e *Emitter) MemBudget(delta int, budget int64, overflowLabel Label) {
+	e.emit(IRInstr{
+		Op:   IRMemBudget,
+		Imm:  int64(delta),
+		Imm2: budget,
+		Dst:  VReg(overflowLabel),
+	})
+}
+
 // ClearDirtySyscallRegs clears dirty flags for a0 (x10) and a1 (x11)
 // only. Called before IRSyscall so the subsequent ReloadSyscallRegs
 // picks up the dispatcher's return values from x[].

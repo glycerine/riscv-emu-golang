@@ -143,6 +143,7 @@ type compiledBlock struct {
 	chainExits []chainPatchInfo  // chain exits for patching
 	jalrICs    []jalrICPatchInfo // JALR IC sites for patching
 	hasFP      bool              // block uses FP registers (skip f[] copy when false)
+	numInsns   int               // static instruction count from emission
 
 	// segment is the DecodedExecuteSegment that owns this block's native
 	// code, or nil for lazy-compiled blocks. Set at AOT install time;
@@ -243,6 +244,9 @@ type JIT struct {
 	stopperPage uintptr // InfiniteLoopStopperPage: mmap'd guard page for preemption
 	watchAddr   uint64  // tohost address; JIT blocks exit when a store hits this address
 
+	DebugOneBlockLockstepMode bool  // emit budget checks at back-edges
+	LockstepModeBudget        int64 // max IC before forced exit (default 65536)
+
 	// Dispatch counters (for diagnostics).
 	DispatchOK       uint64 // jitOK returns to Go dispatch
 	DispatchOther    uint64 // non-OK returns (ecall, fault, etc.)
@@ -259,8 +263,9 @@ type JIT struct {
 // allocation policy is PolicyABJIT (compare PolicyRV8); see lower_amd64.go
 func NewJIT() *JIT {
 	j := &JIT{
-		noJIT:   make(map[uint64]bool),
-		irAlloc: NewFixedStaticAllocator(),
+		noJIT:              make(map[uint64]bool),
+		irAlloc:            NewFixedStaticAllocator(),
+		LockstepModeBudget: 65536,
 	}
 	j.SetRegPolicy(PolicyABJIT)
 	if err := j.initStopperPage(); err != nil {
@@ -590,11 +595,20 @@ func (j *JIT) StepBlock(cpu *CPU) (ic uint64, err error) {
 		cpu.pc = res.PC
 		cpu.cycle += res.Cycles
 
+		ic := res.IC
+		if ic == 0 {
+			ic = uint64(blk.numInsns)
+		}
+		if j.DebugOneBlockLockstepMode {
+			vv("StepBlock: pc=0x%x -> PC=0x%x status=%d res.IC=%d blk.numInsns=%d ic=%d",
+				pc, res.PC, res.Status, res.IC, blk.numInsns, ic)
+		}
+
 		switch int(res.Status) {
 		case jitOK:
-			return 0, nil
+			return ic, nil
 		case jitOKJalrMiss:
-			return 0, nil
+			return ic, nil
 		case jitMisalign:
 			if err := cpu.step(); err != nil {
 				return 1, err

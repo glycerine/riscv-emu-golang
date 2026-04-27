@@ -71,6 +71,7 @@ func (j *JIT) jitCompile(res *emitResult) (*compiledBlock, error) {
 		fn:         codeBase,
 		nativeMmap: execMem,
 		hasFP:      allocHasFP(alloc),
+		numInsns:   res.numInsns,
 	}
 
 	// Step 6: Block chaining setup — backpatch MOVABS sentinels and record metadata.

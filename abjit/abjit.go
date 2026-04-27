@@ -29,6 +29,7 @@ type State struct {
 	VAddrBegin uint64
 	SegSize    uint64
 	Cycles     uint64 // TSC cycles (RDTSC delta, written by exit thunk)
+	IC         uint64 // instruction count (accumulated by back-edge budget checks)
 }
 
 //go:noinline

@@ -68,6 +68,9 @@ type emitter struct {
 	pcLabels       u64labelmap
 	stopperAddr    int64  // InfiniteLoopStopperPage address for backward-branch probes
 	watchAddr      uint64 // tohost address; stores here trigger a block exit
+	lockstepMode   bool
+	lockstepBudget int64
+	backEdgeIC     int    // instructions since last back-edge or block entry
 	deferredExits  []deferredExit
 	deferredFaults []deferredFault
 	exitIdx        int      // counter for chain exit indices
@@ -269,6 +272,7 @@ func (e *emitter) getOrCreateLabel(pc uint64) Label {
 }
 
 func (e *emitter) emitLabel() {
+	e.flushAndResetIC()
 	e.irEm.PlaceLabel(e.getOrCreateLabel(e.pc))
 }
 
@@ -324,12 +328,29 @@ func (e *emitter) emitLoadFused(rd uint32, guestAddr int64, funct3 uint32) {
 
 func (e *emitter) advancePC(size uint64) {
 	e.numInsns++
+	if e.lockstepMode {
+		e.backEdgeIC++
+	}
 	e.pc += size
 }
 
+// flushAndResetIC emits the current backEdgeIC to State.IC and resets
+// the counter. Called at branch points where a new execution path begins.
+func (e *emitter) flushAndResetIC() {
+	if e.lockstepMode && e.backEdgeIC > 0 {
+		e.irEm.MemAdd(abjitStateICOffset, int64(e.backEdgeIC))
+		e.backEdgeIC = 0
+	}
+}
+
 func (e *emitter) emitReturn(pc uint64, status int) {
+	e.flushIC()
 	e.irEm.WriteBackAll()
 	e.irEm.Ret(pc, status, VRegZero)
+}
+
+func (e *emitter) flushIC() {
+	e.flushAndResetIC()
 }
 
 // emitSyscall emits the ECALL fast path: writeback all dirty regs,
@@ -370,6 +391,7 @@ func (e *emitter) allocFaultLabel(addr VReg, status int) Label {
 // For dynamic-target returns (JALR) use emitReturn / IRRetDyn instead —
 // those stay as Go round-trips.
 func (e *emitter) emitChainableReturn(pc uint64) {
+	e.flushIC()
 	e.irEm.WriteBackAll()
 	e.irEm.ChainExit(pc, e.exitIdx)
 	e.exitIdx++
@@ -925,16 +947,18 @@ func (j *JIT) emitBlockRange(mem *GuestMemory, pc, endPC uint64) *emitResult {
 	//gt.IterStart = testIterStart
 
 	e := &emitter{
-		mem:         mem,
-		startPC:     pc,
-		pc:          pc,
-		irEm:        irEm,
-		visited:     make(map[uint64]bool),
-		regionEnd:   endPC,
-		gotoTargets: gt,
-		pcLabels:    newU64labelmap(),
-		stopperAddr: int64(j.stopperPage),
-		watchAddr:   j.watchAddr,
+		mem:            mem,
+		startPC:        pc,
+		pc:             pc,
+		irEm:           irEm,
+		visited:        make(map[uint64]bool),
+		regionEnd:      endPC,
+		gotoTargets:    gt,
+		pcLabels:       newU64labelmap(),
+		stopperAddr:    int64(j.stopperPage),
+		watchAddr:      j.watchAddr,
+		lockstepMode:   j.DebugOneBlockLockstepMode,
+		lockstepBudget: j.LockstepModeBudget,
 	}
 
 	// Emit IR (populates regsUsed via xreg/xregDst calls).
@@ -2566,12 +2590,24 @@ func (e *emitter) emitJAL(rd uint32, offset int64, insnSize uint64) {
 		// and whether the target was already emitted (visited).
 		backward := target < origPC || e.visited[target]
 		if backward {
-			e.irEm.StopperLoad(e.stopperAddr)
-			e.irEm.Jump(targetLabel)
+			if e.lockstepMode {
+				exitLabel := e.irEm.NewLabel()
+				e.irEm.MemBudget(e.backEdgeIC, e.lockstepBudget, exitLabel)
+				e.backEdgeIC = 0
+				e.irEm.StopperLoad(e.stopperAddr)
+				e.irEm.Jump(targetLabel)
+				e.irEm.PlaceLabel(exitLabel)
+				e.irEm.WriteBackAll()
+				e.irEm.Ret(target, jitOK, VRegZero)
+			} else {
+				e.irEm.StopperLoad(e.stopperAddr)
+				e.irEm.Jump(targetLabel)
+			}
 			e.gotoTargets.add(target)
 			e.terminated = true
 			return
 		}
+		e.flushAndResetIC()
 		e.irEm.Jump(targetLabel)
 		e.gotoTargets.add(target)
 		e.pc = target
@@ -2654,8 +2690,19 @@ func (e *emitter) emitBranch(rs1, rs2, funct3 uint32, offset int64) {
 			e.irEm.Branch(a, b, pred, takenLabel)
 			e.irEm.Jump(continueLabel) // not taken: skip stopper probe
 			e.irEm.PlaceLabel(takenLabel)
-			e.irEm.StopperLoad(e.stopperAddr)
-			e.irEm.Jump(targetLabel)
+			if e.lockstepMode {
+				exitLabel := e.irEm.NewLabel()
+				e.irEm.MemBudget(e.backEdgeIC, e.lockstepBudget, exitLabel)
+				e.backEdgeIC = 0
+				e.irEm.StopperLoad(e.stopperAddr)
+				e.irEm.Jump(targetLabel)
+				e.irEm.PlaceLabel(exitLabel)
+				e.irEm.WriteBackAll()
+				e.irEm.Ret(target, jitOK, VRegZero)
+			} else {
+				e.irEm.StopperLoad(e.stopperAddr)
+				e.irEm.Jump(targetLabel)
+			}
 			e.irEm.PlaceLabel(continueLabel)
 		} else {
 			e.irEm.Branch(a, b, pred, targetLabel)

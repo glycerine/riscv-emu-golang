@@ -406,6 +406,8 @@ func runLockstep(t *testing.T, elfPath string) {
 	//t.Logf("jitMem base=%#x interpMem base=%#x size=%#x", jitMem.Base(), interpMem.Base(), jitMem.Size())
 
 	jit := NewJIT()
+	jit.DebugOneBlockLockstepMode = true
+	jit.LockstepModeBudget = 65536
 	maxCycles := uint64(10_000_000)
 	blockNum := 0
 
@@ -416,14 +418,11 @@ func runLockstep(t *testing.T, elfPath string) {
 		}
 
 		// JIT: one dispatch cycle
-		_, jitErr := jit.StepBlock(jitCPU)
+		jitIC, jitErr := jit.StepBlock(jitCPU)
 
-		// Interpreter: advance to the same PC as the JIT
-		targetPC := jitCPU.pc
+		// Interpreter: same number of instructions
 		var interpErr error
-		interpSteps := 0
-		for interpCPU.pc != targetPC && interpSteps < 100000 {
-			interpSteps++
+		for i := uint64(0); i < jitIC; i++ {
 			if blockNum == 59 {
 				ipc := interpCPU.pc
 				// Log any memory access to the upper half (sandbox area)
@@ -471,8 +470,8 @@ func runLockstep(t *testing.T, elfPath string) {
 		regMismatch := false
 		for r := 0; r < 32; r++ {
 			if jitCPU.x[r] != interpCPU.x[r] {
-				t.Errorf("block %d (pc=0x%x, steps=%d): x[%d] mismatch: jit=0x%x interp=0x%x",
-					blockNum, jitCPU.pc, interpSteps, r, jitCPU.x[r], interpCPU.x[r])
+				t.Errorf("block %d (pc=0x%x, ic=%d): x[%d] mismatch: jit=0x%x interp=0x%x",
+					blockNum, jitCPU.pc, jitIC, r, jitCPU.x[r], interpCPU.x[r])
 				regMismatch = true
 			}
 		}

@@ -1526,6 +1526,10 @@ func (lc *lowerOps) lowerInstrCommon(ins *IRInstr) (bool, error) {
 
 	case IRStopperLoad:
 		lc.opsStopperLoad(ins)
+	case IRMemAdd:
+		lc.opsMemAdd(ins)
+	case IRMemBudget:
+		lc.opsMemBudget(ins)
 
 	// Pseudo-ops
 	case IRMarkLive, IRMarkDead, IRWriteback:
@@ -1559,6 +1563,52 @@ func (lc *lowerOps) opsStopperLoad(ins *IRInstr) {
 	p.To.Reg = stgA
 	p.To.Offset = 0
 	lc.c.Append(p)
+}
+
+// abjitStateICOffset is the byte offset of IC in abjit.State.
+// Must agree with abjit/abjit.go and TestStateLayout.
+const abjitStateICOffset = 600
+
+func (lc *lowerOps) opsMemAdd(ins *IRInstr) {
+	p := lc.c.NewProg()
+	p.As = x86.AADDQ
+	p.From.Type = obj.TYPE_CONST
+	p.From.Offset = ins.Imm2 // delta
+	p.To.Type = obj.TYPE_MEM
+	p.To.Reg = goasm.REG_AMD64_BP
+	p.To.Offset = ins.Imm // offset
+	lc.c.Append(p)
+}
+
+func (lc *lowerOps) opsMemBudget(ins *IRInstr) {
+	off := int64(abjitStateICOffset)
+
+	// ADD QWORD [RBP + off], delta
+	p1 := lc.c.NewProg()
+	p1.As = x86.AADDQ
+	p1.From.Type = obj.TYPE_CONST
+	p1.From.Offset = ins.Imm // delta
+	p1.To.Type = obj.TYPE_MEM
+	p1.To.Reg = goasm.REG_AMD64_BP
+	p1.To.Offset = off
+	lc.c.Append(p1)
+
+	// CMP QWORD [RBP + off], budget
+	p2 := lc.c.NewProg()
+	p2.As = x86.ACMPQ
+	p2.From.Type = obj.TYPE_MEM
+	p2.From.Reg = goasm.REG_AMD64_BP
+	p2.From.Offset = off
+	p2.To.Type = obj.TYPE_CONST
+	p2.To.Offset = ins.Imm2 // budget
+	lc.c.Append(p2)
+
+	// JGE overflow label
+	p3 := lc.c.NewProg()
+	p3.As = x86.AJGE
+	p3.To.Type = obj.TYPE_BRANCH
+	lc.c.Append(p3)
+	lc.bindLabel(Label(ins.Dst), p3)
 }
 
 // Ensure imports are used.

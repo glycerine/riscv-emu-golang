@@ -254,6 +254,15 @@ const (
 	// Guard page probe (preemption check at backward branches).
 	IRStopperLoad // probe [Imm]; faults if page armed. No GP reg modified.
 
+	// ADD [RBP+Imm], Imm2. Modifies only EFLAGS — no GP registers.
+	IRMemAdd
+
+	// Batched IC budget check at back-edges (lockstep mode only).
+	// ADD [RBP+IC_OFFSET], Imm; CMP [RBP+IC_OFFSET], Imm2; JGE Label(Dst).
+	// IC_OFFSET is hardcoded (State.IC offset). Imm=delta, Imm2=budget.
+	// Modifies only EFLAGS — no GP registers touched.
+	IRMemBudget
+
 	// Pseudo-ops
 	IRMarkLive  // declares A live here (allocator hint)
 	IRMarkDead  // declares A dead here (allocator hint)
@@ -341,6 +350,8 @@ var irOpNames = [...]string{
 	IRFCvtFromU: "fcvt_from_u",
 	IRFCvtFF:    "fcvt_ff",
 	IRStopperLoad: "stopper_load",
+	IRMemAdd:      "mem_add",
+	IRMemBudget:   "mem_budget",
 	IRMarkLive:    "mark_live",
 	IRMarkDead:    "mark_dead",
 	IRWriteback:   "writeback",
@@ -401,6 +412,11 @@ func (ins IRInstr) String() string {
 		return fmt.Sprintf("%s targetPC=0x%x exitIdx=%d", ins.Op, uint64(ins.Imm), ins.Imm2)
 	case IRStopperLoad:
 		return fmt.Sprintf("%s addr=0x%x", ins.Op, uint64(ins.Imm))
+	case IRMemAdd:
+		return fmt.Sprintf("%s [RBP+%d] += %d", ins.Op, ins.Imm, ins.Imm2)
+	case IRMemBudget:
+		return fmt.Sprintf("%s delta=%d budget=%d overflow=L%d",
+			ins.Op, ins.Imm, ins.Imm2, ins.Dst)
 	default:
 		if ins.B != VRegZero {
 			return fmt.Sprintf("%s.%s %s = %s, %s", ins.Op, ins.T, ins.Dst, ins.A, ins.B)
