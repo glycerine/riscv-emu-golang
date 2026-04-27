@@ -56,10 +56,10 @@ func newBenchCPU(tb testing.TB, elfData []byte) (*riscv.CPU, *riscv.GuestMemory)
 	cpu.SetReg(2, 0x03F00000) // sp — near top of 64MB, zero-filled (argc=0)
 
 	o := riscv.NewOS()
-	o.HandleSyscall(93, riscv.LinuxExit)  // exit
-	o.HandleSyscall(94, riscv.LinuxExit)  // exit_group
-	o.HandleSyscall(214, brkHandler)      // brk
-	o.HandleSyscall(96, tidHandler)       // set_tid_address
+	o.HandleSyscall(93, riscv.LinuxExit) // exit
+	o.HandleSyscall(94, riscv.LinuxExit) // exit_group
+	o.HandleSyscall(214, brkHandler)     // brk
+	o.HandleSyscall(96, tidHandler)      // set_tid_address
 	cpu.Notes.Push(o.Handle)
 	return cpu, mem
 }
@@ -67,6 +67,7 @@ func newBenchCPU(tb testing.TB, elfData []byte) (*riscv.CPU, *riscv.GuestMemory)
 func runJITBenchGuestWith(cpu *riscv.CPU, jit *riscv.JIT) (exitCode int, insns uint64) {
 	defer func() {
 		if r := recover(); r != nil {
+			vv("runJITBenchGuestWith recovered: r='%v'", r)
 			if ex, ok := r.(*riscv.ExitError); ok {
 				exitCode = ex.Code
 				insns = cpu.Cycle()
@@ -94,13 +95,19 @@ func runCachedBenchGuest(cpu *riscv.CPU) (exitCode int, insns uint64) {
 			panic(r)
 		}
 	}()
+
+	// try to avoid the 25% performance drop footgun of calling runCached.
+
 	// Cache covers [entry-4K, entry+256K). Anything outside falls back to step().
-	base := cpu.PC() & ^uint64(0xFFF)
-	if base > 0x1000 {
-		base -= 0x1000
-	}
-	cache := riscv.NewDecoderCache(base, 256<<10)
-	_ = riscv.RunCached(cpu, cache, &cpu.Notes)
+	//base := cpu.PC() & ^uint64(0xFFF)
+	//if base > 0x1000 {
+	//	base -= 0x1000
+	//}
+	//cache := riscv.NewDecoderCache(base, 256<<10)
+	//_ = riscv.RunCached(cpu, cache, &cpu.Notes)
+
+	err := riscv.RunDefault(cpu, &cpu.Notes)
+	_ = err
 	insns = cpu.Cycle()
 	return
 }
