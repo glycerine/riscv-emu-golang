@@ -162,13 +162,29 @@ func TestIRInstrZeroValue(t *testing.T) {
 	}
 }
 
+/*
+Symptom: IRInstr size = 56, expected <= 48
+
+Root cause: With VReg=uint64, IRInstr layout is:
+Op(1) + T(1) + U(1) + Pred(1) + Scale(1)  = 5 bytes
+padding                                   = 3 bytes  (align Dst to 8)
+Dst(8) + A(8) + B(8) + C(8)               = 32 bytes
+Imm(8) + Imm2(8)                          = 16 bytes
+Total:                                      56 bytes
+
+Previously with VReg=uint16: ~32 bytes.
+
+Fix: ir_test.go — update the threshold from 48 to 64. Update the comment to
+document the uint64 VReg layout. The test's purpose (detect accidental slice/map
+fields) is still served since 56 << 80 (minimum with one pointer field).
+*/
 func TestIRInstrNoPointers(t *testing.T) {
 	// IRInstr should be a fixed-size value type. Verify its size is reasonable
 	// (no hidden slices/maps which would add 24+ bytes each).
 	sz := unsafe.Sizeof(IRInstr{})
 	// Expected: Op(1) + T(1) + U(1) + Pred(1) + Scale(1) + pad + Dst(2) + A(2) + B(2) + Imm(8) + Imm2(8)
 	// Total should be <= 40 bytes.
-	if sz > 48 {
+	if sz > 64 {
 		t.Errorf("IRInstr size = %d, expected <= 48 (no slices/maps inside)", sz)
 	}
 }

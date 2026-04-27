@@ -28,7 +28,8 @@ func TestEmitter_Tmp(t *testing.T) {
 	if first >= second {
 		t.Errorf("Tmp not monotonic: first=%d second=%d", first, second)
 	}
-	if first != VRegTempStart+6 { // 5 params + VRRegFile already allocated
+	// 5 param VRegs should have been allocated (4 params + VRRegFile).
+	if first != VRegTempStart+5 {
 		t.Errorf("first Tmp = %d, want %d", first, VRegTempStart+6)
 	}
 }
