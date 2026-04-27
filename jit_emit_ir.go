@@ -13,14 +13,14 @@ import (
 // register allocator's spill phase where L is average interval length.
 // 4096 IR instructions covers ~500-800 RISC-V instructions — large enough
 // for good optimization, small enough for fast compilation.
-const maxBlockIRInsns = 2048
+const maxBlockIRInsns = 100 // 2048
 
 // PerBlockCapTimeToSplit is the soft cap on guest instructions per JIT
 // block. After exceeding this threshold, the emitter terminates the block
 // at the next natural break point (JALR, ECALL, unconditional jump, etc.)
 // as determined by classifyFlow(). Set to 0 to disable the cap entirely.
 // Follows the libriscv model (ITS_TIME_TO_SPLIT = 5000 for TCC).
-var PerBlockCapTimeToSplit int64 = 5000
+var PerBlockCapTimeToSplit int64 = 50 //5000 // 50,60 => red TestSubELF_Block39; 100:green; 55:green, 65:green,70:green, 80:green. 51:green. 49 red. 48:green. 99:green.
 
 // isStoppingFlow returns true for flow classes that are natural block
 // boundaries: unconditional jumps, calls, and terminators.

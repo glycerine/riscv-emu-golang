@@ -738,15 +738,12 @@ func TestSRL_ExactIR(t *testing.T) {
 
 	// IC increment
 
-
 	// Const x7 = -2147483648
 	e.Const(x7, -2147483648)
 
 	// IC increment
 
-
 	// IC increment
-
 
 	// Branch NE x14, x7 -> taken (to fail exit)
 	failLabel := e.NewLabel()
@@ -811,7 +808,6 @@ func TestSRL_ExactIR_V2(t *testing.T) {
 
 	e.Const(x7, -2147483648)
 
-
 	failLabel := e.NewLabel()
 	e.Branch(x14, x7, NE, failLabel)
 	e.Store(e.XBase(), 56, x7, I64)
@@ -857,7 +853,6 @@ func TestSRL_ExactIR_DumpAlloc(t *testing.T) {
 	e.Shr(x14, x11, x12)
 
 	e.Const(x7, -2147483648)
-
 
 	failLabel := e.NewLabel()
 	e.Branch(x14, x7, NE, failLabel)
@@ -929,13 +924,11 @@ func TestSRL_Block61_V1vV2(t *testing.T) {
 	// CONST x5 = 2
 	e.Const(x5, 2)
 
-
 	// BNE x4, x5 -> L7 (test count exit)
 	l7 := e.NewLabel()
 	e.Branch(x4, x5, NE, l7)
 	// CONST x7 = 16777216 (0x1000000)
 	e.Const(x7, 16777216)
-
 
 	// BNE x6, x7 -> L10 (test fail)
 	l10 := e.NewLabel()
@@ -1045,14 +1038,10 @@ func TestSRL_Block61_V1vV2b(t *testing.T) {
 
 	e.Const(x5, 2) // CONST x5 = 2
 
-
-
 	l7 := e.NewLabel()
 	e.Branch(x4, x5, NE, l7) // BNE x4, x5 → L7
 
 	e.Const(x7, 0x1000000) // CONST x7 = 16777216
-
-
 
 	l10 := e.NewLabel()
 	e.Branch(x6, x7, NE, l10) // BNE x6, x7 → L10
