@@ -424,7 +424,9 @@ func runLockstep(t *testing.T, elfPath string) {
 	jit := NewJIT()
 	jit.DebugOneBlockLockstepMode = true
 	//jit.LockstepModeBudget = 2 // 10.14s / 32KB, all Lockstep 132s darwin
-	jit.LockstepModeBudget = 20000 // 10.14s / 32KB, all Lockstep 15.5s. All: 133s
+	//jit.LockstepModeBudget = 20000 // 10.14s / 32KB, all Lockstep 15.5s. All: 133s
+	//jit.LockstepModeBudget = 1_000_000 // 9.9s / 32KB, all Lockstep 15s. All:149.3s
+	jit.LockstepModeBudget = 17_731 // 32KB All: 144.5s
 	//jit.LockstepModeBudget = 2000 // 10.4s / 32KB
 	//jit.LockstepModeBudget = 200 // 11.0s
 	//jit.LockstepModeBudget = 100 // 12.3s
