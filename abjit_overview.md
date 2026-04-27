@@ -270,3 +270,78 @@ JMP    R11                 ;  3B
 - TCC/C code generation path
 - AOT segment management
 - bridge2 SPSC approach
+
+---
+
+## 8. JIT-to-JIT Dispatch Protocol
+
+### Rule: x86 CALL/RET only for Go-boundary crossings
+
+The Go GC scans goroutine stacks and expects every return address to
+point into Go code. x86 CALL pushes a return address onto RSP (the
+Go goroutine stack). If that address points into mmap'd JIT memory,
+the GC panics. Therefore:
+
+- **JIT-to-JIT transitions use JMP (never CALL)**
+- **CALL/RET are only used to cross the JIT→Go boundary**
+
+This invariant is enforced by `TestABJIT_NoJITtoJIT_CALL` in
+`lower_amd64_abjit_safety_test.go`.
+
+### Permitted CALL/RET sites
+
+| Instruction | Location | Purpose |
+|-------------|----------|---------|
+| `RET` | Exit thunk (`emitExitThunk`) | Return from JIT to `callJIT` Go trampoline |
+| `CALL RAX` | `abjitSyscall` | Call SysV syscall dispatcher (Go function) |
+| `CALL RAX` | `abjitCall` | Call Go callback function |
+
+### JIT-to-JIT transition mechanisms
+
+All use JMP — no return address pushed:
+
+| Mechanism | Code pattern | When used |
+|-----------|-------------|-----------|
+| Chain exit | `MOVABS RCX, sentinel; JMP RCX` (patched to direct JMP) | Static inter-block jumps (branches, JAL) |
+| 2-slot JALR IC | `CMP target, cached_pc; JEQ → MOVABS fn; JMP fn` | Lazy blocks (dcBase=0), runtime-patched |
+| Decoder cache | Bounds check → index → load entry → `JMP DX` | AOT blocks with L1 decoder cache |
+| Slow exit stub | `JMP exitThunk` | Cache miss → return to Go dispatcher |
+
+### Guest State Layout (abjit.State)
+
+Heap-allocated Go struct, pointed to by RBP during JIT execution:
+
+| Offset | Field | Size | Description |
+|--------|-------|------|-------------|
+| 0 | `X[0..31]` | 256B | Integer registers |
+| 256 | `F[0..31]` | 256B | FP registers |
+| 512 | `FCSR` | 4B | FP control/status |
+| 516 | (padding) | 4B | |
+| 520 | `MemBase` | 8B | GuestMemory base pointer |
+| 528 | `MemMask` | 8B | Sandbox mask (size-1) |
+| 536 | `PC` | 8B | Program counter (written on block exit) |
+| 544 | `Status` | 8B | Exit status code |
+| 552 | `FaultAddr` | 8B | Fault address or JALR IC site index |
+| 560 | `DCBase` | 8B | Decoder cache base (0 for lazy blocks) |
+| 568 | `DCMask` | 8B | Decoder cache mask |
+| 576 | `VAddrBegin` | 8B | Segment guest-VA start |
+| 584 | `SegSize` | 8B | Segment guest-VA size |
+| 592 | `Cycles` | 8B | RDTSC delta |
+| 600 | `IC` | 8B | Instruction count |
+
+### Guest Memory Model
+
+- All guest loads/stores use GuestMemory: `hostPtr = base + (addr & mask)`
+- Guest heap, stack, and data are regions within the single GuestMemory mmap slab
+- No guest heap allocator — no brk/mmap syscall emulation
+- JIT native code lives in separate mmap'd pages (PROT_EXEC), not in GuestMemory
+- State struct lives on Go heap, not in GuestMemory
+
+### Stack Architecture
+
+| Register | Points to | Purpose |
+|----------|-----------|---------|
+| RSP | Go goroutine stack | 65KB frame from trampoline; callee-saves, RDTSC, Go callbacks |
+| RBP | `abjit.State` base | All guest register and metadata access via `[RBP+offset]` |
+| Guest x2 (sp) | GuestMemory region | RISC-V stack pointer, stored in `State.X[2]`, sandboxed |
+| R12 | (reserved) | Future sandbox stack; currently saved/restored but unused |
