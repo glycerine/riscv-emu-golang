@@ -2,7 +2,7 @@ package riscv
 
 import (
 	"encoding/binary"
-	"encoding/hex"
+	//"encoding/hex"
 	"syscall"
 	"testing"
 	"unsafe"
@@ -38,8 +38,8 @@ func TestLower_RV8_JalrIC_Encoding(t *testing.T) {
 	b.maxVreg = MaxVReg(b)
 
 	code, _ := lowerBlockWithResult(t, b)
-	t.Logf("rv8 JalrIC len=%d bytes", len(code))
-	t.Logf("bytes:\n%s", hex.Dump(code))
+	//t.Logf("rv8 JalrIC len=%d bytes", len(code))
+	//t.Logf("bytes:\n%s", hex.Dump(code))
 
 	if len(code) < 50 {
 		t.Errorf("code too short (%d bytes) — expected decoder_cache sequence", len(code))
