@@ -27,12 +27,25 @@ IncIC                           <- INC R15
 ; instruction IR follows...
 ```
 
-Budget exit stubs (deferred to block end, one per instruction):
+Per-instruction cold path (budget hit, ~16 bytes each):
 ```
-exitLabel:
-  SpillIC                       <- MOV [RBP+IC_offset], R15
-  WriteBackAll
-  Ret(current_pc, jitOK)        <- exit with the unexecuted instruction's PC
+.cold_N:
+  MOV QWORD [RBP+PC_offset], $current_pc   ; 11 bytes -- write unexecuted PC to State
+  JMP .shared_budget_exit                    ; 5 bytes
+```
+
+Shared budget exit (emitted once per block -- not global, because WriteBackAll
+is block-specific: each block's register allocation maps different guest regs
+to different hardware regs, so the writeback MOV sequence differs per block):
+```
+.shared_budget_exit:
+  SpillIC          <- MOV [RBP+IC_offset], R15
+  WriteBackAll     <- write all dirty guest regs (block-specific allocation)
+  ; PC already written by per-instruction MOV above
+  MOV [RBP+status_offset], $0    ; jitOK
+  MOV [RBP+exitinfo_offset], $0
+  ADD RSP, $frame_size
+  JMP epilogue
 ```
 
 **Trace with budget=1:**
@@ -80,10 +93,12 @@ Add `removeReg` helper (filter one int16 from a slice).
 ## New IR ops (`ir.go`)
 
 ```go
-IRZeroIC     // XOR R15, R15 -- block entry
-IRIncIC      // INC R15 -- per-instruction count
-IRSpillIC    // MOV [RBP+IC_offset], R15 -- at every exit
-IRRegBudget  // CMP R15, Imm2; JGE Label(Dst) -- per-instruction budget gate
+IRZeroIC      // XOR R15, R15 -- block entry
+IRIncIC       // INC R15 -- per-instruction count
+IRSpillIC     // MOV [RBP+IC_offset], R15 -- at every exit
+IRRegBudget   // CMP R15, Imm2; JGE Label(Dst) -- per-instruction budget gate
+IRSetPC       // MOV [RBP+PC_offset], Imm -- budget cold path writes PC to State
+IRRetBudget   // MOV [status],0; MOV [exitinfo],0; ADD SP,frame; JMP epilogue
 ```
 
 `IRMemAdd` and `IRMemBudget` remain but are no longer used by lockstep IC.
@@ -97,6 +112,12 @@ func (e *Emitter) SpillIC() { e.emit(IRInstr{Op: IRSpillIC}) }
 func (e *Emitter) RegBudget(budget int64, overflowLabel Label) {
     e.emit(IRInstr{Op: IRRegBudget, Imm2: budget, Dst: VReg(overflowLabel)})
 }
+func (e *Emitter) SetPC(pc uint64) {
+    e.emit(IRInstr{Op: IRSetPC, Imm: int64(pc)})
+}
+func (e *Emitter) RetBudget() {
+    e.emit(IRInstr{Op: IRRetBudget})
+}
 ```
 
 ## Lowerer (`lower_amd64_ops.go`)
@@ -107,6 +128,12 @@ func (lc *lowerOps) opsIncIC()   { /* INC R15  (3 bytes: 49 FF C7) */ }
 func (lc *lowerOps) opsSpillIC() { /* MOV [RBP+abjitStateICOffset], R15 */ }
 func (lc *lowerOps) opsRegBudget(ins *IRInstr) {
     /* CMP R15, ins.Imm2; JGE Label(ins.Dst) */
+}
+func (lc *lowerOps) opsSetPC(ins *IRInstr) {
+    /* MOV QWORD [RBP+PC_offset], ins.Imm */
+}
+func (lc *lowerOps) opsRetBudget() {
+    /* MOV [RBP+status],0; MOV [RBP+exitinfo],0; ADD SP,frame; JMP epilogue */
 }
 ```
 
@@ -131,18 +158,30 @@ func (e *emitter) emitLabel() {
 ```go
 func (e *emitter) emitBudgetCheck() {
     if !e.lockstepMode { return }
-    exitLabel := e.irEm.NewLabel()
-    e.irEm.RegBudget(e.lockstepBudget, exitLabel)
+    coldLabel := e.irEm.NewLabel()
+    e.irEm.RegBudget(e.lockstepBudget, coldLabel)
     e.irEm.IncIC()
-    e.budgetExits = append(e.budgetExits, budgetExit{exitLabel, e.pc})
+    e.budgetExits = append(e.budgetExits, budgetExit{coldLabel, e.pc})
 }
 ```
 
-New field on emitter: `budgetExits []budgetExit` where:
+New fields on emitter:
+```go
+budgetExits      []budgetExit // per-instruction cold paths
+sharedBudgetExit Label        // one shared exit stub per block
+```
 ```go
 type budgetExit struct {
     label Label
     pc    uint64 // the instruction we did NOT execute -- resume here
+}
+```
+
+`sharedBudgetExit` is allocated once in `emitBlockRange` when lockstepMode:
+```go
+if e.lockstepMode {
+    e.sharedBudgetExit = e.irEm.NewLabel()
+    e.irEm.ZeroIC()
 }
 ```
 
@@ -195,25 +234,33 @@ The budget check at `emit32` entry counts instruction 1 (e.g., AUIPC). The fused
 
 (No extra budget check between fused instructions -- they execute atomically.)
 
-### Block entry -- emit ZeroIC in `emitBlockRange` (line 963):
-```go
-if e.lockstepMode {
-    e.irEm.ZeroIC()
-}
-// main emit loop...
-```
+### Block entry -- handled above in `emitBlockRange`:
+ZeroIC and sharedBudgetExit label allocation shown in emitBudgetCheck section.
 
-### Block finalize -- emit budget exit stubs:
+### Block finalize -- emit shared budget exit + per-instruction cold paths:
 
 After existing deferred exit handling (after line 737):
 ```go
-for _, be := range e.budgetExits {
-    e.irEm.PlaceLabel(be.label)
+if e.lockstepMode && len(e.budgetExits) > 0 {
+    // Per-instruction cold paths: write PC to State, jump to shared exit.
+    for _, be := range e.budgetExits {
+        e.irEm.PlaceLabel(be.label)
+        e.irEm.SetPC(be.pc)              // MOV [RBP+PC_offset], $pc
+        e.irEm.Jump(e.sharedBudgetExit)
+    }
+    // Shared budget exit (once per block).
+    e.irEm.PlaceLabel(e.sharedBudgetExit)
     e.spillIC()
     e.irEm.WriteBackAll()
-    e.irEm.Ret(be.pc, jitOK, VRegZero)
+    e.irEm.RetBudget()  // status=jitOK, PC already set, return
 }
 ```
+
+New IR ops for shared exit:
+- `IRSetPC(Imm)` -- `MOV [RBP+PC_offset], $imm` (no GP regs touched)
+- `IRRetBudget` -- writes status=0, exitinfo=0, restores SP, returns (PC already in State)
+
+`e.sharedBudgetExit` is a Label allocated once in emitBlockRange when lockstepMode.
 
 ### All natural exits -- add `spillIC()`:
 
