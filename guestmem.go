@@ -70,6 +70,7 @@ import (
 // highest ELF VA (~0x10000 for riscv-tests). The last 3 pages are
 // reserved for the shadow register file, guard page, and sandbox stack.
 const (
+	Size16KB  uint64 = 1 << 14
 	Size32KB  uint64 = 1 << 15
 	Size64KB  uint64 = 1 << 16
 	Size128KB uint64 = 1 << 17
