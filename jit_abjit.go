@@ -50,7 +50,7 @@ func abjitDispatch(
 		Cycles:    s.Cycles,
 	}
 
-	vv("back from abjit.CallJIT, the call to the assembly trampoline. res = '%s'", res)
+	vv("back from abjit.CallJIT, the call to the assembly trampoline. res = '%v'", &res)
 
 	cpu.x = s.X
 	if blk.hasFP {
