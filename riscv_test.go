@@ -1,9 +1,5 @@
 package riscv
 
-import (
-	"time"
-)
-
 // riscvtests_test.go — runs the official riscv-tests ELF binaries.
 //
 // The riscv-tests suite uses the following ECALL convention (machine-mode):
@@ -20,7 +16,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
+
+var _ = time.Now
 
 const rvTestsDir = "riscv-elf-tests/"
 
@@ -376,10 +375,12 @@ const lockstepMemSize = Size64KB // way faster than 64MB but aliasing
 
 func runLockstep(t *testing.T, elfPath string) {
 	//t.Helper()
-	t0 := time.Now()
-	defer func() {
-		vv("runLockstep: elfPath '%v' took %v", elfPath, time.Since(t0))
-	}()
+
+	//t0 := time.Now()
+	//defer func() {
+	//	vv("runLockstep: elfPath '%v' took %v", elfPath, time.Since(t0))
+	//}()
+
 	saved := CheckSandboxBounds
 	CheckSandboxBounds = true
 	defer func() { CheckSandboxBounds = saved }()
@@ -435,7 +436,7 @@ func runLockstep(t *testing.T, elfPath string) {
 	maxCycles := uint64(10_000_000)
 	blockNum := 0
 
-	nStops := 0
+	//nStops := 0
 	for jitCPU.Cycle() < maxCycles {
 
 		if jitCPU.pc != interpCPU.pc {
@@ -467,10 +468,10 @@ func runLockstep(t *testing.T, elfPath string) {
 			interpCPU.cycle++
 		}
 
-		if nStops%5000 == 0 { // saw 300
-			vv("runLockstep: elfPath '%v'; nStops = %v; we just ran: jitCPU.pc = 0x%x", elfPath, nStops, jitCPU.pc)
-		}
-		nStops++
+		//if nStops%5000 == 0 { // saw 300
+		//vv("runLockstep: elfPath '%v'; nStops = %v; we just ran: jitCPU.pc = 0x%x", elfPath, nStops, jitCPU.pc)
+		//}
+		//nStops++
 
 		// Compare ALL registers FIRST (before exit check)
 		regMismatch := false
@@ -534,7 +535,7 @@ func runLockstep(t *testing.T, elfPath string) {
 		blockNum++
 	}
 
-	t.Logf("lockstep complete: %d blocks, %d instructions; nStops = %v", blockNum, jitCPU.Cycle(), nStops)
+	//t.Logf("lockstep complete: %d blocks, %d instructions; nStops = %v", blockNum, jitCPU.Cycle(), nStops)
 }
 
 func TestRISCVTests_Lockstep_UI(t *testing.T) {
