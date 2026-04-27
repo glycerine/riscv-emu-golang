@@ -459,7 +459,7 @@ func TestSubELF_Block39(t *testing.T) {
 	pc39 := cpu.PC()
 	res := jit.emitBlock(mem, pc39)
 	for attempts := 0; res == nil && attempts < 5; attempts++ {
-		t.Logf("emitBlock returned nil at PC=0x%x, stepping interpreter", cpu.PC())
+		//t.Logf("emitBlock returned nil at PC=0x%x, stepping interpreter", cpu.PC())
 		if err := cpu.Step(); err != nil {
 			t.Fatalf("interpreter step failed at PC=0x%x: %v", cpu.PC(), err)
 		}
