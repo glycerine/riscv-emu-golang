@@ -16,8 +16,15 @@ const (
 // pinned to RBP in the rv8 layout.
 const VRRegFile = VReg(VRegTempStart + 4) // t68
 
-// VRIC is the instruction-counter VReg, pinned to R15 in lockstep mode.
-const VRIC = VReg(VRegTempStart + 5) // t69
+// WARNING: Do NOT pin R15 via a VReg constant here. The Emitter's Tmp()
+// allocates sequential VRegs starting at VRegTempStart+5 (after the 5
+// parameter slots t64–t68). Any constant defined here collides with
+// those temps — the allocator sees the pinned VReg, assigns R15 to
+// the temp, and silently clobbers the IC register. Instead, just
+// remove R15 from the pool in jit_native.go. The IC ops (opsZeroIC,
+// opsIncIC, etc.) use R15 directly without going through the allocator.
+//
+// const VRIC = VReg(VRegTempStart + 5) // DO NOT USE — collides with first Tmp()
 
 // RegPolicy bundles register allocation choices for a target configuration.
 // Pool, Pinned, and Lower must all be non-nil before the policy is used
