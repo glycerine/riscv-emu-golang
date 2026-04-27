@@ -521,6 +521,7 @@ func runLockstep(t *testing.T, elfPath string) {
 	//t.Logf("jitMem base=%#x interpMem base=%#x size=%#x", jitMem.Base(), interpMem.Base(), jitMem.Size())
 
 	jit := NewJIT()
+	// not optional. the whole point of runLockstep():
 	jit.DebugOneBlockLockstepMode = true
 
 	// timings done with maxBlockIRInsns = 2048;
