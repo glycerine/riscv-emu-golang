@@ -250,3 +250,125 @@ for 2524935201 riscv instuctions:
 darwin 9399 MIPS (269 msec) 
 Linux  7129 MIPS (354 msec)
 ~~~
+
+------
+~~~
+PLAN105_test_lazy_jit_and_aot.md
+
+Plan: Close RISC-V Test ELF Coverage Gap (Lazy JIT + AOT)
+
+Context
+
+The standard RISC-V test ELFs (rv64ui, rv64um, rv64ua, rv64uc) are run through three
+ modes, but there's a gap:
+
+┌──────────────────────────────┬───────────────────┬───────────────────────────────┐
+│          Test group          │      Runner       │             Mode              │
+├──────────────────────────────┼───────────────────┼───────────────────────────────┤
+│ TestRISCVTests_UI etc.       │ RunWithOS         │ Interpreter                   │
+├──────────────────────────────┼───────────────────┼───────────────────────────────┤
+│ TestRISCVTests_UI_JIT etc.   │ runJITWithOS →    │ AOT (auto-installed by        │
+│                              │ RunJIT            │ RunJIT:715)                   │
+├──────────────────────────────┼───────────────────┼───────────────────────────────┤
+│ TestRISCVTests_Lockstep_UI   │ StepBlock loop    │ Lazy JIT (per-block, no       │
+│ etc.                         │                   │ RunJIT dispatch)              │
+└──────────────────────────────┴───────────────────┴───────────────────────────────┘
+
+Missing: Lazy JIT via RunJIT (DisableAutoAOT=true). This exercises the full RunJIT
+dispatch loop with lazy compilation — the 2-slot JALR IC, lazy block cache, and
+interpreter fallback. The lockstep tests use StepBlock (single-step), not RunJIT.
+
+Changes
+
+1. Add runRISCVTestJITLazy helper (riscv_test.go)
+
+Clone runRISCVTestJIT but set DisableAutoAOT=true:
+
+func runRISCVTestJITLazy(t *testing.T, elfPath string) {
+    // Same as runRISCVTestJIT but:
+    jit := NewJIT()
+    jit.DisableAutoAOT = true
+    // ... install OS, RunJIT, check exit code ...
+}
+
+2. Add TestRISCVTests_*_JIT_Lazy test functions (riscv_test.go)
+
+For each active instruction category (UI, UM, UA, UC):
+
+func TestRISCVTests_UI_JIT_Lazy(t *testing.T) { ... runRISCVTestJITLazy ... }
+func TestRISCVTests_UM_JIT_Lazy(t *testing.T) { ... }
+func TestRISCVTests_UA_JIT_Lazy(t *testing.T) { ... }
+func TestRISCVTests_UC_JIT_Lazy(t *testing.T) { ... }
+
+UF and UD remain skipped (fflags issue, same as existing _JIT tests).
+
+3. Rename existing _JIT tests for clarity (optional)
+
+The existing _JIT tests are actually AOT. Renaming to _JIT_AOT makes the coverage
+matrix self-documenting. This is optional — the user may prefer to keep the names
+stable.
+
+Coverage Matrix After Changes
+
+┌────────────────┬─────────────┬────────────────┬─────────────┬───────────────────┐
+│      Test      │ Interpreter │   Lazy JIT     │    AOT      │     Lockstep      │
+│                │             │    (RunJIT)    │  (RunJIT)   │    (StepBlock)    │
+├────────────────┼─────────────┼────────────────┼─────────────┼───────────────────┤
+│ UI (integer)   │     yes     │      new       │     yes     │        yes        │
+├────────────────┼─────────────┼────────────────┼─────────────┼───────────────────┤
+│ UM (mul/div)   │     yes     │      new       │     yes     │        yes        │
+├────────────────┼─────────────┼────────────────┼─────────────┼───────────────────┤
+│ UA (atomics)   │     yes     │      new       │     yes     │        yes        │
+├────────────────┼─────────────┼────────────────┼─────────────┼───────────────────┤
+│ UC             │     yes     │      new       │     yes     │        yes        │
+│ (compressed)   │             │                │             │                   │
+├────────────────┼─────────────┼────────────────┼─────────────┼───────────────────┤
+│ UF (float)     │     yes     │      skip      │    skip     │       skip        │
+├────────────────┼─────────────┼────────────────┼─────────────┼───────────────────┤
+│ UD (double)    │     yes     │      skip      │    skip     │       skip        │
+└────────────────┴─────────────┴────────────────┴─────────────┴───────────────────┘
+
+Performance Comparison
+
+The lazy tests will naturally be slower than AOT (every JALR goes through 2-slot IC
+or Go round-trip vs decoder cache). The test log can report timing to quantify the
+gap without a separate benchmark.
+
+Verification
+
+cd ~/ris && go test -v -run 'TestRISCVTests_UI_JIT_Lazy' .
+cd ~/ris && go test -v -run 'TestRISCVTests_U._JIT_Lazy' .
+cd ~/ris && go test -count=1 .  # full suite, no regressions
+
+Critical Files
+
+┌───────────────┬──────────────────────────────────────────────────────────┐
+│     File      │                          Change                          │
+├───────────────┼──────────────────────────────────────────────────────────┤
+│ riscv_test.go │ Add runRISCVTestJITLazy + 4 new _JIT_Lazy test functions │
+└───────────────┴──────────────────────────────────────────────────────────┘
+
+# outcome after implementing:
+
+Interesting — lazy JIT is faster, not slower:
+
+┌──────────┬────────────┬──────────────────┬─────────────┐
+│ Category │ AOT (_JIT) │ Lazy (_JIT_Lazy) │    Ratio    │
+├──────────┼────────────┼──────────────────┼─────────────┤
+│ UI       │      27.6s │             1.5s │  18x faster │
+├──────────┼────────────┼──────────────────┼─────────────┤
+│ UM       │       3.8s │            0.15s │  25x faster │
+├──────────┼────────────┼──────────────────┼─────────────┤
+│ UA       │      28.1s │            0.19s │ 148x faster │
+├──────────┼────────────┼──────────────────┼─────────────┤
+│ UC       │      0.72s │            0.03s │  24x faster │
+└──────────┴────────────┴──────────────────┴─────────────┘
+
+The AOT tests use Size1MB memory, and the AOT compilation overhead (scanning +
+compiling all blocks upfront for each tiny test ELF) dominates. The lazy path only
+compiles blocks as they're reached — much less work for these small test binaries.
+
+All four _JIT_Lazy test suites pass with all subtests green. The coverage gap is
+closed: RISC-V test ELFs now run through interpreter, AOT JIT, lazy JIT (RunJIT), and
+lockstep.
+~~~

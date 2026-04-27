@@ -360,6 +360,105 @@ func TestRISCVTests_UC_JIT(t *testing.T) {
 }
 
 // ══════════════════════════════════════════════════════════════════════════
+// Lazy JIT: run riscv-tests through RunJIT with DisableAutoAOT=true
+// (no decoder cache, exercises 2-slot JALR IC and lazy block compilation)
+// ══════════════════════════════════════════════════════════════════════════
+
+func runRISCVTestJITLazy(t *testing.T, elfPath string) {
+	t.Helper()
+	data, err := os.ReadFile(elfPath)
+	if err != nil {
+		t.Skipf("ELF not found: %s", elfPath)
+		return
+	}
+
+	mem, merr := NewGuestMemory(Size1MB)
+	if merr != nil {
+		t.Fatal(merr)
+	}
+	defer mem.Free()
+
+	elf, lerr := LoadELFBytes(mem, data)
+	if lerr != nil {
+		t.Fatalf("LoadELF: %v", lerr)
+	}
+
+	cpu := NewCPU(*mem)
+	cpu.SetPC(elf.Entry)
+	cpu.SetWatchAddr(elf.TohostAddr)
+
+	o := NewOS()
+	o.HandleSyscall(93, LinuxExit)
+	o.HandleSyscall(94, LinuxExit)
+	o.HandleEcall(RiscvTestsEcall)
+	cpu.Notes.Push(o.Handle)
+	defer cpu.Notes.Pop()
+
+	defer func() {
+		if r := recover(); r != nil {
+			if ex, ok := r.(*ExitError); ok {
+				if ex.Code != 0 {
+					testNum := ex.Code >> 1
+					t.Errorf("Lazy JIT FAILED: test %d (exit code %d)", testNum, ex.Code)
+				}
+				return
+			}
+			panic(r)
+		}
+	}()
+
+	jit := NewJIT()
+	jit.DisableAutoAOT = true
+	if err := jit.RunJIT(cpu); err != nil {
+		t.Fatalf("Lazy JIT run error: %v", err)
+	}
+}
+
+func TestRISCVTests_UI_JIT_Lazy(t *testing.T) {
+	entries, err := filepath.Glob(filepath.Join(rvTestsDir, "rv64ui-p-*"))
+	if err != nil || len(entries) == 0 {
+		t.Skip("rv64ui ELFs not found")
+	}
+	for _, path := range entries {
+		name := strings.TrimPrefix(filepath.Base(path), "rv64ui-p-")
+		t.Run(name, func(t *testing.T) { runRISCVTestJITLazy(t, path) })
+	}
+}
+
+func TestRISCVTests_UM_JIT_Lazy(t *testing.T) {
+	entries, err := filepath.Glob(filepath.Join(rvTestsDir, "rv64um-p-*"))
+	if err != nil || len(entries) == 0 {
+		t.Skip("rv64um ELFs not found")
+	}
+	for _, path := range entries {
+		name := strings.TrimPrefix(filepath.Base(path), "rv64um-p-")
+		t.Run(name, func(t *testing.T) { runRISCVTestJITLazy(t, path) })
+	}
+}
+
+func TestRISCVTests_UA_JIT_Lazy(t *testing.T) {
+	entries, err := filepath.Glob(filepath.Join(rvTestsDir, "rv64ua-p-*"))
+	if err != nil || len(entries) == 0 {
+		t.Skip("rv64ua ELFs not found")
+	}
+	for _, path := range entries {
+		name := strings.TrimPrefix(filepath.Base(path), "rv64ua-p-")
+		t.Run(name, func(t *testing.T) { runRISCVTestJITLazy(t, path) })
+	}
+}
+
+func TestRISCVTests_UC_JIT_Lazy(t *testing.T) {
+	entries, err := filepath.Glob(filepath.Join(rvTestsDir, "rv64uc-p-*"))
+	if err != nil || len(entries) == 0 {
+		t.Skip("rv64uc ELFs not found")
+	}
+	for _, path := range entries {
+		name := strings.TrimPrefix(filepath.Base(path), "rv64uc-p-")
+		t.Run(name, func(t *testing.T) { runRISCVTestJITLazy(t, path) })
+	}
+}
+
+// ══════════════════════════════════════════════════════════════════════════
 // LOCKSTEP: per-block JIT vs interpreter with full register + memory compare
 // ══════════════════════════════════════════════════════════════════════════
 
