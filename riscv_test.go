@@ -1,5 +1,9 @@
 package riscv
 
+import (
+	"time"
+)
+
 // riscvtests_test.go — runs the official riscv-tests ELF binaries.
 //
 // The riscv-tests suite uses the following ECALL convention (machine-mode):
@@ -360,12 +364,22 @@ func TestRISCVTests_UC_JIT(t *testing.T) {
 // LOCKSTEP: per-block JIT vs interpreter with full register + memory compare
 // ══════════════════════════════════════════════════════════════════════════
 
-const lockstepMemSize = Size64MB
+//const lockstepMemSize = Size64MB
 
-//const lockstepMemSize = Size32KB
+// const lockstepMemSize = Size32KB // mismatching, probably aliasing
+// const lockstepMemSize = Size64KB // way faster than 64MB but aliasing
+// const lockstepMemSize = Size128KB // beq, sw, sb, sd, sh, ... fail.
+// const lockstepMemSize = Size256KB // ditto
+// const lockstepMemSize = Size512KB // ditto
+// const lockstepMemSize = Size1MB // ditto. why is beq failing??
+const lockstepMemSize = Size64MB
 
 func runLockstep(t *testing.T, elfPath string) {
 	//t.Helper()
+	t0 := time.Now()
+	defer func() {
+		vv("runLockstep: elfPath '%v' took %v", elfPath, time.Since(t0))
+	}()
 	saved := CheckSandboxBounds
 	CheckSandboxBounds = true
 	defer func() { CheckSandboxBounds = saved }()
@@ -407,7 +421,10 @@ func runLockstep(t *testing.T, elfPath string) {
 
 	jit := NewJIT()
 	jit.DebugOneBlockLockstepMode = true
-	jit.LockstepModeBudget = 65536
+	//jit.LockstepModeBudget = 1_000_065_536 // "add" takes: 38.3 sec
+	//jit.LockstepModeBudget = 65_536 // "add" takes: 32.69 sec
+	//jit.LockstepModeBudget = 536 // "add" takes: 30.35 sec
+	jit.LockstepModeBudget = 50 // "add" takes: 29.7 sec
 	maxCycles := uint64(10_000_000)
 	blockNum := 0
 
