@@ -423,7 +423,11 @@ func runLockstep(t *testing.T, elfPath string) {
 
 	jit := NewJIT()
 	jit.DebugOneBlockLockstepMode = true
-	jit.LockstepModeBudget = 2
+	//jit.LockstepModeBudget = 2 // 10.14s / 32KB, all Lockstep 132s darwin
+	jit.LockstepModeBudget = 20000 // 10.14s / 32KB, all Lockstep 15.5s. All: 133s
+	//jit.LockstepModeBudget = 2000 // 10.4s / 32KB
+	//jit.LockstepModeBudget = 200 // 11.0s
+	//jit.LockstepModeBudget = 100 // 12.3s
 	//jit.LockstepModeBudget = 1 // single-step: exact per-instruction comparison
 	//jit.LockstepModeBudget = 1_000_065_536 // "add" takes: 38.3 sec
 	//jit.LockstepModeBudget = 1 << 6 // "add" takes: 32.69 sec. sw red. beq red.
@@ -446,14 +450,14 @@ func runLockstep(t *testing.T, elfPath string) {
 				blockNum, jitCPU.pc, interpCPU.pc)
 		}
 
-		vv("just before jit.StepBlock(jitCPU) in runLockstep: elfPath '%v'; jitPC = 0x%x and interpCPU.pc = 0x%x ; jitCPU = '%#v'", elfPath, jitCPU.pc, interpCPU.pc, jitCPU)
+		//vv("just before jit.StepBlock(jitCPU) in runLockstep: elfPath '%v'; jitPC = 0x%x and interpCPU.pc = 0x%x ; jitCPU = '%#v'", elfPath, jitCPU.pc, interpCPU.pc, jitCPU)
 
 		// JIT: one dispatch cycle
 		jitIC, jitErr := jit.StepBlock(jitCPU)
 
 		targetPC := jitCPU.pc
 
-		vv("just before interp in runLockstep: elfPath '%v'; we just did jit.StepBlock() and now targetPC = 0x%x", elfPath, targetPC)
+		//vv("just before interp in runLockstep: elfPath '%v'; we just did jit.StepBlock() and now targetPC = 0x%x", elfPath, targetPC)
 
 		// Interpreter: run IC steps (approximate), then catch up to exact PC.
 		var interpErr error
@@ -471,7 +475,7 @@ func runLockstep(t *testing.T, elfPath string) {
 		}
 
 		//if nStops%5000 == 0 { // saw 300
-		vv("runLockstep: elfPath '%v'; nStops = %v; we just ran: jitCPU.pc = 0x%x", elfPath, nStops, jitCPU.pc)
+		//vv("runLockstep: elfPath '%v'; nStops = %v; we just ran: jitCPU.pc = 0x%x", elfPath, nStops, jitCPU.pc)
 		//}
 		nStops++
 
