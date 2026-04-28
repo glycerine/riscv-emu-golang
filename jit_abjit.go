@@ -63,10 +63,9 @@ func abjitDispatch(
 
 	res := jitcall.Result{
 		PC:        s.PC,
-		IC:        s.IC,
+		ICdelta:   s.IC,
 		Status:    s.Status,
 		FaultAddr: s.FaultAddr,
-		Cycles:    s.Cycles,
 	}
 
 	//vv("back from abjit.CallJIT, the call to the assembly trampoline. res = '%v'", &res)

@@ -7,15 +7,13 @@ import (
 )
 
 // Result is the return value from a JIT-compiled block.
-// The first four fields are written by assembly trampolines at fixed
-// offsets — do not reorder them. IC is populated by Go dispatch code
-// (abjitDispatch), not by assembly.
+// The first three fields are written by assembly trampolines at fixed
+// offsets — do not reorder them.
 type Result struct {
 	PC        uint64 // next PC to execute
 	Status    uint64 // 0=ok, 1=ecall, 2=ebreak, 3=load_fault, 4=store_fault, 5=illegal
 	FaultAddr uint64 // guest address that faulted (when Status >= 3)
-	Cycles    uint64 // Reserved for future instruction count (currently zero)
-	IC        uint64 // instruction count (from State.IC, lockstep mode only)
+	ICdelta   uint64 // Instruction Counter delta (R15): guest instructions begun during this dispatch
 }
 
 func statusToString(status uint64) string {
@@ -46,9 +44,8 @@ func (r *Result) String() string {
               PC: 0x%x
           Status: %v
        FaultAddr: 0x%x
-          Cycles: %v
-              IC: %v
-}`, r.PC, statusToString(r.Status), r.FaultAddr, r.Cycles, r.IC)
+         ICdelta: %v
+}`, r.PC, statusToString(r.Status), r.FaultAddr, r.ICdelta)
 }
 
 // Call invokes a JIT-compiled block via direct function pointer.

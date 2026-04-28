@@ -7,8 +7,7 @@ typedef struct {
 	uint64_t pc;
 	uint64_t status;
 	uint64_t fault_addr;
-	uint64_t cycles;
-	uint64_t ic;
+	uint64_t ic; /* R15 IC delta for this dispatch */
 } JitResult;
 
 JitResult jit_sandbox_call(

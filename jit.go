@@ -586,7 +586,7 @@ func (j *JIT) StepBlock(cpu *CPU) (ic uint64, err error) {
 			res = sandboxRv8Call(blk.fn, cpu,
 				cpu.mem.RegFileBase(), cpu.mem.StackTop(),
 				0, 0, 0, 0)
-			cpu.riscvInstrBegun += res.IC
+			cpu.riscvInstrBegun += res.ICdelta
 		}
 		if j.trace {
 			fmt.Fprintf(os.Stderr, "JIT pc=0x%x -> PC=0x%x status=%d\n",
@@ -773,7 +773,7 @@ func (j *JIT) RunJIT(cpu *CPU) (err0 error) {
 					res = sandboxRv8Call(blk.fn, cpu, regFile, stackTop,
 						0, 0, 0, 0)
 				}
-				cpu.riscvInstrBegun += res.IC
+				cpu.riscvInstrBegun += res.ICdelta
 			}
 			cpu.pc = res.PC
 
