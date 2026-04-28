@@ -36,7 +36,7 @@ func abjitDispatch(
 	s.DCMask = dcMask
 	s.VAddrBegin = vBegin
 	s.SegSize = segSize
-	s.IC = 0
+	s.IC = cpu.cycle
 
 	//vv("about to call abjit.CallJIT, the assembly trampoline")
 

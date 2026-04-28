@@ -592,12 +592,7 @@ func (j *JIT) StepBlock(cpu *CPU) (ic uint64, err error) {
 				pc, res.PC, res.Status)
 		}
 		cpu.pc = res.PC
-
-		ic := res.IC
-		if ic == 0 {
-			ic = uint64(blk.numInsns)
-		}
-		cpu.cycle += ic
+		cpu.cycle = res.IC
 		//if j.DebugOneBlockLockstepMode {
 		//	vv("StepBlock: pc=0x%x -> PC=0x%x status=%d res.IC=%d blk.numInsns=%d ic=%d", pc, res.PC, res.Status, res.IC, blk.numInsns, ic)
 		//}
@@ -784,11 +779,7 @@ func (j *JIT) RunJIT(cpu *CPU) (err0 error) {
 				}
 			}
 			cpu.pc = res.PC
-			runIC := res.IC
-			if runIC == 0 {
-				runIC = uint64(blk.numInsns)
-			}
-			cpu.cycle += runIC
+			cpu.cycle = res.IC
 
 			switch int(res.Status) {
 			case jitOK:

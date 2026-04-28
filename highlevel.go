@@ -184,6 +184,9 @@ func (e *Emitter) MemBudget(delta int, budget int64, overflowLabel Label) {
 // ZeroIC emits XOR R15, R15 to zero the IC register at block entry.
 func (e *Emitter) ZeroIC() { e.emit(IRInstr{Op: IRZeroIC}) }
 
+// LoadIC emits MOV R15, [RBP+IC_offset] to restore the cumulative IC.
+func (e *Emitter) LoadIC() { e.emit(IRInstr{Op: IRLoadIC}) }
+
 // IncIC emits INC R15 to count one RISC-V instruction.
 func (e *Emitter) IncIC() { e.emit(IRInstr{Op: IRIncIC}) }
 

@@ -18,6 +18,7 @@ func benchAotJITELF(b *testing.B, elfData []byte) {
 	b.ReportAllocs()
 	b.StopTimer()
 
+	totalInsns := uint64(0)
 	for i := 0; i < b.N; i++ {
 		cpu, mem := newBenchCPU(b, elfData)
 		jit := riscv.NewJIT()
@@ -26,9 +27,15 @@ func benchAotJITELF(b *testing.B, elfData []byte) {
 			b.Fatalf("InstallAOT: %v", err)
 		}
 		b.StartTimer()
-		runJITBenchGuestWith(cpu, jit)
+		_, insns := runJITBenchGuestWith(cpu, jit)
 		b.StopTimer()
+		totalInsns += insns
 		mem.Free()
+	}
+
+	elapsed := b.Elapsed().Seconds()
+	if elapsed > 0 && totalInsns > 0 {
+		b.ReportMetric(float64(totalInsns)/elapsed/1e6, "MIPS")
 	}
 }
 
@@ -51,14 +58,21 @@ func benchLazyJITELF(b *testing.B, elfData []byte) {
 	b.ReportAllocs()
 	b.StopTimer()
 
+	totalInsns := uint64(0)
 	for i := 0; i < b.N; i++ {
 		cpu, mem := newBenchCPU(b, elfData)
 		jit := riscv.NewJIT()
 		jit.DisableAutoAOT = true
 		b.StartTimer()
-		runJITBenchGuestWith(cpu, jit)
+		_, insns := runJITBenchGuestWith(cpu, jit)
 		b.StopTimer()
+		totalInsns += insns
 		mem.Free()
+	}
+
+	elapsed := b.Elapsed().Seconds()
+	if elapsed > 0 && totalInsns > 0 {
+		b.ReportMetric(float64(totalInsns)/elapsed/1e6, "MIPS")
 	}
 }
 

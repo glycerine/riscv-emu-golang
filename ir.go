@@ -263,8 +263,9 @@ const (
 	// Modifies only EFLAGS — no GP registers touched.
 	IRMemBudget
 
-	// Per-instruction lockstep IC ops (R15 dedicated).
-	IRZeroIC     // XOR R15, R15 — emitted at block entry
+	// Per-instruction IC ops (R15 dedicated).
+	IRZeroIC     // XOR R15, R15 — emitted at block entry (lockstep only)
+	IRLoadIC     // MOV R15, [RBP+IC_offset] — restore cumulative IC at block entry
 	IRIncIC      // INC R15 — emitted before each RISC-V instruction
 	IRDecIC      // DEC R15 — undo IncIC for non-emitted terminators
 	IRSpillIC    // MOV [RBP+IC_offset], R15 — emitted at every exit
@@ -362,6 +363,7 @@ var irOpNames = [...]string{
 	IRMemAdd:      "mem_add",
 	IRMemBudget:   "mem_budget",
 	IRZeroIC:      "zero_ic",
+	IRLoadIC:      "load_ic",
 	IRIncIC:       "inc_ic",
 	IRDecIC:       "dec_ic",
 	IRSpillIC:     "spill_ic",
@@ -435,6 +437,8 @@ func (ins IRInstr) String() string {
 			ins.Op, ins.Imm, ins.Imm2, ins.Dst)
 	case IRZeroIC:
 		return "zero_ic"
+	case IRLoadIC:
+		return "load_ic"
 	case IRIncIC:
 		return "inc_ic"
 	case IRDecIC:

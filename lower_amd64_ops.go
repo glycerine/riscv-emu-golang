@@ -1533,6 +1533,8 @@ func (lc *lowerOps) lowerInstrCommon(ins *IRInstr) (bool, error) {
 
 	case IRZeroIC:
 		lc.opsZeroIC()
+	case IRLoadIC:
+		lc.opsLoadIC()
 	case IRIncIC:
 		lc.opsIncIC()
 	case IRDecIC:
@@ -1627,6 +1629,17 @@ func (lc *lowerOps) opsZeroIC() {
 	p.As = x86.AXORQ
 	p.From.Type = obj.TYPE_REG
 	p.From.Reg = goasm.REG_AMD64_R15
+	p.To.Type = obj.TYPE_REG
+	p.To.Reg = goasm.REG_AMD64_R15
+	lc.c.Append(p)
+}
+
+func (lc *lowerOps) opsLoadIC() {
+	p := lc.c.NewProg()
+	p.As = x86.AMOVQ
+	p.From.Type = obj.TYPE_MEM
+	p.From.Reg = goasm.REG_AMD64_BP
+	p.From.Offset = abjitStateICOffset
 	p.To.Type = obj.TYPE_REG
 	p.To.Reg = goasm.REG_AMD64_R15
 	lc.c.Append(p)
