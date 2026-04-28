@@ -1,9 +1,8 @@
-package bench
+package riscv
 
 import (
 	"fmt"
 	"riscv"
-	"riscv/ir"
 	"testing"
 	"time"
 )
