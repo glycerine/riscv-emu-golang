@@ -90,6 +90,7 @@ type emitter struct {
 	pcLabels         u64labelmap
 	stopperAddr      int64  // InfiniteLoopStopperPage address for backward-branch probes
 	watchAddr        uint64 // tohost address; stores here trigger a block exit
+	useICR15         bool
 	lockstepMode     bool
 	lockstepBudget   int64
 	budgetExits      []budgetExit
@@ -299,13 +300,14 @@ func (e *emitter) emitLabel() {
 }
 
 func (e *emitter) emitBudgetCheck() {
-	if !e.lockstepMode {
-		return
+	if e.useICR15 {
+		e.irEm.IncIC()
 	}
-	coldLabel := e.irEm.NewLabel()
-	e.irEm.RegBudget(e.lockstepBudget, coldLabel)
-	e.irEm.IncIC()
-	e.budgetExits = append(e.budgetExits, budgetExit{coldLabel, e.pc})
+	if e.lockstepMode {
+		coldLabel := e.irEm.NewLabel()
+		e.irEm.RegBudget(e.lockstepBudget, coldLabel)
+		e.budgetExits = append(e.budgetExits, budgetExit{coldLabel, e.pc})
+	}
 }
 
 // peek32 fetches the 32-bit instruction at the given PC without
@@ -364,7 +366,7 @@ func (e *emitter) advancePC(size uint64) {
 }
 
 func (e *emitter) spillIC() {
-	if e.lockstepMode {
+	if e.useICR15 {
 		e.irEm.SpillIC()
 	}
 }
@@ -999,13 +1001,16 @@ func (j *JIT) emitBlockRange(mem *GuestMemory, pc, endPC uint64) *emitResult {
 		pcLabels:       newU64labelmap(),
 		stopperAddr:    int64(j.stopperPage),
 		watchAddr:      j.watchAddr,
+		useICR15:       j.UseR15InstructionCounter || j.DebugOneBlockLockstepMode,
 		lockstepMode:   j.DebugOneBlockLockstepMode,
 		lockstepBudget: j.LockstepModeBudget,
 	}
 
+	if e.useICR15 {
+		e.irEm.ZeroIC()
+	}
 	if e.lockstepMode {
 		e.sharedBudgetExit = e.irEm.NewLabel()
-		e.irEm.ZeroIC()
 	}
 
 	// Emit IR (populates regsUsed via xreg/xregDst calls).
@@ -1145,7 +1150,7 @@ func (e *emitter) emit32(insn uint32) {
 					// AUIPC+ADDI → la (load address): single Const.
 					e.irEm.Const(e.xregDst(rd), addr+nextImm)
 					e.advancePC(4)
-					if e.lockstepMode {
+					if e.useICR15 {
 						e.irEm.IncIC()
 					}
 					e.advancePC(4)
@@ -1156,7 +1161,7 @@ func (e *emitter) emit32(insn uint32) {
 					target := addr + nextImm
 					e.irEm.Const(e.xregDst(rd), int64(e.pc)+4)
 					e.advancePC(4)
-					if e.lockstepMode {
+					if e.useICR15 {
 						e.irEm.IncIC()
 					}
 					e.emitJALR(nextRd, rd, target-int64(e.pc), 4)
@@ -1165,7 +1170,7 @@ func (e *emitter) emit32(insn uint32) {
 				case nextOp == 0x03 && nextRs1 == rd && nextRd == rd:
 					// AUIPC+LOAD → load from absolute guest address.
 					e.advancePC(4)
-					if e.lockstepMode {
+					if e.useICR15 {
 						e.irEm.IncIC()
 					}
 					e.advancePC(4)
@@ -1186,7 +1191,7 @@ func (e *emitter) emit32(insn uint32) {
 						nextRs2 := (next >> 20) & 0x1F
 						e.irEm.Const(e.xregDst(rd), addr)
 						e.advancePC(4)
-						if e.lockstepMode {
+						if e.useICR15 {
 							e.irEm.IncIC()
 						}
 						e.emitStore(rd, nextRs2, storeImm, nextFunct3)
@@ -1320,7 +1325,7 @@ func (e *emitter) emit32(insn uint32) {
 		e.terminated = true
 	}
 
-	if e.terminated && e.numInsns == savedNumInsns && e.lockstepMode {
+	if e.terminated && e.numInsns == savedNumInsns && e.useICR15 {
 		e.irEm.DecIC()
 	}
 }
@@ -1362,7 +1367,7 @@ func (e *emitter) emitOpImm(rd, rs1 uint32, imm int64, funct3, funct7 uint32) {
 					if nOp == 0x13 && nF3 == 5 && nF6 == 0 && nShamt == 32 && nRd == rd && nRs1 == rd {
 						e.irEm.Zext(e.xregDst(rd), e.xreg(rs1), I32)
 						e.advancePC(4)
-						if e.lockstepMode {
+						if e.useICR15 {
 							e.irEm.IncIC()
 						}
 						e.advancePC(4)
@@ -1505,7 +1510,7 @@ func (e *emitter) emitOpImm32(rd, rs1 uint32, imm int64, funct3, funct7 uint32) 
 						e.irEm.Zext(dst, t, I32)
 					}
 					e.advancePC(4) // consumed SLLI
-					if e.lockstepMode {
+					if e.useICR15 {
 						e.irEm.IncIC()
 					}
 					e.advancePC(4) // consumed SRLI
@@ -2808,7 +2813,7 @@ func (e *emitter) emitRVC(insn uint16) {
 		e.advancePC(2)
 	}
 
-	if e.terminated && e.numInsns == savedNumInsns && e.lockstepMode {
+	if e.terminated && e.numInsns == savedNumInsns && e.useICR15 {
 		e.irEm.DecIC()
 	}
 }

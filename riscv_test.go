@@ -459,6 +459,87 @@ func TestRISCVTests_UC_JIT_Lazy(t *testing.T) {
 }
 
 // ══════════════════════════════════════════════════════════════════════════
+// R15 IC accuracy: JIT instruction count must match interpreter
+// ══════════════════════════════════════════════════════════════════════════
+
+func TestR15IC_MatchesInterpreter(t *testing.T) {
+	elfPath := filepath.Join(rvTestsDir, "rv64ui-p-add")
+	data, err := os.ReadFile(elfPath)
+	if err != nil {
+		t.Skip("rv64ui-p-add not found")
+	}
+
+	// Interpreter run
+	interpMem, err := NewGuestMemory(Size1MB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer interpMem.Free()
+	interpElf, err := LoadELFBytes(interpMem, data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	interpCPU := NewCPU(*interpMem)
+	interpCPU.SetPC(interpElf.Entry)
+	interpCPU.SetWatchAddr(interpElf.TohostAddr)
+	interpCode, interpErr := RunWithOS(interpCPU)
+	if interpErr != nil {
+		t.Fatalf("interpreter: %v", interpErr)
+	}
+	if interpCode != 0 {
+		t.Fatalf("interpreter failed: exit %d", interpCode)
+	}
+	interpIC := interpCPU.Cycle()
+
+	// JIT run (lazy, R15 IC enabled)
+	jitMem, err := NewGuestMemory(Size1MB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer jitMem.Free()
+	jitElf, err := LoadELFBytes(jitMem, data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jitCPU := NewCPU(*jitMem)
+	jitCPU.SetPC(jitElf.Entry)
+	jitCPU.SetWatchAddr(jitElf.TohostAddr)
+
+	o := NewOS()
+	o.HandleSyscall(93, LinuxExit)
+	o.HandleSyscall(94, LinuxExit)
+	o.HandleEcall(RiscvTestsEcall)
+	jitCPU.Notes.Push(o.Handle)
+
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				if _, ok := r.(*ExitError); !ok {
+					panic(r)
+				}
+			}
+		}()
+		jit := NewJIT()
+		jit.DisableAutoAOT = true
+		_ = jit.RunJIT(jitCPU)
+	}()
+	jitIC := jitCPU.Cycle()
+
+	t.Logf("interpreter IC=%d, JIT R15 IC=%d", interpIC, jitIC)
+	if interpIC == 0 {
+		t.Fatal("interpreter IC is 0")
+	}
+	if jitIC == 0 {
+		t.Fatal("JIT IC is 0 — R15 counting not working")
+	}
+	if interpIC != jitIC {
+		diff := int64(jitIC) - int64(interpIC)
+		pct := float64(diff) / float64(interpIC) * 100
+		t.Errorf("IC mismatch: interp=%d jit=%d diff=%d (%.1f%%)", interpIC, jitIC, diff, pct)
+	}
+}
+
+// ══════════════════════════════════════════════════════════════════════════
 // LOCKSTEP: per-block JIT vs interpreter with full register + memory compare
 // ══════════════════════════════════════════════════════════════════════════
 

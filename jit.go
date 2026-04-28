@@ -241,7 +241,8 @@ type JIT struct {
 	stopperPage uintptr // InfiniteLoopStopperPage: mmap'd guard page for preemption
 	watchAddr   uint64  // tohost address; JIT blocks exit when a store hits this address
 
-	DebugOneBlockLockstepMode bool  // emit budget checks at back-edges
+	UseR15InstructionCounter  bool  // INC R15 per guest instruction for precise IC
+	DebugOneBlockLockstepMode bool  // emit budget checks at back-edges (implies UseR15InstructionCounter)
 	LockstepModeBudget        int64 // max IC before forced exit (default 65536)
 
 	// Dispatch counters (for diagnostics).
@@ -260,9 +261,10 @@ type JIT struct {
 // allocation policy is PolicyABJIT (compare PolicyRV8); see lower_amd64.go
 func NewJIT() *JIT {
 	j := &JIT{
-		noJIT:              make(map[uint64]bool),
-		irAlloc:            NewFixedStaticAllocator(),
-		LockstepModeBudget: 65536,
+		noJIT:                   make(map[uint64]bool),
+		irAlloc:                 NewFixedStaticAllocator(),
+		UseR15InstructionCounter: true,
+		LockstepModeBudget:      65536,
 	}
 	j.SetRegPolicy(PolicyABJIT)
 	if err := j.initStopperPage(); err != nil {
@@ -782,7 +784,11 @@ func (j *JIT) RunJIT(cpu *CPU) (err0 error) {
 				}
 			}
 			cpu.pc = res.PC
-			cpu.cycle += uint64(blk.numInsns)
+			runIC := res.IC
+			if runIC == 0 {
+				runIC = uint64(blk.numInsns)
+			}
+			cpu.cycle += runIC
 
 			switch int(res.Status) {
 			case jitOK:
