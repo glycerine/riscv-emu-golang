@@ -54,6 +54,9 @@ func (j *JIT) jitCompileAOTSegment(
 		}
 		pool := j.regPolicy.Pool(res.block)
 		pinned := j.regPolicy.Pinned()
+		if j.UseR15InstructionCounter || j.DebugOneBlockLockstepMode {
+			pool.IntRegs = removeReg(pool.IntRegs, goasm.REG_AMD64_R15)
+		}
 		alloc := j.irAlloc.Allocate(res.block, pool, pinned, nil)
 
 		ctx := goasm.New(goasm.AMD64)
@@ -140,6 +143,8 @@ func (j *JIT) jitCompileAOTSegment(
 
 		// JALR IC sentinel init — same offset convention.
 		aotBackpatchJalrICs(execMem, blockBase, bc.baseOffset, bc.lowerResult, bc.blk)
+
+		aotBackpatchGocallResumes(execMem, blockBase, bc.baseOffset, bc.lowerResult)
 
 		blocks[bc.startPC] = bc.blk
 	}
@@ -281,5 +286,13 @@ func aotBackpatchJalrICs(
 			binary.LittleEndian.PutUint64(execMem[baseOffset+fnOff:], uint64(stubAddr))
 		}
 		blk.jalrICs = append(blk.jalrICs, info)
+	}
+}
+
+func aotBackpatchGocallResumes(execMem []byte, blockBase uintptr, baseOffset int, lr *LowerResult) {
+	for _, gr := range lr.GocallResumes {
+		patchOff := int(gr.AddrMov.Pc) + 2
+		resumeAddr := blockBase + uintptr(gr.ResumeProg.Pc)
+		binary.LittleEndian.PutUint64(execMem[baseOffset+patchOff:], uint64(resumeAddr))
 	}
 }
