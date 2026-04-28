@@ -26,13 +26,13 @@ UseR15InstructionCounter bool // INC R15 per guest instruction for precise IC
 
 **`NewJIT()` (~line 265)**: Default to `true` so all new JITs get precise IC.
 
-**Implication**: `DebugOneBlockLockstepMode = true` implies `UseR15InstructionCounter = true` (lockstep needs IC). No need to check both in the emitter — just derive a single `useIC` bool.
+**Implication**: `DebugOneBlockLockstepMode = true` implies `UseR15InstructionCounter = true` (lockstep needs IC). No need to check both in the emitter — just derive a single `useICR15` bool.
 
 ### 2. `jit_emit_ir.go` — Decouple IncIC from budget checks
 
 **emitter struct (~line 93)**: Add field:
 ```go
-useIC bool // emit INC R15 per instruction (no budget checks unless lockstepMode)
+useICR15 bool // emit INC R15 per instruction (no budget checks unless lockstepMode)
 ```
 
 **emitter initialization (~line 1002)**: Set from JIT flags:
@@ -49,7 +49,7 @@ if e.lockstepMode {
 ```
 To:
 ```go
-if e.useIC {
+if e.useICR15 {
     e.irEm.ZeroIC()  // XOR R15, R15
 }
 if e.lockstepMode {
@@ -60,7 +60,7 @@ if e.lockstepMode {
 **`emitBudgetCheck()` (~line 302-309)**: Currently emits RegBudget + IncIC. Split:
 ```go
 func (e *emitter) emitBudgetCheck() {
-    if e.useIC {
+    if e.useICR15 {
         e.irEm.IncIC()  // INC R15 — always when IC enabled
     }
     if e.lockstepMode {
@@ -73,15 +73,15 @@ func (e *emitter) emitBudgetCheck() {
 **`spillIC()` (~line 367-370)**: Change guard:
 ```go
 func (e *emitter) spillIC() {
-    if e.useIC {
+    if e.useICR15 {
         e.irEm.SpillIC()  // MOV [RBP+600], R15
     }
 }
 ```
 
-**Fused instruction IncIC calls (~lines 1148-1191)**: These emit extra `IncIC()` for fused pairs (AUIPC+ADDI etc.). Guard changes from `e.lockstepMode` to `e.useIC`.
+**Fused instruction IncIC calls (~lines 1148-1191)**: These emit extra `IncIC()` for fused pairs (AUIPC+ADDI etc.). Guard changes from `e.lockstepMode` to `e.useICR15`.
 
-**DecIC guard (~lines 1323-1325, 2811-2813)**: Change from `e.lockstepMode` to `e.useIC`.
+**DecIC guard (~lines 1323-1325, 2811-2813)**: Change from `e.lockstepMode` to `e.useICR15`.
 
 **Budget exit finalization (~lines 773-783)**: The `sharedBudgetExit` / `RetBudget` code stays guarded by `e.lockstepMode` only — no change needed (budget exits are lockstep-only).
 
@@ -132,6 +132,17 @@ cpu.cycle += ic
 - **`highlevel.go`**: `IncIC()`, `SpillIC()`, `ZeroIC()` already exist
 - **`ir.go`**: IR opcodes already defined
 
+### 6. New test: `TestR15IC_MatchesInterpreter` (riscv_test.go)
+
+Runs a representative RISC-V test ELF (e.g., rv64ui-p-add) through both paths and compares final cycle counts:
+
+- **Interpreter path**: `RunWithOS(cpu)` → `cpu.Cycle()` gives exact instruction count
+- **JIT path**: `UseR15InstructionCounter=true`, `DisableAutoAOT=true` (lazy JIT via RunJIT) → `cpu.Cycle()` gives R15-based IC
+
+Assert the two cycle counts are equal (or within a small tolerance for interpreter-fallback instructions like CSRs where the JIT doesn't emit IncIC but the interpreter does `cpu.cycle++`).
+
+This catches regressions where IncIC emission is accidentally skipped for some instruction class.
+
 ## Verification
 
 ```bash
@@ -154,10 +165,10 @@ cd ~/ris && make quad
 |------|--------|
 | `jit.go:244` | Add `UseR15InstructionCounter bool`, default true in NewJIT |
 | `jit.go:785` | Use `res.IC` instead of `blk.numInsns` in RunJIT |
-| `jit_emit_ir.go:93` | Add `useIC bool` to emitter |
+| `jit_emit_ir.go:93` | Add `useICR15 bool` to emitter |
 | `jit_emit_ir.go:302` | Split emitBudgetCheck: IncIC always, RegBudget only in lockstep |
-| `jit_emit_ir.go:367` | spillIC guard: `useIC` instead of `lockstepMode` |
-| `jit_emit_ir.go:1006` | ZeroIC guard: `useIC` instead of `lockstepMode` |
-| `jit_emit_ir.go:1148+` | Fused IncIC guard: `useIC` instead of `lockstepMode` |
-| `jit_emit_ir.go:1323+` | DecIC guard: `useIC` instead of `lockstepMode` |
+| `jit_emit_ir.go:367` | spillIC guard: `useICR15` instead of `lockstepMode` |
+| `jit_emit_ir.go:1006` | ZeroIC guard: `useICR15` instead of `lockstepMode` |
+| `jit_emit_ir.go:1148+` | Fused IncIC guard: `useICR15` instead of `lockstepMode` |
+| `jit_emit_ir.go:1323+` | DecIC guard: `useICR15` instead of `lockstepMode` |
 | `jit_native.go:35` | R15 pool exclusion: add `UseR15InstructionCounter` check |
