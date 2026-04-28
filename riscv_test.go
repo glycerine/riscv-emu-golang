@@ -255,14 +255,14 @@ func TestRISCVTests_UC(t *testing.T) {
 // ══════════════════════════════════════════════════════════════════════════
 
 func runRISCVTestJIT(t *testing.T, elfPath string) {
-	t.Helper()
+	//t.Helper()
 	data, err := os.ReadFile(elfPath)
 	if err != nil {
 		t.Skipf("ELF not found: %s", elfPath)
 		return
 	}
 
-	mem, merr := NewGuestMemory(Size1MB)
+	mem, merr := NewGuestMemory(Size1MB) // runRISCVTestJIT here
 	if merr != nil {
 		t.Fatal(merr)
 	}
@@ -294,7 +294,9 @@ func TestRISCVTests_UI_JIT_AOT(t *testing.T) {
 	}
 	for _, path := range entries {
 		name := strings.TrimPrefix(filepath.Base(path), "rv64ui-p-")
-		t.Run(name, func(t *testing.T) { runRISCVTestJIT(t, path) })
+		t.Run(name, func(t *testing.T) {
+			runRISCVTestJIT(t, path)
+		})
 	}
 }
 
@@ -365,14 +367,14 @@ func TestRISCVTests_UC_JIT_AOT(t *testing.T) {
 // ══════════════════════════════════════════════════════════════════════════
 
 func runRISCVTestJITLazy(t *testing.T, elfPath string) {
-	t.Helper()
+	//t.Helper()
 	data, err := os.ReadFile(elfPath)
 	if err != nil {
 		t.Skipf("ELF not found: %s", elfPath)
 		return
 	}
 
-	mem, merr := NewGuestMemory(Size1MB)
+	mem, merr := NewGuestMemory(Size1MB) // here runRISCVTestJITLazy
 	if merr != nil {
 		t.Fatal(merr)
 	}
@@ -414,7 +416,9 @@ func TestRISCVTests_UI_JIT_Lazy(t *testing.T) {
 	}
 	for _, path := range entries {
 		name := strings.TrimPrefix(filepath.Base(path), "rv64ui-p-")
-		t.Run(name, func(t *testing.T) { runRISCVTestJITLazy(t, path) })
+		t.Run(name, func(t *testing.T) {
+			runRISCVTestJITLazy(t, path)
+		})
 	}
 }
 
@@ -589,6 +593,8 @@ func runLockstep(t *testing.T, elfPath string) {
 	// not optional. the whole point of runLockstep():
 	jit.DebugOneBlockLockstepMode = true
 
+	//jit.DisableAutoAOT = true
+
 	// timings done with maxBlockIRInsns = 2048;
 	// and               PerBlockCapTimeToSplit = 5000
 	//
@@ -610,11 +616,11 @@ func runLockstep(t *testing.T, elfPath string) {
 	//jit.LockstepModeBudget = 100 // beq red with 64KB guestmem
 	//jit.LockstepModeBudget = 536 // "add" takes: 30.35 sec
 	//jit.LockstepModeBudget = 50 // "add" takes: 29.7 sec
-	maxCycles := uint64(10_000_000)
+	maxInstruc := uint64(10_000_000)
 	blockNum := 0
 
 	nStops := 0
-	for jitCPU.RiscvInstrBegun() < maxCycles {
+	for jitCPU.RiscvInstrBegun() < maxInstruc {
 
 		if jitCPU.pc != interpCPU.pc {
 			t.Fatalf("block %d: PC desync BEFORE dispatch: jit=0x%x interp=0x%x",
