@@ -31,7 +31,7 @@ func TestBasicEntryExit(t *testing.T) {
 
 	cb.Exit()
 
-	state := NewState()
+	state := newAbjitState()
 	callJIT(cb.Addr(), state.RegFileBase())
 	t.Log("basic entry/exit OK")
 }
@@ -47,7 +47,7 @@ func TestCallback(t *testing.T) {
 	cb.Callback(funcAddr(nosplitCallback))
 	cb.Exit()
 
-	state := NewState()
+	state := newAbjitState()
 	callJIT(cb.Addr(), state.RegFileBase())
 	if !callbackFlag {
 		t.Fatal("callback was not called")
@@ -67,7 +67,7 @@ func TestStoreNoCallback(t *testing.T) {
 	cb.StoreToRBP(R8, 8)
 	cb.Exit()
 
-	state := NewState()
+	state := newAbjitState()
 	callJIT(cb.Addr(), state.RegFileBase())
 
 	if state.X[0] != 0xAAAAAAAAAAAAAAAA {
@@ -85,7 +85,7 @@ func TestAbsoluteStore(t *testing.T) {
 	}
 	defer cb.Free()
 
-	state := NewState()
+	state := newAbjitState()
 	stateAddr := uint64(state.RegFileBase())
 
 	cb.Movabs(RAX, stateAddr)
@@ -106,7 +106,7 @@ func TestDumpAndVerify(t *testing.T) {
 	}
 	defer cb.Free()
 
-	state := NewState()
+	state := newAbjitState()
 	stateAddr := uint64(state.RegFileBase())
 
 	cb.Movabs(RAX, stateAddr)
@@ -150,7 +150,7 @@ func TestCalleeSaveVerification(t *testing.T) {
 	cb.StoreToRBP(R12, 24)
 	cb.Exit()
 
-	state := NewState()
+	state := newAbjitState()
 	callJIT(cb.Addr(), state.RegFileBase())
 
 	if !callbackFlag {
@@ -178,7 +178,7 @@ func TestGCSafety(t *testing.T) {
 	cb.Callback(funcAddr(gcCallback))
 	cb.Exit()
 
-	state := NewState()
+	state := newAbjitState()
 	callJIT(cb.Addr(), state.RegFileBase())
 	if !callbackFlag {
 		t.Fatal("callback was not called")
@@ -195,7 +195,7 @@ func TestGCSafetyStress(t *testing.T) {
 	cb.Callback(funcAddr(gcCallback))
 	cb.Exit()
 
-	state := NewState()
+	state := newAbjitState()
 	for i := 0; i < 100; i++ {
 		callbackFlag = false
 		callJIT(cb.Addr(), state.RegFileBase())
@@ -220,7 +220,7 @@ func TestRBPValid(t *testing.T) {
 	cb.StoreToRBP(RAX, 0)
 	cb.Exit()
 
-	state := NewState()
+	state := newAbjitState()
 	rfBase := state.RegFileBase()
 	callJIT(cb.Addr(), rfBase)
 
@@ -247,7 +247,7 @@ func TestRBPPreservedAcrossCallback(t *testing.T) {
 
 	cb.Exit()
 
-	state := NewState()
+	state := newAbjitState()
 	rfBase := state.RegFileBase()
 	callJIT(cb.Addr(), rfBase)
 
@@ -302,7 +302,7 @@ func TestLoadFromRBP(t *testing.T) {
 	cb.StoreToRBP(RAX, 0)
 	cb.Exit()
 
-	state := NewState()
+	state := newAbjitState()
 	state.X[5] = 0x42
 	callJIT(cb.Addr(), state.RegFileBase())
 
@@ -324,7 +324,7 @@ func TestAddReg(t *testing.T) {
 	cb.StoreToRBP(RAX, 0)
 	cb.Exit()
 
-	state := NewState()
+	state := newAbjitState()
 	state.X[10] = 100
 	state.X[11] = 200
 	callJIT(cb.Addr(), state.RegFileBase())
@@ -347,7 +347,7 @@ func TestRunAPI(t *testing.T) {
 	cb.StoreToRBP(RAX, 0)
 	cb.Exit()
 
-	state := NewState()
+	state := newAbjitState()
 	state.X[1] = 7
 	state.X[2] = 35
 	Run(cb, state)
@@ -370,7 +370,7 @@ func BenchmarkTrampolineOverhead(b *testing.B) {
 
 	cb.Exit()
 
-	state := NewState()
+	state := newAbjitState()
 	codeAddr := cb.Addr()
 	rfBase := state.RegFileBase()
 
@@ -390,7 +390,7 @@ func BenchmarkCallbackRoundTrip(b *testing.B) {
 	cb.Callback(funcAddr(nosplitCallback))
 	cb.Exit()
 
-	state := NewState()
+	state := newAbjitState()
 	codeAddr := cb.Addr()
 	rfBase := state.RegFileBase()
 

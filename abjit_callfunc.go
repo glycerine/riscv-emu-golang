@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"reflect"
 	"unsafe"
+
+	"riscv/internal/jitcall"
 )
 
 var gocallAddr uintptr
@@ -13,7 +15,7 @@ func init() {
 }
 
 func getCallAddr() uintptr {
-	impl := callJITImplAddr()
+	impl := jitcall.CallAbJITImplAddr()
 	b := unsafe.Slice((*byte)(unsafe.Pointer(impl)), 0x80)
 	pattern := []byte{0x41, 0xFF, 0xD2} // CALL R10
 	offset := bytes.Index(b, pattern)

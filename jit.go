@@ -6,7 +6,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"os"
-	"riscv/abjit"
 	"riscv/internal/jitcall"
 	"runtime/debug"
 	"sync/atomic"
@@ -236,7 +235,7 @@ type JIT struct {
 	irAlloc    RegAllocator
 	regPolicy  RegPolicy
 	useABJIT   bool
-	abjitState *abjit.State
+	abjitState *abjitState
 
 	stopperPage uintptr // InfiniteLoopStopperPage: mmap'd guard page for preemption
 	watchAddr   uint64  // tohost address; JIT blocks exit when a store hits this address
@@ -261,10 +260,10 @@ type JIT struct {
 // allocation policy is PolicyABJIT (compare PolicyRV8); see lower_amd64.go
 func NewJIT() *JIT {
 	j := &JIT{
-		noJIT:                   make(map[uint64]bool),
-		irAlloc:                 NewFixedStaticAllocator(),
+		noJIT:                    make(map[uint64]bool),
+		irAlloc:                  NewFixedStaticAllocator(),
 		UseR15InstructionCounter: true,
-		LockstepModeBudget:      65536,
+		LockstepModeBudget:       65536,
 	}
 	j.SetRegPolicy(PolicyABJIT)
 	if err := j.initStopperPage(); err != nil {

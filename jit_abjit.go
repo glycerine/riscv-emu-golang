@@ -1,7 +1,6 @@
 package riscv
 
 import (
-	"riscv/abjit"
 	"riscv/internal/jitcall"
 )
 
@@ -21,7 +20,7 @@ func abjitDispatch(
 	//defer vv("end abjitDispatch()")
 
 	if j.abjitState == nil {
-		j.abjitState = abjit.NewState()
+		j.abjitState = newAbjitState()
 	}
 	s := j.abjitState
 
@@ -40,7 +39,7 @@ func abjitDispatch(
 
 	//vv("about to call abjit.CallJIT, the assembly trampoline")
 
-	abjit.CallJIT(blk.fn, s.RegFileBase())
+	jitcall.CallAbJIT(blk.fn, s.RegFileBase())
 
 	res := jitcall.Result{
 		PC:        s.PC,

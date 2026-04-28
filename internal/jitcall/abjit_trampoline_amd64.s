@@ -1,7 +1,7 @@
 #include "funcdata.h"
 #include "textflag.h"
 
-// func callJIT(code, regFileBase uintptr)
+// func CallAbJIT(code, regFileBase uintptr)
 //
 // Frame layout (after Go's prologue):
 //   SP+0      resume address slot (JIT writes here for gocall)
@@ -13,7 +13,7 @@
 //   SP+48     (unused, was RDTSC start)
 //   SP+56..   available stack for Go callbacks (~65KB)
 //
-TEXT ·callJIT(SB), 0, $65528-16
+TEXT ·CallAbJIT(SB), 0, $65528-16
 	NO_LOCAL_POINTERS
 	MOVQ BX,  8(SP)
 	MOVQ BP,  16(SP)
@@ -28,8 +28,8 @@ gocall:
 	CALL R10
 	JMP (SP)
 
-// func callJITImplAddr() uintptr
-TEXT ·callJITImplAddr(SB), 0, $0-8
+// func CallJITImplAddr() uintptr
+TEXT ·CallAbJITImplAddr(SB), 0, $0-8
 	NO_LOCAL_POINTERS
 	MOVQ $·callJIT(SB), AX
 	MOVQ AX, ret+0(FP)

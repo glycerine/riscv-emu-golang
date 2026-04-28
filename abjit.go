@@ -1,8 +1,11 @@
 package riscv
 
-import "unsafe"
+import (
+	"riscv/internal/jitcall"
+	"unsafe"
+)
 
-// State mirrors the shadow register file layout used by the JIT.
+// abjitState mirrors the shadow register file layout used by the JIT.
 // Must be heap-allocated (callJIT's 65KB frame triggers morestack;
 // stack-allocated State would be invalidated by the stack copy).
 //
@@ -14,7 +17,7 @@ import "unsafe"
 //	Offset 516: (padding) — 4 bytes
 //	Offset 520: memBase   — 8 bytes
 //	Offset 528: memMask   — 8 bytes
-type State struct {
+type abjitState struct {
 	X          [32]uint64
 	F          [32]uint64
 	FCSR       uint32
@@ -33,23 +36,23 @@ type State struct {
 }
 
 //go:noinline
-func NewState() *State {
-	return new(State)
+func newAbjitState() *abjitState {
+	return &abjitState{}
 }
 
-func (s *State) RegFileBase() uintptr {
+func (s *abjitState) RegFileBase() uintptr {
 	return uintptr(unsafe.Pointer(s))
 }
 
-func Run(cb *CodeBuilder, s *State) {
+func Run(cb *CodeBuilder, s *abjitState) {
 	// call the assembly trampoline
-	callJIT(cb.Addr(), s.RegFileBase())
+	jitcall.CallAbJIT(cb.Addr(), s.RegFileBase())
 }
 
 // CallJIT calls JIT-compiled native code with the given register file base.
 func CallJIT(code, regFileBase uintptr) {
 	// call the assembly trampoline
-	callJIT(code, regFileBase)
+	jitcall.CallAbJIT(code, regFileBase)
 }
 
 // GocallAddr returns the address of the CALL R10 instruction in the
