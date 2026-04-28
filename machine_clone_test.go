@@ -184,7 +184,7 @@ func TestMachineClone_CPUStateCopy(t *testing.T) {
 	parent.CPU.SetReg(5, 0xFEEDFACECAFEBEEF)
 	parent.CPU.SetFReg(10, 0x4048F5C28F5C28F6)
 	parent.CPU.SetFCSR(0x5A)
-	parent.CPU.cycle = 42
+	parent.CPU.riscvInstrBegun = 42
 	parent.CPU.mtvec = 0xAAAABBBB
 	parent.CPU.watchAddr = 0x1000
 
