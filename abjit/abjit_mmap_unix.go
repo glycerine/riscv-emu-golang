@@ -1,6 +1,6 @@
 //go:build unix
 
-package abjit
+package riscv
 
 import "syscall"
 
