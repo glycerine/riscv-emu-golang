@@ -1,73 +1,101 @@
-# Plan: Save/Restore R15 IC Across Go Calls + Interpreter Verification
+# Plan: Wire UseICR15 Through RegPolicy + Save/Restore R15 Across Go Calls
 
 ## Context
 
-R15 holds the cumulative guest instruction count. Two JIT code paths call into Go via x86 CALL: `abjitSyscall` (ECALL dispatcher, lower_amd64_abjit.go:424-430) and `abjitCall` (Go callback, lower_amd64_abjit.go:692-697). Go functions freely clobber R15, destroying the IC. The syscall path even has a placeholder comment at line 400: "Stage IC to State BEFORE the CALL" with no implementation.
-
-Additionally, the dispatch stats test shows `18446744073642442760` (negative R15) for the AOT bench_guest — R15 was clobbered during an inline ECALL that panicked (LinuxExit).
+R15 holds the cumulative guest IC but gets clobbered by Go calls (syscall dispatcher, Go callbacks). The lowerer needs to spill R15 to State.IC before and reload after each CALL, but only when R15 IC is active. The flag must flow from JIT → RegPolicy → lowerer.
 
 ## Changes
 
-### 1. `lower_amd64_abjit.go` — abjitSyscall: save/restore R15
-
-Before the `CALL dispatcher` at line 424, spill R15 to State.IC. After CALL returns, reload R15 from State.IC and increment by 1 (the ECALL instruction itself):
+### 1. `lower_amd64.go:32-37` — Add `UseICR15` to RegPolicy
 
 ```go
-// Save R15 (IC) to State before CALL (Go clobbers R15).
-lc.opsSpillIC()  // MOV [RBP+600], R15
-
-// CALL dispatcher.
-lc.loadImm(int64(sym.Addr), stgA)
-...CALL stgA...
-
-// Restore R15 (IC) from State after CALL.
-lc.opsLoadIC()   // MOV R15, [RBP+600]
+type RegPolicy struct {
+    Name     string
+    Pool     func(*Block) RegPool
+    Pinned   func() map[VReg]int16
+    Lower    func(*goasm.Ctx, *Block, *Allocation) (*LowerResult, error)
+    UseICR15 bool
+}
 ```
 
-The ECALL instruction's own IncIC was already emitted by `emitBudgetCheck()` before the syscall IR was emitted, so no extra +1 is needed here.
+### 2. `jit.go` — Set `UseICR15` on policy when configuring JIT
 
-### 2. `lower_amd64_abjit.go` — abjitCall: save/restore R15
+In `SetRegPolicy` or wherever the policy is configured, copy the JIT flag:
 
-Same pattern. The `callerSavedInt` list at line 660 only covers SysV caller-saved registers (DX, SI, DI, R8-R11). R15 is not in it because it's SysV callee-saved — but Go doesn't honor SysV conventions. Add explicit R15 save/restore around the CALL:
+```go
+func (j *JIT) SetRegPolicy(p RegPolicy) {
+    j.regPolicy = p
+    j.regPolicy.UseICR15 = j.UseR15InstructionCounter
+    ...
+}
+```
 
-Before the CALL at line 692: `lc.opsSpillIC()`
-After the CALL returns (before restoring other live regs): `lc.opsLoadIC()`
+Also update any place that creates/copies the policy (e.g., `NewJIT`, AOT clone path at ~line 387).
 
-### 3. Interpreter verification
+### 3. `lower_amd64_abjit.go` — Store policy flag in `lowerCtxABJIT`
 
-The interpreter's `step()` (cpu.go:133) executes one instruction and returns. The caller does `cpu.cycle++` (jit.go:653, etc.). With the new R15 IC model, `cpu.cycle` is the authoritative counter. When the interpreter runs (JIT fallback), `cpu.cycle++` correctly counts the interpreted instruction. Before the next JIT dispatch, `abjitDispatch` copies `cpu.cycle → s.IC`, and the JIT loads `R15 = s.IC`. So interpreter-executed instructions ARE included in R15's cumulative count. **No interpreter changes needed.**
+The `lowerCtxABJIT` is created inside `LowerAMD64_ABJIT`. It doesn't currently receive the RegPolicy. But `LowerAMD64_ABJIT` is called via the function pointer `RegPolicy.Lower` — so it doesn't have access to the policy struct.
 
-### 4. Guard the save/restore on `useICR15`
+**Fix**: Pass the flag through the `Block` or through a closure. Simplest: `LowerAMD64_ABJIT` is assigned as `PolicyABJIT.Lower`. We can make `PolicyABJIT` a package-level var and read `PolicyABJIT.UseICR15` directly from the lowerer. But that's fragile.
 
-The spill/load should only be emitted when R15 is used for IC counting. The lowerer doesn't currently have access to the `useICR15` flag. Two options:
+**Better**: Since `RegPolicy.Lower` is a function pointer, make it a closure that captures the policy:
 
-**Option A (simple)**: Always emit the spill/load. R15 is excluded from the allocator pool when `UseR15InstructionCounter` is true (which is the default). When false, R15 is in the pool and might be allocated — but then `opsSpillIC`/`opsLoadIC` would clobber an allocated value. So we must guard.
+```go
+var PolicyABJIT = RegPolicy{
+    Name:   "abjit",
+    Pool:   ABJITPool,
+    Pinned: ABJITPinned,
+    Lower:  LowerAMD64_ABJIT, // will be wrapped below
+}
+```
 
-**Option B (correct)**: Pass `useICR15` to the lowerer context. The `lowerCtxABJIT` already has access to `lc.blk` — but the flag lives on the JIT, not the block. Add a bool to the IR Block or pass through the LowerResult.
+Change to store `UseICR15` on `lowerOps` (the shared struct embedded in both `lowerCtxABJIT` and `lowerCtxRV8`). Add a `useICR15 bool` field to `lowerOps` (lower_amd64_ops.go:45). Set it in `LowerAMD64_ABJIT` — but how does it get the value?
 
-**Recommendation**: Option A is safe because `UseR15InstructionCounter` defaults to true and R15 is always excluded from the pool in practice. But to be defensive, add a `HasIC bool` field to the IR `Block` struct (set during emission), and check it in the lowerer.
+**Cleanest approach**: Change `Lower` signature to accept RegPolicy (or just the bool). But this changes the function pointer type.
 
-Actually, simplest: just always emit the save/restore. If R15 is not used for IC, the extra MOVs are harmless (they read/write State.IC which is unused). The cost is 2 MOVs per Go call — negligible.
+**Actually simplest**: Add `UseICR15 bool` to the `Allocation` struct — it's already passed to `Lower`. Set it in `jitCompile` before calling `Lower`.
+
+Wait, the user chose Option D (RegPolicy). Let me make it work without changing the Lower signature. The policy is stored on `j.regPolicy`. The function `jitCompile` has access to `j`. It calls `j.regPolicy.Lower(ctx, res.block, alloc)`. We can set a field on `Block` from `jitCompile`:
+
+Actually — even simpler. The Lower function is `LowerAMD64_ABJIT` which takes `(ctx, b, alloc)`. We can just set `b.UseICR15` from jitCompile before calling Lower. But the user rejected adding it to Block.
+
+OK, let me just read `UseICR15` from the global `PolicyABJIT` variable. In `jit.go`, `SetRegPolicy` copies the JIT's `UseR15InstructionCounter` to `regPolicy.UseICR15`. The lowerer function `LowerAMD64_ABJIT` is a package-level function — it can't access the policy. But we can make it a method or use a package-level variable.
+
+**Final approach**: Add a package-level `var abjitUseICR15 bool`. Set it in `SetRegPolicy` when the policy name is "abjit". Read it in `LowerAMD64_ABJIT`. Simple, no signature changes, no struct pollution.
+
+### 4. `lower_amd64_abjit.go` — Spill/load R15 around CALLs
+
+In `abjitSyscall` (~line 424), before CALL:
+```go
+if abjitUseICR15 {
+    lc.opsSpillIC()  // MOV [RBP+600], R15
+}
+```
+After CALL returns (~line 430):
+```go
+if abjitUseICR15 {
+    lc.opsLoadIC()   // MOV R15, [RBP+600]
+}
+```
+
+Same in `abjitCall` (~line 692/697).
+
+### 5. Interpreter — no change needed
+
+`cpu.step()` returns, caller does `cpu.cycle++`. Before next JIT dispatch, `abjitDispatch` sets `s.IC = cpu.cycle`, and JIT loads `R15 = s.IC`. Interpreter-counted instructions are included.
 
 ## Files
 
 | File | Change |
 |------|--------|
-| `lower_amd64_abjit.go:400-430` | Add `opsSpillIC()` before and `opsLoadIC()` after CALL in `abjitSyscall` |
-| `lower_amd64_abjit.go:682-697` | Add `opsSpillIC()` before and `opsLoadIC()` after CALL in `abjitCall` |
+| `lower_amd64.go:32` | Add `UseICR15 bool` to `RegPolicy` |
+| `lower_amd64_abjit.go` | Add `var abjitUseICR15 bool`; spill/load R15 in `abjitSyscall` and `abjitCall` |
+| `jit.go` | Copy `UseR15InstructionCounter` to `regPolicy.UseICR15` in `SetRegPolicy`; set `abjitUseICR15` |
 
 ## Verification
 
 ```bash
-# IC accuracy test (small ELF, exact match with interpreter)
 cd ~/ris && go test -v -run TestR15IC_MatchesInterpreter -count=1 .
-
-# AOT bench — should now show sane MIPS (~2000-3000, not trillions)
-cd ~/ris && go test -run='^$' -bench='BenchmarkAotJIT_BenchGuest' -benchtime=1x ./bench/
-
-# Dispatch stats — retired insns should be ~2.5M, not 18 quintillion  
-cd ~/ris/bench && go test -v -run TestJIT_DispatchStats -count=1
-
-# Full suite
-cd ~/ris && go test -count=1 .
+cd ~/ris/bench && go test -v -run TestJIT_DispatchStats -count=1  # should show ~2.5M insns, not trillions
+cd ~/ris && go test -run='^$' -bench='Benchmark(AotJIT|LazyJIT)_BenchGuest' -benchtime=1x ./bench/
 ```
