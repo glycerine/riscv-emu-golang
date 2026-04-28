@@ -67,13 +67,19 @@ jit_trampoline_asm:
 	movq	%r8, %r9	/* R9  = memMask */
 	movq	%r11, %r8	/* R8  = memBase */
 
+	/* Load R15 = IC from sret[24] (zeroed by C). */
+	movq	24(%rsp), %r15
+
 	/* Call JIT-compiled native code. */
 	callq	*%rax
 
 	/*
 	 * After JIT's RET: RSP = sret address (CALL pushed, RET popped).
-	 * Recover system RSP from sret[32].
+	 * Store IC (R15) back to sret[24] before restoring callee-saved regs.
 	 */
+	movq	%r15, 24(%rsp)
+
+	/* Recover system RSP from sret[32]. */
 	movq	32(%rsp), %rsp
 
 	/* Restore callee-saved registers from system stack. */

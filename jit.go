@@ -586,6 +586,7 @@ func (j *JIT) StepBlock(cpu *CPU) (ic uint64, err error) {
 			res = sandboxRv8Call(blk.fn, cpu,
 				cpu.mem.RegFileBase(), cpu.mem.StackTop(),
 				0, 0, 0, 0)
+			cpu.riscvInstrBegun += res.IC
 		}
 		if j.trace {
 			fmt.Fprintf(os.Stderr, "JIT pc=0x%x -> PC=0x%x status=%d\n",
@@ -595,34 +596,34 @@ func (j *JIT) StepBlock(cpu *CPU) (ic uint64, err error) {
 
 		switch int(res.Status) {
 		case jitOK:
-			return cpu.cycle, nil
+			return cpu.riscvInstrBegun, nil
 		case jitOKJalrMiss:
-			return cpu.cycle, nil
+			return cpu.riscvInstrBegun, nil
 		case jitMisalign:
 			if err := cpu.step(); err != nil {
-				return cpu.cycle, err
+				return cpu.riscvInstrBegun, err
 			}
-			cpu.cycle++
-			return cpu.cycle, nil
+			cpu.riscvInstrBegun++
+			return cpu.riscvInstrBegun, nil
 		case jitEcall:
 			if cpu.mtvec != 0 {
 				cpu.mepc = cpu.pc
 				cpu.mcause = 8
 				cpu.mtval = 0
 				cpu.pc = cpu.mtvec
-				return cpu.cycle, nil
+				return cpu.riscvInstrBegun, nil
 			}
-			return cpu.cycle, ErrEcall
+			return cpu.riscvInstrBegun, ErrEcall
 		case jitEbreak:
-			return cpu.cycle, ErrEbreak
+			return cpu.riscvInstrBegun, ErrEbreak
 		case jitLoadFault:
-			return cpu.cycle, &MemFault{Addr: res.FaultAddr, Width: 8, Kind: FaultLoad}
+			return cpu.riscvInstrBegun, &MemFault{Addr: res.FaultAddr, Width: 8, Kind: FaultLoad}
 		case jitStoreFault:
-			return cpu.cycle, &MemFault{Addr: res.FaultAddr, Width: 8, Kind: FaultStore}
+			return cpu.riscvInstrBegun, &MemFault{Addr: res.FaultAddr, Width: 8, Kind: FaultStore}
 		default:
 			err = cpu.step()
-			cpu.cycle++
-			return cpu.cycle, err
+			cpu.riscvInstrBegun++
+			return cpu.riscvInstrBegun, err
 		}
 	}
 
@@ -633,7 +634,7 @@ func (j *JIT) StepBlock(cpu *CPU) (ic uint64, err error) {
 			compiled, cerr := j.jitCompile(res, &cpu.mem)
 			if cerr == nil {
 				j.insertBlock(pc, compiled)
-				return j.StepBlock(cpu) // retry — returns cpu.cycle
+				return j.StepBlock(cpu) // retry — returns cpu.riscvInstrBegun
 			}
 		}
 		j.noJIT[pc] = true
@@ -641,8 +642,8 @@ func (j *JIT) StepBlock(cpu *CPU) (ic uint64, err error) {
 
 	// Interpreter fallback
 	err = cpu.step()
-	cpu.cycle++
-	return cpu.cycle, err
+	cpu.riscvInstrBegun++
+	return cpu.riscvInstrBegun, err
 }
 
 // stepBlockDebugV1V2 runs a block through both V1 and V2, compares all
@@ -772,6 +773,7 @@ func (j *JIT) RunJIT(cpu *CPU) (err0 error) {
 					res = sandboxRv8Call(blk.fn, cpu, regFile, stackTop,
 						0, 0, 0, 0)
 				}
+				cpu.riscvInstrBegun += res.IC
 			}
 			cpu.pc = res.PC
 
@@ -802,7 +804,7 @@ func (j *JIT) RunJIT(cpu *CPU) (err0 error) {
 				if err := cpu.step(); err != nil {
 					return err
 				}
-				cpu.cycle++
+				cpu.riscvInstrBegun++
 				continue
 
 			case jitEcall:
@@ -860,7 +862,7 @@ func (j *JIT) RunJIT(cpu *CPU) (err0 error) {
 
 			default:
 				err := cpu.step()
-				cpu.cycle++
+				cpu.riscvInstrBegun++
 				if err == nil {
 					continue
 				}
@@ -916,7 +918,7 @@ func (j *JIT) RunJIT(cpu *CPU) (err0 error) {
 		// Interpret one instruction.
 		j.DispatchInterp++
 		err := cpu.step()
-		cpu.cycle++
+		cpu.riscvInstrBegun++
 		if err == nil {
 			continue
 		}

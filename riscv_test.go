@@ -482,7 +482,7 @@ func TestR15IC_MatchesInterpreter(t *testing.T) {
 	if interpCode != 0 {
 		t.Fatalf("interpreter failed: exit %d", interpCode)
 	}
-	interpIC := interpCPU.Cycle()
+	interpIC := interpCPU.RiscvInstrBegun()
 
 	// JIT run (lazy, R15 IC enabled)
 	jitMem, err := NewGuestMemory(Size1MB)
@@ -507,7 +507,7 @@ func TestR15IC_MatchesInterpreter(t *testing.T) {
 	jit := NewJIT()
 	jit.DisableAutoAOT = true
 	_ = jit.RunJIT(jitCPU)
-	jitIC := jitCPU.Cycle()
+	jitIC := jitCPU.RiscvInstrBegun()
 
 	t.Logf("interpreter IC=%d, JIT R15 IC=%d", interpIC, jitIC)
 	if interpIC == 0 {
@@ -614,7 +614,7 @@ func runLockstep(t *testing.T, elfPath string) {
 	blockNum := 0
 
 	nStops := 0
-	for jitCPU.Cycle() < maxCycles {
+	for jitCPU.RiscvInstrBegun() < maxCycles {
 
 		if jitCPU.pc != interpCPU.pc {
 			t.Fatalf("block %d: PC desync BEFORE dispatch: jit=0x%x interp=0x%x",
@@ -624,7 +624,7 @@ func runLockstep(t *testing.T, elfPath string) {
 		//vv("just before jit.StepBlock(jitCPU) in runLockstep: elfPath '%v'; jitPC = 0x%x and interpCPU.pc = 0x%x ; jitCPU = '%#v'", elfPath, jitCPU.pc, interpCPU.pc, jitCPU)
 
 		// JIT: one dispatch cycle
-		preCycle := jitCPU.Cycle()
+		preCycle := jitCPU.RiscvInstrBegun()
 		absIC, jitErr := jit.StepBlock(jitCPU)
 		jitIC := absIC - preCycle
 
@@ -636,7 +636,7 @@ func runLockstep(t *testing.T, elfPath string) {
 		var interpErr error
 		for i := uint64(0); i < jitIC; i++ {
 			interpErr = interpCPU.step()
-			interpCPU.cycle++
+			interpCPU.riscvInstrBegun++
 			if interpErr != nil {
 				break
 			}
@@ -644,7 +644,7 @@ func runLockstep(t *testing.T, elfPath string) {
 		catchupLimit := int(jitIC/2) + 20
 		for catchup := 0; interpCPU.pc != targetPC && interpErr == nil && catchup < catchupLimit; catchup++ {
 			interpErr = interpCPU.step()
-			interpCPU.cycle++
+			interpCPU.riscvInstrBegun++
 		}
 
 		//if nStops%5000 == 0 { // saw 300
@@ -714,7 +714,7 @@ func runLockstep(t *testing.T, elfPath string) {
 		blockNum++
 	}
 
-	//t.Logf("lockstep complete: %d blocks, %d instructions; nStops = %v", blockNum, jitCPU.Cycle(), nStops)
+	//t.Logf("lockstep complete: %d blocks, %d instructions; nStops = %v", blockNum, jitCPU.RiscvInstrBegun(), nStops)
 }
 
 func TestRISCVTests_Lockstep_UI(t *testing.T) {

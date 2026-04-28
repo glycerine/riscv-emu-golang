@@ -1669,7 +1669,7 @@ func testNativeTraceW(t *testing.T, elfPath string, targetBlock int) {
 	var interpErr error
 	for i := uint64(0); i < interpIC; i++ {
 		interpErr = cpu.step()
-		cpu.cycle++
+		cpu.riscvInstrBegun++
 		if interpErr != nil {
 			//t.Logf("interpreter error at step %d: %v (pc=0x%x)", i, interpErr, cpu.pc)
 			break

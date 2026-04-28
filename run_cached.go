@@ -176,7 +176,7 @@ func runCached(cpu *CPU, cache *DecoderCache, nc *NoteChain) error {
 	pc := cpu.pc
 	for {
 		var err error
-		var cycles uint64
+		var instrBegun uint64
 		countdown := pollBatch
 		slot := cache.lookup(pc)
 	inner:
@@ -876,7 +876,7 @@ func runCached(cpu *CPU, cache *DecoderCache, nc *NoteChain) error {
 				pc, err = cpu.delegateInsn(slot, pc)
 			}
 
-			cycles++
+			instrBegun++
 			countdown--
 			if err != nil || countdown == 0 {
 				break inner
@@ -890,7 +890,7 @@ func runCached(cpu *CPU, cache *DecoderCache, nc *NoteChain) error {
 				slot = cache.lookup(pc)
 			}
 		}
-		cpu.cycle += cycles
+		cpu.riscvInstrBegun += instrBegun
 		cpu.pc = pc
 
 		if cpu.watchAddr != 0 {

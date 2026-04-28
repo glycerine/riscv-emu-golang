@@ -263,7 +263,7 @@ func TestJIT_Fib(t *testing.T) {
 	if got != want {
 		t.Errorf("fib(20) = %d, want %d", got, want)
 	}
-	t.Logf("fib(20) = %d, insns = %d", got, cpu.Cycle())
+	t.Logf("fib(20) = %d, insns = %d", got, cpu.RiscvInstrBegun())
 }
 
 // ── Test 5c: Block re-entry with modified state ──────────────────────────
@@ -340,7 +340,7 @@ func TestJIT_CycleCount_Loop(t *testing.T) {
 	initRegs(cpu1)
 	cpu1.Notes.Push(ecallStop)
 	RunWithChain(cpu1, &cpu1.Notes)
-	interpCycles := cpu1.Cycle()
+	interpCycles := cpu1.RiscvInstrBegun()
 
 	// JIT
 	cpu2, mem2 := newTestCPU(t, Size64MB, 0x1000, insns)

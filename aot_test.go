@@ -298,10 +298,10 @@ func TestAOTInstall_RunDhrystone(t *testing.T) {
 		}
 	} else {
 		t.Errorf("guest did not exit via ExitError: err=%v, pc=0x%x, cycle=%d",
-			gotErr, cpu.PC(), cpu.Cycle())
+			gotErr, cpu.PC(), cpu.RiscvInstrBegun())
 	}
 
-	t.Logf("dhrystone AOT run: retired %d insns", cpu.Cycle())
+	t.Logf("dhrystone AOT run: retired %d insns", cpu.RiscvInstrBegun())
 }
 
 // TestAOTDispatch_DhrystoneReducesRoundTrips runs dhrystone under

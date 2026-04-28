@@ -66,7 +66,7 @@ func newBenchCPU(tb testing.TB, elfData []byte) (*riscv.CPU, *riscv.GuestMemory)
 
 func runJITBenchGuestWith(cpu *riscv.CPU, jit *riscv.JIT) (exitCode int, insns uint64) {
 	err := jit.RunJIT(cpu)
-	insns = cpu.Cycle()
+	insns = cpu.RiscvInstrBegun()
 	if ex, ok := err.(*riscv.ExitError); ok {
 		exitCode = ex.Code
 		return
@@ -82,7 +82,7 @@ func runJITBenchGuestWith(cpu *riscv.CPU, jit *riscv.JIT) (exitCode int, insns u
 // segments (~256 KB) based at the ELF entry.
 func runCachedBenchGuest(cpu *riscv.CPU) (exitCode int, insns uint64) {
 	err := riscv.RunDefault(cpu, &cpu.Notes)
-	insns = cpu.Cycle()
+	insns = cpu.RiscvInstrBegun()
 	if ex, ok := err.(*riscv.ExitError); ok {
 		exitCode = ex.Code
 	}
@@ -94,7 +94,7 @@ func runCachedBenchGuest(cpu *riscv.CPU) (exitCode int, insns uint64) {
 // a typical CLI user would get by default.
 func runBenchGuest(cpu *riscv.CPU) (exitCode int, insns uint64) {
 	err := cpu.Run()
-	insns = cpu.Cycle()
+	insns = cpu.RiscvInstrBegun()
 	if ex, ok := err.(*riscv.ExitError); ok {
 		exitCode = ex.Code
 	}
@@ -106,7 +106,7 @@ func runBenchGuest(cpu *riscv.CPU) (exitCode int, insns uint64) {
 // default path; not what a typical user would run.
 func runUncachedBenchGuest(cpu *riscv.CPU) (exitCode int, insns uint64) {
 	err := riscv.RunWithChain(cpu, &cpu.Notes)
-	insns = cpu.Cycle()
+	insns = cpu.RiscvInstrBegun()
 	if ex, ok := err.(*riscv.ExitError); ok {
 		exitCode = ex.Code
 	}

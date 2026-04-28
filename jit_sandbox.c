@@ -34,6 +34,7 @@ JitResult jit_sandbox_call(
 	/* 144-byte sret buffer at top of sandbox stack. */
 	char *sret = (char*)sandbox_stack_top - 144;
 	memset(sret, 0, 144);
+	*(uint64_t*)(sret + 24) = 0; /* IC = 0 (relative origin, same as ABJIT s.IC = 0) */
 	*(uint64_t*)(sret + 80) = reg_file + 512;
 	*(uint64_t*)(sret + 88)  = dc_base;
 	*(uint64_t*)(sret + 96)  = dc_mask;
@@ -52,6 +53,7 @@ JitResult jit_sandbox_call(
 	result.status     = *(uint64_t*)(sret + 8);
 	result.fault_addr = *(uint64_t*)(sret + 16);
 	result.cycles     = tsc_end - tsc_start;
+	result.ic         = *(uint64_t*)(sret + 24);
 
 	/* Copy shadow register file → Go registers. */
 	memcpy(go_x, rf, 256);

@@ -203,10 +203,10 @@ func TestChaining_ICAccumulatesAcrossChainedExits(t *testing.T) {
 	// times (branch taken iters-1 times, falls through on the iters-th).
 	// ECALL at the end adds 1.
 	expected := 4*iters + 1
-	if cpu.Cycle() != expected {
-		t.Errorf("cpu.Cycle() = %d, want %d (IC accounting across "+
+	if cpu.RiscvInstrBegun() != expected {
+		t.Errorf("cpu.RiscvInstrBegun() = %d, want %d (IC accounting across "+
 			"budget-check re-entries must match exactly)",
-			cpu.Cycle(), expected)
+			cpu.RiscvInstrBegun(), expected)
 	}
 	if cpu.Reg(12) != iters {
 		t.Errorf("x12 = %d, want %d", cpu.Reg(12), iters)
@@ -241,8 +241,8 @@ func TestChaining_FaultExitsWritebackIC(t *testing.T) {
 	// Expected: LUI retires (IC=1), LW's body runs and jumps to the
 	// fault stub BEFORE the advancePC IC++ for LW. Fault stub writes
 	// RBP → sret.IC = 1. ECALL unreachable.
-	if got := cpu.Cycle(); got != 1 {
-		t.Errorf("cpu.Cycle() = %d, want 1 (LUI retires, LW faults "+
+	if got := cpu.RiscvInstrBegun(); got != 1 {
+		t.Errorf("cpu.RiscvInstrBegun() = %d, want 1 (LUI retires, LW faults "+
 			"before its IC++). A value != 1 suggests IC writeback on "+
 			"the fault path is broken.", got)
 	}

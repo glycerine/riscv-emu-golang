@@ -240,7 +240,7 @@ func (nc *NoteChain) Deliver(cpu *CPU, n Note) NoteDisposition {
 func RunWithChain(cpu *CPU, nc *NoteChain) error {
 	for {
 		err := cpu.step()
-		cpu.cycle++
+		cpu.riscvInstrBegun++
 		// Tohost polling: check after every instruction.
 		// When watchAddr == 0 (the common case), this is a single
 		// predicted-not-taken branch — negligible overhead.

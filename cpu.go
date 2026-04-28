@@ -33,7 +33,7 @@ type CPU struct {
 	x     [32]uint64 // x[0] is hardwired zero
 	f     [32]uint64 // f0-f31: NaN-boxed float32 or raw float64 bits
 	fcsr  uint32     // FP control/status: fflags[4:0] + frm[7:5]
-	cycle uint64     // instruction-retired counter (read via cycle/instret CSRs)
+	riscvInstrBegun uint64 // per-instruction counter incremented at start of each guest instruction
 	Notes NoteChain  // exception delivery chain; handlers installed by OS layer
 	// LR/SC reservation
 	resvAddr  uint64
@@ -110,8 +110,8 @@ func (c *CPU) SetFReg(r uint8, v uint64) { c.f[r] = v }
 func (c *CPU) FReg(r uint8) uint64       { return c.f[r] }
 func (c *CPU) FCSR() uint32              { return c.fcsr }
 func (c *CPU) SetFCSR(v uint32)          { c.fcsr = v }
-func (c *CPU) Cycle() uint64             { return c.cycle }
-func (c *CPU) ResetCycle()               { c.cycle = 0 }
+func (c *CPU) RiscvInstrBegun() uint64    { return c.riscvInstrBegun }
+func (c *CPU) ResetRiscvInstrBegun()     { c.riscvInstrBegun = 0 }
 func (c *CPU) SetWatchAddr(addr uint64)  { c.watchAddr = addr }
 func (c *CPU) WatchAddr() uint64         { return c.watchAddr }
 
@@ -1537,9 +1537,9 @@ func (c *CPU) readCSR(addr uint32) uint64 {
 	case 0x343:
 		return c.mtval // mtval
 	case 0xC00, 0xC02:
-		return c.cycle // cycle / instret
+		return c.riscvInstrBegun // cycle / instret CSRs
 	case 0xC01:
-		return c.cycle // time (approx)
+		return c.riscvInstrBegun // time (approx)
 	case 0xF14:
 		return 0 // mhartid = 0
 	}

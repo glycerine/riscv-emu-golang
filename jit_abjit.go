@@ -16,7 +16,7 @@ import (
 // instruction. Budget checks compare R15 against a fixed threshold,
 // so the relative basis is essential for correctness.
 //
-// Outside JIT code (Go), cpu.cycle is the ABSOLUTE cumulative count
+// Outside JIT code (Go), cpu.riscvInstrBegun is the ABSOLUTE cumulative count
 // of all guest instructions ever retired.
 //
 // The conversion happens here, at the dispatch boundary:
@@ -25,7 +25,7 @@ import (
 //	       trampoline loads R15 from s.IC   (R15 = 0)
 //	       ── JIT code: R15 relative ──
 //	       SpillIC writes R15 back to s.IC
-//	Go  ←  cpu.cycle += s.IC               (relative → absolute)
+//	Go  ←  cpu.riscvInstrBegun += s.IC               (relative → absolute)
 //
 // Chain exits preserve R15 across blocks (no re-zeroing).
 // Gocall sequences (SpillIC/LoadIC) preserve R15 across Go callbacks.
@@ -59,7 +59,7 @@ func abjitDispatch(
 
 	abjit.CallJIT(blk.fn, s.RegFileBase())
 
-	cpu.cycle += s.IC // relative → absolute
+	cpu.riscvInstrBegun += s.IC // relative → absolute
 
 	res := jitcall.Result{
 		PC:        s.PC,

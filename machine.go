@@ -66,7 +66,7 @@ func (m *Machine) Clone() (*Machine, error) {
 		x:         m.CPU.x,
 		f:         m.CPU.f,
 		fcsr:      m.CPU.fcsr,
-		cycle:     m.CPU.cycle,
+		riscvInstrBegun: m.CPU.riscvInstrBegun,
 		resvAddr:  m.CPU.resvAddr,
 		resvValid: m.CPU.resvValid,
 		watchAddr: m.CPU.watchAddr,

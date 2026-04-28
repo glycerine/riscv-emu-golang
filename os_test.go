@@ -693,7 +693,7 @@ func TestECALL_TrapHandler_WritesTohost(t *testing.T) {
 	exitCode := -1
 	for i := 0; i < 1000; i++ {
 		err := cpu.Step()
-		cpu.cycle++
+		cpu.riscvInstrBegun++
 		if cpu.watchAddr != 0 {
 			if v, _ := (&cpu.mem).Load64(cpu.watchAddr); v != 0 {
 				exitCode = tohostExitCode(v)
@@ -751,7 +751,7 @@ func TestECALL_TrapHandler_Fail(t *testing.T) {
 	exitCode := -1
 	for i := 0; i < 1000; i++ {
 		err := cpu.Step()
-		cpu.cycle++
+		cpu.riscvInstrBegun++
 		if cpu.watchAddr != 0 {
 			if v, _ := (&cpu.mem).Load64(cpu.watchAddr); v != 0 {
 				exitCode = tohostExitCode(v)
