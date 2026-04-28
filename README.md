@@ -373,39 +373,22 @@ closed: RISC-V test ELFs now run through interpreter, AOT JIT, lazy JIT (RunJIT)
 lockstep.
 ~~~
 
+with IC instruction counter back. We use R15 for this.
 ~~~
-All bench tests pass. IC counts match interpreter (2,524,935,201 for BenchGuest, 389,619,197 for
-  CoreMark, 282,001,647 for Dhrystone).
+(goivy-venv) jaten@jbook ~/ris (master) $ make bench
 
-  Summary of all changes in this session:
+══════════════════════════════════════════════════════════════════
+  JIT COMPARISON (rv8 vs abjit) — 2026-04-28 02:22  [macos]
+  cpu: Intel(R) Core(TM) i7-1068NG7 CPU @ 2.30GHz
+══════════════════════════════════════════════════════════════════
 
-  1. jit_aot.go: Added R15 pool exclusion + gocall resume backpatching (AOT SIGSEGV fix)
-  2. abjit/trampoline_amd64.s: Trampoline loads R15 from State.IC before JIT entry
-  3. jit_abjit.go: s.IC = 0 + defer to accumulate IC at Go boundary
-  4. jit_emit_ir.go: Removed IRZeroIC emission — trampoline handles it
-  5. jit.go StepBlock: Returns cpu.cycle (absolute); no cpu.cycle += res.IC (handled by defer)
-  6. jit.go RunJIT: Same — no cpu.cycle += res.IC
-  7. riscv_test.go: Lockstep caller computes delta from absolute IC
-~~~
-
-~~~
-$ go test -v -run=xxx -bench=BenchmarkCPU_FullExecution_JIT_ABJIT ./bench
-goos: darwin
-goarch: amd64
-pkg: riscv/bench
-cpu: Intel(R) Core(TM) i7-1068NG7 CPU @ 2.30GHz
-BenchmarkCPU_FullExecution_JIT_ABJIT
-
-cpu_bench_test.go:70 [goID 18] 2026-04-28 03:50:28.785970000 +0000 UTC runJITBenchGuestWith recovered: r='exit status 0'
-
-jit_bench_test.go:75 [goID 18] 2026-04-28 03:50:28.786154000 +0000 UTC elapsed = 0.671339082; totalInsns = 2524935201; tms= '[]time.Duration{671149472}'
-
-cpu_bench_test.go:70 [goID 34] 2026-04-28 03:50:29.448735000 +0000 UTC runJITBenchGuestWith recovered: r='exit status 0'
-
-cpu_bench_test.go:70 [goID 34] 2026-04-28 03:50:30.108163000 +0000 UTC runJITBenchGuestWith recovered: r='exit status 0'
-
-jit_bench_test.go:75 [goID 34] 2026-04-28 03:50:30.108468000 +0000 UTC elapsed = 1.321298538; totalInsns = 5049870402; tms= '[]time.Duration{661642150, 659281074}'
-BenchmarkCPU_FullExecution_JIT_ABJIT-8   	       2	 660649269 ns/op	      3822 MIPS	 3633840 B/op	   45932 allocs/op
-PASS
-ok  	riscv/bench	2.005s
+  Strategy                                     MIPS
+  ──────────────────────────────────────────── ──────────
+  Go JIT — rv8 Fixed Static Mapping (native): 3853 MIPS
+  Go JIT — abjit (native):                   3824 MIPS
+  Go interpreter (no JIT):                     475.2 MIPS
+  libriscv — JIT (TCC):                      3927 MIPS
+  libriscv — interpreter (no JIT):           930.8 MIPS
+  native x86-64 (-O3 -march=native):           18035 MIPS  (140.0 ms)
+  wazero wasm aot-and-run                    9008.0 MIPS
 ~~~
