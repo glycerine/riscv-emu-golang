@@ -1006,9 +1006,8 @@ func (j *JIT) emitBlockRange(mem *GuestMemory, pc, endPC uint64) *emitResult {
 		lockstepBudget: j.LockstepModeBudget,
 	}
 
-	if e.useICR15 {
-		e.irEm.ZeroIC()
-	}
+	// IC is zeroed by Go (s.IC=0) and loaded into R15 by the trampoline.
+	// No IRZeroIC here — chain entries must not re-zero R15.
 	if e.lockstepMode {
 		e.sharedBudgetExit = e.irEm.NewLabel()
 	}

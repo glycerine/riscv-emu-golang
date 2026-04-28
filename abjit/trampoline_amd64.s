@@ -22,6 +22,7 @@ TEXT ·callJIT(SB), 0, $65528-16
 	MOVQ R15, 40(SP)
 
 	MOVQ regFileBase+8(FP), BP
+	MOVQ 600(BP), R15     // R15 = State.IC (zeroed by Go before dispatch)
 	MOVQ code+0(FP), AX
 	JMP AX
 gocall:
