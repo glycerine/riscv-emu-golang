@@ -36,19 +36,18 @@ type SyscallArgs struct {
 	A5   uint64 // arg5 (a5)
 }
 
-// SyscallResult is the return value written back to a0.
-// Negative values signal errors (Linux errno convention).
-type SyscallResult int64
-
 // SyscallHandler handles one specific syscall number.
-// It returns the value to be placed in a0, and whether it handled the call.
-// If handled=false, the OS layer tries the next registered handler.
-type SyscallHandler func(cpu *CPU, args SyscallArgs) (result SyscallResult, handled bool)
+//
+//   - (result, true, false, nil)  — handled; result written to a0
+//   - (0, false, false, nil)      — not handled; try next handler
+//   - (code, false, true, nil)    — guest exit; code is the exit status
+//   - (0, false, false, err)      — handler error; treated as fatal
+type SyscallHandler func(cpu *CPU, args SyscallArgs) (result int64, handled bool, exit bool, err error)
 
 // EcallHandler handles any ECALL that doesn't match a specific syscall —
 // e.g. for RISC-V environments that use ECALL for pass/fail signalling
-// rather than Linux syscalls.
-type EcallHandler func(cpu *CPU, args SyscallArgs) NoteDisposition
+// rather than Linux syscalls. Same return convention as SyscallHandler.
+type EcallHandler func(cpu *CPU, args SyscallArgs) (result int64, handled bool, exit bool, err error)
 
 // OS is a guest OS personality. It intercepts ECALL notes and dispatches
 // to registered syscall handlers. Unrecognised ECALLs are forwarded down
@@ -111,7 +110,14 @@ func (o *OS) Handle(cpu *CPU, n Note) NoteDisposition {
 
 	// Try specific syscall handler first
 	if h, ok := o.syscalls[args.Num]; ok {
-		result, handled := h(cpu, args)
+		result, handled, exit, err := h(cpu, args)
+		if err != nil {
+			return NoteFatal
+		}
+		if exit {
+			cpu.ExitCode = int(int32(result))
+			return NoteExit
+		}
 		if handled {
 			cpu.SetReg(10, uint64(result))
 			return NoteHandled
@@ -120,11 +126,18 @@ func (o *OS) Handle(cpu *CPU, n Note) NoteDisposition {
 
 	// Try fallback ecall handler
 	if o.ecall != nil {
-		d := o.ecall(cpu, args)
-		if d != NoteForward {
-			return d // handler claimed it (NoteHandled or NoteFatal)
+		result, handled, exit, err := o.ecall(cpu, args)
+		if err != nil {
+			return NoteFatal
 		}
-		// fallback forwarded — fall through to ENOSYS
+		if exit {
+			cpu.ExitCode = int(int32(result))
+			return NoteExit
+		}
+		if handled {
+			cpu.SetReg(10, uint64(result))
+			return NoteHandled
+		}
 	}
 
 	// Unknown syscall — return -ENOSYS and continue
@@ -144,29 +157,29 @@ func (e *ExitError) Error() string {
 }
 
 // LinuxExit handles syscall 93 (exit) and 94 (exit_group).
-// When the guest calls exit(code), Run() returns an *ExitError.
+// When the guest calls exit(code), the OS handler returns NoteExit
+// and the run loop returns &ExitError{Code: cpu.ExitCode}.
 // Install with: os.HandleSyscall(93, riscv.LinuxExit)
-//              os.HandleSyscall(94, riscv.LinuxExit)
-func LinuxExit(cpu *CPU, args SyscallArgs) (SyscallResult, bool) {
-	// We signal exit by panicking with a sentinel value that RunWithChain
-	// catches. This avoids threading an exit channel through the call stack.
-	panic(&ExitError{Code: int(int32(args.A0))})
+//
+//	os.HandleSyscall(94, riscv.LinuxExit)
+func LinuxExit(_ *CPU, args SyscallArgs) (int64, bool, bool, error) {
+	return int64(int32(args.A0)), false, true, nil
 }
 
 // RiscvTestsEcall handles the riscv-tests pass/fail ECALL convention:
 //
-//	a7 = 93, a0 = 0       → PASS (returns ExitError{Code: 0})
-//	a7 = 93, a0 = non-zero → FAIL (returns ExitError{Code: a0})
+//	a7 = 93, a0 = 0       → PASS (exit code 0)
+//	a7 = 93, a0 = non-zero → FAIL (exit code a0)
 //
 // The test number is encoded as (a0 >> 1) when a0 is odd.
 // Install as the ecall fallback:
 //
 //	os.HandleEcall(riscv.RiscvTestsEcall)
-func RiscvTestsEcall(cpu *CPU, args SyscallArgs) NoteDisposition {
+func RiscvTestsEcall(_ *CPU, args SyscallArgs) (int64, bool, bool, error) {
 	if args.Num == 93 {
-		panic(&ExitError{Code: int(args.A0)})
+		return int64(args.A0), false, true, nil
 	}
-	return NoteForward
+	return 0, false, false, nil
 }
 
 // ── LinuxWrite — syscall 64 ───────────────────────────────────────────────
@@ -178,19 +191,19 @@ type WriteFunc func(fd int, buf []byte) int
 // LinuxWriteHandler returns a SyscallHandler for syscall 64 (write) that
 // calls w for fd 1 (stdout) and fd 2 (stderr), and ignores all other fds.
 func LinuxWriteHandler(w WriteFunc) SyscallHandler {
-	return func(cpu *CPU, args SyscallArgs) (SyscallResult, bool) {
-		fd  := int(args.A0)
+	return func(cpu *CPU, args SyscallArgs) (int64, bool, bool, error) {
+		fd := int(args.A0)
 		gva := args.A1
-		n   := args.A2
+		n := args.A2
 		if fd != 1 && fd != 2 {
-			return SyscallResult(n), true // pretend success for other fds
+			return int64(n), true, false, nil
 		}
 		buf := make([]byte, n)
 		if f := cpu.mem.ReadBytes(gva, buf); f != nil {
-			return -1, true
+			return -1, true, false, nil
 		}
 		written := w(fd, buf)
-		return SyscallResult(written), true
+		return int64(written), true, false, nil
 	}
 }
 
@@ -210,19 +223,11 @@ func RunWithOS(cpu *CPU) (exitCode int, err error) {
 	cpu.Notes.Push(o.Handle)
 	defer cpu.Notes.Pop()
 
-	defer func() {
-		if r := recover(); r != nil {
-			if ex, ok := r.(*ExitError); ok {
-				exitCode = ex.Code
-				err = nil
-				return
-			}
-			panic(r) // re-panic anything that isn't an ExitError
-		}
-	}()
-
 	err = RunWithChain(cpu, &cpu.Notes)
-	return
+	if ex, ok := err.(*ExitError); ok {
+		return ex.Code, nil
+	}
+	return 0, err
 }
 
 // InstallLinuxOS installs a Linux-ABI OS personality on cpu.Notes.
@@ -262,19 +267,11 @@ func InstallLinuxOS(cpu *CPU, out io.Writer) (cleanup func()) {
 func RunWithLinuxOS(cpu *CPU, out io.Writer) (exitCode int, err error) {
 	defer InstallLinuxOS(cpu, out)()
 
-	defer func() {
-		if r := recover(); r != nil {
-			if ex, ok := r.(*ExitError); ok {
-				exitCode = ex.Code
-				err = nil
-				return
-			}
-			panic(r)
-		}
-	}()
-
 	err = RunWithChain(cpu, &cpu.Notes)
-	return
+	if ex, ok := err.(*ExitError); ok {
+		return ex.Code, nil
+	}
+	return 0, err
 }
 
 // tohostExitCode converts a tohost value to an exit code matching the

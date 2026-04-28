@@ -30,12 +30,12 @@ func loadCPUELF(tb testing.TB) []byte {
 
 // ── syscall stubs for musl startup ─────────────────────────────────────────
 
-func brkHandler(_ *riscv.CPU, _ riscv.SyscallArgs) (riscv.SyscallResult, bool) {
-	return 0, true // musl falls back gracefully when brk returns 0
+func brkHandler(_ *riscv.CPU, _ riscv.SyscallArgs) (int64, bool, bool, error) {
+	return 0, true, false, nil
 }
 
-func tidHandler(_ *riscv.CPU, _ riscv.SyscallArgs) (riscv.SyscallResult, bool) {
-	return 1, true // fake TID
+func tidHandler(_ *riscv.CPU, _ riscv.SyscallArgs) (int64, bool, bool, error) {
+	return 1, true, false, nil
 }
 
 // ── run helper ─────────────────────────────────────────────────────────────
@@ -65,19 +65,15 @@ func newBenchCPU(tb testing.TB, elfData []byte) (*riscv.CPU, *riscv.GuestMemory)
 }
 
 func runJITBenchGuestWith(cpu *riscv.CPU, jit *riscv.JIT) (exitCode int, insns uint64) {
-	defer func() {
-		if r := recover(); r != nil {
-			vv("runJITBenchGuestWith recovered: r='%v'", r)
-			if ex, ok := r.(*riscv.ExitError); ok {
-				exitCode = ex.Code
-				insns = cpu.Cycle()
-				return
-			}
-			panic(r)
-		}
-	}()
-	_ = jit.RunJIT(cpu)
+	err := jit.RunJIT(cpu)
 	insns = cpu.Cycle()
+	if ex, ok := err.(*riscv.ExitError); ok {
+		exitCode = ex.Code
+		return
+	}
+	if err != nil {
+		panic(err)
+	}
 	return
 }
 

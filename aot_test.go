@@ -274,8 +274,8 @@ func TestAOTInstall_RunDhrystone(t *testing.T) {
 	o := NewOS()
 	o.HandleSyscall(93, LinuxExit)
 	o.HandleSyscall(94, LinuxExit)
-	o.HandleSyscall(214, func(_ *CPU, _ SyscallArgs) (SyscallResult, bool) { return 0, true })
-	o.HandleSyscall(96, func(_ *CPU, _ SyscallArgs) (SyscallResult, bool) { return 1, true })
+	o.HandleSyscall(214, func(_ *CPU, _ SyscallArgs) (int64, bool, bool, error) { return 0, true, false, nil })
+	o.HandleSyscall(96, func(_ *CPU, _ SyscallArgs) (int64, bool, bool, error) { return 1, true, false, nil })
 	cpu.Notes.Push(o.Handle)
 
 	j := NewJIT()
@@ -371,8 +371,8 @@ func runDhrystoneCollectCounters(t *testing.T, data []byte, aot bool) (dispatchO
 	o := NewOS()
 	o.HandleSyscall(93, LinuxExit)
 	o.HandleSyscall(94, LinuxExit)
-	o.HandleSyscall(214, func(_ *CPU, _ SyscallArgs) (SyscallResult, bool) { return 0, true })
-	o.HandleSyscall(96, func(_ *CPU, _ SyscallArgs) (SyscallResult, bool) { return 1, true })
+	o.HandleSyscall(214, func(_ *CPU, _ SyscallArgs) (int64, bool, bool, error) { return 0, true, false, nil })
+	o.HandleSyscall(96, func(_ *CPU, _ SyscallArgs) (int64, bool, bool, error) { return 1, true, false, nil })
 	cpu.Notes.Push(o.Handle)
 
 	j := NewJIT()

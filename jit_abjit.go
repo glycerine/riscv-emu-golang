@@ -57,12 +57,9 @@ func abjitDispatch(
 	s.SegSize = segSize
 	s.IC = 0 // relative origin — trampoline loads this into R15
 
-	// Accumulate relative IC into cpu.cycle at dispatch boundary.
-	// defer ensures this fires even when a syscall handler panics
-	// (e.g., exit()), which unwinds through the trampoline.
-	defer func() { cpu.cycle += s.IC }()
-
 	abjit.CallJIT(blk.fn, s.RegFileBase())
+
+	cpu.cycle += s.IC // relative → absolute
 
 	res := jitcall.Result{
 		PC:        s.PC,

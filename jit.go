@@ -717,8 +717,7 @@ func (j *JIT) RunJIT(cpu *CPU) (err0 error) {
 		// Hence they will enver exit if we don't check.
 		if cpu.watchAddr != 0 {
 			if v, _ := cpu.mem.Load64(cpu.watchAddr); v != 0 {
-				//vv("watchAddr has non-zero: about to panic with &ExitCode v = %v", v)
-				panic(&ExitError{Code: tohostExitCode(v)})
+				return &ExitError{Code: tohostExitCode(v)}
 			}
 		}
 
@@ -818,6 +817,8 @@ func (j *JIT) RunJIT(cpu *CPU) (err0 error) {
 				switch cpu.Notes.Deliver(cpu, n) {
 				case NoteHandled:
 					continue
+				case NoteExit:
+					return &ExitError{Code: cpu.ExitCode}
 				default:
 					return ErrEcall
 				}
@@ -827,6 +828,8 @@ func (j *JIT) RunJIT(cpu *CPU) (err0 error) {
 				switch cpu.Notes.Deliver(cpu, n) {
 				case NoteHandled:
 					continue
+				case NoteExit:
+					return &ExitError{Code: cpu.ExitCode}
 				default:
 					return ErrEbreak
 				}
@@ -837,6 +840,8 @@ func (j *JIT) RunJIT(cpu *CPU) (err0 error) {
 				switch cpu.Notes.Deliver(cpu, n) {
 				case NoteHandled:
 					continue
+				case NoteExit:
+					return &ExitError{Code: cpu.ExitCode}
 				default:
 					return f
 				}
@@ -847,6 +852,8 @@ func (j *JIT) RunJIT(cpu *CPU) (err0 error) {
 				switch cpu.Notes.Deliver(cpu, n) {
 				case NoteHandled:
 					continue
+				case NoteExit:
+					return &ExitError{Code: cpu.ExitCode}
 				default:
 					return f
 				}

@@ -42,6 +42,7 @@ type CPU struct {
 	// for a non-zero value and exit when detected. Standard riscv-tests
 	// exit mechanism: tohost==1 means PASS, other values mean FAIL.
 	watchAddr uint64
+	ExitCode  int // set by OS handler on guest exit; read after RunJIT/RunWithChain returns *ExitError
 	// M-mode trap CSRs — minimal support for riscv-tests.
 	// When mtvec != 0, ECALL traps through the guest's own handler
 	// instead of returning ErrEcall to the NoteChain.

@@ -320,9 +320,9 @@ func TestMachineClone_InstallOSOnChild(t *testing.T) {
 	// on every syscall invocation so we can assert the child hit
 	// the handler too.
 	var spyCount int
-	spy := func(_ *CPU, args SyscallArgs) (SyscallResult, bool) {
+	spy := func(_ *CPU, args SyscallArgs) (int64, bool, bool, error) {
 		spyCount++
-		panic(&ExitError{Code: int(int32(args.A0))})
+		return int64(int32(args.A0)), false, true, nil
 	}
 	os := NewOS()
 	os.HandleSyscall(93, spy)

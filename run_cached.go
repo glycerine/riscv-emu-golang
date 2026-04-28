@@ -895,7 +895,7 @@ func runCached(cpu *CPU, cache *DecoderCache, nc *NoteChain) error {
 
 		if cpu.watchAddr != 0 {
 			if v, _ := (&cpu.mem).Load64(cpu.watchAddr); v != 0 {
-				panic(&ExitError{Code: tohostExitCode(v)})
+				return &ExitError{Code: tohostExitCode(v)}
 			}
 		}
 		if err == nil {

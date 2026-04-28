@@ -163,6 +163,10 @@ const (
 	// NoteFatal means the exception is unrecoverable. Run() returns the
 	// original step() error to the caller. (Analogous to Plan 9's noted(NDFLT).)
 	NoteFatal
+
+	// NoteExit means the guest called exit(). cpu.ExitCode has the code.
+	// Run loops return &ExitError{Code: cpu.ExitCode} to the caller.
+	NoteExit
 )
 
 // ── NoteHandler ───────────────────────────────────────────────────────────
@@ -242,7 +246,7 @@ func RunWithChain(cpu *CPU, nc *NoteChain) error {
 		// predicted-not-taken branch — negligible overhead.
 		if cpu.watchAddr != 0 {
 			if v, _ := (&cpu.mem).Load64(cpu.watchAddr); v != 0 {
-				panic(&ExitError{Code: tohostExitCode(v)})
+				return &ExitError{Code: tohostExitCode(v)}
 			}
 		}
 		if err == nil {
@@ -251,9 +255,11 @@ func RunWithChain(cpu *CPU, nc *NoteChain) error {
 		n := noteFromStepErr(err, cpu.PC())
 		switch nc.Deliver(cpu, n) {
 		case NoteHandled:
-			continue // resume from cpu.PC()
+			continue
+		case NoteExit:
+			return &ExitError{Code: cpu.ExitCode}
 		default:
-			return err // NoteFatal or empty chain
+			return err
 		}
 	}
 }
