@@ -206,8 +206,8 @@ func TestMachineClone_CPUStateCopy(t *testing.T) {
 	if got := child.CPU.FCSR(); got != 0x5A {
 		t.Errorf("child.FCSR() = 0x%x, want 0x5A", got)
 	}
-	if got := child.CPU.Cycle(); got != 42 {
-		t.Errorf("child.Cycle() = %d, want 42", got)
+	if got := child.CPU.RiscvInstrBegun(); got != 42 {
+		t.Errorf("child.RiscvInstrBegun() = %d, want 42", got)
 	}
 	if got := child.CPU.mtvec; got != 0xAAAABBBB {
 		t.Errorf("child.mtvec = 0x%x, want 0xAAAABBBB", got)
@@ -263,10 +263,10 @@ func TestMachineClone_IndependentExecution(t *testing.T) {
 	// Both should have retired 2 instructions (ADDI + ECALL).
 	// (Actual counter value depends on the JIT dispatch; we just want
 	// non-zero + approximately equal across the two machines.)
-	if parent.CPU.Cycle() == 0 {
+	if parent.CPU.RiscvInstrBegun() == 0 {
 		t.Errorf("parent cycle counter zero after ECALL run")
 	}
-	if child.CPU.Cycle() == 0 {
+	if child.CPU.RiscvInstrBegun() == 0 {
 		t.Errorf("child cycle counter zero after ECALL run")
 	}
 
