@@ -13,7 +13,7 @@
 #include <sys/mman.h>
 #endif
 static inline std::vector<uint8_t> load_file(const std::string &);
-static constexpr uint64_t MAX_MEMORY = (riscv::encompassing_Nbit_arena == 0) ? uint64_t(4000) << 20 : uint64_t(1) << riscv::encompassing_Nbit_arena;
+static constexpr uint64_t MAX_MEMORY = (riscv::encompassing_Nbit_arena == 0) ? uint64_t(4000) << 20 : (riscv::encompassing_Nbit_arena >= 64 ? ~uint64_t(0) : uint64_t(1) << riscv::encompassing_Nbit_arena);
 static const std::string DYNAMIC_LINKER = "/usr/riscv64-linux-gnu/lib/ld-linux-riscv64-lp64d.so.1";
 //#define NODEJS_WORKAROUND
 

@@ -205,12 +205,12 @@ func timeGoCPUDirectCollectCounters(elf []byte, realSystemCall bool) *riscv.JIT 
 		die("NewGuestMemory: %v", err)
 	}
 	defer mem.Free()
-	entry, err := riscv.LoadELFBytes(mem, elf)
+	elfInfo, err := riscv.LoadELFBytes(mem, elf)
 	if err != nil {
 		die("LoadELFBytes: %v", err)
 	}
 	cpu := riscv.NewCPU(*mem)
-	cpu.SetPC(entry)
+	cpu.SetPC(elfInfo.Entry)
 	cpu.SetReg(2, guestSP)
 	cleanup := riscv.InstallLinuxOS(cpu, io.Discard)
 	defer cleanup()
@@ -276,12 +276,12 @@ func verifyGoCPUInterp(elf []byte, expectedLine string) {
 		die("NewGuestMemory: %v", err)
 	}
 	defer mem.Free()
-	entry, err := riscv.LoadELFBytes(mem, elf)
+	elfInfo, err := riscv.LoadELFBytes(mem, elf)
 	if err != nil {
 		die("LoadELFBytes: %v", err)
 	}
 	cpu := riscv.NewCPU(*mem)
-	cpu.SetPC(entry)
+	cpu.SetPC(elfInfo.Entry)
 	cpu.SetReg(2, guestSP)
 
 	var buf bytes.Buffer
@@ -298,12 +298,12 @@ func verifyGoCPUDirect(elf []byte, expectedLine string) {
 		die("NewGuestMemory: %v", err)
 	}
 	defer mem.Free()
-	entry, err := riscv.LoadELFBytes(mem, elf)
+	elfInfo, err := riscv.LoadELFBytes(mem, elf)
 	if err != nil {
 		die("LoadELFBytes: %v", err)
 	}
 	cpu := riscv.NewCPU(*mem)
-	cpu.SetPC(entry)
+	cpu.SetPC(elfInfo.Entry)
 	cpu.SetReg(2, guestSP)
 
 	cleanup := riscv.InstallLinuxOS(cpu, io.Discard) // fallback for exit(93)
@@ -322,7 +322,9 @@ func verifyGoCPUDirect(elf []byte, expectedLine string) {
 				}
 			}()
 			if err := j.RunJIT(cpu); err != nil {
-				die("RunJIT: %v", err)
+				if _, ok := err.(*riscv.ExitError); !ok {
+					die("RunJIT: %v", err)
+				}
 			}
 		}()
 	})
@@ -366,12 +368,12 @@ func timeGoCPU(elf []byte, jit bool) int64 {
 		die("NewGuestMemory: %v", err)
 	}
 	defer mem.Free()
-	entry, err := riscv.LoadELFBytes(mem, elf)
+	elfInfo, err := riscv.LoadELFBytes(mem, elf)
 	if err != nil {
 		die("LoadELFBytes: %v", err)
 	}
 	cpu := riscv.NewCPU(*mem)
-	cpu.SetPC(entry)
+	cpu.SetPC(elfInfo.Entry)
 	cpu.SetReg(2, guestSP)
 
 	cleanup := riscv.InstallLinuxOS(cpu, io.Discard)
@@ -397,7 +399,9 @@ func timeGoCPU(elf []byte, jit bool) int64 {
 	}()
 	elapsed := time.Since(t0).Nanoseconds()
 	if runErr != nil {
-		die("timeGoCPU (jit=%v): %v", jit, runErr)
+		if _, ok := runErr.(*riscv.ExitError); !ok {
+			die("timeGoCPU (jit=%v): %v", jit, runErr)
+		}
 	}
 	return elapsed
 }
@@ -416,12 +420,12 @@ func timeGoCPUDirect(elf []byte, realSystemCall bool) int64 {
 		die("NewGuestMemory: %v", err)
 	}
 	defer mem.Free()
-	entry, err := riscv.LoadELFBytes(mem, elf)
+	elfInfo, err := riscv.LoadELFBytes(mem, elf)
 	if err != nil {
 		die("LoadELFBytes: %v", err)
 	}
 	cpu := riscv.NewCPU(*mem)
-	cpu.SetPC(entry)
+	cpu.SetPC(elfInfo.Entry)
 	cpu.SetReg(2, guestSP)
 
 	cleanup := riscv.InstallLinuxOS(cpu, io.Discard)
@@ -459,7 +463,9 @@ func timeGoCPUDirect(elf []byte, realSystemCall bool) int64 {
 		}()
 		elapsed := time.Since(t0).Nanoseconds()
 		if runErr != nil {
-			die("timeGoCPUDirect: %v", runErr)
+			if _, ok := runErr.(*riscv.ExitError); !ok {
+				die("timeGoCPUDirect: %v", runErr)
+			}
 		}
 		return elapsed
 	}

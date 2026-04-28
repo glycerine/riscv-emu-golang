@@ -339,7 +339,7 @@ namespace riscv
 #endif
 #ifdef RISCV_ENCOMPASSING_ARENA_BITS
 	static constexpr int encompassing_Nbit_arena = RISCV_ENCOMPASSING_ARENA_BITS;
-	static constexpr uint64_t encompassing_arena_mask = (1ull << RISCV_ENCOMPASSING_ARENA_BITS) - 1;
+	static constexpr uint64_t encompassing_arena_mask = (RISCV_ENCOMPASSING_ARENA_BITS >= 64) ? ~uint64_t(0) : (1ull << RISCV_ENCOMPASSING_ARENA_BITS) - 1;
 #else
 	static constexpr int encompassing_Nbit_arena = 0;
 	static constexpr uint64_t encompassing_arena_mask = 0;
