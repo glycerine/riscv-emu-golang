@@ -1,8 +1,9 @@
 package riscv
 
 import (
-	"riscv/internal/jitcall"
 	"unsafe"
+
+	"riscv/internal/jitcall"
 )
 
 // abjitState mirrors the shadow register file layout used by the JIT.

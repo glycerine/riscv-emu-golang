@@ -4,6 +4,8 @@ import (
 	"runtime"
 	"testing"
 	"unsafe"
+
+	"riscv/internal/jitcall"
 )
 
 var callbackFlag bool
@@ -32,7 +34,7 @@ func TestBasicEntryExit(t *testing.T) {
 	cb.Exit()
 
 	state := newAbjitState()
-	callJIT(cb.Addr(), state.RegFileBase())
+	jitcall.CallAbJIT(cb.Addr(), state.RegFileBase())
 	t.Log("basic entry/exit OK")
 }
 
@@ -48,7 +50,7 @@ func TestCallback(t *testing.T) {
 	cb.Exit()
 
 	state := newAbjitState()
-	callJIT(cb.Addr(), state.RegFileBase())
+	jitcall.CallAbJIT(cb.Addr(), state.RegFileBase())
 	if !callbackFlag {
 		t.Fatal("callback was not called")
 	}
@@ -68,7 +70,7 @@ func TestStoreNoCallback(t *testing.T) {
 	cb.Exit()
 
 	state := newAbjitState()
-	callJIT(cb.Addr(), state.RegFileBase())
+	jitcall.CallAbJIT(cb.Addr(), state.RegFileBase())
 
 	if state.X[0] != 0xAAAAAAAAAAAAAAAA {
 		t.Errorf("X[0] = 0x%X, want 0xAAAAAAAAAAAAAAAA", state.X[0])
@@ -93,7 +95,7 @@ func TestAbsoluteStore(t *testing.T) {
 	cb.emit(0x48, 0x89, 0x08) // MOV [RAX], RCX
 	cb.Exit()
 
-	callJIT(cb.Addr(), state.RegFileBase())
+	jitcall.CallAbJIT(cb.Addr(), state.RegFileBase())
 	if state.X[0] != 0xDEADBEEFDEADBEEF {
 		t.Errorf("X[0] = 0x%X, want 0xDEADBEEFDEADBEEF", state.X[0])
 	}
@@ -116,7 +118,7 @@ func TestDumpAndVerify(t *testing.T) {
 
 	t.Logf("code (%d bytes): % x", cb.Len(), cb.buf[:cb.Len()])
 
-	callJIT(cb.Addr(), state.RegFileBase())
+	jitcall.CallAbJIT(cb.Addr(), state.RegFileBase())
 	if state.X[0] != 0xDEADBEEFDEADBEEF {
 		t.Errorf("X[0] = 0x%X, want 0xDEADBEEFDEADBEEF", state.X[0])
 	}
@@ -151,7 +153,7 @@ func TestCalleeSaveVerification(t *testing.T) {
 	cb.Exit()
 
 	state := newAbjitState()
-	callJIT(cb.Addr(), state.RegFileBase())
+	jitcall.CallAbJIT(cb.Addr(), state.RegFileBase())
 
 	if !callbackFlag {
 		t.Fatal("callback was not called")
@@ -179,7 +181,7 @@ func TestGCSafety(t *testing.T) {
 	cb.Exit()
 
 	state := newAbjitState()
-	callJIT(cb.Addr(), state.RegFileBase())
+	jitcall.CallAbJIT(cb.Addr(), state.RegFileBase())
 	if !callbackFlag {
 		t.Fatal("callback was not called")
 	}
@@ -198,7 +200,7 @@ func TestGCSafetyStress(t *testing.T) {
 	state := newAbjitState()
 	for i := 0; i < 100; i++ {
 		callbackFlag = false
-		callJIT(cb.Addr(), state.RegFileBase())
+		jitcall.CallAbJIT(cb.Addr(), state.RegFileBase())
 		if !callbackFlag {
 			t.Fatalf("iteration %d: callback not called", i)
 		}
@@ -222,7 +224,7 @@ func TestRBPValid(t *testing.T) {
 
 	state := newAbjitState()
 	rfBase := state.RegFileBase()
-	callJIT(cb.Addr(), rfBase)
+	jitcall.CallAbJIT(cb.Addr(), rfBase)
 
 	if state.X[0] != uint64(rfBase) {
 		t.Errorf("RBP = 0x%X, want 0x%X", state.X[0], rfBase)
@@ -249,7 +251,7 @@ func TestRBPPreservedAcrossCallback(t *testing.T) {
 
 	state := newAbjitState()
 	rfBase := state.RegFileBase()
-	callJIT(cb.Addr(), rfBase)
+	jitcall.CallAbJIT(cb.Addr(), rfBase)
 
 	if !callbackFlag {
 		t.Fatal("callback not called")
@@ -263,7 +265,7 @@ func TestRBPPreservedAcrossCallback(t *testing.T) {
 }
 
 func TestStateLayout(t *testing.T) {
-	var s State
+	var s abjitState
 	checks := []struct {
 		name string
 		got  uintptr
@@ -304,7 +306,7 @@ func TestLoadFromRBP(t *testing.T) {
 
 	state := newAbjitState()
 	state.X[5] = 0x42
-	callJIT(cb.Addr(), state.RegFileBase())
+	jitcall.CallAbJIT(cb.Addr(), state.RegFileBase())
 
 	if state.X[0] != 0x42 {
 		t.Errorf("X[0] = 0x%X, want 0x42", state.X[0])
@@ -327,7 +329,7 @@ func TestAddReg(t *testing.T) {
 	state := newAbjitState()
 	state.X[10] = 100
 	state.X[11] = 200
-	callJIT(cb.Addr(), state.RegFileBase())
+	jitcall.CallAbJIT(cb.Addr(), state.RegFileBase())
 
 	if state.X[0] != 300 {
 		t.Errorf("X[0] = %d, want 300", state.X[0])
@@ -376,7 +378,7 @@ func BenchmarkTrampolineOverhead(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		callJIT(codeAddr, rfBase)
+		jitcall.CallAbJIT(codeAddr, rfBase)
 	}
 }
 
@@ -396,6 +398,6 @@ func BenchmarkCallbackRoundTrip(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		callJIT(codeAddr, rfBase)
+		jitcall.CallAbJIT(codeAddr, rfBase)
 	}
 }

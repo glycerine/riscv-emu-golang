@@ -31,6 +31,6 @@ gocall:
 // func CallJITImplAddr() uintptr
 TEXT ·CallAbJITImplAddr(SB), 0, $0-8
 	NO_LOCAL_POINTERS
-	MOVQ $·callJIT(SB), AX
+	MOVQ $·CallAbJIT(SB), AX
 	MOVQ AX, ret+0(FP)
 	RET
