@@ -54,14 +54,14 @@ func TestABJIT_NoJITtoJIT_CALL(t *testing.T) {
 	if calls != 0 {
 		t.Errorf("found %d CALL instructions in block with no syscall/callback — expected 0", calls)
 	}
-	if rets != 1 {
-		t.Errorf("found %d RET instructions — expected exactly 1 (exit thunk)", rets)
+	if rets != 0 {
+		t.Errorf("found %d RET instructions — expected 0 (exit thunk uses JMP to retStub)", rets)
 	}
 }
 
 // TestABJIT_SyscallCALL_CountsCorrect verifies that a block with one
-// IRSyscall produces exactly one CALL (the syscall dispatcher) plus
-// the exit-thunk RET. No extra CALL/RET.
+// IRSyscall produces zero CALL/RET (syscall uses gocall JMP, exit
+// thunk uses JMP to retStub).
 func TestABJIT_SyscallCALL_CountsCorrect(t *testing.T) {
 	b := NewBlock()
 	b.Instrs = []IRInstr{
@@ -83,10 +83,10 @@ func TestABJIT_SyscallCALL_CountsCorrect(t *testing.T) {
 		}
 	}
 
-	if calls != 1 {
-		t.Errorf("found %d CALL instructions — expected 1 (syscall dispatcher)", calls)
+	if calls != 0 {
+		t.Errorf("found %d CALL instructions — expected 0 (syscall uses gocall JMP)", calls)
 	}
-	if rets != 1 {
-		t.Errorf("found %d RET instructions — expected 1 (exit thunk)", rets)
+	if rets != 0 {
+		t.Errorf("found %d RET instructions — expected 0 (exit thunk uses JMP to retStub)", rets)
 	}
 }

@@ -27,6 +27,8 @@ TEXT ·callJIT(SB), 0, $65528-16
 gocall:
 	CALL R10
 	JMP (SP)
+retStub:
+	RET
 
 // func callJITImplAddr() uintptr
 TEXT ·callJITImplAddr(SB), 0, $0-8

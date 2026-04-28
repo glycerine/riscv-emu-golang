@@ -57,3 +57,10 @@ func CallJIT(code, regFileBase uintptr) {
 func GocallAddr() uintptr {
 	return gocallAddr
 }
+
+// RetStubAddr returns the address of the RET instruction in the
+// trampoline. JIT exit thunks JMP here instead of emitting RET
+// inline — keeps all RET instructions in Go-known code.
+func RetStubAddr() uintptr {
+	return retStubAddr
+}

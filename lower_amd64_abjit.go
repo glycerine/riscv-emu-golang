@@ -225,9 +225,12 @@ func (lc *lowerCtxABJIT) emitExitThunk() {
 	lc.emitRM(x86.AMOVQ, goasm.REG_AMD64_SP, 0, goasm.REG_AMD64_BP)
 	lc.emitRI(x86.AADDQ, 8, goasm.REG_AMD64_SP)
 
-	ret := lc.c.NewProg()
-	ret.As = obj.ARET
-	lc.c.Append(ret)
+	lc.loadImm(int64(abjit.RetStubAddr()), stgA)
+	jp := lc.c.NewProg()
+	jp.As = obj.AJMP
+	jp.To.Type = obj.TYPE_REG
+	jp.To.Reg = stgA
+	lc.c.Append(jp)
 }
 
 // jmpExitThunk emits ADD RSP, frameSize; JMP exitThunk.
