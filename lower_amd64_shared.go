@@ -123,10 +123,16 @@ type JalrICDesc struct {
 	StubProg *obj.Prog
 }
 
+type GocallResumeDesc struct {
+	AddrMov    *obj.Prog // MOVABS sentinel holding the resume address
+	ResumeProg *obj.Prog // NOP at the resume point
+}
+
 type LowerResult struct {
-	ChainEntryProg *obj.Prog
-	ChainExits     []ChainExitDesc
-	JalrICs        []JalrICDesc
+	ChainEntryProg  *obj.Prog
+	ChainExits      []ChainExitDesc
+	JalrICs         []JalrICDesc
+	GocallResumes   []GocallResumeDesc
 }
 
 // ── Shared helpers ──

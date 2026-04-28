@@ -101,6 +101,7 @@ func (j *JIT) jitCompile(res *emitResult, mem ...*GuestMemory) (*compiledBlock, 
 			})
 		}
 		backpatchJalrICs(execMem, codeBase, lowerResult, blk)
+		backpatchGocallResumes(execMem, codeBase, lowerResult)
 	}
 
 	return blk, nil
@@ -139,6 +140,14 @@ func backpatchJalrICs(execMem []byte, codeBase uintptr, lowerResult *LowerResult
 		}
 
 		blk.jalrICs = append(blk.jalrICs, info)
+	}
+}
+
+func backpatchGocallResumes(execMem []byte, codeBase uintptr, lr *LowerResult) {
+	for _, gr := range lr.GocallResumes {
+		patchOff := int(gr.AddrMov.Pc) + 2
+		resumeAddr := codeBase + uintptr(gr.ResumeProg.Pc)
+		binary.LittleEndian.PutUint64(execMem[patchOff:], uint64(resumeAddr))
 	}
 }
 

@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"sort"
 
+	"riscv/abjit"
 	"riscv/goasm"
 	"riscv/goasm/obj"
 	"riscv/goasm/obj/x86"
@@ -36,7 +37,8 @@ const (
 
 type lowerCtxABJIT struct {
 	lowerOps
-	exitThunk *obj.Prog
+	exitThunk      *obj.Prog
+	gocallResumes  []GocallResumeDesc
 }
 
 // LowerAMD64_ABJIT converts a register-allocated IR Block into x86-64
@@ -136,6 +138,7 @@ func LowerAMD64_ABJIT(ctx *goasm.Ctx, b *Block, alloc *Allocation) (*LowerResult
 			StubProg: lc.jalrICs[i].stubProg,
 		})
 	}
+	result.GocallResumes = lc.gocallResumes
 	return result, nil
 }
 
@@ -397,8 +400,8 @@ func (lc *lowerCtxABJIT) abjitSyscall(ins *IRInstr) {
 	}
 	sym := lc.blk.CTab[ins.Imm2]
 
-	// Stage IC to State BEFORE the CALL (call clobbers caller-saved regs).
-
+	// Spill R15 (IC) to State before Go call (Go clobbers R15).
+	lc.opsSpillIC()
 
 	// Set up SysV args: RDI=xBase(RBP), RSI=memBase, RDX=memMask.
 	lc.emit2(x86.AMOVQ, goasm.REG_AMD64_BP, goasm.REG_AMD64_DI)
@@ -421,13 +424,44 @@ func (lc *lowerCtxABJIT) abjitSyscall(ins *IRInstr) {
 		lc.emitRM(x86.AMOVQ, goasm.REG_AMD64_BP, int64(abjitMemMaskOff), goasm.REG_AMD64_DX)
 	}
 
-	// CALL dispatcher.
-	lc.loadImm(int64(sym.Addr), stgA)
-	p := lc.c.NewProg()
-	p.As = obj.ACALL
-	p.To.Type = obj.TYPE_REG
-	p.To.Reg = stgA
-	lc.c.Append(p)
+	// Gocall sequence: deallocate JIT spill frame so RSP is at the
+	// trampoline level, store resume address at [RSP+0] (trampoline
+	// slot 0), load func into R10, JMP to gocall. The trampoline does
+	// CALL R10 (return PC is valid Go code) then JMP (RSP) back to
+	// resume. At resume, re-allocate the spill frame.
+	lc.emitRI(x86.AADDQ, lc.frameSize, goasm.REG_AMD64_SP)
+
+	const gocallSentinel = int64(0x7CAFFE7CAFFE7CAF)
+	addrMov := lc.c.NewProg()
+	addrMov.As = x86.AMOVQ
+	addrMov.From.Type = obj.TYPE_CONST
+	addrMov.From.Offset = gocallSentinel
+	addrMov.To.Type = obj.TYPE_REG
+	addrMov.To.Reg = stgA
+	lc.c.Append(addrMov)
+	lc.emitMR(x86.AMOVQ, stgA, goasm.REG_AMD64_SP, 0)
+
+	lc.loadImm(int64(sym.Addr), goasm.REG_AMD64_R10)
+	lc.loadImm(int64(abjit.GocallAddr()), stgA)
+	jp0 := lc.c.NewProg()
+	jp0.As = obj.AJMP
+	jp0.To.Type = obj.TYPE_REG
+	jp0.To.Reg = stgA
+	lc.c.Append(jp0)
+
+	// Resume: trampoline's JMP (SP) lands here. Re-allocate spill frame.
+	resumeNop := lc.c.NewProg()
+	resumeNop.As = obj.ANOP
+	lc.c.Append(resumeNop)
+	lc.emitRI(x86.ASUBQ, lc.frameSize, goasm.REG_AMD64_SP)
+
+	lc.gocallResumes = append(lc.gocallResumes, GocallResumeDesc{
+		AddrMov:    addrMov,
+		ResumeProg: resumeNop,
+	})
+
+	// Restore R15 (IC) from State after Go call.
+	lc.opsLoadIC()
 
 	// RAX = 0 → handled (hot path), non-zero → fallback (cold path).
 	lc.emit2(x86.ATESTQ, goasm.REG_AMD64_AX, goasm.REG_AMD64_AX)
@@ -689,12 +723,42 @@ func (lc *lowerCtxABJIT) abjitCall(ins *IRInstr) error {
 		lc.emitMR(x86.AMOVSD, r, goasm.REG_AMD64_SP, int64(len(liveInt)+i)*8)
 	}
 
-	lc.loadImm(int64(sym.Addr), stgA)
-	p := lc.c.NewProg()
-	p.As = obj.ACALL
-	p.To.Type = obj.TYPE_REG
-	p.To.Reg = stgA
-	lc.c.Append(p)
+	// Spill R15 (IC) before Go call.
+	lc.opsSpillIC()
+
+	// Gocall: store resume address at [SP+saveSize] (which is the
+	// trampoline's [SP+0] since we SUB'd saveSize from SP above).
+	// Actually, the trampoline frame's [SP+0] is at the ORIGINAL SP
+	// before we pushed saves. We need to write to [RSP + saveSize].
+	const gocallSentinel = int64(0x7CAFFE7CAFFE7CAF)
+	addrMov := lc.c.NewProg()
+	addrMov.As = x86.AMOVQ
+	addrMov.From.Type = obj.TYPE_CONST
+	addrMov.From.Offset = gocallSentinel
+	addrMov.To.Type = obj.TYPE_REG
+	addrMov.To.Reg = stgA
+	lc.c.Append(addrMov)
+	lc.emitMR(x86.AMOVQ, stgA, goasm.REG_AMD64_SP, saveSize)
+
+	lc.loadImm(int64(sym.Addr), goasm.REG_AMD64_R10)
+	lc.loadImm(int64(abjit.GocallAddr()), stgA)
+	jp := lc.c.NewProg()
+	jp.As = obj.AJMP
+	jp.To.Type = obj.TYPE_REG
+	jp.To.Reg = stgA
+	lc.c.Append(jp)
+
+	resumeNop := lc.c.NewProg()
+	resumeNop.As = obj.ANOP
+	lc.c.Append(resumeNop)
+
+	lc.gocallResumes = append(lc.gocallResumes, GocallResumeDesc{
+		AddrMov:    addrMov,
+		ResumeProg: resumeNop,
+	})
+
+	// Restore R15 (IC) after Go call.
+	lc.opsLoadIC()
 
 	for i, r := range liveInt {
 		lc.emitRM(x86.AMOVQ, goasm.REG_AMD64_SP, int64(i)*8, r)
