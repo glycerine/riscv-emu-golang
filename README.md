@@ -372,3 +372,18 @@ All four _JIT_Lazy test suites pass with all subtests green. The coverage gap is
 closed: RISC-V test ELFs now run through interpreter, AOT JIT, lazy JIT (RunJIT), and
 lockstep.
 ~~~
+
+~~~
+All bench tests pass. IC counts match interpreter (2,524,935,201 for BenchGuest, 389,619,197 for
+  CoreMark, 282,001,647 for Dhrystone).
+
+  Summary of all changes in this session:
+
+  1. jit_aot.go: Added R15 pool exclusion + gocall resume backpatching (AOT SIGSEGV fix)
+  2. abjit/trampoline_amd64.s: Trampoline loads R15 from State.IC before JIT entry
+  3. jit_abjit.go: s.IC = 0 + defer to accumulate IC at Go boundary
+  4. jit_emit_ir.go: Removed IRZeroIC emission — trampoline handles it
+  5. jit.go StepBlock: Returns cpu.cycle (absolute); no cpu.cycle += res.IC (handled by defer)
+  6. jit.go RunJIT: Same — no cpu.cycle += res.IC
+  7. riscv_test.go: Lockstep caller computes delta from absolute IC
+~~~
