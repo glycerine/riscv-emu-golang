@@ -36,9 +36,12 @@ func abjitDispatch(
 	s.DCMask = dcMask
 	s.VAddrBegin = vBegin
 	s.SegSize = segSize
-	s.IC = cpu.cycle
+	s.IC = 0
 
-	//vv("about to call abjit.CallJIT, the assembly trampoline")
+	// Accumulate relative IC into cpu.cycle at dispatch boundary.
+	// defer ensures this fires even when a syscall handler panics
+	// (e.g., exit()), which unwinds through the trampoline.
+	defer func() { cpu.cycle += s.IC }()
 
 	abjit.CallJIT(blk.fn, s.RegFileBase())
 

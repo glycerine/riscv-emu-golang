@@ -1007,11 +1007,7 @@ func (j *JIT) emitBlockRange(mem *GuestMemory, pc, endPC uint64) *emitResult {
 	}
 
 	if e.useICR15 {
-		if e.lockstepMode {
-			e.irEm.ZeroIC()
-		} else {
-			e.irEm.LoadIC()
-		}
+		e.irEm.ZeroIC()
 	}
 	if e.lockstepMode {
 		e.sharedBudgetExit = e.irEm.NewLabel()

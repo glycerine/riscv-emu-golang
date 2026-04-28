@@ -592,41 +592,37 @@ func (j *JIT) StepBlock(cpu *CPU) (ic uint64, err error) {
 				pc, res.PC, res.Status)
 		}
 		cpu.pc = res.PC
-		cpu.cycle = res.IC
-		//if j.DebugOneBlockLockstepMode {
-		//	vv("StepBlock: pc=0x%x -> PC=0x%x status=%d res.IC=%d blk.numInsns=%d ic=%d", pc, res.PC, res.Status, res.IC, blk.numInsns, ic)
-		//}
 
 		switch int(res.Status) {
 		case jitOK:
-			return ic, nil
+			return cpu.cycle, nil
 		case jitOKJalrMiss:
-			return ic, nil
+			return cpu.cycle, nil
 		case jitMisalign:
 			if err := cpu.step(); err != nil {
-				return 1, err
+				return cpu.cycle, err
 			}
 			cpu.cycle++
-			return 1, nil
+			return cpu.cycle, nil
 		case jitEcall:
 			if cpu.mtvec != 0 {
 				cpu.mepc = cpu.pc
 				cpu.mcause = 8
 				cpu.mtval = 0
 				cpu.pc = cpu.mtvec
-				return 0, nil
+				return cpu.cycle, nil
 			}
-			return 0, ErrEcall
+			return cpu.cycle, ErrEcall
 		case jitEbreak:
-			return 0, ErrEbreak
+			return cpu.cycle, ErrEbreak
 		case jitLoadFault:
-			return 0, &MemFault{Addr: res.FaultAddr, Width: 8, Kind: FaultLoad}
+			return cpu.cycle, &MemFault{Addr: res.FaultAddr, Width: 8, Kind: FaultLoad}
 		case jitStoreFault:
-			return 0, &MemFault{Addr: res.FaultAddr, Width: 8, Kind: FaultStore}
+			return cpu.cycle, &MemFault{Addr: res.FaultAddr, Width: 8, Kind: FaultStore}
 		default:
 			err = cpu.step()
 			cpu.cycle++
-			return 1, err
+			return cpu.cycle, err
 		}
 	}
 
@@ -637,7 +633,7 @@ func (j *JIT) StepBlock(cpu *CPU) (ic uint64, err error) {
 			compiled, cerr := j.jitCompile(res, &cpu.mem)
 			if cerr == nil {
 				j.insertBlock(pc, compiled)
-				return j.StepBlock(cpu) // retry with compiled block
+				return j.StepBlock(cpu) // retry — returns cpu.cycle
 			}
 		}
 		j.noJIT[pc] = true
@@ -646,7 +642,7 @@ func (j *JIT) StepBlock(cpu *CPU) (ic uint64, err error) {
 	// Interpreter fallback
 	err = cpu.step()
 	cpu.cycle++
-	return 1, err
+	return cpu.cycle, err
 }
 
 // stepBlockDebugV1V2 runs a block through both V1 and V2, compares all
@@ -779,7 +775,6 @@ func (j *JIT) RunJIT(cpu *CPU) (err0 error) {
 				}
 			}
 			cpu.pc = res.PC
-			cpu.cycle = res.IC
 
 			switch int(res.Status) {
 			case jitOK:

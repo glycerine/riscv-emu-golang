@@ -640,7 +640,9 @@ func runLockstep(t *testing.T, elfPath string) {
 		//vv("just before jit.StepBlock(jitCPU) in runLockstep: elfPath '%v'; jitPC = 0x%x and interpCPU.pc = 0x%x ; jitCPU = '%#v'", elfPath, jitCPU.pc, interpCPU.pc, jitCPU)
 
 		// JIT: one dispatch cycle
-		jitIC, jitErr := jit.StepBlock(jitCPU)
+		preCycle := jitCPU.Cycle()
+		absIC, jitErr := jit.StepBlock(jitCPU)
+		jitIC := absIC - preCycle
 
 		targetPC := jitCPU.pc
 
