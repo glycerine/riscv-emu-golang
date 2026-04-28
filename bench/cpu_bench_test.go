@@ -81,30 +81,11 @@ func runJITBenchGuestWith(cpu *riscv.CPU, jit *riscv.JIT) (exitCode int, insns u
 // un-cached RunWithChain. The cache is sized to cover typical executable
 // segments (~256 KB) based at the ELF entry.
 func runCachedBenchGuest(cpu *riscv.CPU) (exitCode int, insns uint64) {
-	defer func() {
-		if r := recover(); r != nil {
-			if ex, ok := r.(*riscv.ExitError); ok {
-				exitCode = ex.Code
-				insns = cpu.Cycle()
-				return
-			}
-			panic(r)
-		}
-	}()
-
-	// try to avoid the 25% performance drop footgun of calling runCached.
-
-	// Cache covers [entry-4K, entry+256K). Anything outside falls back to step().
-	//base := cpu.PC() & ^uint64(0xFFF)
-	//if base > 0x1000 {
-	//	base -= 0x1000
-	//}
-	//cache := riscv.NewDecoderCache(base, 256<<10)
-	//_ = riscv.RunCached(cpu, cache, &cpu.Notes)
-
 	err := riscv.RunDefault(cpu, &cpu.Notes)
-	_ = err
 	insns = cpu.Cycle()
+	if ex, ok := err.(*riscv.ExitError); ok {
+		exitCode = ex.Code
+	}
 	return
 }
 
@@ -112,18 +93,11 @@ func runCachedBenchGuest(cpu *riscv.CPU) (exitCode int, insns uint64) {
 // which internally uses the decoder-cached RunCached driver. Measures what
 // a typical CLI user would get by default.
 func runBenchGuest(cpu *riscv.CPU) (exitCode int, insns uint64) {
-	defer func() {
-		if r := recover(); r != nil {
-			if ex, ok := r.(*riscv.ExitError); ok {
-				exitCode = ex.Code
-				insns = cpu.Cycle()
-				return
-			}
-			panic(r)
-		}
-	}()
-	_ = cpu.Run()
+	err := cpu.Run()
 	insns = cpu.Cycle()
+	if ex, ok := err.(*riscv.ExitError); ok {
+		exitCode = ex.Code
+	}
 	return
 }
 
@@ -131,18 +105,11 @@ func runBenchGuest(cpu *riscv.CPU) (exitCode int, insns uint64) {
 // uncached driver (RunWithChain). Kept for head-to-head comparison with the
 // default path; not what a typical user would run.
 func runUncachedBenchGuest(cpu *riscv.CPU) (exitCode int, insns uint64) {
-	defer func() {
-		if r := recover(); r != nil {
-			if ex, ok := r.(*riscv.ExitError); ok {
-				exitCode = ex.Code
-				insns = cpu.Cycle()
-				return
-			}
-			panic(r)
-		}
-	}()
-	_ = riscv.RunWithChain(cpu, &cpu.Notes)
+	err := riscv.RunWithChain(cpu, &cpu.Notes)
 	insns = cpu.Cycle()
+	if ex, ok := err.(*riscv.ExitError); ok {
+		exitCode = ex.Code
+	}
 	return
 }
 

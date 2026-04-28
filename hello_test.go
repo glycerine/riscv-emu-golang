@@ -101,20 +101,11 @@ func TestHelloGoCPU_JIT_DirectSyscall(t *testing.T) {
 	j := NewJIT()
 
 	captured := captureStdout(t, func() {
-		var runErr error
-		func() {
-			defer func() {
-				if r := recover(); r != nil {
-					if _, ok := r.(*ExitError); ok {
-						return
-					}
-					panic(r)
-				}
-			}()
-			runErr = j.RunJIT(cpu)
-		}()
+		runErr := j.RunJIT(cpu)
 		if runErr != nil {
-			t.Fatalf("RunJIT: %v", runErr)
+			if _, ok := runErr.(*ExitError); !ok {
+				t.Fatalf("RunJIT: %v", runErr)
+			}
 		}
 	})
 

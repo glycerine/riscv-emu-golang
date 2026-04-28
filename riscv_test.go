@@ -394,22 +394,15 @@ func runRISCVTestJITLazy(t *testing.T, elfPath string) {
 	cpu.Notes.Push(o.Handle)
 	defer cpu.Notes.Pop()
 
-	defer func() {
-		if r := recover(); r != nil {
-			if ex, ok := r.(*ExitError); ok {
-				if ex.Code != 0 {
-					testNum := ex.Code >> 1
-					t.Errorf("Lazy JIT FAILED: test %d (exit code %d)", testNum, ex.Code)
-				}
-				return
-			}
-			panic(r)
-		}
-	}()
-
 	jit := NewJIT()
 	jit.DisableAutoAOT = true
-	if err := jit.RunJIT(cpu); err != nil {
+	err = jit.RunJIT(cpu)
+	if ex, ok := err.(*ExitError); ok {
+		if ex.Code != 0 {
+			testNum := ex.Code >> 1
+			t.Errorf("Lazy JIT FAILED: test %d (exit code %d)", testNum, ex.Code)
+		}
+	} else if err != nil {
 		t.Fatalf("Lazy JIT run error: %v", err)
 	}
 }
@@ -511,18 +504,9 @@ func TestR15IC_MatchesInterpreter(t *testing.T) {
 	o.HandleEcall(RiscvTestsEcall)
 	jitCPU.Notes.Push(o.Handle)
 
-	func() {
-		defer func() {
-			if r := recover(); r != nil {
-				if _, ok := r.(*ExitError); !ok {
-					panic(r)
-				}
-			}
-		}()
-		jit := NewJIT()
-		jit.DisableAutoAOT = true
-		_ = jit.RunJIT(jitCPU)
-	}()
+	jit := NewJIT()
+	jit.DisableAutoAOT = true
+	_ = jit.RunJIT(jitCPU)
 	jitIC := jitCPU.Cycle()
 
 	t.Logf("interpreter IC=%d, JIT R15 IC=%d", interpIC, jitIC)

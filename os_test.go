@@ -307,26 +307,14 @@ func TestNoteChain_Stacked_OSWithDebug(t *testing.T) {
 	cpu.Notes.Push(o.Handle) // outermost
 	cpu.Notes.Push(spy)      // innermost — called first
 
-	var exitCode int
-	var err error
-	func() {
-		defer func() {
-			if r := recover(); r != nil {
-				if ex, ok := r.(*ExitError); ok {
-					exitCode = ex.Code
-				} else {
-					panic(r)
-				}
-			}
-		}()
-		err = RunWithChain(cpu, &cpu.Notes)
-	}()
+	runErr := RunWithChain(cpu, &cpu.Notes)
 
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if exitCode != 5 {
-		t.Errorf("exit code: got %d want 5", exitCode)
+	if ex, ok := runErr.(*ExitError); ok {
+		if ex.Code != 5 {
+			t.Errorf("exit code: got %d want 5", ex.Code)
+		}
+	} else {
+		t.Fatalf("expected *ExitError, got %v", runErr)
 	}
 	// Spy should have seen the ecall note
 	if len(noted) == 0 {
@@ -702,33 +690,23 @@ func TestECALL_TrapHandler_WritesTohost(t *testing.T) {
 
 	// Run with tohost polling. The trap handler writes gp=1 to tohost,
 	// which triggers the tohost exit with code 0 (PASS).
-	var exitCode int
-	func() {
-		defer func() {
-			if r := recover(); r != nil {
-				if ex, ok := r.(*ExitError); ok {
-					exitCode = ex.Code
-				} else {
-					panic(r)
-				}
-			}
-		}()
-		// Run up to 1000 instructions.
-		for i := 0; i < 1000; i++ {
-			err := cpu.Step()
-			cpu.cycle++
-			if cpu.watchAddr != 0 {
-				if v, _ := (&cpu.mem).Load64(cpu.watchAddr); v != 0 {
-					panic(&ExitError{Code: tohostExitCode(v)})
-				}
-			}
-			if err != nil {
-				t.Fatalf("step %d: unexpected error: %v (pc=0x%x)", i, err, cpu.PC())
+	exitCode := -1
+	for i := 0; i < 1000; i++ {
+		err := cpu.Step()
+		cpu.cycle++
+		if cpu.watchAddr != 0 {
+			if v, _ := (&cpu.mem).Load64(cpu.watchAddr); v != 0 {
+				exitCode = tohostExitCode(v)
+				break
 			}
 		}
+		if err != nil {
+			t.Fatalf("step %d: unexpected error: %v (pc=0x%x)", i, err, cpu.PC())
+		}
+	}
+	if exitCode < 0 {
 		t.Fatal("did not exit within 1000 steps")
-	}()
-
+	}
 	if exitCode != 0 {
 		t.Errorf("tohost exit code: got %d want 0 (PASS)", exitCode)
 	}
@@ -770,32 +748,23 @@ func TestECALL_TrapHandler_Fail(t *testing.T) {
 	cpu.SetPC(ef.Entry)
 	cpu.SetWatchAddr(tohostVA)
 
-	var exitCode int
-	func() {
-		defer func() {
-			if r := recover(); r != nil {
-				if ex, ok := r.(*ExitError); ok {
-					exitCode = ex.Code
-				} else {
-					panic(r)
-				}
-			}
-		}()
-		for i := 0; i < 1000; i++ {
-			err := cpu.Step()
-			cpu.cycle++
-			if cpu.watchAddr != 0 {
-				if v, _ := (&cpu.mem).Load64(cpu.watchAddr); v != 0 {
-					panic(&ExitError{Code: tohostExitCode(v)})
-				}
-			}
-			if err != nil {
-				t.Fatalf("step %d: %v", i, err)
+	exitCode := -1
+	for i := 0; i < 1000; i++ {
+		err := cpu.Step()
+		cpu.cycle++
+		if cpu.watchAddr != 0 {
+			if v, _ := (&cpu.mem).Load64(cpu.watchAddr); v != 0 {
+				exitCode = tohostExitCode(v)
+				break
 			}
 		}
+		if err != nil {
+			t.Fatalf("step %d: %v", i, err)
+		}
+	}
+	if exitCode < 0 {
 		t.Fatal("did not exit")
-	}()
-
+	}
 	if exitCode != 7 {
 		t.Errorf("tohost exit code: got %d want 7 (FAIL test 3)", exitCode)
 	}

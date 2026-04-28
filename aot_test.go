@@ -291,19 +291,8 @@ func TestAOTInstall_RunDhrystone(t *testing.T) {
 		len(seg.decoderCacheMmap))
 
 	// Run. Expect ExitError with code 0.
-	var gotErr error
-	var gotPanic any
-	func() {
-		defer func() {
-			gotPanic = recover()
-		}()
-		gotErr = j.RunJIT(cpu)
-	}()
-	if gotPanic != nil {
-		ex, ok := gotPanic.(*ExitError)
-		if !ok {
-			panic(gotPanic)
-		}
+	gotErr := j.RunJIT(cpu)
+	if ex, ok := gotErr.(*ExitError); ok {
 		if ex.Code != 0 {
 			t.Errorf("exit code = %d, want 0", ex.Code)
 		}
@@ -387,10 +376,7 @@ func runDhrystoneCollectCounters(t *testing.T, data []byte, aot bool) (dispatchO
 		// comparing against.
 		j.DisableAutoAOT = true
 	}
-	func() {
-		defer func() { _ = recover() }()
-		_ = j.RunJIT(cpu)
-	}()
+	_ = j.RunJIT(cpu)
 	return j.DispatchOK, j.JalrICMisses
 }
 
@@ -685,20 +671,11 @@ func TestAOT_CrossSegmentJALR_Runs(t *testing.T) {
 		t.Fatalf("InstallAOT: %v", err)
 	}
 
-	var gotErr error
-	var gotPanic any
-	func() {
-		defer func() { gotPanic = recover() }()
-		gotErr = j.RunJIT(cpu)
-	}()
+	gotErr := j.RunJIT(cpu)
 
-	// Expect ExitError panic with code 0 (syscall 93 a0=0).
-	if gotPanic == nil {
-		t.Fatalf("expected ExitError panic, got gotErr=%v", gotErr)
-	}
-	exit, ok := gotPanic.(*ExitError)
+	exit, ok := gotErr.(*ExitError)
 	if !ok {
-		t.Fatalf("expected *ExitError panic, got %T: %v", gotPanic, gotPanic)
+		t.Fatalf("expected *ExitError, got %T: %v", gotErr, gotErr)
 	}
 	if exit.Code != 0 {
 		t.Errorf("exit code = %d, want 0", exit.Code)
@@ -843,15 +820,11 @@ func TestAOT_DynamicSegmentCreate(t *testing.T) {
 		t.Fatalf("len(aotSegments) before run = %d, want 1", got)
 	}
 
-	var gotPanic any
-	func() {
-		defer func() { gotPanic = recover() }()
-		_ = j.RunJIT(cpu)
-	}()
+	gotErr := j.RunJIT(cpu)
 
-	exit, ok := gotPanic.(*ExitError)
+	exit, ok := gotErr.(*ExitError)
 	if !ok {
-		t.Fatalf("expected *ExitError panic, got %T: %v", gotPanic, gotPanic)
+		t.Fatalf("expected *ExitError, got %T: %v", gotErr, gotErr)
 	}
 	if exit.Code != 0 {
 		t.Errorf("exit code = %d, want 0", exit.Code)
@@ -935,14 +908,10 @@ func TestAOT_InvalidateSegment_Roundtrip(t *testing.T) {
 	o.HandleSyscall(93, LinuxExit)
 	cpu.Notes.Push(o.Handle)
 
-	var gotPanic any
-	func() {
-		defer func() { gotPanic = recover() }()
-		_ = j.RunJIT(cpu)
-	}()
-	exit, ok := gotPanic.(*ExitError)
+	gotErr := j.RunJIT(cpu)
+	exit, ok := gotErr.(*ExitError)
 	if !ok {
-		t.Fatalf("expected *ExitError after re-create, got %T: %v", gotPanic, gotPanic)
+		t.Fatalf("expected *ExitError after re-create, got %T: %v", gotErr, gotErr)
 	}
 	if exit.Code != 0 {
 		t.Errorf("exit code = %d, want 0", exit.Code)

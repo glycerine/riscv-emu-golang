@@ -15,25 +15,17 @@ func runABJITWithOS(cpu *CPU) (exitCode int, err error) {
 	cpu.Notes.Push(o.Handle)
 	defer cpu.Notes.Pop()
 
-	defer func() {
-		if r := recover(); r != nil {
-			if ex, ok := r.(*ExitError); ok {
-				exitCode = ex.Code
-				err = nil
-				return
-			}
-			panic(r)
-		}
-	}()
-
 	jit := NewJIT()
 	jit.SetRegPolicy(PolicyABJIT)
 	err = jit.RunJIT(cpu)
+	if ex, ok := err.(*ExitError); ok {
+		return ex.Code, nil
+	}
 	return
 }
 
 func runABJITRISCVTest(t *testing.T, elfPath string) {
-	t.Helper()
+	//t.Helper()
 	data, err := os.ReadFile(elfPath)
 	if err != nil {
 		t.Skipf("ELF not found: %s", elfPath)

@@ -339,13 +339,10 @@ func TestMachineClone_InstallOSOnChild(t *testing.T) {
 	}
 
 	runOnce := func(m *Machine, label string) {
-		defer func() {
-			r := recover()
-			if _, ok := r.(*ExitError); !ok {
-				t.Errorf("%s: expected *ExitError panic, got %v", label, r)
-			}
-		}()
-		_ = m.JIT.RunJIT(m.CPU)
+		err := m.JIT.RunJIT(m.CPU)
+		if _, ok := err.(*ExitError); !ok {
+			t.Errorf("%s: expected *ExitError, got %v", label, err)
+		}
 	}
 	runOnce(parent, "parent")
 	runOnce(child, "child")
