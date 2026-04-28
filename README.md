@@ -387,3 +387,25 @@ All bench tests pass. IC counts match interpreter (2,524,935,201 for BenchGuest,
   6. jit.go RunJIT: Same — no cpu.cycle += res.IC
   7. riscv_test.go: Lockstep caller computes delta from absolute IC
 ~~~
+
+~~~
+$ go test -v -run=xxx -bench=BenchmarkCPU_FullExecution_JIT_ABJIT ./bench
+goos: darwin
+goarch: amd64
+pkg: riscv/bench
+cpu: Intel(R) Core(TM) i7-1068NG7 CPU @ 2.30GHz
+BenchmarkCPU_FullExecution_JIT_ABJIT
+
+cpu_bench_test.go:70 [goID 18] 2026-04-28 03:50:28.785970000 +0000 UTC runJITBenchGuestWith recovered: r='exit status 0'
+
+jit_bench_test.go:75 [goID 18] 2026-04-28 03:50:28.786154000 +0000 UTC elapsed = 0.671339082; totalInsns = 2524935201; tms= '[]time.Duration{671149472}'
+
+cpu_bench_test.go:70 [goID 34] 2026-04-28 03:50:29.448735000 +0000 UTC runJITBenchGuestWith recovered: r='exit status 0'
+
+cpu_bench_test.go:70 [goID 34] 2026-04-28 03:50:30.108163000 +0000 UTC runJITBenchGuestWith recovered: r='exit status 0'
+
+jit_bench_test.go:75 [goID 34] 2026-04-28 03:50:30.108468000 +0000 UTC elapsed = 1.321298538; totalInsns = 5049870402; tms= '[]time.Duration{661642150, 659281074}'
+BenchmarkCPU_FullExecution_JIT_ABJIT-8   	       2	 660649269 ns/op	      3822 MIPS	 3633840 B/op	   45932 allocs/op
+PASS
+ok  	riscv/bench	2.005s
+~~~
