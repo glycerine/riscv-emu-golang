@@ -6,11 +6,12 @@ import (
 	"riscv/internal/jitcall"
 	"strings"
 	"testing"
+	"unsafe"
 )
 
 func jitcallCall(j *JIT, fn uintptr, x *[32]uint64, f *[32]uint64, fcsr *uint32,
 	memBase uintptr, memMask uint64) jitcall.Result {
-	gm := GuestMemory{base: memBase, mask: memMask, size: memMask + 1}
+	gm := GuestMemory{base: unsafe.Pointer(memBase), mask: memMask, size: memMask + 1}
 	cpu := &CPU{mem: gm}
 	cpu.x = *x
 	cpu.f = *f

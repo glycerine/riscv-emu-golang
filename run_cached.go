@@ -241,7 +241,7 @@ func runCached(cpu *CPU, cache *DecoderCache, nc *NoteChain) error {
 			case opLD:
 				addr := cpu.x[slot.rs1] + uint64(int64(slot.imm))
 				if addr&7 == 0 && (addr|(addr+7))&^cpu.mem.mask == 0 {
-					cpu.x[slot.rd] = *(*uint64)(unsafe.Pointer(cpu.mem.base + uintptr(addr&cpu.mem.mask)))
+					cpu.x[slot.rd] = *(*uint64)(unsafe.Add(cpu.mem.base, addr&cpu.mem.mask))
 				} else {
 					v, f := (&cpu.mem).Load64U(addr)
 					if f != nil {
@@ -408,7 +408,7 @@ func runCached(cpu *CPU, cache *DecoderCache, nc *NoteChain) error {
 			case opSD:
 				addr := cpu.x[slot.rs1] + uint64(int64(slot.imm))
 				if addr&7 == 0 && (addr|(addr+7))&^cpu.mem.mask == 0 {
-					*(*uint64)(unsafe.Pointer(cpu.mem.base + uintptr(addr&cpu.mem.mask))) = cpu.x[slot.rs2]
+					*(*uint64)(unsafe.Add(cpu.mem.base, addr&cpu.mem.mask)) = cpu.x[slot.rs2]
 				} else {
 					if f := (&cpu.mem).Store64U(addr, cpu.x[slot.rs2]); f != nil {
 						err = f
@@ -682,7 +682,7 @@ func runCached(cpu *CPU, cache *DecoderCache, nc *NoteChain) error {
 			case opC_LD:
 				addr := cpu.x[slot.rs1] + uint64(slot.imm)
 				if addr&7 == 0 && (addr|(addr+7))&^cpu.mem.mask == 0 {
-					cpu.x[slot.rd] = *(*uint64)(unsafe.Pointer(cpu.mem.base + uintptr(addr&cpu.mem.mask)))
+					cpu.x[slot.rd] = *(*uint64)(unsafe.Add(cpu.mem.base, addr&cpu.mem.mask))
 				} else {
 					v, f := (&cpu.mem).Load64U(addr)
 					if f != nil {
@@ -703,7 +703,7 @@ func runCached(cpu *CPU, cache *DecoderCache, nc *NoteChain) error {
 			case opC_SD:
 				addr := cpu.x[slot.rs1] + uint64(slot.imm)
 				if addr&7 == 0 && (addr|(addr+7))&^cpu.mem.mask == 0 {
-					*(*uint64)(unsafe.Pointer(cpu.mem.base + uintptr(addr&cpu.mem.mask))) = cpu.x[slot.rs2]
+					*(*uint64)(unsafe.Add(cpu.mem.base, addr&cpu.mem.mask)) = cpu.x[slot.rs2]
 				} else {
 					if f := (&cpu.mem).Store64U(addr, cpu.x[slot.rs2]); f != nil {
 						err = f
@@ -819,7 +819,7 @@ func runCached(cpu *CPU, cache *DecoderCache, nc *NoteChain) error {
 				}
 				addr := cpu.x[2] + uint64(slot.imm)
 				if addr&7 == 0 && (addr|(addr+7))&^cpu.mem.mask == 0 {
-					cpu.x[slot.rd] = *(*uint64)(unsafe.Pointer(cpu.mem.base + uintptr(addr&cpu.mem.mask)))
+					cpu.x[slot.rd] = *(*uint64)(unsafe.Add(cpu.mem.base, addr&cpu.mem.mask))
 				} else {
 					v, f := (&cpu.mem).Load64U(addr)
 					if f != nil {
@@ -860,7 +860,7 @@ func runCached(cpu *CPU, cache *DecoderCache, nc *NoteChain) error {
 			case opC_SDSP:
 				addr := cpu.x[2] + uint64(slot.imm)
 				if addr&7 == 0 && (addr|(addr+7))&^cpu.mem.mask == 0 {
-					*(*uint64)(unsafe.Pointer(cpu.mem.base + uintptr(addr&cpu.mem.mask))) = cpu.x[slot.rs2]
+					*(*uint64)(unsafe.Add(cpu.mem.base, addr&cpu.mem.mask)) = cpu.x[slot.rs2]
 				} else {
 					if f := (&cpu.mem).Store64U(addr, cpu.x[slot.rs2]); f != nil {
 						err = f

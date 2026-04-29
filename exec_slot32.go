@@ -52,7 +52,7 @@ func (c *CPU) exec32Slot(slot *DecodedInsn, pc uint64) (uint64, error) {
 			v = uint64(int64(int32(u)))
 		case 0x3: // LD — inline aligned fast path (Phase D)
 			if addr&7 == 0 && (addr|(addr+7))&^c.mem.mask == 0 {
-				v = *(*uint64)(unsafe.Pointer(c.mem.base + uintptr(addr&c.mem.mask)))
+				v = *(*uint64)(unsafe.Add(c.mem.base, addr&c.mem.mask))
 			} else {
 				u, f := (&c.mem).Load64U(addr)
 				if f != nil {
@@ -115,7 +115,7 @@ func (c *CPU) exec32Slot(slot *DecodedInsn, pc uint64) (uint64, error) {
 			}
 		case 0x3: // SD — inline aligned fast path (Phase D)
 			if addr&7 == 0 && (addr|(addr+7))&^c.mem.mask == 0 {
-				*(*uint64)(unsafe.Pointer(c.mem.base + uintptr(addr&c.mem.mask))) = c.x[slot.rs2]
+				*(*uint64)(unsafe.Add(c.mem.base, addr&c.mem.mask)) = c.x[slot.rs2]
 			} else {
 				if f := (&c.mem).Store64U(addr, c.x[slot.rs2]); f != nil {
 					return pc, f

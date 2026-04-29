@@ -13,8 +13,8 @@ var pageSize = uint64(syscall.Getpagesize())
 
 // mustAllocateSource mmaps a private anonymous region of the given size
 // (must be multiple of pageSize), fills every byte with fill, and registers
-// munmap on cleanup. Returns the base address as uintptr.
-func mustAllocateSource(t *testing.T, size uint64, fill byte) uintptr {
+// munmap on cleanup. Returns the base address as unsafe.Pointer.
+func mustAllocateSource(t *testing.T, size uint64, fill byte) unsafe.Pointer {
 	t.Helper()
 	b, err := syscall.Mmap(-1, 0, int(size),
 		syscall.PROT_READ|syscall.PROT_WRITE,
@@ -26,17 +26,17 @@ func mustAllocateSource(t *testing.T, size uint64, fill byte) uintptr {
 		b[i] = fill
 	}
 	t.Cleanup(func() { _ = syscall.Munmap(b) })
-	return uintptr(unsafe.Pointer(&b[0]))
+	return unsafe.Pointer(&b[0])
 }
 
 // readByte reads a single byte at base+offset.
-func readByte(base uintptr, offset uint64) byte {
-	return *(*byte)(unsafe.Pointer(base + uintptr(offset)))
+func readByte(base unsafe.Pointer, offset uint64) byte {
+	return *(*byte)(unsafe.Add(base, offset))
 }
 
 // writeByte writes a single byte at base+offset.
-func writeByte(base uintptr, offset uint64, v byte) {
-	*(*byte)(unsafe.Pointer(base + uintptr(offset))) = v
+func writeByte(base unsafe.Pointer, offset uint64, v byte) {
+	*(*byte)(unsafe.Add(base, offset)) = v
 }
 
 func TestCoW_BasicRemap(t *testing.T) {
@@ -110,17 +110,6 @@ func TestCoW_ParentWriteAfterChildWroteStaysChildIsolated(t *testing.T) {
 }
 
 func TestCoW_ParentWriteBeforeChildWrite_DocumentBehavior(t *testing.T) {
-	// Subtle case: the parent writes BEFORE the child writes to that page.
-	// On typical CoW (memfd + MAP_PRIVATE on linux; mach_vm_remap with copy
-	// on darwin), the semantics are "shared until either side writes".
-	// linux MAP_PRIVATE: child sees the parent's pre-write snapshot IF the
-	// page was already populated into the memfd at remap time (which it is,
-	// via the SHARED->copy->unmap->PRIVATE dance). darwin mach_vm_remap with
-	// copy=TRUE: child also sees fork-time snapshot.
-	//
-	// This test documents what actually happens rather than asserting a
-	// particular choice — the correctness we require is post-child-write
-	// isolation, covered by the other tests.
 	size := 2 * pageSize
 	src := mustAllocateSource(t, size, 0xAA)
 
@@ -135,7 +124,6 @@ func TestCoW_ParentWriteBeforeChildWrite_DocumentBehavior(t *testing.T) {
 
 	got := readByte(child, 0)
 	t.Logf("parent-pre-write-then-child-read: child[0]=0x%02x (0xAA = fork-time snapshot, 0xCC = still shared)", got)
-	// We require at least that the child is NOT corrupted and is readable.
 	if got != 0xAA && got != 0xCC {
 		t.Errorf("child[0]=0x%02x unexpected", got)
 	}

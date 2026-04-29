@@ -24,6 +24,7 @@ import "C"
 
 import (
 	"fmt"
+	"unsafe"
 )
 
 // COWRemap creates a copy-on-write remap of [sourceAddr, sourceAddr+size)
@@ -35,7 +36,7 @@ import (
 // by the clone and vice versa.
 //
 // Release with COWUnmap when done.
-func COWRemap(size uint64, sourceAddr uintptr) (uintptr, error) {
+func COWRemap(size uint64, sourceAddr unsafe.Pointer) (unsafe.Pointer, error) {
 	var targetAddr C.mach_vm_address_t
 	var curProt, maxProt C.vm_prot_t
 
@@ -46,7 +47,7 @@ func COWRemap(size uint64, sourceAddr uintptr) (uintptr, error) {
 		0,                    // alignment mask: 0 = no alignment constraint
 		C.VM_FLAGS_ANYWHERE,  // let the kernel pick the target address
 		C.mach_task_self_,
-		C.mach_vm_address_t(sourceAddr),
+		C.mach_vm_address_t(uintptr(sourceAddr)),
 		C.boolean_t(1),       // copy=TRUE ⇒ copy-on-write (not shared)
 		&curProt,
 		&maxProt,
@@ -54,17 +55,17 @@ func COWRemap(size uint64, sourceAddr uintptr) (uintptr, error) {
 	)
 
 	if kr != C.KERN_SUCCESS {
-		return 0, fmt.Errorf("mach_vm_remap failed with error code: %d", int(kr))
+		return nil, fmt.Errorf("mach_vm_remap failed with error code: %d", int(kr))
 	}
 
-	return uintptr(targetAddr), nil
+	return unsafe.Pointer(uintptr(targetAddr)), nil
 }
 
 // COWUnmap releases a region returned by COWRemap.
-func COWUnmap(addr uintptr, size uint64) error {
+func COWUnmap(addr unsafe.Pointer, size uint64) error {
 	kr := C.mach_vm_deallocate(
 		C.mach_task_self_,
-		C.mach_vm_address_t(addr),
+		C.mach_vm_address_t(uintptr(addr)),
 		C.mach_vm_size_t(size),
 	)
 	if kr != C.KERN_SUCCESS {

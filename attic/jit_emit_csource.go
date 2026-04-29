@@ -1,3 +1,5 @@
+//go:build none
+
 package riscv
 
 // jit_emit.go — Translates RISC-V basic blocks to C source code.

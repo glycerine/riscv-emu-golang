@@ -163,11 +163,11 @@ func (f *MemFault) Error() string {
 //   - alignment-checked (folded into the same expression)
 //   - sandboxed (hostPtr cannot escape [base, base+size) by construction)
 type GuestMemory struct {
-	// base is the host address of the first byte of the slab.
-	// Stored as uintptr because it is C memory: not a Go pointer,
-	// never traced or moved by the GC. Arithmetic on it is safe for
-	// the lifetime of the allocation.
-	base uintptr
+	// base is the host address of the first byte of the guest memory slab.
+	// Stored as unsafe.Pointer so that pointer arithmetic via unsafe.Add
+	// satisfies Go's unsafe.Pointer rules (rule #3). The underlying
+	// memory is C mmap, never traced or moved by the GC.
+	base unsafe.Pointer
 
 	// mask is size-1. Because size is a power of two, mask has all
 	// bits set below the size boundary and all bits clear above it.
@@ -214,7 +214,7 @@ func NewGuestMemory(size uint64) (*GuestMemory, error) {
 	}
 
 	m := &GuestMemory{
-		base: uintptr(ptr),
+		base: unsafe.Pointer(ptr),
 		mask: size - 1,
 		size: size,
 	}
@@ -236,9 +236,9 @@ func NewGuestMemory(size uint64) (*GuestMemory, error) {
 // Free releases the slab immediately. Safe to call multiple times.
 // After Free, any use of the GuestMemory is undefined behavior.
 func (m *GuestMemory) Free() {
-	if m.base != 0 {
-		C.guest_free(unsafe.Pointer(m.base), C.size_t(m.size))
-		m.base = 0
+	if m.base != nil {
+		C.guest_free(m.base, C.size_t(m.size))
+		m.base = nil
 	}
 }
 
@@ -258,19 +258,19 @@ func (m *GuestMemory) Free() {
 func (m *GuestMemory) CowClone() (*GuestMemory, error) {
 	// Temporarily unguard so COWRemap can read the entire mmap.
 	guardOff := uintptr(m.size) - 2*GuestPageSize
-	C.guest_unguard(unsafe.Pointer(m.base+guardOff), C.size_t(GuestPageSize))
+	C.guest_unguard(unsafe.Add(m.base, guardOff), C.size_t(GuestPageSize))
 
 	newBase, err := COWRemap(m.size, m.base)
 
 	// Re-guard the parent.
-	C.guest_guard(unsafe.Pointer(m.base+guardOff), C.size_t(GuestPageSize))
+	C.guest_guard(unsafe.Add(m.base, guardOff), C.size_t(GuestPageSize))
 
 	if err != nil {
 		return nil, fmt.Errorf("guestmem: CowClone: %w", err)
 	}
 
 	// Guard the child's stack/regfile page too.
-	C.guest_guard(unsafe.Pointer(newBase+guardOff), C.size_t(GuestPageSize))
+	C.guest_guard(unsafe.Add(newBase, guardOff), C.size_t(GuestPageSize))
 
 	var execRegionsCopy []ExecRegion
 	if len(m.execRegions) > 0 {
@@ -291,14 +291,14 @@ func (m *GuestMemory) Size() uint64 { return m.size }
 // valid in-bounds guest address by construction — the same guarantee the
 // memory system uses internally for its containment invariant.
 func (m *GuestMemory) Mask() uint64  { return m.mask }
-func (m *GuestMemory) Base() uintptr { return m.base }
+func (m *GuestMemory) Base() uintptr { return uintptr(m.base) }
 
-func (m *GuestMemory) RegFileBase() uintptr { return m.base + uintptr(m.size) - GuestPageSize }
-func (m *GuestMemory) StackTop() uintptr    { return m.base + uintptr(m.size) - 2*GuestPageSize }
+func (m *GuestMemory) RegFileBase() uintptr { return uintptr(m.base) + uintptr(m.size) - GuestPageSize }
+func (m *GuestMemory) StackTop() uintptr    { return uintptr(m.base) + uintptr(m.size) - 2*GuestPageSize }
 
 // RawSlice returns a zero-copy byte slice over the entire guest memory slab.
 func (m *GuestMemory) RawSlice() []byte {
-	return unsafe.Slice((*byte)(unsafe.Pointer(m.base)), m.size)
+	return unsafe.Slice((*byte)(m.base), m.size)
 }
 
 // ZeroRange returns physical pages in [addr, addr+length) to the OS.
@@ -309,7 +309,7 @@ func (m *GuestMemory) ZeroRange(addr, length uint64) *MemFault {
 	if end > m.size || end < addr { // second condition catches wraparound
 		return &MemFault{addr, length, FaultStore}
 	}
-	C.guest_zero_range(unsafe.Pointer(m.base+uintptr(addr)), C.size_t(length))
+	C.guest_zero_range(unsafe.Add(m.base, uintptr(addr)), C.size_t(length))
 	return nil
 }
 
@@ -357,12 +357,11 @@ func (m *GuestMemory) checkSandboxEscape(addr, width uint64, kind FaultKind) *Me
 //	addr & mask ∈ [0, size-1]  →  base + (addr&mask) ∈ [base, base+size-1]
 //
 // Callers must have verified check(addr, width)==0 before dereferencing.
-// The unsafe.Pointer cast is syntactically required by Go; it generates
-// no machine code. This is safe because base is C memory and never moves.
+// unsafe.Add from an unsafe.Pointer satisfies Go's pointer rule #3.
 //
 //go:nosplit
 func (m *GuestMemory) hostPtr(addr uint64) unsafe.Pointer {
-	return unsafe.Pointer(m.base + uintptr(addr&m.mask))
+	return unsafe.Add(m.base, addr&m.mask)
 }
 
 // fault constructs a MemFault, distinguishing misalignment from OOB.

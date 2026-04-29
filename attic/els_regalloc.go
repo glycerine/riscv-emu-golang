@@ -1,3 +1,5 @@
+//go:build none
+
 package riscv
 
 import "sort"
