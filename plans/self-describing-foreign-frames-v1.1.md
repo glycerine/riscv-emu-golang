@@ -44,20 +44,33 @@ required.
 
 Locks the current goroutine to its OS thread
 and provisions a fixed-size stack (e.g. 1MB).
-The stack will never be copied for growth. Any
-stack growth attempt panics. This eliminates
-the stack-copying hazard: Go normally grows
-goroutine stacks by copying them, rewriting
-internal pointers during the copy. Foreign
-frames may contain pointers into the stack that
-the runtime cannot find or rewrite. A fixed,
-non-copyable stack makes this impossible.
+This call changes four runtime behaviors for
+this goroutine:
 
-This call also sets `g.foreignStack = true` on
-the goroutine's g struct, enabling the stack
-scanner and panic unwinder to recognize
-self-describing frames on this goroutine's
-stack.
+1. **Thread locked.** The goroutine will not
+   be rescheduled to another OS thread.
+
+2. **Stack fixed.** The stack will never be
+   copied for growth. Any stack growth attempt
+   panics. This eliminates the stack-copying
+   hazard: Go normally grows goroutine stacks
+   by copying them, rewriting internal
+   pointers during the copy. Foreign frames
+   may contain pointers into the stack that
+   the runtime cannot find or rewrite.
+
+3. **No SIGURG.** The runtime will not send
+   async preemption signals (SIGURG) to this
+   goroutine's thread. sysmon skips it
+   entirely. This eliminates signal-related
+   latency and the hazard of interrupting
+   foreign code at an arbitrary PC. See
+   Section 6 (Preemption Protocol).
+
+4. **g.foreignStack = true.** Enables the
+   stack scanner and panic unwinder to
+   recognize self-describing frames on this
+   goroutine's stack.
 
 **Prerequisite 2: Modified stack scanner**
 
@@ -292,10 +305,10 @@ frame before the prologue has written correct
 data.
 
 The edge case of async preemption (SIGURG)
-interrupting the prologue is eliminated by the
-requirement that async preemption is deferred
-on foreign-capable goroutines while executing
-foreign code (Section 11.2, invariant 4).
+interrupting the prologue is eliminated by
+LockOSThreadForeign suppressing SIGURG
+entirely for this goroutine's thread
+(Section 6, Section 13.2 invariant 5).
 
 **Conclusion.**
 
@@ -648,9 +661,212 @@ deferred functions.
 
 ---
 
-## 6. Tracked Region
+## 6. Preemption Protocol
 
-### 6.1 Location
+### 6.1 Problem
+
+Go's scheduler uses two preemption mechanisms:
+
+- **Cooperative:** compiler-inserted stack
+  checks in function prologues compare RSP
+  against g.stackguard0. When the runtime
+  wants to preempt, it sets stackguard0 to a
+  sentinel value. The next prologue check
+  triggers a yield.
+
+- **Async (SIGURG):** sysmon detects a
+  goroutine running >10ms and sends SIGURG
+  to its thread. The signal handler captures
+  the goroutine's state and preempts it.
+
+Foreign code has no Go-style prologue checks,
+so cooperative preemption doesn't reach it.
+SIGURG delivery interrupts at arbitrary PCs
+within JIT code — the signal handler cannot
+safely capture the state because the PC is
+not in moduledata and the register layout is
+unknown. Additionally, signal delivery and
+handling introduces microseconds of latency,
+which is unacceptable for latency-sensitive
+applications (games, audio, real-time).
+
+### 6.2 Solution
+
+`LockOSThreadForeign` disables SIGURG for the
+goroutine entirely. sysmon skips it for async
+preemption. No signals are delivered to the
+thread while the goroutine is foreign-capable.
+
+Instead, preemption is fully cooperative:
+foreign code calls back into Go at natural
+boundaries. Any Go function's prologue checks
+stackguard0 and services pending preemption
+or GC requests automatically. No explicit
+yield API is needed — any callback into Go is
+a safepoint.
+
+### 6.3 Foreign Code Contract
+
+**Foreign code must call back into Go within
+a bounded time.** This is the sole obligation.
+
+While foreign code runs without calling into
+Go, the goroutine is unpreemptible. GC
+stop-the-world pauses are delayed. Other
+goroutines cannot be scheduled on this P.
+
+The recommended maximum interval between Go
+callbacks is 10ms, matching sysmon's existing
+preemption threshold. For latency-sensitive
+applications, shorter intervals are better.
+
+The callbacks do not need to be explicit
+yield points. Any call into Go suffices:
+- Allocating a Go object
+- Accessing a Go data structure
+- Calling runtime.Gosched()
+- Any Go function whatsoever
+
+The Go function's prologue handles everything
+transparently.
+
+### 6.4 GC Cooperation
+
+The GC does not require SIGURG to scan a
+foreign-capable goroutine's stack. The GC
+can scan the stack at any time using the
+self-describing frame protocol — it does not
+need the goroutine to be stopped at a
+Go-specific safepoint.
+
+When a GC stop-the-world is requested, the
+foreign-capable goroutine will participate
+when it next calls into Go. The STW pause
+is bounded by the foreign code's maximum
+callback interval.
+
+For applications that need deterministic GC
+timing, the foreign code can call
+`runtime.Gosched()` or `runtime.GC()` at
+explicit points (e.g. between game frames,
+between physics ticks).
+
+### 6.5 What This Replaces
+
+This cooperative model replaces the cgocall
+approach where Go transitions the goroutine
+to a "syscall" state and releases the P for
+other goroutines. In our model:
+
+- The goroutine owns its P permanently
+  (locked thread).
+- The goroutine is never in "syscall" state.
+- The scheduler does not need to steal the P.
+- Preemption happens at Go callbacks, not
+  via signals.
+
+The tradeoff: one P is dedicated to this
+goroutine. For a game or JIT engine that
+runs one primary goroutine doing foreign
+work, this is the natural model.
+
+---
+
+## 7. Relationship to cgocall
+
+This section explains why this protocol
+exists as an alternative to Go's existing
+cgocall infrastructure.
+
+### 7.1 What cgocall Provides
+
+Go's runtime.cgocall is the existing
+mechanism for calling foreign code. Despite
+the "c" in the name, it is not C-specific —
+it handles any foreign call. It provides:
+
+- Precise stack tracing by switching to a
+  separate C stack, so the Go stack contains
+  only Go frames.
+- Scheduler coordination by transitioning
+  the goroutine to syscall state and
+  releasing the P.
+- Symbolization via runtime.SetCgoCallback.
+
+### 7.2 Why cgocall Is Insufficient
+
+cgocall's overhead is approximately 43ns per
+call. A direct CALL/RET is approximately 2ns.
+This is a 21× performance difference.
+
+For coarse-grained foreign calls (calling a
+C library function once per operation), 43ns
+is negligible. For a JIT compiler dispatching
+translated basic blocks at high frequency —
+potentially millions of transitions per
+second — it is catastrophic. The overhead
+dominates execution time and makes the JIT
+non-competitive with native execution.
+
+The overhead comes from cgocall's model:
+switching stacks, transitioning goroutine
+state, releasing and reacquiring the P, and
+signal mask manipulation. These are all
+necessary for cgocall's generality (it
+handles any foreign code on any goroutine),
+but unnecessary when the goroutine is locked
+to a thread with a fixed stack and the
+foreign code follows a self-describing frame
+protocol.
+
+### 7.3 How This Protocol Differs
+
+This protocol takes a different approach:
+instead of switching to a separate stack, the
+foreign code runs directly on the goroutine
+stack. Instead of transitioning goroutine
+state, the goroutine remains in running state.
+Instead of releasing the P, the goroutine
+keeps it. The GC traces foreign frames using
+the self-describing bitmap rather than by
+requiring all foreign frames to be on a
+separate stack.
+
+The result: 2ns call overhead (a bare
+CALL/RET), full GC correctness, and
+panic/recover participation. The cost is
+that one P is dedicated to the goroutine
+and the foreign code must follow the
+self-describing frame protocol.
+
+### 7.4 Symbolization
+
+This protocol does not provide function
+names or line numbers for foreign frames.
+Stack traces show `<foreign frame at PC>`.
+A future version could support a
+symbolization callback analogous to
+runtime.SetCgoCallback, where the JIT
+registers a function that maps PCs to
+human-readable names.
+
+### 7.5 No cgo Toolchain Required
+
+This protocol requires no cgo toolchain
+involvement. The JIT compiler emits
+self-describing frames directly. No
+`import "C"`, no cgo build step, no
+dynamic linking. This is particularly
+valuable for pure-Go projects that
+generate foreign code at runtime (JIT
+compilers, Wasm engines, emulators) and
+do not otherwise need C interop.
+
+---
+
+## 8. Tracked Region
+
+### 8.1 Location
 
 When numTrackedSlots <= 32 (inline bitmap):
 ```
@@ -663,7 +879,7 @@ B = ceil(numTrackedSlots / 64)
 tracked_slot[i] is at RSP + 32 + 8×B + 8×i
 ```
 
-### 6.2 Bitmap Interpretation
+### 8.2 Bitmap Interpretation
 
 When numTrackedSlots <= 32 (inline):
 ```
@@ -683,7 +899,7 @@ In both cases: bit=1 means the slot is
 treated as a live Go heap pointer. The GC
 traces it. Bit=0 means the GC ignores it.
 
-### 6.3 Maximal Bitmap Rule
+### 8.3 Maximal Bitmap Rule
 
 The bitmap is the union of all pointer slots
 that will ever hold a Go pointer at any point
@@ -702,7 +918,7 @@ The JIT compiler knows every callback site,
 which callbacks return Go pointers, and which
 slot each return value will be spilled to.
 
-### 6.4 Zero-Initialization Requirement
+### 8.4 Zero-Initialization Requirement
 
 **Critical correctness requirement.** Every
 tracked slot whose bitmap bit is 1 MUST be
@@ -720,7 +936,7 @@ Slots with known valid pointers from entry
 (e.g. the context pointer) may be initialized
 with their actual value instead of zero.
 
-### 6.5 Slot Lifecycle
+### 8.5 Slot Lifecycle
 
 ```
 1. PROLOGUE: slot = 0 (or valid ptr)
@@ -754,7 +970,7 @@ with their actual value instead of zero.
 At no point does the GC observe a
 pointer-marked slot containing uninit garbage.
 
-### 6.6 Clearing Dead Pointer Slots
+### 8.6 Clearing Dead Pointer Slots
 
 When foreign code overwrites a pointer slot
 with a non-pointer, the bitmap still marks it.
@@ -778,9 +994,9 @@ Recommended but not required for correctness.
 
 ---
 
-## 7. Untracked Region
+## 9. Untracked Region
 
-### 7.1 Location
+### 9.1 Location
 
 ```
 untracked_start = RSP + 32
@@ -789,12 +1005,12 @@ untracked_start = RSP + 32
 untracked_end   = RSP + frameSize16 × 16
 ```
 
-### 7.2 GC Behavior
+### 9.2 GC Behavior
 
 The GC does not read, trace, or interpret any
 data in the untracked region.
 
-### 7.3 Permitted Uses
+### 9.3 Permitted Uses
 
 The JIT may use the untracked region for:
 - Guest register spills (integers)
@@ -816,9 +1032,9 @@ via the tracked slot.
 
 ---
 
-## 8. GC Scanner Integration
+## 10. GC Scanner Integration
 
-### 8.1 Complete Scanner Logic
+### 10.1 Complete Scanner Logic
 
 ```go
 func scanForeignFrame(
@@ -906,7 +1122,7 @@ func scanForeignFrame(
 }
 ```
 
-### 8.2 Integration Point
+### 10.2 Integration Point
 
 ```go
 // In the stack walker:
@@ -924,7 +1140,7 @@ if f := findfunc(pc); f == nil {
 }
 ```
 
-### 8.3 Stack Traces
+### 10.3 Stack Traces
 
 runtime.Callers and runtime.Stack should emit:
 ```
@@ -935,9 +1151,9 @@ for debugging.
 
 ---
 
-## 9. JIT Compiler Requirements
+## 11. JIT Compiler Requirements
 
-### 9.1 At Compilation Time
+### 11.1 At Compilation Time
 
 For each foreign function, the JIT must:
 
@@ -1013,7 +1229,7 @@ If no cleanup needed:
 The cleanup pointer is a compile-time
 constant.
 
-### 9.2 Emitted Prologue
+### 11.2 Emitted Prologue
 
 ```asm
 foreign_function:
@@ -1039,7 +1255,7 @@ foreign_function:
     mov   [rsp+UNTRACKED+16], rbp
 ```
 
-### 9.3 Emitted Epilogue
+### 11.3 Emitted Epilogue
 
 ```asm
     mov   r14, [rsp+UNTRACKED+0]
@@ -1049,7 +1265,7 @@ foreign_function:
     ret
 ```
 
-### 9.4 Emitted Callback Sequence
+### 11.4 Emitted Callback Sequence
 
 ```asm
     ; Spill live Go ptrs to tracked slots
@@ -1073,7 +1289,7 @@ The tracked slot was already bitmap-marked and
 zero-initialized in the prologue. The bitmap
 was correct before the call. No race.
 
-### 9.5 Emitted Cleanup Function
+### 11.5 Emitted Cleanup Function
 
 The cleanup is a separate JIT-emitted function
 that follows the same self-describing protocol.
@@ -1113,7 +1329,7 @@ inlineBitmap = 0
 CLEANUP_HEADER = 0x0000000000000002
 ```
 
-### 9.6 g Pointer Protocol
+### 11.6 g Pointer Protocol
 
 The g pointer (R14 on amd64, R28 on arm64)
 is the Go runtime's goroutine pointer. Foreign
@@ -1134,9 +1350,9 @@ cleanup does not need to restore g itself.
 
 ---
 
-## 10. Worked Example
+## 12. Worked Example
 
-### 10.1 Scenario
+### 12.1 Scenario
 
 A RISC-V JIT function that:
 - Receives a context pointer in RDI (Go heap)
@@ -1145,7 +1361,7 @@ A RISC-V JIT function that:
 - Saves R14, RBX, RBP
 - Has a cleanup handler
 
-### 10.2 Frame Design
+### 12.2 Frame Design
 
 ```
 Tracked (numTrackedSlots = 2):
@@ -1160,7 +1376,7 @@ Untracked:
   Total:             64 bytes
 ```
 
-### 10.3 Layout Computation
+### 12.3 Layout Computation
 
 ```
 numTrackedSlots = 2 → inline (2 <= 32)
@@ -1174,7 +1390,7 @@ aligned         = 112 (already 16-aligned)
 frameSize16     = 7
 ```
 
-### 10.4 Header Computation
+### 12.4 Header Computation
 
 ```
 bitmap: bit 0 = 1, bit 1 = 1 → 0x3
@@ -1188,7 +1404,7 @@ header |= 0x3 << 32      // inlineBitmap
 header = 0x0000000300020007
 ```
 
-### 10.5 Stack Layout
+### 12.5 Stack Layout
 
 ```
 RSP+0:   return address
@@ -1208,7 +1424,7 @@ RSP+104: RISC-V x14  (untracked)
 RSP+112: [next frame]
 ```
 
-### 10.6 Emitted Code
+### 12.6 Emitted Code
 
 ```asm
 jit_block:
@@ -1259,7 +1475,7 @@ jit_block_cleanup:
     ret
 ```
 
-### 10.7 GC Trace Walkthrough
+### 12.7 GC Trace Walkthrough
 
 GC fires during `call go_allocate_something`.
 Goroutine stopped inside Go code. Stack walker
@@ -1306,7 +1522,7 @@ Scanner steps:
 
 9. Continue stack walk from RSP+112.
 
-### 10.8 Panic Unwind Walkthrough
+### 12.8 Panic Unwind Walkthrough
 
 A Go callback panics. gopanic begins unwinding.
 It reaches the foreign frame.
@@ -1349,9 +1565,9 @@ If the cleanup had returned 1 instead:
 
 ---
 
-## 11. Constraints and Invariants
+## 13. Constraints and Invariants
 
-### 11.1 JIT Compiler Invariants
+### 13.1 JIT Compiler Invariants
 
 1. Magic+version at RSP+8 must be exactly
    0xFFFFFFFFFFF10001.
@@ -1392,7 +1608,7 @@ If the cleanup had returned 1 instead:
     self-describing frames, must not panic,
     and must return normally.
 
-### 11.2 Go Runtime Invariants
+### 13.2 Go Runtime Invariants
 
 1. Stack scanner checks g.foreignStack before
    foreign frame discovery. If false, fatal
@@ -1413,10 +1629,12 @@ If the cleanup had returned 1 instead:
    g.foreignStack; stack growth code panics
    instead of copying.
 
-5. Async preemption (SIGURG) must be deferred
-   while foreign code executes. Foreign code
-   handles cooperative preemption via its own
-   mechanism (e.g. TSC-budget checks).
+5. No SIGURG is sent to foreign-capable
+   goroutines. sysmon skips them for async
+   preemption. Preemption is cooperative:
+   it occurs when foreign code calls into
+   Go and the Go prologue checks
+   stackguard0. See Section 6.
 
 6. During panic unwind, if a foreign frame has
    a non-nil cleanup pointer, gopanic CALLs
@@ -1424,7 +1642,7 @@ If the cleanup had returned 1 instead:
    return value is 0, continue unwinding. If
    nonzero, recover.
 
-### 11.3 Not Provided
+### 13.3 Not Provided
 
 - Function names for foreign frames.
 - Line number information.
@@ -1434,9 +1652,9 @@ If the cleanup had returned 1 instead:
 
 ---
 
-## 12. Portability
+## 14. Portability
 
-### 12.1 ARM64
+### 14.1 ARM64
 
 The protocol is architecture-neutral. On ARM64:
 
@@ -1447,7 +1665,7 @@ The protocol is architecture-neutral. On ARM64:
 - Cleanup return in X0 (not RAX).
 - Frame layout protocol identical.
 
-### 12.2 Extensibility
+### 14.2 Extensibility
 
 Future adaptation via:
 - Version field in magic (bits [0:15])
@@ -1457,9 +1675,9 @@ Future adaptation via:
 
 ---
 
-## 13. Runtime Changes Summary
+## 15. Runtime Changes Summary
 
-### 13.1 Stack scanner
+### 15.1 Stack scanner
   (~50-80 lines in traceback.go / stkframe.go)
 
 When findfunc(pc) returns nil, check
@@ -1467,13 +1685,20 @@ g.foreignStack. If false, fatal. If true,
 call scanForeignFrame. Zero cost for normal
 goroutines.
 
-### 13.2 Stack growth
+### 15.2 Stack growth
   (~3 lines in stack.go)
 
 In newstack/copystack, if g.foreignStack is
 true, panic instead of copying.
 
-### 13.3 Panic unwinder
+### 15.3 sysmon preemption
+  (~5 lines in proc.go)
+
+In sysmon's preemption loop, skip goroutines
+where g.foreignStack is true. Do not send
+SIGURG to their threads.
+
+### 15.4 Panic unwinder
   (~30-50 lines in panic.go)
 
 In gopanic's unwind loop, when encountering a
@@ -1482,7 +1707,7 @@ If non-nil, call it via callForeignCleanup.
 Check return value. If 0, continue. If nonzero,
 trigger recovery using existing mechanism.
 
-### 13.4 callForeignCleanup
+### 15.5 callForeignCleanup
   (~20 lines, new runtime helper)
 
 Small function that restores g, sets up args
@@ -1490,33 +1715,37 @@ per platform calling convention, CALLs the
 cleanup address, returns the result. Analogous
 to existing reflectcall.
 
-### 13.5 runtime.LockOSThreadForeign
+### 15.6 runtime.LockOSThreadForeign
   (new public API)
 
 ```go
 // LockOSThreadForeign locks the calling
 // goroutine to its OS thread and provisions
 // a fixed stack of at least the given size.
-// The stack will never be copied. Sets
-// g.foreignStack = true, enabling the stack
-// scanner and panic unwinder to recognize
-// self-describing foreign frames. Must be
-// called before executing foreign code.
+// The stack will never be copied. No SIGURG
+// signals will be sent to this thread.
+// Sets g.foreignStack = true, enabling the
+// stack scanner and panic unwinder to
+// recognize self-describing foreign frames.
+// Must be called before executing foreign
+// code.
 func LockOSThreadForeign(stackSize uintptr)
 ```
 
 Implementation:
 - Lock goroutine to OS thread.
 - Set g.foreignStack = true.
+- Mark goroutine as exempt from async
+  preemption (sysmon skips it for SIGURG).
 - If stack < requested, grow now (safe to
   copy — no foreign frames yet).
 - Stack growth thereafter panics.
 
 ---
 
-## 14. Reference
+## 16. Reference
 
-### 14.1 Constants
+### 16.1 Constants
 
 ```
 MAGIC_SENTINEL     = 0xFFFFFFFFFFF1
@@ -1536,7 +1765,7 @@ CLEANUP_CONTINUE   = 0
 CLEANUP_RECOVER    = 1
 ```
 
-### 14.2 Header Bit Map
+### 16.2 Header Bit Map
 
 ```
 Bit(s)   Field             Width
@@ -1547,7 +1776,7 @@ Bit(s)   Field             Width
 [32:63]  inlineBitmap      32
 ```
 
-### 14.3 Frame Layout Summary
+### 16.3 Frame Layout Summary
 
 ```
 RSP+0    return address      8 bytes
@@ -1559,7 +1788,7 @@ RSP+32   bitmap words        8×B bytes
          untracked space     remainder
 ```
 
-### 14.4 Frame Size Formula
+### 16.4 Frame Size Formula
 
 ```
 B = 0                    if numTS <= 32
