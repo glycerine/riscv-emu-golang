@@ -392,3 +392,12 @@ with IC instruction counter back. We use R15 for this.
   native x86-64 (-O3 -march=native):           18035 MIPS  (140.0 ms)
   wazero wasm aot-and-run                    9008.0 MIPS
 ~~~
+
+~~~
+latest test suite at 43e5e8810e6df1cd607dc703a8b15790f418a494
+
+atg
+
+darwin ok  	riscv	324.063s
+linux: ok   riscv   380.452s
+~~~
