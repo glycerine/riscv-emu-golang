@@ -2,26 +2,22 @@
 
 ## Context
 
-Our RISC-V emulator's JIT (via TCC) achieves ~4100 MIPS — roughly 20% of native (21041 MIPS). The libriscv JIT is similar at ~4235 MIPS. Both use TCC to compile C source to native code. Meanwhile, wazero — a pure-Go WebAssembly runtime — achieves 19336 MIPS (~92% of native) on the same benchmark. This document analyzes wazero's architecture to understand why it's 4-5x faster than TCC-based JITs and what techniques could be applied to our emulator.
+Our RISC-V emulator's abjit JIT achieves ~4100 MIPS — roughly 20% of native (21041 MIPS). The libriscv JIT (TCC-based) is similar at ~4235 MIPS. Meanwhile, wazero — a pure-Go WebAssembly runtime — achieves 19336 MIPS (~92% of native) on the same benchmark. This document analyzes wazero's architecture, accurately compares it to our abjit architecture, and assesses the feasibility of adapting wazero's backend for RISC-V.
 
 ---
 
-## 1. Overview: Two-Engine Architecture
+## 1. Wazero Overview: Two-Engine Architecture
 
 Wazero ships two execution engines:
 
-- **Interpreter** (`internal/engine/interpreter/`): Pure Go, stack-based, runs everywhere. Analogous to our `step()` loop.
+- **Interpreter** (`internal/engine/interpreter/`): Pure Go, stack-based, runs everywhere.
 - **wazevo AOT compiler** (`internal/engine/wazevo/`): A proper SSA-based optimizing compiler that emits native x86-64 or ARM64 machine code directly — no intermediate C, no TCC, no LLVM, no CGO. This is the engine that achieves 92% of native.
 
 Platform detection (`internal/platform/`) auto-selects the compiler on supported targets (linux/darwin/freebsd on amd64 with SSE4.1; arm64 on linux/darwin/freebsd/netbsd/windows).
 
-**Key insight #1:** The performance gap is not Go vs C. It's "proper optimizing compiler" vs "template-based C emission compiled by an unoptimizing compiler (TCC)."
-
 ---
 
-## 2. The Compilation Pipeline: Three Stages
-
-Wazevo uses a classic compiler architecture — nearly identical in structure to LLVM but specialized for WebAssembly:
+## 2. The Wazevo Compilation Pipeline
 
 ```
 Wasm bytecode
@@ -30,8 +26,7 @@ Wasm bytecode
 ┌─────────────────────────────────┐
 │  Stage 1: FRONTEND              │
 │  Wasm bytecodes → SSA IR        │
-│  (internal/engine/wazevo/       │
-│   frontend/)                    │
+│  (frontend/)                    │
 │                                 │
 │  • Stack-to-SSA conversion      │
 │  • Bounds check analysis        │
@@ -43,8 +38,7 @@ Wasm bytecode
 ┌─────────────────────────────────┐
 │  Stage 2: BACKEND               │
 │  SSA IR → Machine IR            │
-│  (internal/engine/wazevo/       │
-│   backend/)                     │
+│  (backend/)                     │
 │                                 │
 │  • Instruction selection        │
 │  • Address mode synthesis       │
@@ -67,391 +61,353 @@ Wasm bytecode
         Native execution
 ```
 
-### 2.1 Stage 1: Frontend (Wasm → SSA IR)
+### 2.1 Frontend (Wasm → SSA IR)
 
-**SSA IR Design:**
 - Uses "block argument" SSA variant (more efficient than traditional PHI nodes)
-- `Value`: 64-bit entity — lower 32 bits = ID, bits 32-59 = instruction ID, bits 60-63 = type
-- `Instruction`: Flat union type with opcode + up to 3 operands + additional data
-- `BasicBlock`: Contains parameters (block arguments) instead of PHI nodes
-- Supported types: I32, I64, F32, F64, V128 (SIMD)
+- `Value`: 64-bit entity — ID + instruction ID + type packed into 64 bits
+- `Instruction`: Flat union with opcode + up to 3 operands + additional data
+- 110+ SSA opcodes, **all general-purpose** — no Wasm-specific opcodes in the IR
+- Optimization passes: dead block elimination, redundant PHI elimination, dead code elimination, reverse post-order block layout, loop nesting forest construction
 
-**Wasm stack → SSA conversion:**
-The frontend maintains a conceptual Wasm value stack. Stack operations become SSA operations:
-- `i32.const 5` → `v1 = Iconst(5)` (push SSA value)
-- `i32.add` → pop v1,v2; `v3 = Iadd(v1,v2)` (push v3)
-- `block`/`loop`/`if` → create SSA BasicBlocks; push control frames
-- `br` → jump with block arguments (for values that cross the branch)
+### 2.2 Backend (SSA → Machine IR)
 
-**Optimization passes:**
-1. Dead block elimination (unreachable code)
-2. Redundant PHI elimination (coalesce identical block arguments)
-3. Dead code elimination (unused instructions)
-4. Block layout in reverse post-order (cache-friendly)
-5. Loop nesting forest construction (for future loop optimizations)
+**Instruction selection via pattern matching:**
+- Recognizes `Iadd(Ishl(base, 2), offset)` → single `[base*4 + offset]` x86-64 addressing mode
+- Multiple SSA instructions collapse into one machine instruction via `MarkLowered()`
+- Constant folding and strength reduction during lowering
 
-Instructions carry an `InstructionGroupID` — instructions in the same group have no intervening side effects and can be safely reordered or merged.
+**Register allocation — Chaitin's algorithm:**
+- Interference graph with liveness analysis at instruction-level granularity
+- 14 allocatable integer registers, 16 float/SIMD registers on AMD64
+- Spills to stack with locality-aware slot assignment
+- Caller-saved registers preferred (cheaper than callee-saved save/restore)
 
-### 2.2 Stage 2: Backend (SSA → Machine IR)
+### 2.3 Bounds Check Elimination
 
-**Lowering (`Lower()`):**
-Pattern-matches SSA instructions into ISA-specific machine instructions. This is where the real optimization happens:
-
-- **Address mode synthesis**: Recognizes patterns like `Iadd(Ishl(base, 2), offset)` and lowers to a single `[base*4 + offset]` x86-64 addressing mode. Multiple SSA instructions collapse into one machine instruction.
-- **Instruction merging**: When multiple SSA instructions can be represented by one machine instruction, marks predecessors with `MarkLowered()` so they don't emit redundant code.
-- **Constant folding / strength reduction**: Applied during lowering.
-
-**Register Allocation (`RegAlloc()`):**
-Chaitin's algorithm with liveness analysis:
-- One `VReg` (virtual register) per SSA Value
-- Liveness computed at instruction-level granularity
-- Interference graph built; physical registers assigned
-- Spills to stack when pressure exceeds available registers
-- **Register preference**: Caller-saved registers preferred (cheaper than callee-saved save/restore)
-
-**AMD64 register assignment:**
-- 14 allocatable integer registers: rax, rcx, rdx, rbx, rsi, rdi, r8-r15
-- 16 allocatable float/SIMD registers: xmm0-xmm15
-- rbp = frame pointer, rsp = stack pointer (reserved)
-- Caller-saved: rax, rcx, rbx, rsi, rdi, r8-r11, xmm0-7
-- Callee-saved: rdx, r12-r15, xmm8-15
-
-### 2.3 Stage 3: ISA Encoding
-
-Translates machine IR to raw bytes. For AMD64 this means encoding ModR/M, SIB, REX prefixes, etc. Each instruction type has its own encoder. The final output is a `[]byte` of native machine code.
+Each SSA `Value` representing a memory address carries a `knownSafeBound`. If a subsequent access falls within the already-proven range, the bounds check is eliminated entirely. At block merge points, safe bounds take the minimum across predecessors. After any function call, bounds reset (callee may grow memory). In memory-heavy loops, one check at the loop header can prove the entire body safe — a 1.5-2x speedup over naive checking.
 
 ---
 
-## 3. Memory Management and Executable Code
+## 3. Wazero's Zero-CGO Native Code Execution
 
-### 3.1 Code Allocation
+### 3.1 The Entry Point
 
-```
-platform.MmapCodeSegment(size)  // mmap(PROT_READ|PROT_WRITE, MAP_ANON|MAP_PRIVATE)
-copy(executable[offset:], functionBody)  // copy compiled code
-resolveRelocations(executable)            // fix up call targets
-platform.MprotectCodeSegment(executable)  // mprotect(PROT_READ|PROT_EXEC)
-```
-
-On Linux, wazero tries huge pages first (2MB/1GB) and falls back to 4KB pages. All functions within a module are packed into a single contiguous executable segment.
-
-Go finalizers handle cleanup (`MunmapCodeSegment`), so compiled modules are GC-friendly.
-
-### 3.2 Compilation Caching
-
-Two-level cache:
-1. **In-memory**: `map[wasm.ModuleID]*compiledModule` (guarded by `sync.RWMutex`)
-2. **File cache**: SHA256(moduleID + magic + cpuFeatures) → serialized compiled code on disk
-
-Cache key includes CPU feature flags, so recompilation happens when hardware differs.
-
-### 3.3 Parallel Compilation
-
-Functions within a module are compiled in parallel using worker goroutines. Each worker gets its own `Machine`, `SSABuilder`, and `backend.Compiler` instances — no shared mutable state during compilation.
-
----
-
-## 4. Zero-CGO Native Code Execution
-
-**This is the single most critical architectural decision.** Wazero calls native code from Go without CGO, eliminating the ~200ns CGO call overhead entirely.
-
-### 4.1 The Entry Point Mechanism
-
-Go assembly file (`abi_entry_amd64.s`):
+Go assembly (`abi_entry_amd64.s`), marked `NOSPLIT|NOFRAME`:
 ```asm
 TEXT ·entrypoint(SB), NOSPLIT|NOFRAME, $0-48
-    MOVQ preambleExecutable+0(FP), R11    // preamble code pointer
-    MOVQ functionExecutable+8(FP), R14     // function code pointer
-    MOVQ executionContextPtr+16(FP), AX    // execution context
-    MOVQ moduleContextPtr+24(FP), BX       // module context
-    MOVQ paramResultSlicePtr+32(FP), R12   // args/results buffer
-    MOVQ goAllocatedStackSlicePtr+40(FP), R13  // wasm stack
-    JMP  R11   // jump to preamble
+    MOVQ preambleExecutable+0(FP), R11
+    MOVQ functionExecutable+8(FP), R14
+    MOVQ executionContextPtr+16(FP), AX
+    MOVQ moduleContextPtr+24(FP), BX
+    MOVQ paramResultSlicePtr+32(FP), R12
+    MOVQ goAllocatedStackSlicePtr+40(FP), R13
+    JMP  R11   // jump to generated preamble
 ```
 
-Key flags: `NOSPLIT|NOFRAME` — Go runtime won't preempt this function or insert stack checks. The `JMP R11` transfers control to dynamically-generated machine code.
+### 3.2 The Entry Preamble (generated per-signature)
 
-The Go-side declaration uses `//go:linkname` to bind:
-```go
-//go:linkname entrypoint github.com/.../amd64.entrypoint
-func entrypoint(preambleExecutable, functionExecutable *byte,
-    executionContextPtr uintptr, moduleContextPtr *byte,
-    paramResultStackPtr *uint64, goAllocatedStackSlicePtr uintptr)
-```
+1. Save Go's RSP/RBP into `executionContext`
+2. Switch RSP to Go-allocated wasm stack
+3. Copy arguments from param slice into registers per calling convention
+4. Zero RBP (stack unwinding marker)
+5. `CALL` the compiled function
+6. Copy results back to param slice
+7. Restore Go's RSP/RBP; `RET`
 
-### 4.2 The Entry Preamble
+### 3.3 The Dispatch Loop
 
-Each function signature gets a generated **preamble** — a machine code thunk that:
-1. Saves Go's RSP and RBP into `executionContext`
-2. Switches RSP to the Go-allocated wasm stack
-3. Copies arguments from the param/result slice into registers per the calling convention
-4. Zeros RBP (wasm stack unwinding marker)
-5. `CALL` to the actual compiled wasm function
-6. On return: copies results back to the param/result slice
-7. Restores Go's RSP/RBP
-8. `RET` back to Go
-
-### 4.3 The Dispatch Loop
-
-When native code needs Go runtime services (memory growth, host function calls, etc.), it:
-1. Writes an exit code to `executionContext.exitCode`
-2. Saves its stack pointer in `executionContext`
-3. Returns to Go via `afterGoFunctionCallEntrypoint`
-
-Go's dispatch loop (`callEngine.callWithStack`) handles 30+ exit codes:
-
-```go
-for {
-    switch ec := c.execCtx.exitCode & ExitCodeMask {
-    case ExitCodeOK:           return nil
-    case ExitCodeGrowStack:    newsp, newfp = c.growStack(); resume(...)
-    case ExitCodeGrowMemory:   mem.Grow(pages); resume(...)
-    case ExitCodeCallGoFunc:   hostFunc.Call(ctx, args); resume(...)
-    case ExitCodeTableOutOfBounds:  return ErrRuntimeInvalidTableAccess
-    // ... etc
-    }
-}
-```
-
-After handling, Go calls `afterGoFunctionCallEntrypoint` to resume native execution at the saved return address.
-
-### 4.4 Why This Is Fast
-
-| Factor | CGO approach (our JIT) | Wazero approach |
-|--------|----------------------|-----------------|
-| Call overhead | ~200ns per CGO call (save/restore all regs, signal mask, etc.) | ~5ns (plain function call + JMP) |
-| Stack switch | C stack ↔ Go stack via runtime | Direct RSP swap in preamble |
-| Register save | CGO saves ALL registers | Only callee-saved; caller-saved live across calls only |
-| Preemption | CGO boundary is a preemption point | NOSPLIT — no preemption in hot path |
-| Memory access | Through function args/struct | Direct register access to execution context |
+When native code needs Go services, it writes an exit code to `executionContext.exitCode` and returns to Go. The Go dispatch loop handles 30+ exit codes (memory growth, host function calls, stack growth, exceptions, etc.), then calls `afterGoFunctionCallEntrypoint` to resume native execution.
 
 ---
 
-## 5. Bounds Check Elimination — The Other Big Win
+## 4. Our abjit Architecture — Accurate Description
 
-WebAssembly requires bounds checking on every memory access. Naively, this doubles the instruction count for memory-heavy code. Wazero's frontend performs aggressive bounds check analysis:
+### 4.1 What abjit Actually Is
 
-### 5.1 Known-Safe-Bound Tracking
+Our JIT uses **NO CGO and NO TCC**. It is a Go-native JIT that:
+- Emits x86-64 machine code directly (raw bytes, no C intermediate)
+- Uses a Go assembly trampoline (`abjit/trampoline_amd64.s`) — 2.8ns overhead
+- Has an IR intermediate representation with 75+ opcodes
+- Uses fixed static register allocation (priority-based, not liveness-based)
+- Supports Go callbacks from JIT code (4.0ns round-trip)
 
-Each SSA `Value` that represents a memory address carries a `knownSafeBound` — the maximum offset that has already been proven in-bounds for this value.
+### 4.2 The abjit Trampoline
 
-```
-// Conceptual:
-v1 = load(memBase + offset, size=4)   // bounds check: memLen >= offset + 4
-                                       // v1.knownSafeBound = offset + 4
-v2 = load(memBase + offset + 2, size=2)  // offset+2+2 = offset+4 <= knownSafeBound
-                                          // BOUNDS CHECK ELIMINATED
-```
-
-### 5.2 Cross-Block Propagation
-
-At block merge points, the safe bound is the *minimum* across all predecessors (intersection). Within a straight-line block, bounds increase monotonically.
-
-### 5.3 Invalidation
-
-After any function call, all `knownSafeBound` values reset — the callee might have grown memory, changing the base pointer and length.
-
-### 5.4 Impact
-
-In memory-heavy loops (the typical case for benchmarks), a single bounds check at loop entry can prove all accesses within the loop body safe. This alone can account for a 1.5-2x speedup over naive bounds checking.
-
----
-
-## 6. Execution Context and Module Context
-
-### 6.1 Execution Context
-
-A Go-allocated struct shared with native code at known offsets:
-
-```go
-type executionContext struct {
-    exitCode                    ExitCode   // how/why native code returned to Go
-    callerModuleContextPtr      *byte      // for nested cross-module calls
-    originalFramePointer        uintptr    // Go's RBP (to restore on exit)
-    originalStackPointer        uintptr    // Go's RSP (to restore on exit)
-    goReturnAddress             uintptr    // where to resume in Go
-    stackBottomPtr              *byte      // wasm stack bounds (for growth)
-    goCallReturnAddress         *byte      // resume point after Go function
-    stackPointerBeforeGoCall    *uint64    // saved SP when calling Go
-    stackGrowRequiredSize       uintptr    // how much stack to grow
-    // Trampoline addresses (shared across all calls):
-    memoryGrowTrampolineAddress              *byte
-    stackGrowCallTrampolineAddress           *byte
-    tableGrowTrampolineAddress               *byte
-    // ... 10+ more trampoline addresses
-    savedRegisters              [64][2]uint64  // callee-saved register spill area
-}
+Go assembly entry (`trampoline_amd64.s`):
+```asm
+TEXT ·callJIT(SB), NOSPLIT|NOFRAME, $0
+    // Go prologue: PUSH BP; MOV BP,SP; SUB SP,0xFFF8 (65KB frame)
+    // Save callee-saved: RBX, RBP, R12, R13, R15
+    // Load RBP = regFileBase (State pointer)
+    // Load R15 = State.IC
+    // JMP RAX (= native code address)
 ```
 
-Native code accesses fields at compile-time-known offsets (e.g., `exitCode` at offset 0, `originalFramePointer` at offset 24, etc.).
-
-### 6.2 Module Context
-
-An opaque byte buffer containing per-module-instance state, accessed by native code via offsets:
-- `moduleInstance` pointer
-- Local memory base pointer and length (cached — reloaded after any call)
-- Imported memory instance pointer
-- Imported function table (executable pointers + module context pointers)
-- Global variable storage (if engine owns globals)
-- Type ID table (for indirect call type checking)
-- Table instance pointers
-
-The offset layout is computed at compile time by `wazevoapi.NewModuleContextOffsetData` based on the module's import/export structure.
-
----
-
-## 7. Function Call Mechanics
-
-### 7.1 Direct Wasm-to-Wasm Calls
-
-Compiled as direct `CALL` instructions to the target function's offset within the executable segment. Arguments passed in registers per the wazevo calling convention.
-
-### 7.2 Indirect Calls
-
-```
-1. Load function pointer from table[index]
-2. Null check (exit ExitCodeIndirectCallNullPointer if null)
-3. Type check: load actualTypeID, compare to expectedTypeID
-   (exit ExitCodeIndirectCallTypeMismatch on mismatch)
-4. Load executable pointer and module context from function instance
-5. CALL indirect through executable pointer
+**Go callback from JIT code:**
+```asm
+MOVABS R11, <gocallAddr>     ; 10 bytes
+LEA    R10, [RIP+17]         ; 7 bytes  (resume point)
+MOV    [RSP], R10            ; 4 bytes  (store resume at [RSP+0])
+MOVABS R10, <goFunc>         ; 10 bytes
+JMP    R11                   ; → gocall: CALL R10; JMP (SP)
 ```
 
-### 7.3 Host (Go) Function Calls
+**GC safety invariant**: JIT code never emits `RET`. Instead it jumps to `retStubAddr` — a known Go code address — because Go's GC scans return addresses on the stack and panics if one points into mmap'd memory.
 
-Native code uses a **Go function trampoline** — a per-signature machine code thunk that:
-1. Marshals wasm registers into a stack-based format
-2. Sets exit code to `ExitCodeCallGoFunction | (funcIndex << 8)`
-3. Stores stack pointer in execution context
-4. Returns to Go dispatch loop
-5. (Go calls the host function)
-6. After return: restores registers, loads results, resumes
+### 4.3 Register Mapping
 
----
+**Pinned registers (outside allocator):**
+- RBP → `abjit.State` base (guest register file pointer)
+- R14 → Go goroutine pointer `g` (must never touch)
+- R15 → Instruction counter (relative per-block)
+- R12 → Reserved (future sandbox stack)
+- RAX/RCX → Staging registers (scratch, used by lowerer)
 
-## 8. What Makes Wazero 4-5x Faster Than TCC-Based JITs
+**Allocatable pool (11 integer, 14 FP):**
+- Integer: RBX, RDX, RSI, RDI, R8, R9, R10, R11, R13 + 2 more
+- FP: XMM0–XMM13
 
-### 8.1 No CGO Overhead (est. 10-30% of the gap)
+**Fixed static priority mapping** — RISC-V registers x0–x31 are assigned to host registers by a static priority table (most-used first: ra, sp, t0, t1, a0–a7, ...). Registers beyond pool size spill to stack. No liveness analysis — every allocated register is live for the entire block.
 
-Our JIT pays ~200ns per CGO call to invoke TCC-compiled blocks. For small blocks (which dominate), this overhead is significant. Wazero's Go-assembly trampoline costs ~5ns.
+### 4.4 IR and Compilation Pipeline
 
-### 8.2 Proper Register Allocation (est. 30-40% of the gap)
+```
+RISC-V instructions
+     │ (jit_emit_ir.go — decode + emit IR)
+     ▼
+IR Block (75+ opcodes: IRLoad, IRStore, IRAdd, IRBranch, IRChainExit, ...)
+     │
+     ▼ Peephole pass (4-instruction window, ~10 patterns)
+     │
+     ▼ Fixed static register allocation (regalloc_fixed.go)
+     │
+     ▼ Lowering to x86-64 (lower_amd64_abjit.go)
+     │
+     ▼ Assembly (goasm.Ctx.Assemble() → bytes)
+     │
+     ▼ mmap + sentinel backpatching
+     │
+     ▼ compiledBlock {fn, chainExits[], jalrICs[]}
+```
 
-TCC performs almost no register allocation — it's essentially a one-pass compiler that loads/stores through memory for every operation. Wazero's Chaitin allocator keeps values in registers across entire basic blocks and beyond, dramatically reducing memory traffic.
+### 4.5 Block Chaining and Inline Caches
 
-**Example — `a + b + c`:**
-- TCC: load a → reg, load b → reg, add → reg, store → mem, load → reg, load c → reg, add → reg, store → mem (8 memory ops)
-- Wazero: load a → r1, load b → r2, add r1,r2 → r1, load c → r3, add r1,r3 → r1 (3 memory ops)
+- **Chain patching**: When block A branches to block B, the MOVABS sentinel in A is patched to jump directly to B's entry — eliminating the Go dispatch loop on subsequent executions.
+- **JALR inline cache**: 2-slot shift-policy IC. On miss, slot 0 → slot 1, new target → slot 0. After 16 misses, the site is deopted (polymorphic).
+- **Decoder cache**: Per-segment read-only array indexed by `(pc - vAddrBegin) >> 1` for fast block lookup.
 
-### 8.3 Instruction Selection and Address Mode Synthesis (est. 15-25% of the gap)
+### 4.6 Memory Model
 
-Wazero recognizes patterns like `base + index*scale + offset` and emits single x86-64 instructions with complex addressing modes. TCC compiles C source literally — `ptr[i]` becomes separate shift, add, and load instructions.
+- `GuestMemory`: Power-of-two mmap slab, mask-based bounds checking
+- All access: `hostPtr = base + (addr & mask)` (one AND, one ADD)
+- Alignment check inline; misaligned access falls back to byte-by-byte
+- Faults exit to Go dispatcher, which re-executes via interpreter
 
-### 8.4 Bounds Check Elimination (est. 10-20% of the gap)
+### 4.7 What Our IR Has
 
-TCC-compiled code checks bounds on every memory access. Wazero's SSA-level analysis eliminates redundant checks, often proving entire loop bodies safe with a single check at the loop header.
+- 75+ opcodes covering integer, FP, memory, control flow, syscall, JALR-IC, chain exits
+- Dedicated opcodes for budget/IC management (IRMemBudget, IRIncIC, etc.)
+- IRSyscall with hot-path inline dispatch
+- IRJalrIC with decoder-cache + 2-slot fallback
 
-### 8.5 Block Layout and Branch Optimization (est. 5-10% of the gap)
+### 4.8 What Our IR Does NOT Have
 
-Wazero lays out blocks in reverse post-order for optimal branch prediction. Fall-through paths are the common case. TCC has no such optimization.
-
-### 8.6 No C Compilation Step
-
-TCC must parse C source, build an AST, and generate code. Wazero goes directly from Wasm bytecode to SSA to machine code — no intermediate text format. This doesn't affect runtime performance but makes compilation faster.
-
----
-
-## 9. Lessons for Our RISC-V Emulator
-
-### 9.1 The Core Problem
-
-We emit C source and compile with TCC. TCC is a **non-optimizing** compiler. It produces correct code, but:
-- No register allocation (everything goes through stack)
-- No instruction scheduling
-- No address mode optimization
-- No cross-instruction analysis
-
-### 9.2 What Wazero's Architecture Tells Us
-
-To reach near-native performance, we would need to either:
-
-**Option A: Replace TCC with an optimizing C compiler (GCC/Clang -O2)**
-- Pro: Minimal architectural change
-- Con: Compilation latency jumps from ~1ms to ~100ms per block
-- Con: Still have CGO overhead per block invocation
-- Con: GCC/Clang are huge dependencies
-
-**Option B: Emit machine code directly (the wazero approach)**
-- Build an SSA-based compiler backend in Go
-- Emit x86-64 (and optionally ARM64) machine code directly
-- Use Go assembly trampolines to call compiled code (no CGO)
-- Pro: Near-native performance achievable
-- Con: Massive engineering effort (wazevo is ~30K+ lines of compiler code)
-- Con: Per-ISA backend needed for each target
-
-**Option C: Emit machine code directly but without SSA — a "macro assembler" approach**
-- Write a Go-native x86-64 assembler (or use an existing one)
-- Translate RISC-V instructions to x86-64 instruction sequences with a fixed register mapping
-- Apply a few key optimizations: register pinning, bounds check hoisting, branch threading
-- Pro: Much less code than a full SSA compiler (~5-10K lines)
-- Con: Won't match full SSA quality, but can close most of the gap
-- This is essentially what rv8 does, and it achieves ~4000 MIPS — so the register mapping alone isn't enough
-
-**Option D: Use wazero itself as the backend**
-- Compile RISC-V → Wasm → native via wazero
-- Pro: Get wazero's optimizations for free
-- Con: Double translation overhead
-- Con: Wasm's stack machine model may not map efficiently from RISC-V's register machine
-- Worth benchmarking — if wasm overhead is low, this could be the easiest path to 15000+ MIPS
-
-**Option E: Use Go's own compiler backend**
-- Emit Go SSA or even Go source, compile with `go build`
-- Pro: Leverage Go's own optimizing compiler
-- Con: Go compilation is slow (~seconds per package)
-- Con: Not suitable for JIT (too slow to compile at runtime)
-- Could work for AOT compilation of known ELFs
-
-### 9.3 Quick Wins (applicable regardless of approach)
-
-1. **Eliminate CGO overhead**: Use Go assembly trampolines like wazero's `entrypoint`. Even with TCC-compiled code, avoiding CGO per-block saves 10-30%.
-
-2. **Larger compilation regions**: Our current 2048-PC / 16KB limit means many small blocks. Larger regions give the compiler (even TCC) more to work with and amortize call overhead.
-
-3. **Pin guest registers to host registers**: Even in C emission, we could use `register` keyword hints or TCC-specific extensions to encourage register allocation.
-
-4. **Hoist bounds checks out of loops**: Analyze loop bounds at JIT time and emit a single check before the loop.
+- **No SSA form** — IR is linear, imperative, register-machine style
+- **No global optimization passes** — no constant folding, no DCE, no CSE, no LICM
+- **No instruction scheduling**
+- **No address mode synthesis** — `base + index*scale + offset` patterns not recognized
+- **No liveness-based register allocation** — every VReg lives for the full block
+- **No cross-block optimization** — each block compiled independently
+- **Peephole only** — 4-instruction window, ~10 hand-written patterns
 
 ---
 
-## 10. Key Files in Wazero (for reference)
+## 5. Head-to-Head Comparison
 
-| Area | Path |
-|------|------|
-| Runtime entry | `runtime.go`, `config.go` |
-| Engine selection | `internal/platform/platform.go` |
-| SSA IR | `internal/engine/wazevo/ssa/` |
-| Frontend | `internal/engine/wazevo/frontend/frontend.go`, `lower.go` |
-| Backend | `internal/engine/wazevo/backend/compiler.go` |
-| AMD64 ISA | `internal/engine/wazevo/backend/isa/amd64/` |
-| Entry trampoline | `backend/isa/amd64/abi_entry_amd64.s` |
-| Preamble gen | `backend/isa/amd64/abi_entry_preamble.go` |
-| Go call trampoline | `backend/isa/amd64/abi_go_call.go` |
-| Dispatch loop | `internal/engine/wazevo/call_engine.go` |
-| Memory mapping | `internal/platform/mmap_linux.go` |
-| Bounds check elim | `internal/engine/wazevo/frontend/lower.go` (knownSafeBound) |
-| Compilation cache | `internal/engine/wazevo/engine_cache.go` |
-| Module context | `internal/engine/wazevo/module_engine.go` |
+| Feature | Wazero (wazevo) | Our abjit |
+|---------|----------------|-----------|
+| **MIPS achieved** | 19,336 (92% native) | 4,103 (20% native) |
+| **CGO?** | No | No |
+| **Trampoline** | Go asm, ~5ns | Go asm, ~2.8ns |
+| **IR form** | SSA (block arguments) | Linear/imperative |
+| **IR opcodes** | 110+ general-purpose | 75+ (RISC-V-specific) |
+| **Optimization passes** | DCE, dead block elim, redundant PHI elim, block layout | Peephole only (4-insn window) |
+| **Register allocator** | Chaitin (interference graph + liveness) | Fixed static priority (no liveness) |
+| **Allocatable int regs** | 14 | 11 |
+| **Instruction selection** | Pattern-matching with address mode synthesis | Direct per-op translation |
+| **Bounds check elim** | SSA-level knownSafeBound analysis | None (every access checked) |
+| **Block size** | Entire Wasm functions | 50–100 RISC-V instructions |
+| **Cross-block optimization** | Yes (SSA spans function) | No (each block independent) |
+| **Block chaining** | N/A (AOT compiles whole function) | Runtime patching of MOVABS targets |
+| **Compilation model** | AOT (ahead of time, whole module) | JIT (lazy, per-block on first hit) |
+| **Code caching** | In-memory + file cache (SHA256-keyed) | In-memory block cache (direct-mapped) |
+| **Parallel compilation** | Yes (worker goroutines per function) | No |
 
 ---
 
-## Summary
+## 6. Where the 5x Performance Gap Comes From
 
-Wazero achieves 92% of native speed through five reinforcing techniques:
+Both systems use Go assembly trampolines with similar overhead (~3-5ns). The gap is in **code quality**, not calling convention.
 
-1. **Proper SSA-based optimizing compiler** — not a template emitter
-2. **Zero-CGO native code invocation** — Go assembly trampoline, ~5ns overhead
-3. **Aggressive bounds check elimination** — SSA-level analysis proves most checks redundant
-4. **Full register allocation** — Chaitin's algorithm keeps values in registers
-5. **Instruction selection with address mode synthesis** — multiple SSA ops → one x86-64 instruction
+### 6.1 Register Allocation Quality (est. 35-45% of the gap)
 
-The gap between our 4100 MIPS and wazero's 19300 MIPS is almost entirely explained by TCC's lack of optimization + CGO call overhead. Closing it requires either replacing TCC with an optimizing backend or emitting machine code directly.
+**Wazero**: Chaitin's algorithm with liveness analysis. Values stay in registers across their entire live range. Spills only when register pressure exceeds 14 integer / 16 float registers.
+
+**abjit**: Fixed static priority mapping. Every allocated VReg is assumed live for the entire block (`Start=0, End=N-1`). This means:
+- Registers that are written once and read once still occupy a register for the whole block
+- No register reuse within a block (a temporary used at instruction 3 blocks a register through instruction 99)
+- More spills than necessary when >11 guest registers are active
+
+**Impact**: For a block with 50 RISC-V instructions touching 15 guest registers, abjit must spill 4+ registers to stack. Wazero would likely keep all values in registers (many are short-lived temporaries).
+
+### 6.2 Instruction Selection and Address Modes (est. 15-25% of the gap)
+
+**Wazero**: Pattern-matches across multiple SSA instructions. `base + index*4 + offset` becomes one x86-64 instruction with a complex addressing mode. Multiple SSA ops collapse into one machine instruction.
+
+**abjit**: Direct per-op translation. Each IR instruction becomes one or more x86-64 instructions. `IRLoad` and `IRLoadX` emit simple addressing but don't merge surrounding address arithmetic.
+
+**Impact**: Wazero emits fewer instructions for the same computation, reducing both code size and execution time.
+
+### 6.3 Compilation Unit Size (est. 10-20% of the gap)
+
+**Wazero**: Compiles entire Wasm functions at once (potentially hundreds of instructions). The SSA builder sees the complete control flow graph — all blocks, all branches, all PHIs — enabling cross-block optimization.
+
+**abjit**: Compiles 50-100 instruction blocks independently. Cross-block values must be spilled to the `State` struct at block boundaries and reloaded at the next block's prologue. Every block entry loads registers from `[RBP+offset]`; every exit stores them back.
+
+**Impact**: The load/store overhead at block boundaries is significant for hot inner loops. A loop body that wazero compiles as one function with values in registers, abjit compiles as multiple blocks with full register file load/store at each boundary.
+
+### 6.4 Optimization Passes (est. 10-15% of the gap)
+
+**Wazero**: Dead code elimination removes unreachable instructions. Redundant PHI elimination reduces register pressure. Block layout in reverse post-order improves cache behavior and branch prediction.
+
+**abjit**: Peephole pass catches ~10 trivial patterns (self-moves, identity operations). No constant folding (`const 5; const 3; add` is not folded to `const 8`). No dead code elimination. No common subexpression elimination.
+
+### 6.5 Bounds Check Elimination (est. 5-10% of the gap)
+
+**Wazero**: SSA-level analysis eliminates redundant bounds checks. In loops, one check can prove the entire body safe.
+
+**abjit**: Every memory access performs `(addr & mask) + base` inline. The mask-based approach is efficient (one AND + one ADD), but alignment checks add an extra branch. No hoisting of invariant checks out of loops.
+
+**Note**: This factor is smaller than it would be for a naive bounds-checking scheme because our mask-based approach is already quite cheap. The gap here is more about alignment check overhead than bounds checks per se.
+
+---
+
+## 7. Feasibility: Adapting Wazero's Backend for RISC-V
+
+### 7.1 The Key Insight
+
+Wazero's SSA IR is **completely general-purpose** — no Wasm-specific opcodes. The frontend (Wasm → SSA) and backend (SSA → machine code) are cleanly separated by the `Builder` interface. We could replace the Wasm frontend with a RISC-V frontend and reuse the entire backend stack.
+
+### 7.2 What's Reusable As-Is (80% of wazevo)
+
+| Component | Lines (approx) | Reusable? |
+|-----------|---------------:|-----------|
+| SSA IR (`ssa/`) | ~5,000 | 100% |
+| SSA Builder | ~2,000 | 100% |
+| Optimization passes | ~1,500 | 100% |
+| Backend compiler | ~2,000 | 100% |
+| Register allocator | ~3,000 | 100% |
+| AMD64 ISA backend | ~10,000 | 100% |
+| ARM64 ISA backend | ~10,000 | 100% |
+| Entry trampoline | ~500 | 95% (minor adaptation) |
+| Dispatch loop | ~600 | 80% (different exit codes) |
+
+### 7.3 What Needs to Be Written (~3,000-5,000 lines)
+
+1. **RISC-V Instruction Decoder** (~800 lines)
+   - Parse RV64IMAFDC + Zba/Zbb/Zbs
+   - Handle compressed instructions (RVC)
+   - We already have a complete decoder in our emulator
+
+2. **RISC-V → SSA Lowering Handlers** (~2,500 lines)
+   - Map each RISC-V instruction to SSA opcodes
+   - RISC-V's 32 integer + 32 FP registers become SSA Variables
+   - Example: `ADDI x1, x1, 10` →
+     ```
+     old_x1 = MustFindValue(x1Var)
+     ten = Iconst64(10)
+     new_x1 = Iadd(old_x1, ten)
+     DefineVariable(x1Var, new_x1)
+     ```
+
+3. **Basic Block Detection** (~500-1000 lines)
+   - Scan RISC-V code for branch targets, build CFG
+   - Our `scanRegion()` BFS already does this
+
+4. **Calling Convention / ABI Adapter** (~200 lines)
+   - Map RISC-V standard ABI (a0-a7 args, fa0-fa7 float args) to wazero's `FunctionABI`
+
+5. **Execution Context Adaptation** (~500 lines)
+   - Adapt `executionContext` for RISC-V state (PC, CSRs, privilege mode)
+   - Adapt exit codes for RISC-V traps (ECALL, page fault, etc.)
+
+### 7.4 Architectural Challenges
+
+**Block boundaries vs. whole-function compilation:**
+Wazero compiles entire Wasm functions because Wasm has explicit function boundaries. RISC-V binaries don't always have clear function boundaries (stripped binaries, hand-written assembly, computed jumps). Options:
+- Use symbol table / DWARF info when available
+- Fall back to region-based compilation (like our current `scanRegion`)
+- Use trace compilation for hot paths across function boundaries
+
+**JIT vs AOT tradeoffs:**
+Wazero is AOT — it compiles everything upfront. Our emulator is JIT — it compiles on first execution. The SSA pipeline is more expensive than our current IR pipeline, so compilation latency per block will increase. However:
+- Wazero compiles Wasm functions in parallel (worker goroutines) — we could do the same
+- The code quality improvement should more than compensate for slower compilation
+- Wazero supports file-based compilation caching — amortizes cost across runs
+
+**Self-modifying code:**
+RISC-V programs can modify their own code (rare but legal). Wasm cannot. Our current JIT handles this by invalidating blocks when stores hit code regions. A wazero-based approach would need the same invalidation mechanism.
+
+### 7.5 Expected Performance
+
+If we achieve wazero-quality code generation for RISC-V, we could reasonably expect:
+- Current: 4,103 MIPS (20% of native)
+- With SSA + proper regalloc + instruction selection: **12,000-16,000 MIPS** (57-76% of native)
+- The gap from 76% to wazero's 92% would come from: RISC-V's richer register set (32 vs Wasm's stack-based model creates more register pressure), cross-block overhead if we can't compile whole functions, and the inherent overhead of dynamic translation (address mapping, privilege checks)
+
+### 7.6 Implementation Strategy
+
+**Phase 1: Proof of concept (~2 weeks)**
+- Fork wazevo frontend
+- Implement RV64I subset (no F/D/C extensions)
+- Compile a simple loop, measure MIPS vs abjit
+- Validate against our interpreter
+
+**Phase 2: Full ISA coverage (~3 weeks)**
+- Add IMAFDC + Zba/Zbb/Zbs
+- Handle compressed instructions
+- Pass riscv-elf-tests suite
+
+**Phase 3: Integration with emulator (~2 weeks)**
+- Replace abjit backend with wazevo-based backend
+- Adapt dispatch loop and block caching
+- Handle self-modifying code invalidation
+- Benchmark against libriscv and native
+
+**Phase 4: Optimization (~ongoing)**
+- Tune compilation unit size (region vs function)
+- Add RISC-V-specific SSA optimizations (e.g., x0 is always zero)
+- Profile and optimize hot paths
+
+---
+
+## 8. Summary
+
+### What wazero does that we don't:
+1. **SSA-based IR** with proper dataflow analysis (we use linear/imperative IR)
+2. **Chaitin register allocation** with liveness intervals (we use fixed static priority)
+3. **Instruction selection with pattern matching** and address mode synthesis (we do direct per-op translation)
+4. **Cross-block optimization** within functions (we compile blocks independently)
+5. **Dead code elimination, constant propagation** (we have peephole only)
+6. **Bounds check elimination** via knownSafeBound tracking (we check every access)
+
+### What we already do right:
+1. **Zero-CGO trampoline** — actually faster than wazero's (2.8ns vs ~5ns)
+2. **Go callback support** from native code (4.0ns round-trip)
+3. **GC-safe design** — no mmap pointers on Go stack
+4. **Block chaining** with runtime patching
+5. **JALR inline cache** with 2-slot shift policy
+6. **Mask-based memory sandbox** — efficient, branchless base case
+
+### The path forward:
+The most promising approach is **replacing our IR/regalloc/lowering pipeline with wazero's SSA backend**, keeping our trampoline, block chaining, JALR-IC, and memory model. This gives us wazero-quality code generation with our existing runtime infrastructure. Estimated effort: 3,000-5,000 lines of new frontend code + integration work, achievable in 6-8 weeks.
