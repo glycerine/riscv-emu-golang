@@ -554,7 +554,12 @@ constant (either a code address or 0).
 
 The cleanup pointer is NOT a Go heap pointer. It is a code
 address pointing into JIT-emitted executable memory. The GC does
-not trace it.
+not trace it. (QUESTION: should we relax this in a principled way so 
+we don't have to mmap/malloc all
+JIT-ed memory? mmap is useful to maintain W^X -- and darwin
+requires it -- but being able to GC JIT-ed code could
+also be very convenient in non-darwin places).
+
 
 ### 5.3 Calling Convention
 
