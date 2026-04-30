@@ -97,46 +97,39 @@
 
 ## 1. Overview
 
-This document specifies a protocol that allows
-JIT-compiled ("foreign") code to execute on a Go
-goroutine stack with full garbage collection
-correctness and panic cleanup participation.
+This document specifies a protocol that allows JIT-compiled
+("foreign") code to execute on a Go goroutine stack with full
+garbage collection correctness and panic cleanup participation.
 
-Go pointers may flow freely between Go and
-foreign frames in all directions: Go to foreign,
-foreign to Go via callbacks, and Go callback
-returns back to foreign frames.
+Go pointers may flow freely between Go and foreign frames in all
+directions: Go to foreign, foreign to Go via callbacks, and Go
+callback returns back to foreign frames.
 
-The protocol works by embedding an immutable
-pointer bitmap directly in each foreign stack
-frame. When the Go garbage collector encounters
-a frame whose PC is not in any registered
-moduledata, it reads the frame's self-description
-from the stack, traces Go pointers according to
-the bitmap, and advances to the next frame.
+The protocol works by embedding an immutable pointer bitmap
+directly in each foreign stack frame. When the Go garbage
+collector encounters a frame whose PC is not in any registered
+moduledata, it reads the frame's self-description from the stack,
+traces Go pointers according to the bitmap, and advances to the
+next frame.
 
-When Go's panic machinery unwinds through a
-foreign frame, it invokes the frame's cleanup
-handler if one is present. The cleanup handler
-releases resources (defer semantics). The panic
+When Go's panic machinery unwinds through a foreign frame, it
+invokes the frame's cleanup handler if one is present. The
+cleanup handler releases resources (defer semantics). The panic
 then continues propagating up the stack.
 
-No external metadata registration is required.
-No moduledata synthesis. No go:linkname hacks.
-No runtime data structures to maintain. The
-frame describes itself.
+No external metadata registration is required. No moduledata
+synthesis. No go:linkname hacks. No runtime data structures to
+maintain. The frame describes itself.
 
 ### 1.1 Prerequisites
 
-Three companion changes to the Go runtime are
-required.
+Three companion changes to the Go runtime are required.
 
 **Prerequisite 1: runtime.LockOSThreadForeign(stackSize)**
 
-Locks the current goroutine to its OS thread
-and provisions a fixed-size stack (e.g. 1MB).
-This call changes four runtime behaviors for
-this goroutine:
+Locks the current goroutine to its OS thread and provisions a
+fixed-size stack (e.g. 1MB). This call changes five runtime
+behaviors for this goroutine:
 
 1. **Thread locked.** The goroutine will not
    be rescheduled to another OS thread.
@@ -173,89 +166,72 @@ this goroutine:
 
 **Prerequisite 2: Modified stack scanner**
 
-When the stack scanner encounters a PC not in
-any moduledata, it first checks whether
-`g.foreignStack` is true.
+When the stack scanner encounters a PC not in any moduledata, it
+first checks whether `g.foreignStack` is true.
 
-If false: fatal immediately with
-`throw("unknown caller pc")`. Identical to
-today's behavior. Normal goroutines pay zero
-cost for this feature's existence.
+If false: fatal immediately with `throw("unknown caller pc")`.
+Identical to today's behavior. Normal goroutines pay zero cost
+for this feature's existence.
 
-If true: check for the self-describing frame
-protocol at RSP+8. If the magic+version
-signature is present, trace the frame per the
-embedded bitmap and advance to the next frame.
-If absent, fatal as before — this is a genuine
-bug, not a valid foreign frame.
+If true: check for the self-describing frame protocol at RSP+8.
+If the magic+version signature is present, trace the frame per
+the embedded bitmap and advance to the next frame. If absent,
+fatal as before — this is a genuine bug, not a valid foreign
+frame.
 
 **Prerequisite 3: Modified panic unwinder**
 
-When gopanic encounters a foreign frame during
-stack unwinding, it reads the cleanup pointer
-at RSP+24. If non-nil, it calls the cleanup
-function. The cleanup performs resource release
-(defer semantics). After the cleanup returns,
-the unwind continues past the foreign frame.
+When gopanic encounters a foreign frame during stack unwinding,
+it reads the cleanup pointer at RSP+24. If non-nil, it calls the
+cleanup function. The cleanup performs resource release (defer
+semantics). After the cleanup returns, the unwind continues past
+the foreign frame.
 
 ### 1.2 Design Principles
 
-**Immutable bitmaps.** The pointer bitmap is
-written once in the function prologue and never
-modified. This eliminates all race conditions
-between the GC and the executing foreign code.
+**Immutable bitmaps.** The pointer bitmap is written once in the
+function prologue and never modified. This eliminates all race
+conditions between the GC and the executing foreign code.
 
-**(JIT) Compile-time complete.** Every aspect of the
-frame description is known at JIT compilation
-time. The bitmap is the union of all pointer
-slots that will ever hold a Go pointer during
-the function's lifetime. Slots that will hold
-pointers in the future are zero-initialized in
-the prologue.
+**(JIT) Compile-time complete.** Every aspect of the frame
+description is known at JIT compilation time. The bitmap is the
+union of all pointer slots that will ever hold a Go pointer
+during the function's lifetime. Slots that will hold pointers in
+the future are zero-initialized in the prologue.
 
-**Self-contained.** The frame description lives
-on the stack within the frame itself. No
-external data, no registration, no
-deregistration. Born when the frame is entered,
-dies when it returns.
+**Self-contained.** The frame description lives on the stack
+within the frame itself. No external data, no registration, no
+deregistration. Born when the frame is entered, dies when it
+returns.
 
-**No register maps needed.** The GC only
-observes foreign frames when the goroutine is
-stopped at a safepoint — when foreign code has
-called into Go and is waiting for the callback
-to return. At that moment the foreign frame is
-suspended: it is not executing, and the CPU
-registers belong to the Go callee, not the
-foreign frame. The foreign frame's only
-surviving state is what it wrote to the stack
-before the call. Any Go pointer the foreign
-code needs to survive the call must already be
-on the stack. This is not ABI-specific — it is
-a logical consequence of what "calling a
-function" means on any architecture. If a value
-exists only in a register and the code executes
-a call, the callee may overwrite that register.
-The value is gone. Every calling convention on
-every architecture shares this property.
-Register contents are therefore never part of
-this protocol. Only stack slots matter.
+**No register maps needed.** The GC only observes foreign frames
+when the goroutine is stopped at a safepoint — when foreign code
+has called into Go and is waiting for the callback to return. At
+that moment the foreign frame is suspended: it is not executing,
+and the CPU registers belong to the Go callee, not the foreign
+frame. The foreign frame's only surviving state is what it wrote
+to the stack before the call. Any Go pointer the foreign code
+needs to survive the call must already be on the stack. This is
+not ABI-specific — it is a logical consequence of what "calling a
+function" means on any architecture. If a value exists only in a
+register and the code executes a call, the callee may overwrite
+that register. The value is gone. Every calling convention on
+every architecture shares this property. Register contents are
+therefore never part of this protocol. Only stack slots matter.
 
-**Language-neutral cleanup.** The cleanup
-handler is foreign code — JIT-emitted, in
-whatever language the JIT targets. It is not
-required to be Go code. It performs resource
-release during panic unwind (defer semantics).
-Recovery (stopping the unwind) is not supported
-from foreign frames; recovery must be handled
-by a Go frame higher on the stack using Go's
-own defer/recover mechanism.
+**Language-neutral cleanup.** The cleanup handler is foreign code
+— JIT-emitted, in whatever language the JIT targets. It is not
+required to be Go code. It performs resource release during panic
+unwind (defer semantics). Recovery (stopping the unwind) is not
+supported from foreign frames; recovery must be handled by a Go
+frame higher on the stack using Go's own defer/recover mechanism.
 
 ---
 
 ## 2. Stack Frame Layout
 
-All offsets are relative to RSP after the
-function prologue completes (after SUB RSP).
+All offsets are relative to RSP after the function prologue
+completes (after SUB RSP).
 
 ```
 Offset             Contents
@@ -292,10 +268,9 @@ RSP+frameSize16×16 Next frame's return address
 ────────────────────────────────────────
 ```
 
-The frame size (frameSize16 × 16 bytes) includes
-everything from RSP+0 through the last byte
-before the next frame. Minimum frameSize16 = 2
-(32 bytes).
+The frame size (frameSize16 × 16 bytes) includes everything from
+RSP+0 through the last byte before the next frame. Minimum
+frameSize16 = 2 (32 bytes).
 
 ---
 
@@ -323,13 +298,11 @@ magic = (0xFFFFFFFFFFF1 << 16) | version
 
 For v1.x: `magic = 0xFFFFFFFFFFF10001`
 
-Note: v1.x uses the same protocol version
-number (1) as v1. The cleanup slot is an
-additive extension — the version number
-reflects the wire format of magic+header,
-which is unchanged. The cleanup slot at RSP+24
-is always present in the frame layout; a nil
-value means no cleanup.
+Note: v1.x uses the same protocol version number (1) as v1. The
+cleanup slot is an additive extension — the version number
+reflects the wire format of magic+header, which is unchanged. The
+cleanup slot at RSP+24 is always present in the frame layout; a
+nil value means no cleanup.
 
 ### 3.3 Validation by the GC
 
@@ -350,70 +323,59 @@ if version != 1 {
 
 ### 3.4 Safety Analysis
 
-The magic sentinel must not be misidentified in
-stack data that is not a self-describing frame.
-This section analyzes the false positive risk by
-examining each layer of protection.
+The magic sentinel must not be misidentified in stack data that
+is not a self-describing frame. This section analyzes the false
+positive risk by examining each layer of protection.
 
 **Layer 1: g.foreignStack flag.**
 
-The sentinel check is never performed unless
-`g.foreignStack` is true. This flag is only set
-by `runtime.LockOSThreadForeign`. On all normal
-goroutines the flag is false and the foreign
-frame path is unreachable. An unknown PC on a
-normal goroutine fatals immediately without
-reading RSP+8.
+The sentinel check is never performed unless `g.foreignStack` is
+true. This flag is only set by `runtime.LockOSThreadForeign`. On
+all normal goroutines the flag is false and the foreign frame
+path is unreachable. An unknown PC on a normal goroutine fatals
+immediately without reading RSP+8.
 
-This eliminates all false positives on normal
-goroutines.
+This eliminates all false positives on normal goroutines.
 
 **Layer 2: findfunc(pc) must return nil.**
 
-Even on a foreign-capable goroutine, the
-sentinel check only runs when `findfunc(pc)`
-returns nil — the PC is not in any registered
+Even on a foreign-capable goroutine, the sentinel check only runs
+when `findfunc(pc)` returns nil — the PC is not in any registered
 moduledata.
 
 Frames on a foreign-capable goroutine are:
 
 - Go frames: in moduledata, findfunc succeeds.
-  Sentinel check never runs.
+Sentinel check never runs.
 
 - Go-to-foreign trampoline: a Go assembly
-  function, in moduledata, findfunc succeeds.
-  Sentinel check never runs.
+function, in moduledata, findfunc succeeds. Sentinel check never
+runs.
 
 - Foreign frames: JIT-emitted, not in any
-  moduledata. findfunc returns nil. Sentinel
-  check runs.
+moduledata. findfunc returns nil. Sentinel check runs.
 
-The sentinel check runs exclusively on frames
-emitted by the JIT compiler.
+The sentinel check runs exclusively on frames emitted by the JIT
+compiler.
 
-**Layer 3: JIT prologue completes before any
-safepoint.**
+**Layer 3: JIT prologue completes before any safepoint.**
 
-Every foreign frame was emitted by the JIT
-compiler. The JIT writes the magic+version,
-header, and cleanup pointer in the prologue,
-before any callback into Go. The GC can only
-observe the frame at a safepoint (during a
-callback). Therefore the GC never sees the
-frame before the prologue has written correct
+Every foreign frame was emitted by the JIT compiler. The JIT
+writes the magic+version, header, and cleanup pointer in the
+prologue, before any callback into Go. The GC can only observe
+the frame at a safepoint (during a callback). Therefore the GC
+never sees the frame before the prologue has written correct
 data.
 
-The edge case of async preemption (SIGURG)
-interrupting the prologue is eliminated by
-LockOSThreadForeign suppressing SIGURG
-entirely for this goroutine's thread
-(Section 6, Section 13.2 invariant 5).
+The edge case of async preemption (SIGURG) interrupting the
+prologue is eliminated by LockOSThreadForeign suppressing SIGURG
+entirely for this goroutine's thread (Section 6, Section 13.2
+invariant 5).
 
 **Conclusion.**
 
-The sentinel does not need to be unforgeable
-against all possible stack contents. It
-operates in a context that is triply gated:
+The sentinel does not need to be unforgeable against all possible
+stack contents. It operates in a context that is triply gated:
 
 1. Only on goroutines that called
    LockOSThreadForeign (explicit opt-in)
@@ -422,16 +384,14 @@ operates in a context that is triply gated:
 3. Only at safepoints (after the prologue
    has written correct data)
 
-Within this context, a false positive requires
-a JIT compiler bug. The sentinel is a final
-sanity check, not a security boundary. The true
-protection comes from the structural invariants
-of layers 1-3.
+Within this context, a false positive requires a JIT compiler
+bug. The sentinel is a final sanity check, not a security
+boundary. The true protection comes from the structural
+invariants of layers 1-3.
 
-**Version field.** The lower 16 bits allow up
-to 65534 future protocol versions (version 0
-is reserved/invalid) while maintaining the same
-sentinel for discovery.
+**Version field.** The lower 16 bits allow up to 65534 future
+protocol versions (version 0 is reserved/invalid) while
+maintaining the same sentinel for discovery.
 
 ---
 
@@ -454,13 +414,12 @@ RSP+40:  bitmap_word[1] (slots 64-127)
          [untracked space]
 ```
 
-When numTrackedSlots <= 32, the bitmap fits
-entirely in the inlineBitmap field. No bitmap
-words appear on the stack. The tracked region
-begins at RSP+32.
+When numTrackedSlots <= 32, the bitmap fits entirely in the
+inlineBitmap field. No bitmap words appear on the stack. The
+tracked region begins at RSP+32.
 
-When numTrackedSlots > 32, inlineBitmap must be
-zero and bitmap words follow at RSP+32.
+When numTrackedSlots > 32, inlineBitmap must be zero and bitmap
+words follow at RSP+32.
 
 ### 4.1 Layout
 
@@ -513,10 +472,9 @@ Bits [32:63] inlineBitmap      (32 bits)
 
 One extension bit: bit 15.
 
-Always 0 in this protocol. If set, a v1
-reader must fatal without reading further.
-A future protocol version may use this bit
-to signal a different encoding.
+Always 0 in this protocol. If set, a v1 reader must fatal without
+reading further. A future protocol version may use this bit to
+signal a different encoding.
 
 The GC checks before reading other fields:
 
@@ -528,19 +486,16 @@ if header & (1<<15) != 0 {
 
 ### 4.4 Inline vs. External Bitmap
 
-The decision is derived from numTrackedSlots.
-No flag bit is needed.
+The decision is derived from numTrackedSlots. No flag bit is
+needed.
 
 - numTrackedSlots <= 32:
   Bitmap is in bits [32:63] of the header.
-  No bitmap words on the stack.
-  Tracked region begins at RSP+32.
+No bitmap words on the stack. Tracked region begins at RSP+32.
 
 - numTrackedSlots > 32:
-  inlineBitmap must be zero.
-  Emit ceil(numTrackedSlots / 64) bitmap
-  words starting at RSP+32.
-  Tracked region begins at
+inlineBitmap must be zero. Emit ceil(numTrackedSlots / 64) bitmap
+words starting at RSP+32. Tracked region begins at
   RSP + 32 + 8×ceil(numTrackedSlots/64).
 
 ### 4.5 Frame Size Computation
@@ -571,21 +526,17 @@ frameSize16 is a (JIT) compile-time constant.
 
 ### 5.1 Purpose
 
-The cleanup pointer enables foreign frames to
-release resources during Go panic unwind
-(defer semantics). When gopanic unwinds through
-a foreign frame and finds a non-nil cleanup
-pointer, it calls the cleanup function. The
-cleanup performs resource release, then the
-panic continues propagating up the stack.
+The cleanup pointer enables foreign frames to release resources
+during Go panic unwind (defer semantics). When gopanic unwinds
+through a foreign frame and finds a non-nil cleanup pointer, it
+calls the cleanup function. The cleanup performs resource
+release, then the panic continues propagating up the stack.
 
-Recovery (stopping the unwind) is not supported
-from foreign frames. If recovery is needed, it
-must be handled by a Go frame higher on the
-stack using Go's own defer/recover. Foreign-to-
-foreign exception handling (independent of Go
-panic) can use setjmp/longjmp or equivalent
-mechanisms outside this protocol.
+Recovery (stopping the unwind) is not supported from foreign
+frames. If recovery is needed, it must be handled by a Go frame
+higher on the stack using Go's own defer/recover. Foreign-to-
+foreign exception handling (independent of Go panic) can use
+setjmp/longjmp or equivalent mechanisms outside this protocol.
 
 ### 5.2 Layout
 
@@ -597,21 +548,19 @@ If 0, no cleanup runs during panic unwind
 and the frame is simply skipped.
 ```
 
-The cleanup pointer is always present in every
-self-describing frame. It is written in the
-prologue as a (JIT) compile-time constant (either
-a code address or 0).
+The cleanup pointer is always present in every self-describing
+frame. It is written in the prologue as a (JIT) compile-time
+constant (either a code address or 0).
 
-The cleanup pointer is NOT a Go heap pointer.
-It is a code address pointing into JIT-emitted
-executable memory. The GC does not trace it.
+The cleanup pointer is NOT a Go heap pointer. It is a code
+address pointing into JIT-emitted executable memory. The GC does
+not trace it.
 
 ### 5.3 Calling Convention
 
-When gopanic encounters a foreign frame with
-a non-nil cleanup pointer, it CALLs the
-cleanup function using the platform's standard
-C calling convention:
+When gopanic encounters a foreign frame with a non-nil cleanup
+pointer, it CALLs the cleanup function using the platform's
+standard C calling convention:
 
 ```
 Arguments:
@@ -634,9 +583,8 @@ returns normally and the unwind continues.
 
 ### 5.4 Cleanup Frame
 
-The cleanup function is foreign (JIT-emitted)
-code. When called, it creates its own stack
-frame. This frame MUST follow the same
+The cleanup function is foreign (JIT-emitted) code. When called,
+it creates its own stack frame. This frame MUST follow the same
 self-describing protocol: magic+version at
 RSP+8, header at RSP+16, cleanup at RSP+24.
 
@@ -645,10 +593,9 @@ The cleanup frame will typically have:
 - cleanup pointer = 0 (no nested cleanup)
 - A small frame for scratch space only
 
-This ensures the GC can scan the stack
-correctly even if GC fires during cleanup
-execution (which is possible if the cleanup
-calls back into Go).
+This ensures the GC can scan the stack correctly even if GC fires
+during cleanup execution (which is possible if the cleanup calls
+back into Go).
 
 During cleanup, the stack looks like:
 
@@ -663,43 +610,33 @@ High addresses (stack bottom)
 Low addresses (RSP)
 ```
 
-The original foreign frame is untouched.
-The cleanup reads it via the SP argument.
-The GC can trace the entire stack: every
-frame is either in moduledata or
-self-describing.
+The original foreign frame is untouched. The cleanup reads it via
+the SP argument. The GC can trace the entire stack: every frame
+is either in moduledata or self-describing.
 
 ### 5.5 Cleanup Ownership
 
-The cleanup pointer at RSP+24 is exclusively
-for the panic unwind path. It is invoked only
-by the Go runtime during gopanic. Two distinct
-cleanup paths exist:
+The cleanup pointer at RSP+24 is exclusively for the panic unwind
+path. It is invoked only by the Go runtime during gopanic. Two
+distinct cleanup paths exist:
 
-**Panic path.** The Go runtime reads RSP+24
-and calls the cleanup function. Foreign code
-does not call it — the runtime does. This
-cleanup handles abnormal termination: the
-foreign code was interrupted mid-execution,
-state may be partially constructed, and the
-cleanup must handle arbitrary interruption
-points.
+**Panic path.** The Go runtime reads RSP+24 and calls the cleanup
+function. Foreign code does not call it — the runtime does. This
+cleanup handles abnormal termination: the foreign code was
+interrupted mid-execution, state may be partially constructed,
+and the cleanup must handle arbitrary interruption points.
 
-**Normal return path.** The Go runtime does
-nothing with RSP+24 on normal return. Foreign
-code is solely responsible for its own
-cleanup before RET. This may be inline in the
-epilogue, a call to a separate teardown
-function, or nothing at all. This cleanup
-handles orderly shutdown: the function
-completed, state is consistent.
+**Normal return path.** The Go runtime does nothing with RSP+24
+on normal return. Foreign code is solely responsible for its own
+cleanup before RET. This may be inline in the epilogue, a call to
+a separate teardown function, or nothing at all. This cleanup
+handles orderly shutdown: the function completed, state is
+consistent.
 
-JIT authors will typically want different
-logic for these two paths. The protocol
-enforces this separation: RSP+24 is the
-runtime's hook for panic; normal teardown is
-the JIT author's concern and is not part of
-this protocol.
+JIT authors will typically want different logic for these two
+paths. The protocol enforces this separation: RSP+24 is the
+runtime's hook for panic; normal teardown is the JIT author's
+concern and is not part of this protocol.
 
 ### 5.6 Cleanup Constraints
 
@@ -739,16 +676,14 @@ if cleanup != 0 {
 // Continue unwinding past this frame.
 ```
 
-The `callForeignCleanup` function is a small
-runtime helper that:
+The `callForeignCleanup` function is a small runtime helper that:
 1. Restores the g pointer (R14/R28) so the
    cleanup can call back into Go if needed
 2. CALLs the cleanup address with the two
    arguments per the platform calling conv
 
-This helper is analogous to `reflectcall`
-which gopanic already uses to invoke Go
-deferred functions.
+This helper is analogous to `reflectcall` which gopanic already
+uses to invoke Go deferred functions.
 
 ---
 
@@ -759,238 +694,188 @@ deferred functions.
 Go's scheduler uses two preemption mechanisms:
 
 - **Cooperative:** compiler-inserted stack
-  checks in function prologues compare RSP
-  against g.stackguard0. When the runtime
-  wants to preempt, it sets stackguard0 to a
-  sentinel value. The next prologue check
-  triggers a yield.
+checks in function prologues compare RSP against g.stackguard0.
+When the runtime wants to preempt, it sets stackguard0 to a
+sentinel value. The next prologue check triggers a yield.
 
 - **Async (SIGURG):** sysmon detects a
-  goroutine running >10ms and sends SIGURG
-  to its thread. The signal handler captures
-  the goroutine's state and preempts it.
+goroutine running >10ms and sends SIGURG to its thread. The
+signal handler captures the goroutine's state and preempts it.
 
-Foreign code has no Go-style prologue checks,
-so cooperative preemption doesn't reach it.
-SIGURG delivery interrupts at arbitrary PCs
-within JIT code — the signal handler cannot
-safely capture the state because the PC is
-not in moduledata and the register layout is
-unknown. Additionally, signal delivery and
-handling introduces microseconds of latency,
-which is unacceptable for latency-sensitive
-applications (games, audio, real-time).
+Foreign code has no Go-style prologue checks, so cooperative
+preemption doesn't reach it. SIGURG delivery interrupts at
+arbitrary PCs within JIT code — the signal handler cannot safely
+capture the state because the PC is not in moduledata and the
+register layout is unknown. Additionally, signal delivery and
+handling introduces microseconds of latency, which is
+unacceptable for latency-sensitive applications (games, audio,
+real-time).
 
 ### 6.2 Solution
 
-`LockOSThreadForeign` disables SIGURG for the
-goroutine entirely. sysmon skips it for async
-preemption. No signals are delivered to the
-thread while the goroutine is foreign-capable.
+`LockOSThreadForeign` disables SIGURG for the goroutine entirely.
+sysmon skips it for async preemption. No signals are delivered to
+the thread while the goroutine is foreign-capable.
 
-Instead, preemption is fully cooperative:
-foreign code calls back into Go at natural
-boundaries. Any Go function's prologue checks
-stackguard0 and services pending preemption
-or GC requests automatically. No explicit
-yield API is needed — any callback into Go is
-a safepoint.
+Instead, preemption is fully cooperative: foreign code calls back
+into Go at natural boundaries. Any Go function's prologue checks
+stackguard0 and services pending preemption or GC requests
+automatically. No explicit yield API is needed — any callback
+into Go is a safepoint.
 
 ### 6.3 Foreign Code Contract
 
-Foreign code has no obligation to call back
-into Go on any particular schedule.
+Foreign code has no obligation to call back into Go on any
+particular schedule.
 
-When foreign code does call into Go, the Go
-function's prologue services any pending GC
-or scheduling work automatically. This is the
-cooperative safepoint.
+When foreign code does call into Go, the Go function's prologue
+services any pending GC or scheduling work automatically. This is
+the cooperative safepoint.
 
-Foreign code that never calls into Go runs
-uninterrupted indefinitely. The GC does not
-wait for it. STW pauses proceed without it.
-Other goroutines are unaffected. This is the
-correct model for audio engines, game render
-loops, and real-time processing, where
-uninterrupted execution is more important
-than GC participation.
+Foreign code that never calls into Go runs uninterrupted
+indefinitely. The GC does not wait for it. STW pauses proceed
+without it. Other goroutines are unaffected. This is the correct
+model for audio engines, game render loops, and real-time
+processing, where uninterrupted execution is more important than
+GC participation.
 
-The tradeoff: while foreign code runs without
-calling into Go, the GC cannot scan its stack.
-Go objects whose sole root is in a tracked
-slot of the foreign frame may not be collected
-promptly — they survive until the goroutine
-next calls into Go and the GC scans its stack.
-This is a minor retention, not a leak. The
+The tradeoff: while foreign code runs without calling into Go,
+the GC cannot scan its stack. Go objects whose sole root is in a
+tracked slot of the foreign frame may not be collected promptly —
+they survive until the goroutine next calls into Go and the GC
+scans its stack. This is a minor retention, not a leak. The
 objects are collected at the next opportunity.
 
-For foreign code that uses Go services
-regularly (allocating objects, calling Go
-functions), callbacks happen naturally and
-frequently. The GC scans the stack at each
-callback. No special action is needed.
+For foreign code that uses Go services regularly (allocating
+objects, calling Go functions), callbacks happen naturally and
+frequently. The GC scans the stack at each callback. No special
+action is needed.
 
 ### 6.4 GC Cooperation
 
-`LockOSThreadForeign` excludes the goroutine
-from stop-the-world participation. The GC
-never blocks waiting for this goroutine to
+`LockOSThreadForeign` excludes the goroutine from stop-the-world
+participation. The GC never blocks waiting for this goroutine to
 reach a safepoint. STW proceeds without it.
 
-The goroutine's stack is scanned
-opportunistically: when the goroutine calls
-into Go, the Go prologue detects any pending
-GC work (via stackguard0) and services it
-before proceeding. At that point the stack
-is scanned using the self-describing frame
+The goroutine's stack is scanned opportunistically: when the
+goroutine calls into Go, the Go prologue detects any pending GC
+work (via stackguard0) and services it before proceeding. At that
+point the stack is scanned using the self-describing frame
 protocol.
 
 Consequences:
 
 - **STW pauses are never delayed** by a
-  foreign-capable goroutine, regardless of
-  how long it runs without calling into Go.
+foreign-capable goroutine, regardless of how long it runs without
+calling into Go.
 
 - **Go objects in tracked slots survive**
-  until the next Go callback, even if they
-  are otherwise unreachable. This is
-  conservative but correct — a minor
-  retention, not a leak.
+until the next Go callback, even if they are otherwise
+unreachable. This is conservative but correct — a minor
+retention, not a leak.
 
 - **Foreign code that holds no Go pointers**
-  (all tracked slots zeroed) has zero GC
-  impact. The GC skips the stack entirely.
-  This is the ideal model for audio/game
-  hot loops.
+(all tracked slots zeroed) has zero GC impact. The GC skips the
+stack entirely. This is the ideal model for audio/game hot loops.
 
 - **Foreign code that needs deterministic
-  GC timing** can call `runtime.Gosched()`
-  or any Go function at explicit points
-  (e.g. between game frames, between
-  physics ticks) to trigger a scan.
-
-### 
+GC timing** can call `runtime.Gosched()` or any Go function at
+explicit points (e.g. between game frames, between physics ticks)
+to trigger a scan.
 
 ### 6.5 What This Replaces
 
-This cooperative model replaces the cgocall
-approach where Go transitions the goroutine
-to "syscall" state on every foreign call and
-releases the P for other goroutines. In our
-model:
+This cooperative model replaces the cgocall approach where Go
+transitions the goroutine to "syscall" state on every foreign
+call and releases the P for other goroutines. In our model:
 
 - The transition from Go to foreign code
-  does not change goroutine state. The
-  goroutine remains in _Grunning and
-  retains its P.
+does not change goroutine state. The goroutine remains in
+_Grunning and retains its P.
 - The scheduler does not need to steal the P.
 - Preemption happens at Go callbacks, not
-  via signals.
+via signals.
 
-If foreign code calls back into Go and that
-Go code performs a system call, the normal
-syscall state transitions apply — the
-goroutine enters _Gsyscall and the P may be
-released, as with any Go code. This is
-transparent and correct.
+If foreign code calls back into Go and that Go code performs a
+system call, the normal syscall state transitions apply — the
+goroutine enters _Gsyscall and the P may be released, as with any
+Go code. This is transparent and correct.
 
-The tradeoff: one P is dedicated to this
-goroutine while it executes foreign code.
-For a game or JIT engine that runs one
-primary goroutine doing foreign work, this
-is the natural model.
+The tradeoff: one P is dedicated to this goroutine while it
+executes foreign code. For a game or JIT engine that runs one
+primary goroutine doing foreign work, this is the natural model.
 
 ---
 
 ## 7. Relationship to cgocall
 
-This section explains why this protocol
-exists as an alternative to Go's existing
-cgocall infrastructure.
+This section explains why this protocol exists as an alternative
+to Go's existing cgocall infrastructure.
 
 ### 7.1 What cgocall Provides
 
-Go's runtime.cgocall is the existing
-mechanism for calling foreign code. Despite
-the "c" in the name, it is not C-specific —
+Go's runtime.cgocall is the existing mechanism for calling
+foreign code. Despite the "c" in the name, it is not C-specific —
 it handles any foreign call. It provides:
 
 - Precise stack tracing by switching to a
-  separate C stack, so the Go stack contains
-  only Go frames.
+separate C stack, so the Go stack contains only Go frames.
 - Scheduler coordination by transitioning
-  the goroutine to syscall state and
-  releasing the P.
+the goroutine to syscall state and releasing the P.
 - Symbolization via runtime.SetCgoCallback.
 
 ### 7.2 Why cgocall Is Insufficient
 
-cgocall's overhead is approximately 43ns per
-call. A direct CALL/RET is approximately 2ns.
-This is a 21× performance difference.
+cgocall's overhead is approximately 43ns per call. A direct
+CALL/RET is approximately 2ns. This is a 21× performance
+difference.
 
-For coarse-grained foreign calls (calling a
-C library function once per operation), 43ns
-is negligible. For a JIT compiler dispatching
-translated basic blocks at high frequency —
-potentially millions of transitions per
-second — it is catastrophic. The overhead
-dominates execution time and makes the JIT
-non-competitive with native execution.
+For coarse-grained foreign calls (calling a C library function
+once per operation), 43ns is negligible. For a JIT compiler
+dispatching translated basic blocks at high frequency —
+potentially millions of transitions per second — it is
+catastrophic. The overhead dominates execution time and makes the
+JIT non-competitive with native execution.
 
-The overhead comes from cgocall's model:
-switching stacks, transitioning goroutine
-state, releasing and reacquiring the P, and
-signal mask manipulation. These are all
-necessary for cgocall's generality (it
-handles any foreign code on any goroutine),
-but unnecessary when the goroutine is locked
-to a thread with a fixed stack and the
-foreign code follows a self-describing frame
-protocol.
+The overhead comes from cgocall's model: switching stacks,
+transitioning goroutine state, releasing and reacquiring the P,
+and signal mask manipulation. These are all necessary for
+cgocall's generality (it handles any foreign code on any
+goroutine), but unnecessary when the goroutine is locked to a
+thread with a fixed stack and the foreign code follows a
+self-describing frame protocol.
 
 ### 7.3 How This Protocol Differs
 
-This protocol takes a different approach:
-instead of switching to a separate stack, the
-foreign code runs directly on the goroutine
-stack. Instead of transitioning goroutine
-state, the goroutine remains in running state.
-Instead of releasing the P, the goroutine
-keeps it. The GC traces foreign frames using
-the self-describing bitmap rather than by
-requiring all foreign frames to be on a
-separate stack.
+This protocol takes a different approach: instead of switching to
+a separate stack, the foreign code runs directly on the goroutine
+stack. Instead of transitioning goroutine state, the goroutine
+remains in running state. Instead of releasing the P, the
+goroutine keeps it. The GC traces foreign frames using the
+self-describing bitmap rather than by requiring all foreign
+frames to be on a separate stack.
 
-The result: 2ns call overhead (a bare
-CALL/RET), full GC correctness, and
-panic cleanup participation. The cost is
-that one P is dedicated to the goroutine
-and the foreign code must follow the
-self-describing frame protocol.
+The result: 2ns call overhead (a bare CALL/RET), full GC
+correctness, and panic cleanup participation. The cost is that
+one P is dedicated to the goroutine and the foreign code must
+follow the self-describing frame protocol.
 
 ### 7.4 Symbolization
 
-This protocol does not provide function
-names or line numbers for foreign frames.
-Stack traces show `<foreign frame at PC>`.
-A future version could support a
-symbolization callback analogous to
-runtime.SetCgoCallback, where the JIT
-registers a function that maps PCs to
-human-readable names.
+This protocol does not provide function names or line numbers for
+foreign frames. Stack traces show `<foreign frame at PC>`. A
+future version could support a symbolization callback analogous
+to runtime.SetCgoCallback, where the JIT registers a function
+that maps PCs to human-readable names.
 
 ### 7.5 No cgo Toolchain Required
 
-This protocol requires no cgo toolchain
-involvement. The JIT compiler emits
-self-describing frames directly. No
-`import "C"`, no cgo build step, no
-dynamic linking. This is particularly
-valuable for pure-Go projects that
-generate foreign code at runtime (JIT
-compilers, Wasm engines, emulators) and
-do not otherwise need C interop.
+This protocol requires no cgo toolchain involvement. The JIT
+compiler emits self-describing frames directly. No `import "C"`,
+no cgo build step, no dynamic linking. This is particularly
+valuable for pure-Go projects that generate foreign code at
+runtime (JIT compilers, Wasm engines, emulators) and do not
+otherwise need C interop.
 
 ---
 
@@ -1025,16 +910,14 @@ corresponds to tracked_slot[i]
 for i in 0..numTrackedSlots-1
 ```
 
-In both cases: bit=1 means the slot is
-treated as a live Go heap pointer. The GC
-traces it. Bit=0 means the GC ignores it.
+In both cases: bit=1 means the slot is treated as a live Go heap
+pointer. The GC traces it. Bit=0 means the GC ignores it.
 
 ### 8.3 Maximal Bitmap Rule
 
-The bitmap is the union of all pointer slots
-that will ever hold a Go pointer at any point
-during the function's execution. Computed at
-JIT compilation time:
+The bitmap is the union of all pointer slots that will ever hold
+a Go pointer at any point during the function's execution.
+Computed at JIT compilation time:
 
 ```
 For each tracked slot i:
@@ -1044,27 +927,24 @@ For each tracked slot i:
                   a Go pointer
 ```
 
-The JIT compiler knows every callback site,
-which callbacks return Go pointers, and which
-slot each return value will be spilled to.
+The JIT compiler knows every callback site, which callbacks
+return Go pointers, and which slot each return value will be
+spilled to.
 
 ### 8.4 Zero-Initialization Requirement
 
-**Critical correctness requirement.** Every
-tracked slot whose bitmap bit is 1 MUST be
-zero-initialized in the prologue, before any
-callback into Go.
+**Critical correctness requirement.** Every tracked slot whose
+bitmap bit is 1 MUST be zero-initialized in the prologue, before
+any callback into Go.
 
-Rationale: the bitmap claims these slots
-contain Go pointers from frame creation. If a
-slot contains uninitialized garbage and the GC
-traces it, the garbage might look like a heap
-address. Zeroing makes it nil, which the GC
-handles correctly.
+Rationale: the bitmap claims these slots contain Go pointers from
+frame creation. If a slot contains uninitialized garbage and the
+GC traces it, the garbage might look like a heap address. Zeroing
+makes it nil, which the GC handles correctly.
 
-Slots with known valid pointers from entry
-(e.g. the context pointer) may be initialized
-with their actual value instead of zero.
+Slots with known valid pointers from entry (e.g. the context
+pointer) may be initialized with their actual value instead of
+zero.
 
 ### 8.5 Slot Lifecycle
 
@@ -1097,21 +977,20 @@ with their actual value instead of zero.
    Bitmap ceases to exist.
 ```
 
-At no point does the GC observe a
-pointer-marked slot containing uninit garbage.
+At no point does the GC observe a pointer-marked slot containing
+uninit garbage.
 
 ### 8.6 Clearing Dead Pointer Slots
 
-When foreign code overwrites a pointer slot
-with a non-pointer, the bitmap still marks it.
-The GC traces the value.
+When foreign code overwrites a pointer slot with a non-pointer,
+the bitmap still marks it. The GC traces the value.
 
 Two outcomes:
 - Value outside Go heap range. GC's inheap()
-  check rejects it. No harm.
+check rejects it. No harm.
 - Value looks like a heap address. GC pins
-  that object alive. Minor transient
-  retention, not a correctness violation.
+that object alive. Minor transient retention, not a correctness
+violation.
 
 To avoid this, zero the slot when done:
 
@@ -1137,8 +1016,8 @@ untracked_end   = RSP + frameSize16 × 16
 
 ### 9.2 GC Behavior
 
-The GC does not read, trace, or interpret any
-data in the untracked region.
+The GC does not read, trace, or interpret any data in the
+untracked region.
 
 ### 9.3 Permitted Uses
 
@@ -1148,17 +1027,14 @@ The JIT may use the untracked region for:
 - Temporary buffers
 - Saved callee-saved registers
 - Saved g pointer
-  (R14 on amd64, R28 on arm64)
+(R14 on amd64, R28 on arm64)
 - Any data that is NOT a Go heap pointer
 
-**Critical rule.** The untracked region MUST
-NOT be the sole location of a live Go heap
-pointer. Any Go pointer must have its
-authoritative copy in a tracked slot with
-bitmap bit = 1. A redundant copy of an
-already-tracked pointer in the untracked
-region is harmless — the GC already sees it
-via the tracked slot.
+**Critical rule.** The untracked region MUST NOT be the sole
+location of a live Go heap pointer. Any Go pointer must have its
+authoritative copy in a tracked slot with bitmap bit = 1. A
+redundant copy of an already-tracked pointer in the untracked
+region is harmless — the GC already sees it via the tracked slot.
 
 ---
 
@@ -1276,8 +1152,7 @@ runtime.Callers and runtime.Stack should emit:
 ```
 <foreign frame at 0x7f1234560080>
 ```
-The function name is unknown. The PC is useful
-for debugging.
+The function name is unknown. The PC is useful for debugging.
 
 ---
 
@@ -1289,9 +1164,8 @@ For each foreign function, the JIT must:
 
 **Step 1: Design the frame layout.**
 
-Decide which slots are tracked (may hold Go
-pointers) and which are untracked (never hold
-Go pointers).
+Decide which slots are tracked (may hold Go pointers) and which
+are untracked (never hold Go pointers).
 
 Typical RISC-V translator layout:
 
@@ -1310,8 +1184,8 @@ Untracked:
 
 **Step 2: Compute the maximal bitmap.**
 
-For each tracked slot, set bit=1 if it will
-ever hold a Go pointer.
+For each tracked slot, set bit=1 if it will ever hold a Go
+pointer.
 
 **Step 3: Compute frameSize16.**
 
@@ -1349,15 +1223,12 @@ The header is a single compile-time uint64.
 
 **Step 5: Determine the cleanup pointer.**
 
-If the function needs cleanup on panic:
-  Set cleanup = address of JIT-emitted
-  cleanup code for this function.
+If the function needs cleanup on panic: Set cleanup = address of
+JIT-emitted cleanup code for this function.
 
-If no cleanup needed:
-  Set cleanup = 0.
+If no cleanup needed: Set cleanup = 0.
 
-The cleanup pointer is a compile-time
-constant.
+The cleanup pointer is a compile-time constant.
 
 ### 11.2 Emitted Prologue
 
@@ -1415,14 +1286,13 @@ foreign_function:
     mov   [rsp+UNTRACKED+0], r14
 ```
 
-The tracked slot was already bitmap-marked and
-zero-initialized in the prologue. The bitmap
-was correct before the call. No race.
+The tracked slot was already bitmap-marked and zero-initialized
+in the prologue. The bitmap was correct before the call. No race.
 
 ### 11.5 Emitted Cleanup Function
 
-The cleanup is a separate JIT-emitted function
-that follows the same self-describing protocol.
+The cleanup is a separate JIT-emitted function that follows the
+same self-describing protocol.
 
 ```asm
 my_block_cleanup:
@@ -1446,8 +1316,8 @@ my_block_cleanup:
     ret
 ```
 
-The cleanup header for a frame with no tracked
-slots and no cleanup of its own:
+The cleanup header for a frame with no tracked slots and no
+cleanup of its own:
 
 ```
 frameSize16 = 2  (32 bytes)
@@ -1459,22 +1329,21 @@ CLEANUP_HEADER = 0x0000000000000002
 
 ### 11.6 g Pointer Protocol
 
-The g pointer (R14 on amd64, R28 on arm64)
-is the Go runtime's goroutine pointer. Foreign
-code may clobber it freely.
+The g pointer (R14 on amd64, R28 on arm64) is the Go runtime's
+goroutine pointer. Foreign code may clobber it freely.
 
 1. On entry: save g to untracked region.
 2. Before callback: restore g from save area.
 3. After callback: re-save g.
 4. On exit: restore g before RET.
 
-g is saved in the untracked region. It is not
-a Go heap pointer — it points to the runtime's
-g struct, which the GC handles separately.
+g is saved in the untracked region. It is not a Go heap pointer —
+it points to the runtime's g struct, which the GC handles
+separately.
 
-Note: the runtime's callForeignCleanup helper
-restores g before calling the cleanup, so the
-cleanup does not need to restore g itself.
+Note: the runtime's callForeignCleanup helper restores g before
+calling the cleanup, so the cleanup does not need to restore g
+itself.
 
 ---
 
@@ -1604,9 +1473,8 @@ jit_block_cleanup:
 
 ### 12.7 GC Trace Walkthrough
 
-GC fires during `call go_allocate_something`.
-Goroutine stopped inside Go code. Stack walker
-reaches the foreign frame.
+GC fires during `call go_allocate_something`. Goroutine stopped
+inside Go code. Stack walker reaches the foreign frame.
 
 ```
 RSP+0:   return addr (Go caller)
@@ -1651,8 +1519,8 @@ Scanner steps:
 
 ### 12.8 Panic Unwind Walkthrough
 
-A Go callback panics. gopanic begins unwinding.
-It reaches the foreign frame.
+A Go callback panics. gopanic begins unwinding. It reaches the
+foreign frame.
 
 1. gopanic reads RSP+24: non-nil cleanup.
 
@@ -1768,9 +1636,8 @@ It reaches the foreign frame.
 ### 13.3 Not Provided
 
 - Recovery (stopping panic unwind) from
-  foreign frames. Use Go defer/recover at
-  a Go frame above, or use setjmp/longjmp
-  for foreign-to-foreign exception handling.
+foreign frames. Use Go defer/recover at a Go frame above, or use
+setjmp/longjmp for foreign-to-foreign exception handling.
 - Function names for foreign frames.
 - Line number information.
 - Profiling support (unknown PCs skipped).
@@ -1797,63 +1664,58 @@ Future adaptation via:
 - Version field in magic (bits [0:15])
 - extensionBit in header (bit 15)
 - Cleanup calling convention (additional
-  arguments in future versions)
+arguments in future versions)
 - Recovery semantics (future protocol
-  version may define recover support)
+version may define recover support)
 
 ---
 
 ## 15. Runtime Changes Summary
 
 ### 15.1 Stack scanner
-  (~50-80 lines in traceback.go / stkframe.go)
+(~50-80 lines in traceback.go / stkframe.go)
 
-When findfunc(pc) returns nil, check
-g.foreignStack. If false, fatal. If true,
-call scanForeignFrame. Zero cost for normal
+When findfunc(pc) returns nil, check g.foreignStack. If false,
+fatal. If true, call scanForeignFrame. Zero cost for normal
 goroutines.
 
 ### 15.2 Stack growth
-  (~3 lines in stack.go)
+(~3 lines in stack.go)
 
-In newstack/copystack, if g.foreignStack is
-true, panic instead of copying.
+In newstack/copystack, if g.foreignStack is true, panic instead
+of copying.
 
 ### 15.3 sysmon preemption
-  (~5 lines in proc.go)
+(~5 lines in proc.go)
 
-In sysmon's preemption loop, skip goroutines
-where g.foreignStack is true. Do not send
-SIGURG to their threads.
+In sysmon's preemption loop, skip goroutines where g.foreignStack
+is true. Do not send SIGURG to their threads.
 
 ### 15.4 STW exclusion
-  (~10 lines in proc.go / mgc.go)
+(~10 lines in proc.go / mgc.go)
 
-In the stop-the-world loop, do not wait for
-goroutines where g.foreignStack is true.
-When such a goroutine next calls into Go,
-the Go prologue detects pending GC work and
-services it, including stack scanning.
+In the stop-the-world loop, do not wait for goroutines where
+g.foreignStack is true. When such a goroutine next calls into Go,
+the Go prologue detects pending GC work and services it,
+including stack scanning.
 
 ### 15.5 Panic unwinder
-  (~30-50 lines in panic.go)
+(~30-50 lines in panic.go)
 
-In gopanic's unwind loop, when encountering a
-foreign frame: read cleanup pointer at SP+24.
-If non-nil, call it via callForeignCleanup.
-After cleanup returns, continue unwinding past
-the foreign frame.
+In gopanic's unwind loop, when encountering a foreign frame: read
+cleanup pointer at SP+24. If non-nil, call it via
+callForeignCleanup. After cleanup returns, continue unwinding
+past the foreign frame.
 
 ### 15.6 callForeignCleanup
-  (~20 lines, new runtime helper)
+(~20 lines, new runtime helper)
 
-Small function that restores g, sets up args
-per platform calling convention, CALLs the
-cleanup address. Analogous to existing
+Small function that restores g, sets up args per platform calling
+convention, CALLs the cleanup address. Analogous to existing
 reflectcall.
 
 ### 15.7 runtime.LockOSThreadForeign
-  (new public API)
+(new public API)
 
 ```go
 // LockOSThreadForeign locks the calling
@@ -1874,17 +1736,16 @@ Implementation:
 - Lock goroutine to OS thread.
 - Set g.foreignStack = true.
 - Mark goroutine as exempt from async
-  preemption (sysmon skips it for SIGURG).
+preemption (sysmon skips it for SIGURG).
 - Mark goroutine as exempt from STW
-  participation (GC proceeds without it).
+participation (GC proceeds without it).
 - Provision a fixed stack of the requested
-  size. The current goroutine stack is
-  copied to the new stack (safe — no
-  foreign frames exist yet). Alternatively,
-  the implementation may use the OS thread's
-  own stack via pthread_attr_setstacksize.
+size. The current goroutine stack is copied to the new stack
+(safe — no foreign frames exist yet). Alternatively, the
+implementation may use the OS thread's own stack via
+pthread_attr_setstacksize.
 - The stack is marked non-copyable. Any
-  future stack growth attempt panics.
+future stack growth attempt panics.
 
 ---
 
