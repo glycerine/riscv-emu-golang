@@ -19,7 +19,7 @@
    - [4.1 Layout](#41-layout)
    - [4.2 Bit Layout Diagram](#42-bit-layout-diagram)
    - [4.3 Extension Bit](#43-extension-bit)
-   - [4.4 Inline vs. External Bitmap](#44-inline-vs-external-bitmap)
+   - [4.4 Inline vs External Bitmap](#44-inline-vs-external-bitmap)
    - [4.5 Frame Size Computation](#45-frame-size-computation)
 5. [Cleanup Pointer (RSP+24)](#5-cleanup-pointer-rsp24)
    - [5.1 Purpose](#51-purpose)
@@ -83,9 +83,10 @@
     - [15.1 Stack scanner](#151-stack-scanner)
     - [15.2 Stack growth](#152-stack-growth)
     - [15.3 sysmon preemption](#153-sysmon-preemption)
-    - [15.4 Panic unwinder](#154-panic-unwinder)
-    - [15.5 callForeignCleanup](#155-callforeigncleanup)
-    - [15.6 runtime.LockOSThreadForeign](#156-runtimelockosthreadforeign)
+    - [15.4 STW exclusion](#154-stw-exclusion)
+    - [15.5 Panic unwinder](#155-panic-unwinder)
+    - [15.6 callForeignCleanup](#156-callforeigncleanup)
+    - [15.7 runtime.LockOSThreadForeign](#157-runtimelockosthreadforeign)
 16. [Reference](#16-reference)
     - [16.1 Constants](#161-constants)
     - [16.2 Header Bit Map](#162-header-bit-map)
@@ -161,6 +162,14 @@ this goroutine:
    stack scanner and panic unwinder to
    recognize self-describing frames on this
    goroutine's stack.
+
+5. **STW exclusion.** The garbage collector's
+   stop-the-world pauses will not wait for
+   this goroutine to stop. The GC proceeds
+   without scanning this goroutine's stack.
+   The stack is scanned opportunistically
+   when the goroutine next calls into Go.
+   See Section 6 (Preemption Protocol).
 
 **Prerequisite 2: Modified stack scanner**
 
@@ -590,8 +599,8 @@ and the frame is simply skipped.
 
 The cleanup pointer is always present in every
 self-describing frame. It is written in the
-prologue as a (JIT) compile-time constant
-(either a code address or 0).
+prologue as a (JIT) compile-time constant (either
+a code address or 0).
 
 The cleanup pointer is NOT a Go heap pointer.
 It is a code address pointing into JIT-emitted
@@ -702,8 +711,8 @@ this protocol.
    behavior. (Future protocol versions may
    define nested panic semantics.)
 
-3. The cleanup MUST return normally. It must
-   not longjmp, exit, or otherwise transfer
+3. The cleanup MUST return. It must not
+   longjmp, exit, or otherwise transfer
    control outside the normal return path.
 
 4. The cleanup SHOULD be fast. It runs during
@@ -789,41 +798,76 @@ a safepoint.
 
 ### 6.3 Foreign Code Contract
 
-**Foreign code must call back into Go within
-a bounded time.** This is the sole obligation.
+Foreign code has no obligation to call back
+into Go on any particular schedule.
 
-While foreign code runs without calling into
-Go, the goroutine is unpreemptible. GC
-stop-the-world pauses are delayed.
+When foreign code does call into Go, the Go
+function's prologue services any pending GC
+or scheduling work automatically. This is the
+cooperative safepoint.
 
-The recommended maximum interval between Go
-callbacks is 10ms, matching sysmon's existing
-preemption threshold. For latency-sensitive
-applications, shorter intervals are better.
+Foreign code that never calls into Go runs
+uninterrupted indefinitely. The GC does not
+wait for it. STW pauses proceed without it.
+Other goroutines are unaffected. This is the
+correct model for audio engines, game render
+loops, and real-time processing, where
+uninterrupted execution is more important
+than GC participation.
 
-The callbacks do not need to be explicit
-yield points. Any call into Go suffices:
-- Allocating a Go object
-- Accessing a Go data structure
-- Calling runtime.Gosched()
-- Any Go function whatsoever
+The tradeoff: while foreign code runs without
+calling into Go, the GC cannot scan its stack.
+Go objects whose sole root is in a tracked
+slot of the foreign frame may not be collected
+promptly — they survive until the goroutine
+next calls into Go and the GC scans its stack.
+This is a minor retention, not a leak. The
+objects are collected at the next opportunity.
 
-The Go function's prologue handles everything
-transparently.
+For foreign code that uses Go services
+regularly (allocating objects, calling Go
+functions), callbacks happen naturally and
+frequently. The GC scans the stack at each
+callback. No special action is needed.
 
 ### 6.4 GC Cooperation
 
-When a GC stop-the-world is requested, the
-foreign-capable goroutine will participate
-when it next calls into Go. The STW pause
-is bounded by the foreign code's maximum
-callback interval.
+`LockOSThreadForeign` excludes the goroutine
+from stop-the-world participation. The GC
+never blocks waiting for this goroutine to
+reach a safepoint. STW proceeds without it.
 
-For applications that need deterministic GC
-timing, the foreign code can call
-`runtime.Gosched()` or `runtime.GC()` at
-explicit points (e.g. between game frames,
-between physics ticks).
+The goroutine's stack is scanned
+opportunistically: when the goroutine calls
+into Go, the Go prologue detects any pending
+GC work (via stackguard0) and services it
+before proceeding. At that point the stack
+is scanned using the self-describing frame
+protocol.
+
+Consequences:
+
+- **STW pauses are never delayed** by a
+  foreign-capable goroutine, regardless of
+  how long it runs without calling into Go.
+
+- **Go objects in tracked slots survive**
+  until the next Go callback, even if they
+  are otherwise unreachable. This is
+  conservative but correct — a minor
+  retention, not a leak.
+
+- **Foreign code that holds no Go pointers**
+  (all tracked slots zeroed) has zero GC
+  impact. The GC skips the stack entirely.
+  This is the ideal model for audio/game
+  hot loops.
+
+- **Foreign code that needs deterministic
+  GC timing** can call `runtime.Gosched()`
+  or any Go function at explicit points
+  (e.g. between game frames, between
+  physics ticks) to trigger a scan.
 
 ### 
 
@@ -1396,6 +1440,8 @@ my_block_cleanup:
 
     ; ... do cleanup work ...
 
+    ; ... do cleanup work ...
+
     add   rsp, 32
     ret
 ```
@@ -1707,7 +1753,13 @@ It reaches the foreign frame.
    Go and the Go prologue checks
    stackguard0. See Section 6.
 
-6. During panic unwind, if a foreign frame has
+6. STW does not wait for foreign-capable
+   goroutines. The GC proceeds without
+   scanning their stacks. Stacks are
+   scanned opportunistically when the
+   goroutine next calls into Go.
+
+7. During panic unwind, if a foreign frame has
    a non-nil cleanup pointer, gopanic CALLs
    it with (frameSP, &panicValue). After the
    cleanup returns, continue unwinding past
@@ -1737,7 +1789,6 @@ The protocol is architecture-neutral. On ARM64:
 - Stack alignment 16 bytes (same).
 - g pointer is R28 not R14.
 - Cleanup args in X0, X1 (not RDI, RSI).
-- Cleanup return in X0 (not RAX).
 - Frame layout protocol identical.
 
 ### 14.2 Extensibility
@@ -1775,7 +1826,16 @@ In sysmon's preemption loop, skip goroutines
 where g.foreignStack is true. Do not send
 SIGURG to their threads.
 
-### 15.4 Panic unwinder
+### 15.4 STW exclusion
+  (~10 lines in proc.go / mgc.go)
+
+In the stop-the-world loop, do not wait for
+goroutines where g.foreignStack is true.
+When such a goroutine next calls into Go,
+the Go prologue detects pending GC work and
+services it, including stack scanning.
+
+### 15.5 Panic unwinder
   (~30-50 lines in panic.go)
 
 In gopanic's unwind loop, when encountering a
@@ -1784,15 +1844,15 @@ If non-nil, call it via callForeignCleanup.
 After cleanup returns, continue unwinding past
 the foreign frame.
 
-### 15.5 callForeignCleanup
+### 15.6 callForeignCleanup
   (~20 lines, new runtime helper)
 
 Small function that restores g, sets up args
 per platform calling convention, CALLs the
-cleanup address, returns the result. Analogous
-to existing reflectcall.
+cleanup address. Analogous to existing
+reflectcall.
 
-### 15.6 runtime.LockOSThreadForeign
+### 15.7 runtime.LockOSThreadForeign
   (new public API)
 
 ```go
@@ -1801,11 +1861,12 @@ to existing reflectcall.
 // a fixed stack of at least the given size.
 // The stack will never be copied. No SIGURG
 // signals will be sent to this thread.
-// Sets g.foreignStack = true, enabling the
-// stack scanner and panic unwinder to
-// recognize self-describing foreign frames.
-// Must be called before executing foreign
-// code.
+// Stop-the-world pauses will not wait for
+// this goroutine. Sets g.foreignStack = true,
+// enabling the stack scanner and panic
+// unwinder to recognize self-describing
+// foreign frames. Must be called before
+// executing foreign code.
 func LockOSThreadForeign(stackSize uintptr)
 ```
 
@@ -1814,6 +1875,8 @@ Implementation:
 - Set g.foreignStack = true.
 - Mark goroutine as exempt from async
   preemption (sysmon skips it for SIGURG).
+- Mark goroutine as exempt from STW
+  participation (GC proceeds without it).
 - Provision a fixed stack of the requested
   size. The current goroutine stack is
   copied to the new stack (safe — no
@@ -1842,6 +1905,8 @@ MAX_FRAME_BYTES    = 32767 × 16 = 524,272
 MAX_INLINE_TRACKED = 32
 MAX_TRACKED_SLOTS  = 65535
 MIN_FRAME_SIZE_16  = 2
+
+
 ```
 
 ### 16.2 Header Bit Map
