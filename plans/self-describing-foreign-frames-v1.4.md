@@ -1,6 +1,6 @@
 # Self-Describing Foreign Frame Protocol
 
-## Specification v1.3
+## Specification v1.4
 
 ---
 
@@ -749,8 +749,7 @@ a bounded time.** This is the sole obligation.
 
 While foreign code runs without calling into
 Go, the goroutine is unpreemptible. GC
-stop-the-world pauses are delayed. Other
-goroutines cannot be scheduled on this P.
+stop-the-world pauses are delayed.
 
 The recommended maximum interval between Go
 callbacks is 10ms, matching sysmon's existing
