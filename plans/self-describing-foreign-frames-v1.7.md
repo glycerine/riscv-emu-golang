@@ -1,6 +1,6 @@
 # Self-Describing Foreign Frame Protocol
 
-## Specification v1.6
+## Specification v1.7
 
 ---
 
@@ -48,7 +48,7 @@
    - [8.4 Zero-Initialization Requirement](#84-zero-initialization-requirement)
    - [8.5 Slot Lifecycle](#85-slot-lifecycle)
    - [8.6 Clearing Dead Pointer Slots](#86-clearing-dead-pointer-slots)
-   - [8.7 Departure from Go's Per-PC Liveness Model](#87-departure-from-go-s-per-pc-Liveness-Model)
+   - [8.7 Departure from Go's Per-PC Liveness Model](#87-departure-from-gos-per-pc-liveness-model)
 9. [Untracked Region](#9-untracked-region)
    - [9.1 Location](#91-location)
    - [9.2 GC Behavior](#92-gc-behavior)
