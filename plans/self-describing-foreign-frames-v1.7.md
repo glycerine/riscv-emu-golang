@@ -135,8 +135,8 @@ cleanup handler releases resources (defer semantics). The panic
 then continues propagating up the stack.
 
 No external metadata registration is required. No moduledata
-synthesis. No go:linkname hacks. No runtime data structures to
-maintain. The frame describes itself.
+synthesis is needed. Gone are all go:linkname hacks. No runtime data 
+structures need to be maintained. The frame describes itself.
 
 ### 1.1 Prerequisites
 
