@@ -4,6 +4,22 @@
 
 ---
 
+JIT compilers, games, audio, and soft-real-time
+applications frequently need both high performance 
+foreign-code interoperation and relief from garbage
+collection pauses.
+
+This is a specification for a self-describing foreign 
+stack-frame protocol intended to allow JIT compiled code 
+in Go to integrate seemlessly with pre-compiled Go code.
+Foreign code can be called 20x faster than CGO, and
+the foreign thread is pinned and has total control
+over GC pause points; if they are allowed at all.
+The implementation complexity burden is shifted 
+from the Go runtime to the JIT compiler author.
+
+A present limitation is that we only consider 64-bit platforms.
+
 ### Table of Contents
 
 1. [Overview](#1-overview)
