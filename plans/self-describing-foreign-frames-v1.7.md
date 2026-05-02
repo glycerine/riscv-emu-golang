@@ -18,7 +18,19 @@ over GC pause points; if they are allowed at all.
 The implementation complexity burden is shifted 
 from the Go runtime to the JIT compiler author.
 
-A present limitation is that we only consider 64-bit platforms.
+The original motivation for this work was to increase
+the security of running guest code.
+Contrary to popular belief, JIT compilation can be
+used to dramatically increase the strength of a
+guest sandbox by inserting runtime checks on memory access and
+system call parameters that would otherwise be infeasible
+or cripple to the original software.
+Marketing or not, the zero day flood from LLMs is likely
+to become a reality in short order. The capability
+to deploy JIT based security mechanisms merits serious
+and immediate consideration.
+
+A present scope limitation is that we only consider 64-bit platforms.
 
 ### Table of Contents
 
