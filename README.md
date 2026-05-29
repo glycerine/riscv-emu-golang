@@ -5,6 +5,8 @@ This repository is a performance-oriented RV64 emulator and native JIT
 for amd64/x86_64. It includes a RISC-V CPU interpreter in pure Go. That is, you can run
 RV64 binaries and instructions from within your Go programs. 
 
+Inspiration: https://github.com/libriscv/libriscv (a RISC-V emulator in C++).
+
 --------
 Author: Jason E. Aten, Ph.D.
 
