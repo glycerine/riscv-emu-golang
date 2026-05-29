@@ -1,36 +1,63 @@
-riscv-emulator
+A RISC-V 64 emulator in Golang (Go)
 ==============
 
-macOS uses a different RISC-V toolchain from linux.
+This repository is a performance-oriented RV64 emulator and native JIT. It
+includes a RISC-V CPU interpreter in pure Go. That is, you can run
+RV64 binaries and instructions from within your Go programs.
 
-# Prerequisites (one-time)
+The Go module is `riscv`. The root package
+implements guest memory, ELF loading, a cached interpreter, a native AMD64 JIT,
+an AOT segment system, OS/syscall personalities, and a forkable `Machine`
+wrapper. The surrounding directories hold benchmarks, oracle tests, vendored
+reference projects, and a local copy of the Go assembler backend.
+
+The current JIT path is native IR -> goasm -> executable mmap. The default
+register policy is `PolicyABJIT`; `PolicyRV8` is still available for the older
+rv8-style trampoline/register layout. The old C-source/TCC emitter still exists
+as legacy/reference code, but it is not the dispatch path in `NewJIT`/`RunJIT`.
+
+Treat comments in hot-path files as part of the design. Several "odd" choices
+are load-bearing for correctness or speed: CPU field layout, the `runCached`
+call-site restriction, ABJIT/RV8 register conventions, NaN boxing, decoder
+cache layout, AOT segment lifetime, and the guest-memory mask invariant.
+
+--------
+Author: Jason E. Aten, Ph.D.
+
+License: BSD 3-Clause, same as Go.
+
+## notes
+
+note: macOS uses a different RISC-V toolchain from linux.
+
+### Prerequisites (one-time)
 
 brew install riscv64-elf-gcc cmake
 
-# Extract
+### Extract
 
 tar -xzf riscv-emulator.tar.gz
 cd riscv
 
-# Unit tests — works immediately
+### Unit tests — works immediately
 
 go test -v ./...
 
-# One-time setup (clones libriscv ~400MB, builds static libs, compiles guest ELF)
+### One-time setup (clones libriscv ~400MB, builds static libs, compiles guest ELF)
 
 make bench-setup
 
-# Full benchmark comparison
+### Full benchmark comparison
 
 make bench
 
-# Quick targets (no libriscv needed)
+### Quick targets (no libriscv needed)
 
-make bench-ours       # our GuestMemory benchmarks only
+make bench-ours       ### our GuestMemory benchmarks only
 
-make test             # unit tests
+make test             ### unit tests
 
-# benchmark results 2026 April 20
+### benchmark results 2026 April 20
 
 JIT-ed, we are ballpark of libriscv now. Sometimes a little slower
 slower, sometimes faster. We are not measuring system call latency.
@@ -57,7 +84,7 @@ $ make bench
   native x86-64 (-O3 -march=native):           22954 MIPS  (110.0 ms)
 ~~~
 
-# darwin: make bench
+### darwin: make bench
 
 ~~~
 $ make bench
@@ -123,7 +150,7 @@ ok  	riscv/bench	1.621s
 
 ~~~
 
-# libriscv assembly dumps to debug_libriscv_dir
+### libriscv assembly dumps to debug_libriscv_dir
 
 ~~~
 The libriscv dump facility is implemented and working end-to-end.
@@ -189,7 +216,7 @@ still on default rv8, about to compare to ABJIT
 
 ~~~
 
-### performance note
+######### performance note
 
 the main client caller should do
 
@@ -338,7 +365,7 @@ Verification
 
 cd ~/ris && go test -v -run 'TestRISCVTests_UI_JIT_Lazy' .
 cd ~/ris && go test -v -run 'TestRISCVTests_U._JIT_Lazy' .
-cd ~/ris && go test -count=1 .  # full suite, no regressions
+cd ~/ris && go test -count=1 .  ### full suite, no regressions
 
 Critical Files
 
@@ -348,7 +375,7 @@ Critical Files
 │ riscv_test.go │ Add runRISCVTestJITLazy + 4 new _JIT_Lazy test functions │
 └───────────────┴──────────────────────────────────────────────────────────┘
 
-# outcome after implementing:
+### outcome after implementing:
 
 Interesting — lazy JIT is faster, not slower:
 
