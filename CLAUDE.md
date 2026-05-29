@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Go RISC-V emulator (RV64IMAFDC + Zicsr/Zba/Zbb/Zbs) with a JIT compiler that translates basic blocks to C source, compiles via TCC (TinyCC) to native x86-64, and calls through a zero-CGO-overhead Go assembly trampoline. Module name: `riscv`.
+Go RISC-V emulator (RV64IMAFDC + Zicsr/Zba/Zbb/Zbs) with a JIT compiler that translates RISC-V assembly to native x86-64, and calls through a zero-CGO-overhead Go assembly trampoline. Module name: `riscv`.
 
 ## Build & Test Commands
 
