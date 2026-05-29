@@ -7,6 +7,15 @@ RV64 binaries and instructions from within your Go programs.
 
 Inspiration: https://github.com/libriscv/libriscv (a RISC-V emulator in C++).
 
+Specifically, cpu.go is an RV64IMAFDC with Zicsr, Zifencei, Zicond, 
+and bitmanip extensions Zba/Zbb/Zbc/Zbs.
+
+The A, F, D, C, and B-family extensions are implemented for RV64; RV128 is not supported.
+
+Zicsr is implemented for the CSRs this emulator cares about, 
+not as a full privileged-architecture model. The atomics are processed but
+are no-ops.
+
 --------
 Author: Jason E. Aten, Ph.D.
 
