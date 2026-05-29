@@ -34,9 +34,9 @@ import (
 	"syscall"
 	"time"
 
-	riscv "riscv"
-	libriscv "riscv/bench/libriscv"
-	"riscv/internal/syscalls"
+	riscv "github.com/glycerine/riscv-emu-golang"
+	libriscv "github.com/glycerine/riscv-emu-golang/bench/libriscv"
+	"github.com/glycerine/riscv-emu-golang/internal/syscalls"
 )
 
 const (
