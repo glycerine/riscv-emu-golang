@@ -6,6 +6,8 @@ Bridge2 SPSC ring: 186ns (cross-core cache bounce). Plain CGO: 34ns (same
 thread). The Balke gojit approach runs JIT code on the same goroutine with
 zero CGO and allows GC-safe callbacks into Go mid-execution.
 
+relevant blog: https://aaronbalke.com/posts/gojit/
+
 **Goal**: New `~/ris/abjit/` package providing an alternative call path.
 All existing JIT machinery stays untouched.
 
