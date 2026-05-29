@@ -7,8 +7,8 @@ import (
 	"testing"
 	"unsafe"
 
-	"riscv/goasm"
-	"riscv/internal/jitcall"
+	"github.com/glycerine/riscv-emu-golang/goasm"
+	"github.com/glycerine/riscv-emu-golang/internal/jitcall"
 )
 
 // ── Lowerer-level tests for the decoder_cache JALR IC (rv8JalrIC) ──

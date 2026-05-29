@@ -31,12 +31,13 @@
 package arm
 
 import (
-	"riscv/goasm/obj"
-	"riscv/goasm/objabi"
-	"riscv/goasm/sys"
-	"riscv/goasm/abi"
-	"riscv/goasm/buildcfg"
 	"log"
+
+	"github.com/glycerine/riscv-emu-golang/goasm/abi"
+	"github.com/glycerine/riscv-emu-golang/goasm/buildcfg"
+	"github.com/glycerine/riscv-emu-golang/goasm/obj"
+	"github.com/glycerine/riscv-emu-golang/goasm/objabi"
+	"github.com/glycerine/riscv-emu-golang/goasm/sys"
 )
 
 var progedit_tlsfallback *obj.LSym

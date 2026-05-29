@@ -11,9 +11,9 @@ import (
 	"fmt"
 	"sort"
 
-	"riscv/goasm"
-	"riscv/goasm/obj"
-	"riscv/goasm/obj/x86"
+	"github.com/glycerine/riscv-emu-golang/goasm"
+	"github.com/glycerine/riscv-emu-golang/goasm/obj"
+	"github.com/glycerine/riscv-emu-golang/goasm/obj/x86"
 )
 
 // Staging register constants (shared across lowerers).
@@ -43,18 +43,18 @@ const (
 const FAST = true
 
 type lowerOps struct {
-	blk        *Block
-	alloc      *Allocation
-	c          *goasm.Ctx
-	idx        int
-	rIdx       regIndex
-	fpSet      map[VReg]bool
-	cxLive     []regEntry
-	labelProg  map[Label]*obj.Prog
-	pending    map[Label][]*obj.Prog
-	stackSlots int
-	frameSize  int64
-	sretOffset int64 // offset of sret pointer within frame (= stackSlots*8)
+	blk            *Block
+	alloc          *Allocation
+	c              *goasm.Ctx
+	idx            int
+	rIdx           regIndex
+	fpSet          map[VReg]bool
+	cxLive         []regEntry
+	labelProg      map[Label]*obj.Prog
+	pending        map[Label][]*obj.Prog
+	stackSlots     int
+	frameSize      int64
+	sretOffset     int64 // offset of sret pointer within frame (= stackSlots*8)
 	chainEntryProg *obj.Prog
 	chainExits     []chainExitInfo
 	jalrICs        []jalrICInfo

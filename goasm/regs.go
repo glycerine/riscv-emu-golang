@@ -4,15 +4,15 @@
 package goasm
 
 import (
-	"riscv/goasm/obj/arm"
-	"riscv/goasm/obj/arm64"
-	"riscv/goasm/obj/loong64"
-	"riscv/goasm/obj/mips"
-	"riscv/goasm/obj/ppc64"
-	goariscv "riscv/goasm/obj/riscv"
-	"riscv/goasm/obj/s390x"
-	"riscv/goasm/obj/wasm"
-	"riscv/goasm/obj/x86"
+	"github.com/glycerine/riscv-emu-golang/goasm/obj/arm"
+	"github.com/glycerine/riscv-emu-golang/goasm/obj/arm64"
+	"github.com/glycerine/riscv-emu-golang/goasm/obj/loong64"
+	"github.com/glycerine/riscv-emu-golang/goasm/obj/mips"
+	"github.com/glycerine/riscv-emu-golang/goasm/obj/ppc64"
+	goariscv "github.com/glycerine/riscv-emu-golang/goasm/obj/riscv"
+	"github.com/glycerine/riscv-emu-golang/goasm/obj/s390x"
+	"github.com/glycerine/riscv-emu-golang/goasm/obj/wasm"
+	"github.com/glycerine/riscv-emu-golang/goasm/obj/x86"
 )
 
 // ── AMD64 / x86-64 ────────────────────────────────────────────────────────────
@@ -783,7 +783,7 @@ const (
 
 // Wasm virtual registers.
 const (
-	REG_WASM_SP    = wasm.REG_SP    // stack pointer (32-bit until 64-bit memory ops available)
+	REG_WASM_SP    = wasm.REG_SP   // stack pointer (32-bit until 64-bit memory ops available)
 	REG_WASM_CTXT  = wasm.REG_CTXT // context pointer
 	REG_WASM_G     = wasm.REG_g    // goroutine pointer
 	REG_WASM_RET0  = wasm.REG_RET0 // return value 0

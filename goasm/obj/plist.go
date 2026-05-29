@@ -5,11 +5,12 @@
 package obj
 
 import (
-	"riscv/goasm/objabi"
-	"riscv/goasm/src"
 	"fmt"
-	"riscv/goasm/abi"
 	"strings"
+
+	"github.com/glycerine/riscv-emu-golang/goasm/abi"
+	"github.com/glycerine/riscv-emu-golang/goasm/objabi"
+	"github.com/glycerine/riscv-emu-golang/goasm/src"
 )
 
 type Plist struct {

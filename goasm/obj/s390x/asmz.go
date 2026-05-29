@@ -30,12 +30,13 @@
 package s390x
 
 import (
-	"riscv/goasm/obj"
-	"riscv/goasm/objabi"
 	"fmt"
 	"log"
 	"math"
 	"slices"
+
+	"github.com/glycerine/riscv-emu-golang/goasm/obj"
+	"github.com/glycerine/riscv-emu-golang/goasm/objabi"
 )
 
 // ctxtz holds state while assembling a single function.

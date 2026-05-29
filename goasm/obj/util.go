@@ -6,12 +6,13 @@ package obj
 
 import (
 	"bytes"
-	"riscv/goasm/objabi"
 	"fmt"
-	"riscv/goasm/abi"
-	"riscv/goasm/buildcfg"
 	"io"
 	"strings"
+
+	"github.com/glycerine/riscv-emu-golang/goasm/abi"
+	"github.com/glycerine/riscv-emu-golang/goasm/buildcfg"
+	"github.com/glycerine/riscv-emu-golang/goasm/objabi"
 )
 
 const REG_NONE = 0

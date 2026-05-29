@@ -3,10 +3,11 @@ package riscv
 import (
 	"os"
 	//"path/filepath"
-	"riscv/internal/jitcall"
 	"strings"
 	"testing"
 	"unsafe"
+
+	"github.com/glycerine/riscv-emu-golang/internal/jitcall"
 )
 
 func jitcallCall(j *JIT, fn uintptr, x *[32]uint64, f *[32]uint64, fcsr *uint32,

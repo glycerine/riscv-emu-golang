@@ -15,8 +15,8 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/glycerine/riscv-emu-golang/goasm"
 	"golang.org/x/arch/x86/x86asm"
-	"riscv/goasm"
 )
 
 // vizJitTag is the 16-hex-char session tag — generated once per

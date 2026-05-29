@@ -5,9 +5,9 @@ package riscv
 import (
 	"sort"
 
-	"riscv/goasm"
-	"riscv/goasm/obj"
-	"riscv/goasm/obj/x86"
+	"github.com/glycerine/riscv-emu-golang/goasm"
+	"github.com/glycerine/riscv-emu-golang/goasm/obj"
+	"github.com/glycerine/riscv-emu-golang/goasm/obj/x86"
 )
 
 // ── Per-VReg interval lookup ──
@@ -129,10 +129,10 @@ type GocallResumeDesc struct {
 }
 
 type LowerResult struct {
-	ChainEntryProg  *obj.Prog
-	ChainExits      []ChainExitDesc
-	JalrICs         []JalrICDesc
-	GocallResumes   []GocallResumeDesc
+	ChainEntryProg *obj.Prog
+	ChainExits     []ChainExitDesc
+	JalrICs        []JalrICDesc
+	GocallResumes  []GocallResumeDesc
 }
 
 // ── Shared helpers ──

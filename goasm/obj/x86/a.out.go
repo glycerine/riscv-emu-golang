@@ -30,7 +30,7 @@
 
 package x86
 
-import "riscv/goasm/obj"
+import "github.com/glycerine/riscv-emu-golang/goasm/obj"
 
 const (
 	REG_NONE = 0

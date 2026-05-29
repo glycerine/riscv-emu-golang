@@ -32,9 +32,10 @@
 package obj
 
 import (
-	"riscv/goasm/objabi"
 	"log"
 	"math"
+
+	"github.com/glycerine/riscv-emu-golang/goasm/objabi"
 )
 
 // Grow increases the length of s.P to lsiz.

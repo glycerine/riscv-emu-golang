@@ -9,7 +9,7 @@ import (
 	"reflect"
 	"strings"
 
-	"riscv/goasm/goexperiment"
+	"github.com/glycerine/riscv-emu-golang/goasm/goexperiment"
 )
 
 // ExperimentFlags represents a set of GOEXPERIMENT flags relative to a baseline

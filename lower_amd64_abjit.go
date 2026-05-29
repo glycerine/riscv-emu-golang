@@ -15,10 +15,10 @@ import (
 	"fmt"
 	"sort"
 
-	"riscv/abjit"
-	"riscv/goasm"
-	"riscv/goasm/obj"
-	"riscv/goasm/obj/x86"
+	"github.com/glycerine/riscv-emu-golang/abjit"
+	"github.com/glycerine/riscv-emu-golang/goasm"
+	"github.com/glycerine/riscv-emu-golang/goasm/obj"
+	"github.com/glycerine/riscv-emu-golang/goasm/obj/x86"
 )
 
 // State field offsets relative to RBP (must match abjit.State layout).
@@ -37,8 +37,8 @@ const (
 
 type lowerCtxABJIT struct {
 	lowerOps
-	exitThunk      *obj.Prog
-	gocallResumes  []GocallResumeDesc
+	exitThunk     *obj.Prog
+	gocallResumes []GocallResumeDesc
 }
 
 // LowerAMD64_ABJIT converts a register-allocated IR Block into x86-64
@@ -319,7 +319,6 @@ func (lc *lowerCtxABJIT) abjitRetDyn(ins *IRInstr) {
 		}
 	}
 
-
 	lc.storeRegsBack()
 
 	if pcStaged {
@@ -526,7 +525,6 @@ func (lc *lowerCtxABJIT) abjitJalrIC(ins *IRInstr) {
 		}
 	}
 
-
 	lc.storeRegsBack()
 
 	// Load target into RCX.
@@ -549,11 +547,11 @@ func (lc *lowerCtxABJIT) abjitJalrIC(ins *IRInstr) {
 	lc.c.Append(missJmp1)
 
 	// Bounds check: (target - vaddrBegin) < segSize (unsigned).
-	lc.emit2(x86.AMOVQ, stgB, goasm.REG_AMD64_DX)                                  // DX = target
-	lc.emitRM(x86.AMOVQ, goasm.REG_AMD64_BP, abjitVAddrBeginOff, stgA)              // RAX = vaddrBegin
-	lc.emit2(x86.ASUBQ, stgA, goasm.REG_AMD64_DX)                                   // DX = target - vaddrBegin
-	lc.emitRM(x86.AMOVQ, goasm.REG_AMD64_BP, abjitSegSizeOff, stgA)                 // RAX = segSize
-	lc.emit2(x86.ACMPQ, goasm.REG_AMD64_DX, stgA)                                   // cmp offset, segSize
+	lc.emit2(x86.AMOVQ, stgB, goasm.REG_AMD64_DX)                      // DX = target
+	lc.emitRM(x86.AMOVQ, goasm.REG_AMD64_BP, abjitVAddrBeginOff, stgA) // RAX = vaddrBegin
+	lc.emit2(x86.ASUBQ, stgA, goasm.REG_AMD64_DX)                      // DX = target - vaddrBegin
+	lc.emitRM(x86.AMOVQ, goasm.REG_AMD64_BP, abjitSegSizeOff, stgA)    // RAX = segSize
+	lc.emit2(x86.ACMPQ, goasm.REG_AMD64_DX, stgA)                      // cmp offset, segSize
 	missJmp2 := lc.c.NewProg()
 	missJmp2.As = x86.AJCC // JAE unsigned
 	missJmp2.To.Type = obj.TYPE_BRANCH

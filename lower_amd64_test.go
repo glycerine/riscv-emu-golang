@@ -5,10 +5,10 @@ import (
 	"testing"
 	"unsafe"
 
-	"riscv/goasm"
-	"riscv/goasm/obj"
-	"riscv/goasm/obj/x86"
-	"riscv/internal/jitcall"
+	"github.com/glycerine/riscv-emu-golang/goasm"
+	"github.com/glycerine/riscv-emu-golang/goasm/obj"
+	"github.com/glycerine/riscv-emu-golang/goasm/obj/x86"
+	"github.com/glycerine/riscv-emu-golang/internal/jitcall"
 )
 
 // ── Test helpers ──

@@ -6,7 +6,8 @@ package sys
 
 import (
 	"encoding/binary"
-	"riscv/goasm/goarch"
+
+	"github.com/glycerine/riscv-emu-golang/goasm/goarch"
 )
 
 // TODO: just use goarch.ArchFamilyType directly

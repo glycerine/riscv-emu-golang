@@ -31,8 +31,6 @@
 package arm64
 
 import (
-	"riscv/goasm/obj"
-	"riscv/goasm/objabi"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -41,6 +39,9 @@ import (
 	"math/bits"
 	"slices"
 	"strings"
+
+	"github.com/glycerine/riscv-emu-golang/goasm/obj"
+	"github.com/glycerine/riscv-emu-golang/goasm/objabi"
 )
 
 // ctxt7 holds state while assembling a single function.

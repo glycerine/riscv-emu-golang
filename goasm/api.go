@@ -32,11 +32,11 @@ import (
 	"strings"
 	"sync"
 
-	"riscv/goasm/obj"
-	"riscv/goasm/obj/arm64"
-	"riscv/goasm/obj/x86"
-	"riscv/goasm/objabi"
-	"riscv/goasm/src"
+	"github.com/glycerine/riscv-emu-golang/goasm/obj"
+	"github.com/glycerine/riscv-emu-golang/goasm/obj/arm64"
+	"github.com/glycerine/riscv-emu-golang/goasm/obj/x86"
+	"github.com/glycerine/riscv-emu-golang/goasm/objabi"
+	"github.com/glycerine/riscv-emu-golang/goasm/src"
 )
 
 // Arch selects the target ISA.

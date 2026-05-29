@@ -4,7 +4,7 @@
 package ppc64
 
 import (
-	"riscv/goasm/obj"
+	"github.com/glycerine/riscv-emu-golang/goasm/obj"
 )
 
 const (

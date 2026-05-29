@@ -32,15 +32,16 @@
 package obj
 
 import (
-	"riscv/goasm/hash"
-	"riscv/goasm/objabi"
 	"encoding/base64"
 	"encoding/binary"
 	"fmt"
-	"riscv/goasm/buildcfg"
 	"log"
 	"math"
 	"sort"
+
+	"github.com/glycerine/riscv-emu-golang/goasm/buildcfg"
+	"github.com/glycerine/riscv-emu-golang/goasm/hash"
+	"github.com/glycerine/riscv-emu-golang/goasm/objabi"
 )
 
 func Linknew(arch *LinkArch) *Link {

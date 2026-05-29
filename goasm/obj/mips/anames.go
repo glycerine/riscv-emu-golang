@@ -2,7 +2,7 @@
 
 package mips
 
-import "riscv/goasm/obj"
+import "github.com/glycerine/riscv-emu-golang/goasm/obj"
 
 var Anames = []string{
 	obj.A_ARCHSPECIFIC: "ABSD",

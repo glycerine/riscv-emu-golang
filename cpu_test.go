@@ -2,8 +2,9 @@ package riscv
 
 import (
 	"math"
-	"riscv/internal/fenv"
 	"testing"
+
+	"github.com/glycerine/riscv-emu-golang/internal/fenv"
 )
 
 // TestCPU_LoadIncrementStore encodes a minimal RV64I program and executes it:
@@ -378,7 +379,9 @@ func TestRORIW_Zero(t *testing.T) {
 func clmulRef(a, b uint64) uint64 {
 	var r uint64
 	for i := 0; i < 64; i++ {
-		if (b>>i)&1 != 0 { r ^= a << i }
+		if (b>>i)&1 != 0 {
+			r ^= a << i
+		}
 	}
 	return r
 }
@@ -409,7 +412,9 @@ func TestCLMULH_Basic(t *testing.T) {
 	cpu := setupM(t, mem, brtD(0x05, 3, 1, 2, 3, 0x33), a, b)
 	var r uint64
 	for i := 1; i < 64; i++ {
-		if (b>>i)&1 != 0 { r ^= a >> (64 - i) }
+		if (b>>i)&1 != 0 {
+			r ^= a >> (64 - i)
+		}
 	}
 	if cpu.Reg(1) != r {
 		t.Errorf("CLMULH: got 0x%X want 0x%X", cpu.Reg(1), r)
@@ -423,7 +428,9 @@ func TestCLMULR_Basic(t *testing.T) {
 	cpu := setupM(t, mem, brtD(0x05, 2, 1, 2, 3, 0x33), a, b)
 	var r uint64
 	for i := 0; i < 63; i++ {
-		if (b>>i)&1 != 0 { r ^= a >> (63 - i) }
+		if (b>>i)&1 != 0 {
+			r ^= a >> (63 - i)
+		}
 	}
 	if cpu.Reg(1) != r {
 		t.Errorf("CLMULR: got 0x%X want 0x%X", cpu.Reg(1), r)

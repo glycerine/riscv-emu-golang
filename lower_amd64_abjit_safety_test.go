@@ -3,9 +3,9 @@ package riscv
 import (
 	"testing"
 
-	"riscv/goasm"
-	"riscv/goasm/obj"
-	_ "riscv/goasm/obj/x86"
+	"github.com/glycerine/riscv-emu-golang/goasm"
+	"github.com/glycerine/riscv-emu-golang/goasm/obj"
+	_ "github.com/glycerine/riscv-emu-golang/goasm/obj/x86"
 )
 
 func lowerABJITBlock(t *testing.T, b *Block) (*goasm.Ctx, *LowerResult) {

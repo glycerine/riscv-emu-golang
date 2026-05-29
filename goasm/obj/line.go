@@ -5,7 +5,7 @@
 package obj
 
 import (
-	"riscv/goasm/src"
+	"github.com/glycerine/riscv-emu-golang/goasm/src"
 )
 
 // getFileIndexAndLine returns the relative file index (local to the CU), and

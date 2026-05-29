@@ -33,14 +33,15 @@ package obj
 import (
 	"bufio"
 	"bytes"
-	"riscv/goasm/objabi"
-	"riscv/goasm/src"
-	"riscv/goasm/sys"
 	"encoding/binary"
 	"fmt"
-	"riscv/goasm/abi"
 	"sync"
 	"sync/atomic"
+
+	"github.com/glycerine/riscv-emu-golang/goasm/abi"
+	"github.com/glycerine/riscv-emu-golang/goasm/objabi"
+	"github.com/glycerine/riscv-emu-golang/goasm/src"
+	"github.com/glycerine/riscv-emu-golang/goasm/sys"
 )
 
 // An Addr is an argument to an instruction.
@@ -1120,7 +1121,7 @@ type Pcln struct {
 	Pcdata    []*LSym
 	Funcdata  []*LSym
 	UsedFiles map[uint32]struct{} // file indices used while generating pcfile
-	InlTree   InlTree                        // per-function inlining tree extracted from the global tree
+	InlTree   InlTree             // per-function inlining tree extracted from the global tree
 }
 
 type Reloc struct {
@@ -1163,34 +1164,34 @@ type Link struct {
 	CompressInstructions bool // use compressed instructions where possible (if supported by architecture)
 
 	// Prog arena: slab allocator to avoid per-Prog heap allocations.
-	progCur  *ProgSlab   // current slab being allocated from
-	progIdx  int         // next free slot in progCur
-	progUsed []*ProgSlab // slabs filled during this compilation
-	progFree []*ProgSlab // free list for reuse
-	Debugasm             int
-	Debugvlog            bool
-	Debugpcln            string
-	Flag_shared          bool
-	Flag_dynlink         bool
-	Flag_linkshared      bool
-	Flag_optimize        bool
-	Flag_locationlists   bool
-	Flag_noRefName       bool   // do not include referenced symbol names in object file
-	Retpoline            bool   // emit use of retpoline stubs for indirect jmp/call
-	Flag_maymorestack    string // If not "", call this function before stack checks
-	Bso                  *bufio.Writer
-	Pathname             string
-	Pkgpath              string           // the current package's import path
-	hashmu               sync.Mutex       // protects hash, funchash
-	hash                 map[string]*LSym // name -> sym mapping
-	funchash             map[string]*LSym // name -> sym mapping for ABIInternal syms
-	statichash           map[string]*LSym // name -> sym mapping for static syms
-	PosTable             src.PosTable
-	InlTree              InlTree // global inlining tree used by gc/inl.go
-	DiagFunc             func(string, ...any)
-	DiagFlush            func()
-	GenAbstractFunc      func(fn *LSym)
-	Errors               int
+	progCur            *ProgSlab   // current slab being allocated from
+	progIdx            int         // next free slot in progCur
+	progUsed           []*ProgSlab // slabs filled during this compilation
+	progFree           []*ProgSlab // free list for reuse
+	Debugasm           int
+	Debugvlog          bool
+	Debugpcln          string
+	Flag_shared        bool
+	Flag_dynlink       bool
+	Flag_linkshared    bool
+	Flag_optimize      bool
+	Flag_locationlists bool
+	Flag_noRefName     bool   // do not include referenced symbol names in object file
+	Retpoline          bool   // emit use of retpoline stubs for indirect jmp/call
+	Flag_maymorestack  string // If not "", call this function before stack checks
+	Bso                *bufio.Writer
+	Pathname           string
+	Pkgpath            string           // the current package's import path
+	hashmu             sync.Mutex       // protects hash, funchash
+	hash               map[string]*LSym // name -> sym mapping
+	funchash           map[string]*LSym // name -> sym mapping for ABIInternal syms
+	statichash         map[string]*LSym // name -> sym mapping for static syms
+	PosTable           src.PosTable
+	InlTree            InlTree // global inlining tree used by gc/inl.go
+	DiagFunc           func(string, ...any)
+	DiagFlush          func()
+	GenAbstractFunc    func(fn *LSym)
+	Errors             int
 
 	InParallel    bool // parallel backend phase in effect
 	UseBASEntries bool // use Base Address Selection Entries in location lists and PC ranges

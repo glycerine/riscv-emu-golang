@@ -4,7 +4,7 @@
 
 package abi
 
-import "riscv/goasm/goarch"
+import "github.com/glycerine/riscv-emu-golang/goasm/goarch"
 
 type InterfaceSwitch struct {
 	Cache  *InterfaceSwitchCache

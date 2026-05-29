@@ -5,12 +5,13 @@
 package loong64
 
 import (
-	"riscv/goasm/obj"
-	"riscv/goasm/objabi"
 	"fmt"
 	"log"
 	"math/bits"
 	"slices"
+
+	"github.com/glycerine/riscv-emu-golang/goasm/obj"
+	"github.com/glycerine/riscv-emu-golang/goasm/objabi"
 )
 
 // ctxt0 holds state while assembling a single function.

@@ -30,12 +30,13 @@
 package s390x
 
 import (
-	"riscv/goasm/obj"
-	"riscv/goasm/objabi"
-	"riscv/goasm/sys"
-	"riscv/goasm/abi"
 	"log"
 	"math"
+
+	"github.com/glycerine/riscv-emu-golang/goasm/abi"
+	"github.com/glycerine/riscv-emu-golang/goasm/obj"
+	"github.com/glycerine/riscv-emu-golang/goasm/objabi"
+	"github.com/glycerine/riscv-emu-golang/goasm/sys"
 )
 
 func progedit(ctxt *obj.Link, p *obj.Prog, newprog obj.ProgAlloc) {

@@ -4,7 +4,7 @@ import (
 	"encoding/binary"
 	"testing"
 
-	"riscv/goasm"
+	"github.com/glycerine/riscv-emu-golang/goasm"
 )
 
 // Chain exit foundation tests for the rv8 lowerer.

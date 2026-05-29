@@ -5,7 +5,7 @@
 package s390x
 
 import (
-	"riscv/goasm/obj"
+	"github.com/glycerine/riscv-emu-golang/goasm/obj"
 )
 
 // This file contains utility functions for use when

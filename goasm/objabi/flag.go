@@ -7,7 +7,6 @@ package objabi
 import (
 	"flag"
 	"fmt"
-	"riscv/goasm/buildcfg"
 	"io"
 	"log"
 	"os"
@@ -15,6 +14,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/glycerine/riscv-emu-golang/goasm/buildcfg"
 )
 
 func Flagcount(name, usage string, val *int) {

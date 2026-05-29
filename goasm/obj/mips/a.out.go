@@ -30,7 +30,7 @@
 package mips
 
 import (
-	"riscv/goasm/obj"
+	"github.com/glycerine/riscv-emu-golang/goasm/obj"
 )
 
 //go:generate go run ../stringer.go -i $GOFILE -o anames.go -p mips

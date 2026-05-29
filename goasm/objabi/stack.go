@@ -5,8 +5,8 @@
 package objabi
 
 import (
-	"riscv/goasm/abi"
-	"riscv/goasm/buildcfg"
+	"github.com/glycerine/riscv-emu-golang/goasm/abi"
+	"github.com/glycerine/riscv-emu-golang/goasm/buildcfg"
 )
 
 func StackNosplit(race bool) int {

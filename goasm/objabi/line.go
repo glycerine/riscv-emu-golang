@@ -5,11 +5,12 @@
 package objabi
 
 import (
-	"riscv/goasm/buildcfg"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+
+	"github.com/glycerine/riscv-emu-golang/goasm/buildcfg"
 )
 
 // WorkingDir returns the current working directory

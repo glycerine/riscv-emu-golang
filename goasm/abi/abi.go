@@ -5,8 +5,9 @@
 package abi
 
 import (
-	"riscv/goasm/goarch"
 	"unsafe"
+
+	"github.com/glycerine/riscv-emu-golang/goasm/goarch"
 )
 
 // RegArgs is a struct that has space for each argument

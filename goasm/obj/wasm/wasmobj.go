@@ -6,14 +6,15 @@ package wasm
 
 import (
 	"bytes"
-	"riscv/goasm/obj"
-	"riscv/goasm/objabi"
-	"riscv/goasm/sys"
 	"encoding/binary"
 	"fmt"
-	"riscv/goasm/abi"
 	"io"
 	"math"
+
+	"github.com/glycerine/riscv-emu-golang/goasm/abi"
+	"github.com/glycerine/riscv-emu-golang/goasm/obj"
+	"github.com/glycerine/riscv-emu-golang/goasm/objabi"
+	"github.com/glycerine/riscv-emu-golang/goasm/sys"
 )
 
 var Register = map[string]int16{

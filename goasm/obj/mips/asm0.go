@@ -30,12 +30,13 @@
 package mips
 
 import (
-	"riscv/goasm/obj"
-	"riscv/goasm/objabi"
-	"riscv/goasm/sys"
 	"fmt"
 	"log"
 	"slices"
+
+	"github.com/glycerine/riscv-emu-golang/goasm/obj"
+	"github.com/glycerine/riscv-emu-golang/goasm/objabi"
+	"github.com/glycerine/riscv-emu-golang/goasm/sys"
 )
 
 // ctxt0 holds state while assembling a single function.

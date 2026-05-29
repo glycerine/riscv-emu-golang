@@ -1,8 +1,8 @@
 package riscv
 
 import (
-	"riscv/abjit"
-	"riscv/internal/jitcall"
+	"github.com/glycerine/riscv-emu-golang/abjit"
+	"github.com/glycerine/riscv-emu-golang/internal/jitcall"
 )
 
 // abjitDispatch executes a JIT-compiled block via the abjit trampoline.

@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"strings"
 
-	"riscv/goasm/buildcfg"
+	"github.com/glycerine/riscv-emu-golang/goasm/buildcfg"
 )
 
 const (

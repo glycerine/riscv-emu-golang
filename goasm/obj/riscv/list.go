@@ -7,7 +7,7 @@ package riscv
 import (
 	"fmt"
 
-	"riscv/goasm/obj"
+	"github.com/glycerine/riscv-emu-golang/goasm/obj"
 )
 
 func init() {

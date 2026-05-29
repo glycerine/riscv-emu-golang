@@ -30,15 +30,16 @@
 package ppc64
 
 import (
-	"riscv/goasm/obj"
-	"riscv/goasm/objabi"
 	"encoding/binary"
 	"fmt"
-	"riscv/goasm/buildcfg"
 	"log"
 	"math"
 	"math/bits"
 	"sort"
+
+	"github.com/glycerine/riscv-emu-golang/goasm/buildcfg"
+	"github.com/glycerine/riscv-emu-golang/goasm/obj"
+	"github.com/glycerine/riscv-emu-golang/goasm/objabi"
 )
 
 // ctxt9 holds state while assembling a single function.

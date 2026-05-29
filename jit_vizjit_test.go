@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/glycerine/riscv-emu-golang/goasm"
 	"golang.org/x/arch/x86/x86asm"
-	"riscv/goasm"
 )
 
 // TestVizJit_BranchTargets_MatchMachineCode verifies that post-assembly

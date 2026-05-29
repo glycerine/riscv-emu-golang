@@ -30,13 +30,14 @@
 package mips
 
 import (
-	"riscv/goasm/obj"
-	"riscv/goasm/sys"
 	"encoding/binary"
 	"fmt"
-	"riscv/goasm/abi"
 	"log"
 	"math"
+
+	"github.com/glycerine/riscv-emu-golang/goasm/abi"
+	"github.com/glycerine/riscv-emu-golang/goasm/obj"
+	"github.com/glycerine/riscv-emu-golang/goasm/sys"
 )
 
 func progedit(ctxt *obj.Link, p *obj.Prog, newprog obj.ProgAlloc) {

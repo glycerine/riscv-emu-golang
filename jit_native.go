@@ -7,9 +7,10 @@ package riscv
 import (
 	"encoding/binary"
 	"fmt"
-	"riscv/goasm"
 	"syscall"
 	"unsafe"
+
+	"github.com/glycerine/riscv-emu-golang/goasm"
 )
 
 // Reusable assembler context — Prog slabs are recycled across compilations.

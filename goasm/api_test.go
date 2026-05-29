@@ -10,10 +10,10 @@ import (
 	"testing"
 	"unsafe"
 
-	"riscv/goasm"
-	"riscv/goasm/obj"
-	"riscv/goasm/obj/arm64"
-	"riscv/goasm/obj/x86"
+	"github.com/glycerine/riscv-emu-golang/goasm"
+	"github.com/glycerine/riscv-emu-golang/goasm/obj"
+	"github.com/glycerine/riscv-emu-golang/goasm/obj/arm64"
+	"github.com/glycerine/riscv-emu-golang/goasm/obj/x86"
 )
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
@@ -143,8 +143,8 @@ func TestAMD64_ADDQ_RR(t *testing.T) {
 	want := []byte{
 		0x48, 0xC7, 0xC0, 0x03, 0x00, 0x00, 0x00, // MOVQ $3, AX
 		0x48, 0xC7, 0xC3, 0x04, 0x00, 0x00, 0x00, // MOVQ $4, BX
-		0x48, 0x01, 0xD8,                          // ADDQ BX, AX
-		0xC3,                                      // RET
+		0x48, 0x01, 0xD8, // ADDQ BX, AX
+		0xC3, // RET
 	}
 	assertBytes(t, got, want)
 }
@@ -166,8 +166,8 @@ func TestAMD64_SUBQ_imm(t *testing.T) {
 	}
 	want := []byte{
 		0x48, 0xC7, 0xC0, 0x0A, 0x00, 0x00, 0x00, // MOVQ $10, AX
-		0x48, 0x83, 0xE8, 0x03,                    // SUBQ $3, AX
-		0xC3,                                      // RET
+		0x48, 0x83, 0xE8, 0x03, // SUBQ $3, AX
+		0xC3, // RET
 	}
 	assertBytes(t, got, want)
 }
@@ -198,8 +198,8 @@ func TestAMD64_ANDQ_RR(t *testing.T) {
 	want := []byte{
 		0x48, 0xC7, 0xC0, 0xFF, 0x00, 0x00, 0x00, // MOVQ $0xFF, AX
 		0x48, 0xC7, 0xC3, 0x0F, 0x00, 0x00, 0x00, // MOVQ $0x0F, BX
-		0x48, 0x21, 0xD8,                          // ANDQ BX, AX
-		0xC3,                                      // RET
+		0x48, 0x21, 0xD8, // ANDQ BX, AX
+		0xC3, // RET
 	}
 	assertBytes(t, got, want)
 }
@@ -217,8 +217,8 @@ func TestAMD64_ORQ_RR(t *testing.T) {
 	want := []byte{
 		0x48, 0xC7, 0xC0, 0xF0, 0x00, 0x00, 0x00, // MOVQ $0xF0, AX
 		0x48, 0xC7, 0xC3, 0x0F, 0x00, 0x00, 0x00, // MOVQ $0x0F, BX
-		0x48, 0x09, 0xD8,                          // ORQ BX, AX
-		0xC3,                                      // RET
+		0x48, 0x09, 0xD8, // ORQ BX, AX
+		0xC3, // RET
 	}
 	assertBytes(t, got, want)
 }
@@ -240,8 +240,8 @@ func TestAMD64_SHLQ_imm(t *testing.T) {
 	}
 	want := []byte{
 		0x48, 0xC7, 0xC0, 0x01, 0x00, 0x00, 0x00, // MOVQ $1, AX
-		0x48, 0xC1, 0xE0, 0x03,                    // SHLQ $3, AX
-		0xC3,                                      // RET
+		0x48, 0xC1, 0xE0, 0x03, // SHLQ $3, AX
+		0xC3, // RET
 	}
 	assertBytes(t, got, want)
 }
@@ -259,8 +259,8 @@ func TestAMD64_IMULQ_RR(t *testing.T) {
 	want := []byte{
 		0x48, 0xC7, 0xC0, 0x06, 0x00, 0x00, 0x00, // MOVQ $6, AX
 		0x48, 0xC7, 0xC3, 0x07, 0x00, 0x00, 0x00, // MOVQ $7, BX
-		0x48, 0x0F, 0xAF, 0xC3,                    // IMULQ BX, AX
-		0xC3,                                      // RET
+		0x48, 0x0F, 0xAF, 0xC3, // IMULQ BX, AX
+		0xC3, // RET
 	}
 	assertBytes(t, got, want)
 }
@@ -280,8 +280,8 @@ func TestAMD64_NEGQ(t *testing.T) {
 	}
 	want := []byte{
 		0x48, 0xC7, 0xC0, 0x05, 0x00, 0x00, 0x00, // MOVQ $5, AX
-		0x48, 0xF7, 0xD8,                          // NEGQ AX
-		0xC3,                                      // RET
+		0x48, 0xF7, 0xD8, // NEGQ AX
+		0xC3, // RET
 	}
 	assertBytes(t, got, want)
 }
@@ -298,8 +298,8 @@ func TestAMD64_MOVQ_R12_REX(t *testing.T) {
 	}
 	want := []byte{
 		0x49, 0xC7, 0xC4, 0x63, 0x00, 0x00, 0x00, // MOVQ $99, R12  (REX.WB)
-		0x4C, 0x89, 0xE0,                          // MOVQ R12, AX   (REX.WR)
-		0xC3,                                      // RET
+		0x4C, 0x89, 0xE0, // MOVQ R12, AX   (REX.WR)
+		0xC3, // RET
 	}
 	assertBytes(t, got, want)
 }
@@ -353,8 +353,8 @@ func TestAMD64_MOVQ_load_store(t *testing.T) {
 	}
 	want := []byte{
 		0x48, 0xC7, 0x07, 0x63, 0x00, 0x00, 0x00, // MOVQ $99, 0(DI)
-		0x48, 0x8B, 0x07,                          // MOVQ 0(DI), AX
-		0xC3,                                      // RET
+		0x48, 0x8B, 0x07, // MOVQ 0(DI), AX
+		0xC3, // RET
 	}
 	assertBytes(t, got, want)
 }
@@ -433,7 +433,7 @@ func TestAMD64_SHLQ_CL(t *testing.T) {
 	}
 	want := []byte{
 		0x48, 0xD3, 0xE0, // SHLQ CL, AX
-		0xC3,             // RET
+		0xC3, // RET
 	}
 	assertBytes(t, got, want)
 }
@@ -458,8 +458,8 @@ func TestAMD64_MULQ(t *testing.T) {
 	want := []byte{
 		0x48, 0xC7, 0xC0, 0x07, 0x00, 0x00, 0x00, // MOVQ $7, AX
 		0x48, 0xC7, 0xC3, 0x06, 0x00, 0x00, 0x00, // MOVQ $6, BX
-		0x48, 0xF7, 0xE3,                         // MULQ BX
-		0xC3,                                     // RET
+		0x48, 0xF7, 0xE3, // MULQ BX
+		0xC3, // RET
 	}
 	assertBytes(t, got, want)
 }
@@ -486,8 +486,8 @@ func TestAMD64_IDIVQ(t *testing.T) {
 		0x48, 0xC7, 0xC2, 0x00, 0x00, 0x00, 0x00, // MOVQ $0, DX
 		0x48, 0xC7, 0xC0, 0x2A, 0x00, 0x00, 0x00, // MOVQ $42, AX
 		0x48, 0xC7, 0xC3, 0x07, 0x00, 0x00, 0x00, // MOVQ $7, BX
-		0x48, 0xF7, 0xFB,                         // IDIVQ BX
-		0xC3,                                     // RET
+		0x48, 0xF7, 0xFB, // IDIVQ BX
+		0xC3, // RET
 	}
 	assertBytes(t, got, want)
 }
@@ -510,10 +510,10 @@ func TestAMD64_JEQ_forward(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []byte{
-		0x48, 0x39, 0xD8,                         // CMPQ AX, BX (reg=BX, rm=AX)
-		0x74, 0x07,                               // JE +7 (skip MOVQ)
+		0x48, 0x39, 0xD8, // CMPQ AX, BX (reg=BX, rm=AX)
+		0x74, 0x07, // JE +7 (skip MOVQ)
 		0x48, 0xC7, 0xC0, 0x01, 0x00, 0x00, 0x00, // MOVQ $1, AX
-		0xC3,                                     // RET
+		0xC3, // RET
 	}
 	assertBytes(t, got, want)
 }
@@ -537,9 +537,9 @@ func TestAMD64_JNE_backward(t *testing.T) {
 	}
 	want := []byte{
 		0x48, 0xC7, 0xC0, 0x00, 0x00, 0x00, 0x00, // MOVQ $0, AX (target)
-		0x48, 0x39, 0xD8,                         // CMPQ AX, BX
-		0x75, 0xF4,                               // JNE -12 (back to target)
-		0xC3,                                     // RET
+		0x48, 0x39, 0xD8, // CMPQ AX, BX
+		0x75, 0xF4, // JNE -12 (back to target)
+		0xC3, // RET
 	}
 	assertBytes(t, got, want)
 }
@@ -556,7 +556,7 @@ func TestAMD64_MOVL_zeroext(t *testing.T) {
 	}
 	want := []byte{
 		0x89, 0xC0, // MOVL AX, AX (zero-extends EAX into RAX)
-		0xC3,       // RET
+		0xC3, // RET
 	}
 	assertBytes(t, got, want)
 }
@@ -573,7 +573,7 @@ func TestAMD64_MOVBQSX(t *testing.T) {
 	}
 	want := []byte{
 		0x48, 0x0F, 0xBE, 0xC0, // MOVBQSX AL, AX
-		0xC3,                   // RET
+		0xC3, // RET
 	}
 	assertBytes(t, got, want)
 }
@@ -591,7 +591,7 @@ func TestAMD64_MOVSD_load(t *testing.T) {
 	}
 	want := []byte{
 		0xF2, 0x0F, 0x10, 0x03, // MOVSD 0(BX), X0
-		0xC3,                   // RET
+		0xC3, // RET
 	}
 	assertBytes(t, got, want)
 }
@@ -607,7 +607,7 @@ func TestAMD64_ADDSD(t *testing.T) {
 	}
 	want := []byte{
 		0xF2, 0x0F, 0x58, 0xC1, // ADDSD X1, X0
-		0xC3,                   // RET
+		0xC3, // RET
 	}
 	assertBytes(t, got, want)
 }
@@ -623,7 +623,7 @@ func TestAMD64_MULSD(t *testing.T) {
 	}
 	want := []byte{
 		0xF2, 0x0F, 0x59, 0xC1, // MULSD X1, X0
-		0xC3,                   // RET
+		0xC3, // RET
 	}
 	assertBytes(t, got, want)
 }
@@ -639,7 +639,7 @@ func TestAMD64_SQRTSD(t *testing.T) {
 	}
 	want := []byte{
 		0xF2, 0x0F, 0x51, 0xC0, // SQRTSD X0, X0
-		0xC3,                   // RET
+		0xC3, // RET
 	}
 	assertBytes(t, got, want)
 }

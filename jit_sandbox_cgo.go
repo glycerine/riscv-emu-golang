@@ -5,8 +5,9 @@ package riscv
 */
 import "C"
 import (
-	"riscv/internal/jitcall"
 	"unsafe"
+
+	"github.com/glycerine/riscv-emu-golang/internal/jitcall"
 )
 
 // TEMPORARY: bypass sandbox to isolate old-vs-new divergence.

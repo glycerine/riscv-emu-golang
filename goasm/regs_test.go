@@ -3,7 +3,7 @@ package goasm_test
 import (
 	"testing"
 
-	"riscv/goasm"
+	"github.com/glycerine/riscv-emu-golang/goasm"
 )
 
 // TestRegs_AllResolve takes a reference to one constant per arch group

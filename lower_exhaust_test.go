@@ -14,8 +14,8 @@ import (
 	"testing"
 	"unsafe"
 
-	"riscv/goasm"
-	"riscv/internal/jitcall"
+	"github.com/glycerine/riscv-emu-golang/goasm"
+	"github.com/glycerine/riscv-emu-golang/internal/jitcall"
 )
 
 const exhaustN = 7 // guest regs x1..x7

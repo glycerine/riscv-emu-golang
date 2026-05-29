@@ -4,7 +4,7 @@ import (
 	"os"
 	"testing"
 
-	"riscv/goasm"
+	"github.com/glycerine/riscv-emu-golang/goasm"
 )
 
 // TestBloat_BenchGuest_0x10de locks in a reproducible measurement of

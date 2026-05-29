@@ -5,8 +5,9 @@
 package objabi
 
 import (
-	"riscv/goasm/abi"
 	"strings"
+
+	"github.com/glycerine/riscv-emu-golang/goasm/abi"
 )
 
 var funcIDs = map[string]abi.FuncID{

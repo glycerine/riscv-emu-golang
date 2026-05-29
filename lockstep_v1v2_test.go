@@ -2,10 +2,11 @@ package riscv
 
 import (
 	"math/rand"
-	"riscv/goasm"
 	"syscall"
 	"testing"
 	"unsafe"
+
+	"github.com/glycerine/riscv-emu-golang/goasm"
 )
 
 // compileIR compiles an IR block using the rv8 lowerer, returns executable memory.

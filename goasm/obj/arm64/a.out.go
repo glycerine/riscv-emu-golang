@@ -30,7 +30,7 @@
 
 package arm64
 
-import "riscv/goasm/obj"
+import "github.com/glycerine/riscv-emu-golang/goasm/obj"
 
 const (
 	NSNAME = 8

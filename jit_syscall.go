@@ -1,7 +1,7 @@
 package riscv
 
 import (
-	"riscv/internal/syscalls"
+	"github.com/glycerine/riscv-emu-golang/internal/syscalls"
 )
 
 // syscall_dispatcher address — obtained once at init. The JIT's IR

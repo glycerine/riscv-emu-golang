@@ -5,10 +5,11 @@
 package x86
 
 import (
-	"riscv/goasm/obj"
 	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/glycerine/riscv-emu-golang/goasm/obj"
 )
 
 // evexBits stores EVEX prefix info that is used during instruction encoding.

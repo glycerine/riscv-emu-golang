@@ -30,16 +30,17 @@
 package ppc64
 
 import (
-	"riscv/goasm/obj"
-	"riscv/goasm/objabi"
-	"riscv/goasm/src"
-	"riscv/goasm/sys"
-	"riscv/goasm/abi"
-	"riscv/goasm/buildcfg"
 	"log"
 	"math"
 	"math/bits"
 	"strings"
+
+	"github.com/glycerine/riscv-emu-golang/goasm/abi"
+	"github.com/glycerine/riscv-emu-golang/goasm/buildcfg"
+	"github.com/glycerine/riscv-emu-golang/goasm/obj"
+	"github.com/glycerine/riscv-emu-golang/goasm/objabi"
+	"github.com/glycerine/riscv-emu-golang/goasm/src"
+	"github.com/glycerine/riscv-emu-golang/goasm/sys"
 )
 
 // Test if this value can encoded as a mask for

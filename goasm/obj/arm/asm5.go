@@ -31,13 +31,14 @@
 package arm
 
 import (
-	"riscv/goasm/obj"
-	"riscv/goasm/objabi"
 	"fmt"
-	"riscv/goasm/buildcfg"
 	"log"
 	"math"
 	"slices"
+
+	"github.com/glycerine/riscv-emu-golang/goasm/buildcfg"
+	"github.com/glycerine/riscv-emu-golang/goasm/obj"
+	"github.com/glycerine/riscv-emu-golang/goasm/objabi"
 )
 
 // ctxt5 holds state while assembling a single function.

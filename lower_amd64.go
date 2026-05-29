@@ -2,7 +2,7 @@ package riscv
 
 // lower_amd64.go — AMD64 register layout constants and pool definitions.
 
-import "riscv/goasm"
+import "github.com/glycerine/riscv-emu-golang/goasm"
 
 // Parameter VRegs by convention (NewEmitter allocates these first).
 const (

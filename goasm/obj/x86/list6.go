@@ -31,8 +31,9 @@
 package x86
 
 import (
-	"riscv/goasm/obj"
 	"fmt"
+
+	"github.com/glycerine/riscv-emu-golang/goasm/obj"
 )
 
 var Register = []string{

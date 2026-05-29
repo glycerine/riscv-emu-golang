@@ -19,9 +19,9 @@ import (
 	"fmt"
 	"sort"
 
-	"riscv/goasm"
-	"riscv/goasm/obj"
-	"riscv/goasm/obj/x86"
+	"github.com/glycerine/riscv-emu-golang/goasm"
+	"github.com/glycerine/riscv-emu-golang/goasm/obj"
+	"github.com/glycerine/riscv-emu-golang/goasm/obj/x86"
 )
 
 type lowerCtxRV8 struct {
@@ -136,7 +136,6 @@ func (lc *lowerCtxRV8) emitPrologue() {
 	// happen BEFORE the IC zero which may clobber DI.
 	lc.emitMR(x86.AMOVQ, goasm.REG_AMD64_R8, goasm.REG_AMD64_DI, 128)
 	lc.emitMR(x86.AMOVQ, goasm.REG_AMD64_R9, goasm.REG_AMD64_DI, 136)
-
 
 	// Copy sret from RDI to RAX so first-entry and chain-entry share
 	// the same code path below (chain entry arrives with RAX=sret).

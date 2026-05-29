@@ -29,7 +29,7 @@
 
 package s390x
 
-import "riscv/goasm/obj"
+import "github.com/glycerine/riscv-emu-golang/goasm/obj"
 
 //go:generate go run ../stringer.go -i $GOFILE -o anames.go -p s390x
 

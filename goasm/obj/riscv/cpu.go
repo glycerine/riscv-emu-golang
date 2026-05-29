@@ -32,7 +32,7 @@ import (
 	"errors"
 	"fmt"
 
-	"riscv/goasm/obj"
+	"github.com/glycerine/riscv-emu-golang/goasm/obj"
 )
 
 var CSRs map[uint16]string = csrs

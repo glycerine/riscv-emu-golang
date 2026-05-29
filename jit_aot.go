@@ -12,9 +12,10 @@ package riscv
 import (
 	"encoding/binary"
 	"fmt"
-	"riscv/goasm"
 	"syscall"
 	"unsafe"
+
+	"github.com/glycerine/riscv-emu-golang/goasm"
 )
 
 // aotBlockCompile is the per-block working state carried between

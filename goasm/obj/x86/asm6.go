@@ -31,14 +31,15 @@
 package x86
 
 import (
-	"riscv/goasm/obj"
-	"riscv/goasm/objabi"
-	"riscv/goasm/sys"
 	"encoding/binary"
 	"fmt"
-	"riscv/goasm/buildcfg"
 	"log"
 	"strings"
+
+	"github.com/glycerine/riscv-emu-golang/goasm/buildcfg"
+	"github.com/glycerine/riscv-emu-golang/goasm/obj"
+	"github.com/glycerine/riscv-emu-golang/goasm/objabi"
+	"github.com/glycerine/riscv-emu-golang/goasm/sys"
 )
 
 var (

@@ -5,8 +5,9 @@
 package loong64
 
 import (
-	"riscv/goasm/obj"
 	"fmt"
+
+	"github.com/glycerine/riscv-emu-golang/goasm/obj"
 )
 
 func init() {

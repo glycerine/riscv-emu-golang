@@ -5,12 +5,13 @@
 package x86
 
 import (
-	"riscv/goasm/obj"
-	"riscv/goasm/objabi"
-	"riscv/goasm/src"
 	"encoding/base64"
 	"fmt"
 	"math"
+
+	"github.com/glycerine/riscv-emu-golang/goasm/obj"
+	"github.com/glycerine/riscv-emu-golang/goasm/objabi"
+	"github.com/glycerine/riscv-emu-golang/goasm/src"
 )
 
 type sehbuf struct {
