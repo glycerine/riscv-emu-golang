@@ -1,25 +1,9 @@
 A RISC-V 64 emulator in Golang (Go)
 ==============
 
-This repository is a performance-oriented RV64 emulator and native JIT. It
-includes a RISC-V CPU interpreter in pure Go. That is, you can run
-RV64 binaries and instructions from within your Go programs.
-
-The Go module is `riscv`. The root package
-implements guest memory, ELF loading, a cached interpreter, a native AMD64 JIT,
-an AOT segment system, OS/syscall personalities, and a forkable `Machine`
-wrapper. The surrounding directories hold benchmarks, oracle tests, vendored
-reference projects, and a local copy of the Go assembler backend.
-
-The current JIT path is native IR -> goasm -> executable mmap. The default
-register policy is `PolicyABJIT`; `PolicyRV8` is still available for the older
-rv8-style trampoline/register layout. The old C-source/TCC emitter still exists
-as legacy/reference code, but it is not the dispatch path in `NewJIT`/`RunJIT`.
-
-Treat comments in hot-path files as part of the design. Several "odd" choices
-are load-bearing for correctness or speed: CPU field layout, the `runCached`
-call-site restriction, ABJIT/RV8 register conventions, NaN boxing, decoder
-cache layout, AOT segment lifetime, and the guest-memory mask invariant.
+This repository is a performance-oriented RV64 emulator and native JIT
+for amd64/x86_64. It includes a RISC-V CPU interpreter in pure Go. That is, you can run
+RV64 binaries and instructions from within your Go programs. 
 
 --------
 Author: Jason E. Aten, Ph.D.
