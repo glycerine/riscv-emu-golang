@@ -4,7 +4,7 @@ import (
 	"os"
 	"testing"
 
-	"riscv"
+	"github.com/glycerine/riscv-emu-golang"
 )
 
 // ── ELF loading ────────────────────────────────────────────────────────────

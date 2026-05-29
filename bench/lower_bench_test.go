@@ -16,8 +16,8 @@ import (
 	"os"
 	"testing"
 
-	"riscv"
-	"riscv/goasm"
+	"github.com/glycerine/riscv-emu-golang"
+	"github.com/glycerine/riscv-emu-golang/goasm"
 )
 
 const defaultGcELF = "/Users/jaten/ris/testvectors/gc_riscv64"

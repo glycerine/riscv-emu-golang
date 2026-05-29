@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"riscv"
+	"github.com/glycerine/riscv-emu-golang"
 )
 
 // ── AOT JIT benchmarks ───────────────────────────────────────────────────

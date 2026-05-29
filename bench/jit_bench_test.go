@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"riscv"
+	"github.com/glycerine/riscv-emu-golang"
 )
 
 func runJITBenchGuest(cpu *riscv.CPU) (exitCode int, insns uint64) {

@@ -13,7 +13,7 @@ package bench
 import (
 	"testing"
 
-	"riscv"
+	"github.com/glycerine/riscv-emu-golang"
 )
 
 // ---------------------------------------------------------------------------

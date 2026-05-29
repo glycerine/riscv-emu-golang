@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"riscv"
+	"github.com/glycerine/riscv-emu-golang"
 )
 
 // runChainReference runs a guest ELF under the Fixed Static Mapping JIT
@@ -15,7 +15,7 @@ import (
 //   - ChainPatched > 0              → chaining is firing
 //   - insns/DispatchOK ≫ block size → most back-edges are chained
 //   - insns/DispatchOK ≈ MaxIC      → BudgetCheck (GC safepoint) is the
-//                                     dominant exit, not a chainable one
+//     dominant exit, not a chainable one
 func runChainReference(t *testing.T, elfData []byte, workload string) {
 	t.Helper()
 	runChainReferenceMode(t, elfData, workload, false)
