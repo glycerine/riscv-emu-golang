@@ -1,101 +1,168 @@
 # CLAUDE.md
 
-## Project Overview
+## Read This First
 
-Go RISC-V emulator (RV64IMAFDC + Zicsr/Zba/Zbb/Zbs) with a JIT compiler that translates RISC-V assembly to native x86-64, and calls through a zero-CGO-overhead Go assembly trampoline. Module name: `riscv`.
+This repository is a performance-oriented RV64 emulator and native JIT, not
+just a simple interpreter. The Go module is `riscv`. The root package
+implements guest memory, ELF loading, a cached interpreter, a native AMD64 JIT,
+an AOT segment system, OS/syscall personalities, and a forkable `Machine`
+wrapper. The surrounding directories hold benchmarks, oracle tests, vendored
+reference projects, and a local copy of the Go assembler backend.
 
-## Build & Test Commands
+The current JIT path is native IR -> goasm -> executable mmap. The default
+register policy is `PolicyABJIT`; `PolicyRV8` is still available for the older
+rv8-style trampoline/register layout. The old C-source/TCC emitter still exists
+as legacy/reference code, but it is not the dispatch path in `NewJIT`/`RunJIT`.
+
+Treat comments in hot-path files as part of the design. Several "odd" choices
+are load-bearing for correctness or speed: CPU field layout, the `runCached`
+call-site restriction, ABJIT/RV8 register conventions, NaN boxing, decoder
+cache layout, AOT segment lifetime, and the guest-memory mask invariant.
+
+`plans/` is historical/user archive material. Do not treat it as live guidance
+unless the user explicitly asks about a plan. `attic/` is disabled code.
+`xendor/`, `riscv-elf-tests/`, and `goasm/` are vendored/reference trees; edit
+them only when the task specifically targets them.
+
+## Quick Commands
 
 ```bash
-# Unit tests (no external deps needed)
-go test -v .
-go test -v ./...              # includes fuzzoracle (one-time setup: make bench-setup first)
+# Common doc/code sanity checks
+GOCPU_VIZJIT_OFF=1 go test -count=1 .
+GOCPU_VIZJIT_OFF=1 go test -count=1 ./bench/
 
-# Run a single test
-go test -v -run TestJIT_ADD .
+# The Makefile's default unit-test target currently runs bench then root tests
+make test
 
-# JIT smoke test via bench package
-go test -v -run TestJIT_BenchGuest_Smoke ./bench/
+# Focused examples
+GOCPU_VIZJIT_OFF=1 go test -count=1 -run 'TestJIT_' .
+GOCPU_VIZJIT_OFF=1 go test -count=1 -run TestCPU_BenchGuest_Smoke ./bench/
+GOCPU_VIZJIT_OFF=1 go test -count=1 -run TestAOT .
 
-# Full benchmark comparison
-make bench-setup              # one-time: clone libriscv (~400MB), build, compile guest ELF
-make bench                    # full comparison
-make bench-quick              # fast head-to-head (<1s)
-make bench-ours               # our benchmarks only (no libriscv needed)
-make bench-cpu                # CPU execution throughput (MIPS metric)
+# Bench setup and benchmark families
+make bench-setup       # requires cmake, zig, C++ toolchain; uses vendored xendor/libriscv
+make bench             # rv8 vs abjit vs interpreter vs libriscv vs native/wasm
+make bench-cpu
+make bench-coremark
+make bench-dhrystone
+make bench-jit-coremark
+make bench-jit-dhrystone
+make bench-chain-ref
+make quad              # AOT vs lazy JIT on several workloads
 
-# Benchmark single run
-go test -run='^$' -bench='BenchmarkCPU_FullExecution' -benchtime=1x ./bench/
-
-# Fuzzing (oracle-based, validates against libriscv)
-make fuzz-oracle              # ALU instructions
-make fuzz-fd                  # floating-point F+D
-make fuzz-rvc                 # compressed instructions
-make fuzz-amo                 # atomics
-make fuzz-bitmanip            # Zba/Zbb/Zbs
-
-# Profiling
-make prof                     # CPU profile
-make mem                      # memory profile
+# Fuzzing
+make fuzz              # pure-Go CPU/IR fuzz target
+make fuzz-oracle       # libriscv oracle; requires make bench-setup
+make fuzz-stores
+make fuzz-rvc
+make fuzz-amo
+make fuzz-fd
+make fuzz-bitmanip
+make fuzz-cfloat
 ```
 
-## Architecture
+`go test ./...` is not the usual first pass: it includes packages such as
+`fuzzoracle` that expect the libriscv C API to have been built. Use it only
+after `make bench-setup` or when you intentionally want that broader sweep.
 
-### Execution Pipeline
+Set `GOCPU_VIZJIT_OFF=1` for routine tests. Without it, VizJit may write
+per-block assembly dumps under `debug_vizjit_dir`. To inspect generated code,
+set `GOCPU_VIZJIT=/path/to/dir` and run a narrow test or benchmark.
 
-1. **ELF loading** (`elf.go`): Parses ELF64, loads PT_LOAD segments into guest memory
-2. **Interpreter** (`cpu.go`): Switch-based decode/execute, one instruction at a time via `step()`
-3. **JIT** (`jit.go` + `jit_emit.go` + `jit_tcc.go`):
-   - `emitBlock()`: Scans a region of RISC-V code via BFS (`scanRegion`), emits C source for the whole region
-   - `tccCompile()`: CGO call to TCC to compile C → native machine code in memory
-   - `jitcall.Call()`: Go assembly trampoline (`internal/jitcall/`) invokes the native block with zero CGO overhead
-   - `RunJIT()`: Dispatch loop with last-block cache, falls back to interpreter for untranslatable instructions
+## Architecture Map
 
-### Key Design Decisions
+### Guest State and Interpreter
 
-- **GuestMemory** (`guestmem.go`): Power-of-two mmap with mask-based bounds checking. Security invariant: `hostPtr = base + (addr & mask)`. All access is a single branch.
-- **NaN-boxing** (`float.go`): Single-precision FP values have upper 32 bits = `0xFFFFFFFF` (differs from libriscv which uses zeros). JIT emission must match this convention.
-- **Exception delivery** (`note.go`): Plan 9-inspired NoteChain — stack of handlers, innermost-first. `NoteHandled` / `NoteForward` / `NoteFatal` dispositions.
-- **OS personality** (`os.go`): Pluggable syscall table. `RunWithOS()` installs handler on NoteChain.
-- **TCC limitations**: No `__int128` (affects MULH emission), no libm (sqrt/sqrtf injected via `tcc_add_symbol`).
+- `guestmem.go` owns the mmap-backed guest address space. Its critical
+  sandbox invariant is `hostPtr = base + (addr & mask)`, with a power-of-two
+  memory size. Bounds checks report guest `MemFault`s; the mask prevents host
+  escape even if a check is wrong.
+- `guestmem_exec.go` tracks executable guest-VA ranges. ELF loading and future
+  mmap/mprotect hooks use this metadata to drive AOT segment creation.
+- `cpu.go` is the canonical instruction implementation and CPU state. The
+  `init` offset assertions are intentional: native lowerers depend on the
+  register-file layout.
+- `run_cached.go` is the fast cached interpreter. Do not add direct
+  `runCached(...)` call sites outside `run_cached.go`; this has measured
+  performance effects due to Go compiler code generation.
+- `decode.go`, `decoder_cache.go`, and `exec_slot.go` implement predecode and
+  slot execution for the cached interpreter.
 
-### JIT Region Scanning
+### Exceptions, ELF, and OS Personality
 
-`emitBlock` uses two-phase approach:
-1. `scanRegion()` BFS discovers reachable PCs (up to 2048 PCs, 16KB range)
-2. Emitter walks the region sequentially, emitting all instructions
-3. Forward branch targets within the region use `goto`; external targets exit the block
-4. Bail labels in `finalize()` catch goto targets that weren't emitted (early termination)
+- `elf.go` loads ELF64 RISC-V executables, records executable regions, and
+  discovers the `tohost` symbol used by riscv-tests.
+- `note.go` is the Plan 9-style synchronous exception system. Handlers compose
+  through `NoteChain`; unrecognized notes should be forwarded.
+- `os.go` defines syscall/ecall handling, Linux-style helpers, `RunWithOS`,
+  and exit-code behavior.
+- `jit_syscall.go` and `internal/syscalls/` provide the direct ECALL fast path.
+  Toggle functions affect future block emissions only; already-compiled blocks
+  keep the path they were emitted with.
 
-### Package Structure
+### Native JIT and AOT
 
-- **Root** (`package riscv`): CPU, memory, JIT, ELF, OS, exception system
-- **`internal/jitcall`**: Go assembly trampoline for calling JIT-compiled native blocks
-- **`internal/fenv`**: Host FP exception flag access (MXCSR on x86-64)
-- **`bench/`**: Benchmarks (CPU throughput, memory ops, JIT). Guest ELF in `bench/libriscv_guest/`
-- **`fuzzoracle/`**: Oracle fuzzing against libriscv — requires `make bench-setup`
-- **`xendor/tcc`**: Precompiled TinyCC library (libtcc.a)
-- **`xendor/libriscv`**: Reference emulator (cloned by `make bench-setup`, ~400MB)
-- **`riscv-elf-tests/`**: Official RISC-V test suite ELFs
+- `jit_emit_ir.go`, `emit.go`, `emit_impl.go`, `highlevel.go`, and
+  `peephole.go` translate guest instructions into the local IR.
+- `ir.go` defines IR operations, VRegs, types, predicates, and VizJit globals.
+- `regalloc.go` and `regalloc_fixed.go` implement the current allocation path.
+- `lower_amd64.go` selects register policies. `PolicyABJIT` is the default;
+  `PolicyRV8` remains available for comparison/debugging.
+- `lower_amd64_ops.go`, `lower_amd64_abjit.go`, `lower_amd64_rv8.go`, and
+  shared lowerer files convert IR to goasm programs.
+- `jit_native.go` assembles goasm output, mmaps executable memory, backpatches
+  chain exits/JALR slots, and writes VizJit dumps.
+- `jit.go` owns dispatch, lazy block caching, block chaining, AOT install,
+  JALR miss handling, preemption, counters, and segment lifetime.
+- `aot.go`, `jit_aot.go`, and `jit_segment.go` implement whole-region AOT:
+  collect block ranges, compile one native slab per executable segment, build a
+  read-only decoder cache, and create dynamic segments on demand.
 
-### Test Organization
+### Trampolines and Support Packages
 
-- `*_test.go` in root: Unit tests for CPU instructions, memory, ELF, OS, JIT
-- `bench/*_bench_test.go`: Throughput benchmarks (report MIPS metric)
-- `fuzzoracle/*_test.go`: Oracle tests (`*_oracle_test.go`) and fuzz targets (`fuzz_*_test.go`) — both need libriscv via `make bench-setup`
-- `riscv_test.go`: Runs official riscv-tests ELF suite
+- `abjit/` is the default same-goroutine trampoline path. Its `State` layout
+  must match the offsets in `lower_amd64_abjit.go`.
+- `internal/jitcall/` is the older direct function-pointer trampoline used by
+  the RV8 path and AOT-aware calls.
+- `internal/fenv/` exposes FP exception flags on amd64; non-amd64 fallbacks
+  currently return zero flags.
+- `internal/syscalls/` is the assembly syscall dispatcher called from JIT code.
+- `goasm/` is a local extraction of Go's assembler backend. Preserve target
+  coverage and avoid broad cleanup there.
 
-### CGO Build Tags
+### Tests, Benchmarks, and Reference Code
 
-- Default build: JIT + TCC (xendor/tcc must be present)
-- `libriscv` build tag: Required for `bench/libriscv/`
-- `fuzzoracle/` no longer needs any build tag.
+- Root `*_test.go` files cover interpreter, memory, ELF, JIT, AOT, lowering,
+  lockstep, and RISC-V ELF test execution.
+- `bench/` contains throughput benchmarks and guest programs for bench_guest,
+  CoreMark, Dhrystone, hello/ecall, wazero comparison, and libriscv calibration.
+- `fuzzoracle/` compares against libriscv through its C API; build it with
+  `make bench-setup` before running the oracle fuzz targets.
+- `bridge/` and `bridge2/` are experiments around CGo/ring-buffer sandbox
+  dispatch. They are useful context, but not the main JIT path.
+- `xendor/` holds vendored/reference projects such as libriscv, LuaJIT,
+  CoreMark, Dhrystone, aabalke_gojit, and guac.
 
-### ignore the plans/ sub-folder.
+## Maintainer Notes
 
-These are user's archives and not for CLAUDE.
-
-### goasm assembler targets
-
-goasm/ is an extraction of the Go assembler backend. All targets
-must be preserved.
+- Keep changes tightly scoped. This code has many microarchitectural and Go
+  compiler-sensitive paths; small-looking edits can move benchmark results a
+  lot.
+- Preserve `CPU` and `abjit.State` layouts unless you also update every offset
+  consumer and add/adjust tests.
+- RISC-V `x0` must remain hardwired to zero. Many fast paths use the "write,
+  then zero x0" trick to avoid branches.
+- RV64F single-precision values are NaN-boxed with upper 32 bits set to all
+  ones. Interpreter and JIT behavior must match.
+- AOT segments are immutable after install and reference-counted. `Close`
+  releases their native-code and decoder-cache mmaps. Segment invalidation has
+  documented dangling-reference caveats; do not expand it casually.
+- ABJIT must not clobber Go runtime-critical registers such as R14. R15 may be
+  reserved for instruction counting; register-pool changes need focused tests
+  and benchmarks.
+- JIT syscall toggles, direct syscall callbacks, and inline ECALL settings are
+  process-level knobs for future emissions. Create a fresh JIT when comparing
+  modes.
+- For performance-sensitive changes, pair correctness tests with at least one
+  relevant benchmark (`make bench`, `make quad`, or a narrow `go test -bench`
+  target). Use `GOCPU_VIZJIT` when inspecting generated code.
