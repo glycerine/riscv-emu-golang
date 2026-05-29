@@ -1,4 +1,4 @@
-# CLAUDE.md
+# AGENTS.md
 
 ## Read This First
 
