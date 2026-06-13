@@ -114,3 +114,52 @@ func TestInlineEcall_HelloEndToEnd(t *testing.T) {
 		t.Fatal("captured mismatch (same length, different content)")
 	}
 }
+
+func TestInlineEcall_TinyDirectWrite(t *testing.T) {
+	if !DirectSyscallEnabled() {
+		t.Skip("direct syscall fast path disabled")
+	}
+
+	saved := InlineEcallEnabled()
+	defer SetInlineEcallEnabled(saved)
+	SetInlineEcallEnabled(true)
+
+	const (
+		codeVA = uint64(0x1000)
+		msgVA  = uint64(0x2000)
+	)
+	msg := []byte("arm64 direct syscall\n")
+	insns := []uint32{
+		ienc(opOPIMM, 0, 10, 0, 1),               // a0 = stdout
+		uenc(opLUI, 11, uint32(msgVA)),           // a1 = msgVA
+		ienc(opOPIMM, 0, 12, 0, int32(len(msg))), // a2 = len
+		ienc(opOPIMM, 0, 17, 0, 64),              // a7 = SYS_write
+		instrECALL,
+		ienc(opOPIMM, 0, 10, 0, 0),  // a0 = exit code
+		ienc(opOPIMM, 0, 17, 0, 93), // a7 = exit
+		instrECALL,
+	}
+
+	cpu, mem := newTestCPU(t, Size64MB, codeVA, insns)
+	defer mem.Free()
+	for i, b := range msg {
+		if fault := mem.Store8(msgVA+uint64(i), b); fault != nil {
+			t.Fatalf("Store8 msg[%d]: %v", i, fault)
+		}
+	}
+	cleanup := InstallLinuxOS(cpu, io.Discard)
+	defer cleanup()
+
+	j := NewJIT()
+	captured := captureStdout(t, func() {
+		err := j.RunJIT(cpu)
+		if err != nil {
+			if exit, ok := err.(*ExitError); !ok || exit.Code != 0 {
+				t.Fatalf("RunJIT: %v", err)
+			}
+		}
+	})
+	if string(captured) != string(msg) {
+		t.Fatalf("captured = %q, want %q", captured, msg)
+	}
+}

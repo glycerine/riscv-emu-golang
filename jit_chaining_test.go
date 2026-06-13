@@ -2,6 +2,7 @@ package riscv
 
 import (
 	"encoding/binary"
+	"runtime"
 	"testing"
 	"unsafe"
 )
@@ -50,7 +51,8 @@ func runSimpleLoopJIT(t *testing.T, iters uint64) (*CPU, *JIT) {
 // any block whose IR we compile carries chain-exit metadata.
 func TestChaining_ChainExitsPopulated_OnCompiledBlock(t *testing.T) {
 	insns := []uint32{
-		ienc(opOPIMM, 0, 1, 0, 42), // ADDI x1, x0, 42
+		jenc(5, 8), // JAL x5, +8
+		instrECALL,
 		instrECALL,
 	}
 	cpu, mem := newTestCPU(t, Size64MB, 0x1000, insns)
@@ -73,11 +75,12 @@ func TestChaining_ChainExitsPopulated_OnCompiledBlock(t *testing.T) {
 	}
 }
 
-// D3 — The bytes immediately before each chain exit's patchOffset must
-// be 48 B9 (REX.W, MOV RCX imm64). rv8 uses RCX as the chain-exit staging reg.
+// D3 — Each chain exit patchOffset must identify the architecture's
+// patchable 8-byte target slot.
 func TestChaining_PatchPointsAtImm64_OfMovABS(t *testing.T) {
 	insns := []uint32{
-		ienc(opOPIMM, 0, 1, 0, 1),
+		jenc(5, 8), // JAL x5, +8
+		instrECALL,
 		instrECALL,
 	}
 	cpu, mem := newTestCPU(t, Size64MB, 0x1000, insns)
@@ -91,15 +94,29 @@ func TestChaining_PatchPointsAtImm64_OfMovABS(t *testing.T) {
 		t.Fatal("no chain exits to inspect")
 	}
 	for i, ce := range blk.chainExits {
-		if ce.patchOffset < 2 {
-			t.Errorf("exit %d: patchOffset=%d < 2", i, ce.patchOffset)
-			continue
-		}
-		//nolint:gosec // reading JIT code bytes for test verification
-		p := (*[2]byte)(unsafe.Pointer(blk.fn + uintptr(ce.patchOffset-2)))
-		if p[0] != 0x48 || p[1] != 0xB9 {
-			t.Errorf("exit %d: bytes before patchOffset = %02x %02x, "+
-				"want 48 B9", i, p[0], p[1])
+		switch runtime.GOARCH {
+		case "amd64":
+			if ce.patchOffset < 2 {
+				t.Errorf("exit %d: patchOffset=%d < 2", i, ce.patchOffset)
+				continue
+			}
+			//nolint:gosec // reading JIT code bytes for test verification
+			p := (*[2]byte)(unsafe.Pointer(blk.fn + uintptr(ce.patchOffset-2)))
+			if p[0] != 0x48 || p[1] != 0xB9 {
+				t.Errorf("exit %d: bytes before patchOffset = %02x %02x, "+
+					"want 48 B9", i, p[0], p[1])
+			}
+		case "arm64":
+			if ce.patchOffset < 8 {
+				t.Errorf("exit %d: patchOffset=%d < 8", i, ce.patchOffset)
+				continue
+			}
+			//nolint:gosec // reading JIT code bytes for test verification
+			p := (*[4]byte)(unsafe.Pointer(blk.fn + uintptr(ce.patchOffset-8)))
+			word := binary.LittleEndian.Uint32(p[:])
+			if word&0xff000000 != 0x58000000 {
+				t.Errorf("exit %d: word before patch slot = 0x%08x, want ARM64 LDR literal", i, word)
+			}
 		}
 	}
 }

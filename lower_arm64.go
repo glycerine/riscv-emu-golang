@@ -36,10 +36,11 @@ const (
 	a64MemBase int16 = goasm.REG_ARM64_R4
 	a64MemMask int16 = goasm.REG_ARM64_R5
 
-	a64A int16 = goasm.REG_ARM64_R6
-	a64B int16 = goasm.REG_ARM64_R7
-	a64C int16 = goasm.REG_ARM64_R8
-	a64D int16 = goasm.REG_ARM64_R9
+	a64A    int16 = goasm.REG_ARM64_R6
+	a64B    int16 = goasm.REG_ARM64_R7
+	a64C    int16 = goasm.REG_ARM64_R8
+	a64D    int16 = goasm.REG_ARM64_R9
+	a64Call int16 = goasm.REG_ARM64_R16
 
 	a64ABJITBase int16 = goasm.REG_ARM64_R20
 
@@ -118,6 +119,8 @@ type lowerARM64Ctx struct {
 	pending        map[Label][]*obj.Prog
 	chainEntryProg *obj.Prog
 	chainExits     []chainExitInfo
+	jalrICs        []jalrICInfo
+	callScratchOff int64
 }
 
 func lowerARM64(ctx *goasm.Ctx, b *Block, abi arm64ABI) (*LowerResult, error) {
@@ -128,9 +131,16 @@ func lowerARM64(ctx *goasm.Ctx, b *Block, abi arm64ABI) (*LowerResult, error) {
 		tempSlots: make(map[VReg]int64),
 		labelProg: make(map[Label]*obj.Prog),
 		pending:   make(map[Label][]*obj.Prog),
+		// Negative means this block has no reserved call scratch.
+		callScratchOff: -1,
 	}
 	lc.collectTemps()
-	if n := int64(len(lc.tempSlots) * 8); n > 0 {
+	n := int64(len(lc.tempSlots) * 8)
+	if abi == arm64RV8 && blockHasSyscall(b) {
+		lc.callScratchOff = n
+		n += 16
+	}
+	if n > 0 {
 		lc.frameSize = (n + 15) &^ 15
 	}
 
@@ -160,6 +170,14 @@ func lowerARM64(ctx *goasm.Ctx, b *Block, abi arm64ABI) (*LowerResult, error) {
 			StubProg: lc.chainExits[i].stubProg,
 		})
 	}
+	for i := range lc.jalrICs {
+		result.JalrICs = append(result.JalrICs, JalrICDesc{
+			SiteIdx:  lc.jalrICs[i].siteIdx,
+			PcMov:    lc.jalrICs[i].pcMov,
+			FnMov:    lc.jalrICs[i].fnMov,
+			StubProg: lc.jalrICs[i].stubProg,
+		})
+	}
 	return result, nil
 }
 
@@ -178,6 +196,15 @@ func (lc *lowerARM64Ctx) collectTemps() {
 		add(ins.B)
 		add(ins.C)
 	}
+}
+
+func blockHasSyscall(b *Block) bool {
+	for i := range b.Instrs {
+		if b.Instrs[i].Op == IRSyscall {
+			return true
+		}
+	}
+	return false
 }
 
 func (lc *lowerARM64Ctx) emitRR(op obj.As, src, dst int16) {
@@ -589,11 +616,10 @@ func (lc *lowerARM64Ctx) lowerInstr(ins *IRInstr) error {
 	case IRChainExit:
 		lc.emitChainExit(uint64(ins.Imm))
 		return nil
+	case IRJalrIC:
+		return lc.jalrIC(ins)
 	case IRSyscall:
-		lc.loadImm(0, a64A)
-		lc.emitResultImm(ins.Imm, jitEcall, a64A)
-		lc.emitReturn()
-		return nil
+		return lc.syscall(ins)
 	case IRZeroIC:
 		lc.storeICImm(0)
 		return nil
@@ -1138,6 +1164,158 @@ func (lc *lowerARM64Ctx) retBudget() {
 	lc.emitReturn()
 }
 
+func (lc *lowerARM64Ctx) dcOffsets() (dcBase, dcMask, vaddrBegin, segSize int64) {
+	if lc.abi == arm64ABJIT {
+		return abjitDCBaseOff, abjitDCMaskOff, abjitVAddrBeginOff, abjitSegSizeOff
+	}
+	return 32, 40, 48, 56
+}
+
+func (lc *lowerARM64Ctx) branchTo(as obj.As) *obj.Prog {
+	p := lc.c.NewProg()
+	p.As = as
+	p.To.Type = obj.TYPE_BRANCH
+	lc.c.Append(p)
+	return p
+}
+
+func (lc *lowerARM64Ctx) jalrIC(ins *IRInstr) error {
+	if err := lc.loadV(ins.A, a64B); err != nil {
+		return err
+	}
+
+	// Result.PC/State.PC is the dynamic target on every miss path.
+	pcOff, _, _, _ := lc.resultOffsets()
+	lc.emitStore(arm64.AMOVD, a64B, lc.sretBase(), pcOff)
+
+	dcBaseOff, dcMaskOff, vaddrBeginOff, segSizeOff := lc.dcOffsets()
+	base := lc.sretBase()
+
+	// Decoder-cache fast path for AOT blocks.
+	lc.emitLoad(arm64.AMOVD, base, dcBaseOff, a64C)
+	lc.cmpImm(a64C, 0)
+	miss1 := lc.branchTo(arm64.ABEQ)
+
+	lc.emitRR(arm64.AMOVD, a64B, a64A)                  // offset = target
+	lc.emitLoad(arm64.AMOVD, base, vaddrBeginOff, a64D) // vaddrBegin
+	lc.emitRRR(arm64.ASUB, a64A, a64D, a64A)            // offset = target - vaddrBegin
+	lc.emitLoad(arm64.AMOVD, base, segSizeOff, a64D)
+	lc.cmp(a64A, a64D)
+	miss2 := lc.branchTo(arm64.ABHS) // unsigned offset >= segSize
+
+	lc.emitRRI(arm64.ALSL, 2, a64A, a64A)
+	lc.emitLoad(arm64.AMOVD, base, dcMaskOff, a64D)
+	lc.emitRRR(arm64.AAND, a64A, a64D, a64A)
+	lc.emitRRR(arm64.AADD, a64C, a64A, a64D)
+	lc.emitLoad(arm64.AMOVD, a64D, 0, a64D)
+	lc.cmpImm(a64D, 0)
+	miss3 := lc.branchTo(arm64.ABEQ)
+
+	lc.emitDeallocFrame()
+	lc.emitIndirectJump(a64D)
+
+	trySlots := lc.c.NewProg()
+	trySlots.As = obj.ANOP
+	lc.c.Append(trySlots)
+	miss1.To.SetTarget(trySlots)
+	miss2.To.SetTarget(trySlots)
+	miss3.To.SetTarget(trySlots)
+
+	lc.twoSlotJalrIC(int(ins.Imm), a64B)
+	return nil
+}
+
+func (lc *lowerARM64Ctx) twoSlotJalrIC(siteIdx int, targetReg int16) {
+	pcMov0 := lc.emitPatchableLiteralLoad(a64A, nativePatchSentinel)
+	lc.cmp(targetReg, a64A)
+	hit0 := lc.branchTo(arm64.ABEQ)
+
+	pcMov1 := lc.emitPatchableLiteralLoad(a64A, nativePatchSentinel)
+	lc.cmp(targetReg, a64A)
+	miss := lc.branchTo(arm64.ABNE)
+
+	// Slot 1 hit.
+	lc.emitDeallocFrame()
+	fnMov1 := lc.emitPatchableLiteralLoad(a64A, nativePatchSentinel)
+	lc.emitIndirectJump(a64A)
+
+	// Slot 0 hit.
+	hit0Prog := lc.c.NewProg()
+	hit0Prog.As = obj.ANOP
+	lc.c.Append(hit0Prog)
+	hit0.To.SetTarget(hit0Prog)
+	lc.emitDeallocFrame()
+	fnMov0 := lc.emitPatchableLiteralLoad(a64A, nativePatchSentinel)
+	lc.emitIndirectJump(a64A)
+
+	missProg := lc.c.NewProg()
+	missProg.As = obj.ANOP
+	lc.c.Append(missProg)
+	miss.To.SetTarget(missProg)
+
+	lc.jalrICs = append(lc.jalrICs, jalrICInfo{
+		siteIdx:  siteIdx,
+		pcMov:    [2]*obj.Prog{pcMov0, pcMov1},
+		fnMov:    [2]*obj.Prog{fnMov0, fnMov1},
+		stubProg: missProg,
+	})
+
+	lc.emitJalrMiss(siteIdx)
+}
+
+func (lc *lowerARM64Ctx) emitJalrMiss(siteIdx int) {
+	_, statusOff, faultOff, _ := lc.resultOffsets()
+	lc.loadImm(int64(JitOKJalrMiss), a64A)
+	lc.emitStore(arm64.AMOVD, a64A, lc.sretBase(), statusOff)
+	lc.loadImm(int64(siteIdx), a64A)
+	lc.emitStore(arm64.AMOVD, a64A, lc.sretBase(), faultOff)
+	lc.emitReturn()
+}
+
+func (lc *lowerARM64Ctx) syscall(ins *IRInstr) error {
+	if int(ins.Imm2) >= len(lc.blk.CTab) {
+		lc.loadImm(0, a64A)
+		lc.emitResultImm(ins.Imm, jitEcall, a64A)
+		lc.emitReturn()
+		return nil
+	}
+	sym := lc.blk.CTab[ins.Imm2]
+
+	if lc.abi == arm64RV8 {
+		if lc.callScratchOff < 0 {
+			return fmt.Errorf("arm64 lower: RV8 syscall missing scratch slot")
+		}
+		lc.emitStore(arm64.AMOVD, a64SRet, goasm.REG_ARM64_RSP, lc.callScratchOff)
+	}
+
+	lc.emitRR(arm64.AMOVD, lc.xBaseReg(), goasm.REG_ARM64_R0)
+	lc.loadMemBase(goasm.REG_ARM64_R1)
+	lc.loadMemMask(goasm.REG_ARM64_R2)
+	lc.loadImm(int64(sym.Addr), a64Call)
+	lc.emitIndirectCall(a64Call)
+
+	lc.cmpImm(goasm.REG_ARM64_R0, 0)
+	slow := lc.branchTo(arm64.ABNE)
+
+	if lc.abi == arm64RV8 {
+		lc.emitLoad(arm64.AMOVD, goasm.REG_ARM64_RSP, lc.callScratchOff, a64SRet)
+	}
+	lc.emitChainExit(uint64(ins.Imm))
+
+	slowProg := lc.c.NewProg()
+	slowProg.As = obj.ANOP
+	lc.c.Append(slowProg)
+	slow.To.SetTarget(slowProg)
+
+	if lc.abi == arm64RV8 {
+		lc.emitLoad(arm64.AMOVD, goasm.REG_ARM64_RSP, lc.callScratchOff, a64SRet)
+	}
+	lc.loadImm(0, a64A)
+	lc.emitResultImm(ins.Imm, jitEcall, a64A)
+	lc.emitReturn()
+	return nil
+}
+
 func arm64GPRegNum(reg int16) uint32 {
 	return uint32(reg - goasm.REG_ARM64_R0)
 }
@@ -1163,6 +1341,31 @@ func (lc *lowerARM64Ctx) emitPatchableAddrLoad(dst int16, value uint64) *obj.Pro
 	return load
 }
 
+func (lc *lowerARM64Ctx) emitPatchableLiteralLoad(dst int16, value uint64) *obj.Prog {
+	// LDR literal loads the 8-byte slot after the following branch:
+	//
+	//   LDR dst, [PC+8]
+	//   B afterData
+	//   WORD low32
+	//   WORD high32
+	// afterData:
+	//
+	// This keeps the same patch offset convention as emitPatchableAddrLoad:
+	// PatchImm64 writes the little-endian data slot at load.Pc+8.
+	load := lc.emitWord(arm64LDRLiteral64(dst, 2))
+	skip := lc.c.NewProg()
+	skip.As = arm64.AB
+	skip.To.Type = obj.TYPE_BRANCH
+	lc.c.Append(skip)
+	lc.emitWord(uint32(value))
+	lc.emitWord(uint32(value >> 32))
+	after := lc.c.NewProg()
+	after.As = obj.ANOP
+	lc.c.Append(after)
+	skip.To.SetTarget(after)
+	return load
+}
+
 func (lc *lowerARM64Ctx) emitIndirectJump(reg int16) {
 	p := lc.c.NewProg()
 	p.As = obj.AJMP
@@ -1171,10 +1374,22 @@ func (lc *lowerARM64Ctx) emitIndirectJump(reg int16) {
 	lc.c.Append(p)
 }
 
-func (lc *lowerARM64Ctx) emitChainExit(targetPC uint64) {
+func (lc *lowerARM64Ctx) emitIndirectCall(reg int16) {
+	p := lc.c.NewProg()
+	p.As = obj.ACALL
+	p.To.Type = obj.TYPE_MEM
+	p.To.Reg = reg
+	lc.c.Append(p)
+}
+
+func (lc *lowerARM64Ctx) emitDeallocFrame() {
 	if lc.frameSize != 0 {
 		lc.emitRRI(arm64.AADD, lc.frameSize, goasm.REG_ARM64_RSP, goasm.REG_ARM64_RSP)
 	}
+}
+
+func (lc *lowerARM64Ctx) emitChainExit(targetPC uint64) {
+	lc.emitDeallocFrame()
 	load := lc.emitPatchableAddrLoad(a64D, nativePatchSentinel)
 	lc.chainExits = append(lc.chainExits, chainExitInfo{
 		targetPC: targetPC,
@@ -1194,9 +1409,7 @@ func (lc *lowerARM64Ctx) emitSlowExitStub(targetPC uint64) *obj.Prog {
 }
 
 func (lc *lowerARM64Ctx) emitReturn() {
-	if lc.frameSize != 0 {
-		lc.emitRRI(arm64.AADD, lc.frameSize, goasm.REG_ARM64_RSP, goasm.REG_ARM64_RSP)
-	}
+	lc.emitDeallocFrame()
 	lc.emitReturnFrameFreed()
 }
 

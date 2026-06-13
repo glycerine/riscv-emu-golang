@@ -2,6 +2,7 @@ package riscv
 
 import (
 	"encoding/binary"
+	"runtime"
 	"testing"
 	"unsafe"
 )
@@ -72,16 +73,32 @@ func TestJITChain_Foundation_StubBackpatched(t *testing.T) {
 		t.Errorf("imm64 at patchOffset is zero (patchOffset=%d)", ce.patchOffset)
 	}
 
-	// Sanity: the two bytes just before patchOffset should be 0x48 0xB9
-	// (REX.W + MOV-to-RCX opcode). rv8 uses RCX as the chain-exit staging reg.
-	if ce.patchOffset < 2 {
-		t.Fatalf("patchOffset = %d < 2, can't check MOVABS prefix", ce.patchOffset)
-	}
-	//nolint:gosec // test-only inspection
-	prefix := (*[2]byte)(unsafe.Pointer(compiled.fn + uintptr(ce.patchOffset-2)))
-	if prefix[0] != 0x48 || prefix[1] != 0xB9 {
-		t.Errorf("bytes at patchOffset-2 = %02x %02x, want 48 B9 "+
-			"(REX.W, MOV RCX imm64)", prefix[0], prefix[1])
+	switch runtime.GOARCH {
+	case "amd64":
+		// Sanity: the two bytes just before patchOffset should be 0x48 0xB9
+		// (REX.W + MOV-to-RCX opcode). rv8 uses RCX as the chain-exit staging reg.
+		if ce.patchOffset < 2 {
+			t.Fatalf("patchOffset = %d < 2, can't check MOVABS prefix", ce.patchOffset)
+		}
+		//nolint:gosec // test-only inspection
+		prefix := (*[2]byte)(unsafe.Pointer(compiled.fn + uintptr(ce.patchOffset-2)))
+		if prefix[0] != 0x48 || prefix[1] != 0xB9 {
+			t.Errorf("bytes at patchOffset-2 = %02x %02x, want 48 B9 "+
+				"(REX.W, MOV RCX imm64)", prefix[0], prefix[1])
+		}
+	case "arm64":
+		// ARM64 uses LDR-literal patch slots. The literal data starts 8
+		// bytes after the raw LDR instruction, so the instruction word at
+		// patchOffset-8 should be an LDR literal form.
+		if ce.patchOffset < 8 {
+			t.Fatalf("patchOffset = %d < 8, can't check LDR literal", ce.patchOffset)
+		}
+		//nolint:gosec // test-only inspection
+		wordp := (*[4]byte)(unsafe.Pointer(compiled.fn + uintptr(ce.patchOffset-8)))
+		word := binary.LittleEndian.Uint32(wordp[:])
+		if word&0xff000000 != 0x58000000 {
+			t.Errorf("word at patchOffset-8 = 0x%08x, want ARM64 LDR literal", word)
+		}
 	}
 }
 

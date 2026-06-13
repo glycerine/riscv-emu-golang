@@ -1,4 +1,4 @@
-//go:build !amd64
+//go:build !amd64 && !(linux && arm64)
 
 // Package syscalls provides non-amd64 fallbacks for the JIT syscall fast path.
 package syscalls
