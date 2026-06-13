@@ -30,7 +30,7 @@
         bench-jit-coremark bench-jit-dhrystone bench-chain-ref \
         darwin-perf bench-wasm build-luajit-riscv \
         hello hello-elfs quad standard test-arm64-qemu \
-        test-arm64-qemu-main test-arm64-qemu-lockstep
+        test-arm64-qemu-main test-arm64-qemu-lockstep bench-arm64-qemu
 
 # ── platform detection ─────────────────────────────────────────────────────
 
@@ -75,6 +75,9 @@ GUEST_CFLAGS := -O2 -target $(ZIG_TARGET) -static -mcpu=generic_rv64+m+a+f+d+c \
             -I riscv-elf-tests/env/p \
             -I riscv-elf-tests/isa/macros/scalar \
             -nostdlib
+
+ARM64_QEMU_BENCH ?= ^BenchmarkRVTests_UI_(Interp2|LazyJIT2)$$
+ARM64_QEMU_BENCHTIME ?= 3x
 
 # ── paths ──────────────────────────────────────────────────────────────────
 
@@ -192,6 +195,7 @@ endif
 	@echo "    make test-arm64-qemu           cross-build root/riscv-tests/lockstep under qemu-system-aarch64"
 	@echo "    make test-arm64-qemu-main      same, but skip sharded lockstep"
 	@echo "    make test-arm64-qemu-lockstep  sharded non-FP lockstep only"
+	@echo "    make bench-arm64-qemu          qemu-system arm64 benchmark smoke lane"
 	@echo "      ARM64_QEMU_CPU=cortex-a72 by default; override if your QEMU needs another model"
 	@echo "    make clean            remove xendor/build_capi and generated ELF"
 	@echo ""
@@ -694,13 +698,26 @@ test-arm64-qemu:
 	@echo "── linux/arm64 qemu-system test lane ───────────────────────────"
 	GO=$(GO) $(ROOT)scripts/test-arm64-qemu.sh
 
-test-arm64-qemu-main:
+test-arm64-qemu-main: # about 2 minutes on linux
 	@echo "── linux/arm64 qemu-system main lane ───────────────────────────"
 	ARM64_QEMU_LOCKSTEP=0 GO=$(GO) $(ROOT)scripts/test-arm64-qemu.sh
 
 test-arm64-qemu-lockstep:
 	@echo "── linux/arm64 qemu-system lockstep lane ───────────────────────"
 	ARM64_QEMU_MAIN=0 ARM64_QEMU_LOCKSTEP=1 GO=$(GO) $(ROOT)scripts/test-arm64-qemu.sh
+
+bench-arm64-qemu:
+	@echo "── linux/arm64 qemu-system benchmark smoke lane ────────────────"
+	ARM64_QEMU_PACKAGE=./bench \
+	ARM64_QEMU_REQUIRE_RISCV_TESTS=0 \
+	ARM64_QEMU_MAIN=0 \
+	ARM64_QEMU_LOCKSTEP=0 \
+	GO=$(GO) $(ROOT)scripts/test-arm64-qemu.sh \
+	    -test.run '^$$' \
+	    -test.bench '$(ARM64_QEMU_BENCH)' \
+	    -test.benchtime=$(ARM64_QEMU_BENCHTIME) \
+	    -test.benchmem \
+	    -test.timeout 20m
 
 # ── clean ──────────────────────────────────────────────────────────────────
 

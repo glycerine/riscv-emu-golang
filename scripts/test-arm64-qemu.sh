@@ -14,6 +14,7 @@ ARM64_QEMU_TIMEOUT="${ARM64_QEMU_TIMEOUT:-60m}"
 ARM64_QEMU_LOCKSTEP_TIMEOUT="${ARM64_QEMU_LOCKSTEP_TIMEOUT:-75m}"
 ARM64_QEMU_MAIN="${ARM64_QEMU_MAIN:-1}"
 ARM64_QEMU_LOCKSTEP="${ARM64_QEMU_LOCKSTEP:-1}"
+ARM64_QEMU_PACKAGE="${ARM64_QEMU_PACKAGE:-.}"
 ARM64_QEMU_RUN="${ARM64_QEMU_RUN:-^(Test(GuestMemory.*|CPU.*|Decode.*|RunCached.*|LoadELF.*|FindSymbolAddr.*|FindExecLoads.*|FindTextSection.*|LowerARM64.*|JIT_.*|JITIC_MatchesInterpreter.*)|TestRISCVTests_(UI|UM|Smoke|UA|UF|UD|UC|UI_JIT_AOT|UM_JIT_AOT|UA_JIT_AOT|UF_JIT_AOT|UD_JIT_AOT|UC_JIT_AOT|UI_JIT_Lazy|UM_JIT_Lazy|UA_JIT_Lazy|UC_JIT_Lazy))$}"
 
 if [[ -z "${QEMU_AARCH64}" ]]; then
@@ -50,13 +51,13 @@ rootfs="${ARM64_QEMU_CACHE}/rootfs"
 initramfs="${ARM64_QEMU_CACHE}/riscv-arm64-initramfs.cpio.gz"
 log="${ARM64_QEMU_CACHE}/qemu.log"
 
-echo "── cross-building linux/arm64 test binary"
+echo "── cross-building linux/arm64 test binary (${ARM64_QEMU_PACKAGE})"
 (
 	cd "${ROOT}"
 	GOCACHE="${GOCACHE:-/tmp/gocache-riscv-arm64}" \
 	GOCPU_VIZJIT_OFF=1 \
 	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 \
-	"${GO}" test -c -o "${testbin}" .
+	"${GO}" test -c -o "${testbin}" "${ARM64_QEMU_PACKAGE}"
 )
 
 echo "── building tiny linux/arm64 init"
@@ -72,6 +73,29 @@ mkdir -p "${rootfs}/tmp" "${rootfs}/dev"
 cp "${initbin}" "${rootfs}/init"
 cp "${testbin}" "${rootfs}/riscv-arm64.test"
 chmod 0755 "${rootfs}/init" "${rootfs}/riscv-arm64.test"
+
+stage_bench_elfs() {
+	local missing=0
+	mkdir -p "${rootfs}/libriscv_guest"
+	if [[ -f "${ROOT}/bench/libriscv_guest/bench_guest.elf" ]]; then
+		cp "${ROOT}/bench/libriscv_guest/bench_guest.elf" "${rootfs}/libriscv_guest/bench_guest.elf"
+	else
+		echo "missing bench/libriscv_guest/bench_guest.elf (run make guest-elf)" >&2
+		missing=1
+	fi
+	if [[ -f "${ROOT}/bench/coremark.elf" ]]; then
+		cp "${ROOT}/bench/coremark.elf" "${rootfs}/coremark.elf"
+	fi
+	if [[ -f "${ROOT}/bench/dhrystone.elf" ]]; then
+		cp "${ROOT}/bench/dhrystone.elf" "${rootfs}/dhrystone.elf"
+	fi
+	return "${missing}"
+}
+
+if [[ "${ARM64_QEMU_STAGE_BENCH_ELFS:-0}" != "0" ]]; then
+	echo "── staging benchmark guest ELFs"
+	stage_bench_elfs
+fi
 
 if [[ "$#" -gt 0 ]]; then
 	require_riscv_tests="${ARM64_QEMU_REQUIRE_RISCV_TESTS:-0}"

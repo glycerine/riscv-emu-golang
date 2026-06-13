@@ -4,11 +4,12 @@ package riscv
 
 // lower_arm64.go — conservative ARM64 backend.
 //
-// This is deliberately simple: it ignores the fixed allocator's host-register
-// choices and stores all temporaries in a native stack frame. Architectural
-// x/f registers still live in the normal register file / abjit.State layout.
-// Unsupported IR returns an error so the JIT manager falls back to the
-// interpreter for that block instead of miscompiling.
+// The first ARM64 performance path honors fixed allocator choices for a small
+// caller-scratch integer register pool, while FP values and unallocated temps
+// still use the native stack frame. Architectural state remains in the normal
+// register file / abjit.State layout at block boundaries. Unsupported IR
+// returns an error so the JIT manager falls back to the interpreter for that
+// block instead of miscompiling.
 
 import (
 	"encoding/binary"
@@ -74,18 +75,15 @@ func init() {
 }
 
 func ARM64Pool(_ *Block) RegPool {
+	// R6-R9 are fixed staging registers in this lowerer, R16 is the
+	// indirect-call scratch register, and R20 carries the ABJIT State
+	// pointer. Keep the first allocator-aware ARM64 path on caller-scratch
+	// integer registers that the lowerer otherwise leaves alone.
 	intRegs := []int16{
-		goasm.REG_ARM64_R6, goasm.REG_ARM64_R7, goasm.REG_ARM64_R8, goasm.REG_ARM64_R9,
 		goasm.REG_ARM64_R10, goasm.REG_ARM64_R11, goasm.REG_ARM64_R12, goasm.REG_ARM64_R13,
 		goasm.REG_ARM64_R14, goasm.REG_ARM64_R15,
 	}
-	fpRegs := []int16{
-		goasm.REG_ARM64_F0, goasm.REG_ARM64_F1, goasm.REG_ARM64_F2, goasm.REG_ARM64_F3,
-		goasm.REG_ARM64_F4, goasm.REG_ARM64_F5, goasm.REG_ARM64_F6, goasm.REG_ARM64_F7,
-		goasm.REG_ARM64_F8, goasm.REG_ARM64_F9, goasm.REG_ARM64_F10, goasm.REG_ARM64_F11,
-		goasm.REG_ARM64_F12, goasm.REG_ARM64_F13, goasm.REG_ARM64_F14, goasm.REG_ARM64_F15,
-	}
-	return RegPool{IntRegs: intRegs, FPRegs: fpRegs}
+	return RegPool{IntRegs: intRegs}
 }
 
 func ARM64Pinned() map[VReg]int16 { return nil }
@@ -103,16 +101,19 @@ func patchARM64LiteralImm64(code []byte, prog *obj.Prog, value uint64) (int, err
 }
 
 func LowerARM64_RV8(ctx *goasm.Ctx, b *Block, alloc *Allocation) (*LowerResult, error) {
-	return lowerARM64(ctx, b, arm64RV8)
+	return lowerARM64(ctx, b, alloc, arm64RV8)
 }
 
 func LowerARM64_ABJIT(ctx *goasm.Ctx, b *Block, alloc *Allocation) (*LowerResult, error) {
-	return lowerARM64(ctx, b, arm64ABJIT)
+	return lowerARM64(ctx, b, alloc, arm64ABJIT)
 }
 
 type lowerARM64Ctx struct {
 	c              *goasm.Ctx
 	blk            *Block
+	alloc          *Allocation
+	rIdx           regIndex
+	idx            int
 	abi            arm64ABI
 	tempSlots      map[VReg]int64
 	frameSize      int64
@@ -124,16 +125,20 @@ type lowerARM64Ctx struct {
 	callScratchOff int64
 }
 
-func lowerARM64(ctx *goasm.Ctx, b *Block, abi arm64ABI) (*LowerResult, error) {
+func lowerARM64(ctx *goasm.Ctx, b *Block, alloc *Allocation, abi arm64ABI) (*LowerResult, error) {
 	lc := &lowerARM64Ctx{
 		c:         ctx,
 		blk:       b,
+		alloc:     alloc,
 		abi:       abi,
 		tempSlots: make(map[VReg]int64),
 		labelProg: make(map[Label]*obj.Prog),
 		pending:   make(map[Label][]*obj.Prog),
 		// Negative means this block has no reserved call scratch.
 		callScratchOff: -1,
+	}
+	if alloc != nil {
+		lc.rIdx = buildRegIndex(alloc)
 	}
 	lc.collectTemps()
 	n := int64(len(lc.tempSlots) * 8)
@@ -151,8 +156,10 @@ func lowerARM64(ctx *goasm.Ctx, b *Block, abi arm64ABI) (*LowerResult, error) {
 	if lc.frameSize != 0 {
 		lc.emitRRI(arm64.ASUB, lc.frameSize, goasm.REG_ARM64_RSP, goasm.REG_ARM64_RSP)
 	}
+	lc.loadAllocatedRegs()
 
 	for i := range b.Instrs {
+		lc.idx = i
 		if err := lc.lowerInstr(&b.Instrs[i]); err != nil {
 			return nil, err
 		}
@@ -184,7 +191,7 @@ func lowerARM64(ctx *goasm.Ctx, b *Block, abi arm64ABI) (*LowerResult, error) {
 
 func (lc *lowerARM64Ctx) collectTemps() {
 	add := func(v VReg) {
-		if v >= VRegTempStart {
+		if v >= VRegTempStart && !lc.tempHasHostReg(v) {
 			if _, ok := lc.tempSlots[v]; !ok {
 				lc.tempSlots[v] = int64(len(lc.tempSlots)) * 8
 			}
@@ -196,6 +203,60 @@ func (lc *lowerARM64Ctx) collectTemps() {
 		add(ins.A)
 		add(ins.B)
 		add(ins.C)
+	}
+}
+
+func (lc *lowerARM64Ctx) canUseHostReg(v VReg) bool {
+	if v == VRegZero {
+		return false
+	}
+	if v >= 32 && v < 64 {
+		return false
+	}
+	if v >= VRegTempStart && v <= VRRegFile {
+		return false
+	}
+	return v < 32 || v >= VRegTempStart
+}
+
+func (lc *lowerARM64Ctx) hostReg(v VReg) int16 {
+	if lc.alloc == nil || !lc.canUseHostReg(v) {
+		return -1
+	}
+	if int(v) >= len(lc.alloc.Kind) || lc.alloc.Kind[v] != AllocReg {
+		return -1
+	}
+	if len(lc.rIdx) == 0 {
+		return -1
+	}
+	return lc.rIdx.lookup(v, lc.idx)
+}
+
+func (lc *lowerARM64Ctx) tempHasHostReg(v VReg) bool {
+	if v < VRegTempStart || v <= VRRegFile {
+		return false
+	}
+	if lc.alloc == nil || int(v) >= len(lc.alloc.Kind) {
+		return false
+	}
+	return lc.alloc.Kind[v] == AllocReg && len(lc.rIdx) != 0
+}
+
+func (lc *lowerARM64Ctx) loadAllocatedRegs() {
+	for vr := VReg(1); vr < 32; vr++ {
+		host := lc.hostReg(vr)
+		if host >= 0 {
+			lc.emitLoad(arm64.AMOVD, lc.xBaseReg(), int64(vr)*8, host)
+		}
+	}
+}
+
+func (lc *lowerARM64Ctx) storeRegsBack() {
+	for vr := VReg(1); vr < 32; vr++ {
+		host := lc.hostReg(vr)
+		if host >= 0 {
+			lc.emitStore(arm64.AMOVD, host, lc.xBaseReg(), int64(vr)*8)
+		}
 	}
 }
 
@@ -358,6 +419,10 @@ func (lc *lowerARM64Ctx) storeFP(v VReg, src int16, t Type) error {
 }
 
 func (lc *lowerARM64Ctx) loadV(v VReg, dst int16) error {
+	if host := lc.hostReg(v); host >= 0 {
+		lc.emitRR(arm64.AMOVD, host, dst)
+		return nil
+	}
 	switch {
 	case v == VRegZero:
 		lc.loadImm(0, dst)
@@ -387,6 +452,10 @@ func (lc *lowerARM64Ctx) loadV(v VReg, dst int16) error {
 }
 
 func (lc *lowerARM64Ctx) storeV(v VReg, src int16) error {
+	if host := lc.hostReg(v); host >= 0 {
+		lc.emitRR(arm64.AMOVD, src, host)
+		return nil
+	}
 	switch {
 	case v == VRegZero:
 		return nil
@@ -1480,6 +1549,7 @@ func (lc *lowerARM64Ctx) jalrIC(ins *IRInstr) error {
 	lc.cmpImm(a64D, 0)
 	miss3 := lc.branchTo(arm64.ABEQ)
 
+	lc.storeRegsBack()
 	lc.emitDeallocFrame()
 	lc.emitIndirectJump(a64D)
 
@@ -1504,6 +1574,7 @@ func (lc *lowerARM64Ctx) twoSlotJalrIC(siteIdx int, targetReg int16) {
 	miss := lc.branchTo(arm64.ABNE)
 
 	// Slot 1 hit.
+	lc.storeRegsBack()
 	lc.emitDeallocFrame()
 	fnMov1 := lc.emitPatchableLiteralLoad(a64A, nativePatchSentinel)
 	lc.emitIndirectJump(a64A)
@@ -1513,6 +1584,7 @@ func (lc *lowerARM64Ctx) twoSlotJalrIC(siteIdx int, targetReg int16) {
 	hit0Prog.As = obj.ANOP
 	lc.c.Append(hit0Prog)
 	hit0.To.SetTarget(hit0Prog)
+	lc.storeRegsBack()
 	lc.emitDeallocFrame()
 	fnMov0 := lc.emitPatchableLiteralLoad(a64A, nativePatchSentinel)
 	lc.emitIndirectJump(a64A)
@@ -1556,6 +1628,7 @@ func (lc *lowerARM64Ctx) call(ins *IRInstr) error {
 		lc.emitStore(arm64.AMOVD, reg, goasm.REG_ARM64_RSP, int64(i)*8)
 	}
 
+	lc.storeRegsBack()
 	lc.loadImm(int64(sym.Addr), a64Call)
 	lc.emitIndirectCall(a64Call)
 
@@ -1563,6 +1636,7 @@ func (lc *lowerARM64Ctx) call(ins *IRInstr) error {
 		lc.emitLoad(arm64.AMOVD, goasm.REG_ARM64_RSP, int64(i)*8, reg)
 	}
 	lc.emitRRI(arm64.AADD, saveSize, goasm.REG_ARM64_RSP, goasm.REG_ARM64_RSP)
+	lc.loadAllocatedRegs()
 	return nil
 }
 
@@ -1582,6 +1656,7 @@ func (lc *lowerARM64Ctx) syscall(ins *IRInstr) error {
 		lc.emitStore(arm64.AMOVD, a64SRet, goasm.REG_ARM64_RSP, lc.callScratchOff)
 	}
 
+	lc.storeRegsBack()
 	lc.emitRR(arm64.AMOVD, lc.xBaseReg(), goasm.REG_ARM64_R0)
 	lc.loadMemBase(goasm.REG_ARM64_R1)
 	lc.loadMemMask(goasm.REG_ARM64_R2)
@@ -1594,6 +1669,7 @@ func (lc *lowerARM64Ctx) syscall(ins *IRInstr) error {
 	if lc.abi == arm64RV8 {
 		lc.emitLoad(arm64.AMOVD, goasm.REG_ARM64_RSP, lc.callScratchOff, a64SRet)
 	}
+	lc.loadAllocatedRegs()
 	lc.emitChainExit(uint64(ins.Imm))
 
 	slowProg := lc.c.NewProg()
@@ -1683,6 +1759,7 @@ func (lc *lowerARM64Ctx) emitDeallocFrame() {
 }
 
 func (lc *lowerARM64Ctx) emitChainExit(targetPC uint64) {
+	lc.storeRegsBack()
 	lc.emitDeallocFrame()
 	load := lc.emitPatchableAddrLoad(a64D, nativePatchSentinel)
 	lc.chainExits = append(lc.chainExits, chainExitInfo{
@@ -1703,6 +1780,7 @@ func (lc *lowerARM64Ctx) emitSlowExitStub(targetPC uint64) *obj.Prog {
 }
 
 func (lc *lowerARM64Ctx) emitReturn() {
+	lc.storeRegsBack()
 	lc.emitDeallocFrame()
 	lc.emitReturnFrameFreed()
 }

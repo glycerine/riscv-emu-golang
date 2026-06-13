@@ -115,6 +115,16 @@ func loadRVTestELFs(tb testing.TB) []rvTestELF {
 	return elfs
 }
 
+func loadRVTestELF(tb testing.TB, name string) rvTestELF {
+	tb.Helper()
+	path := filepath.Join(rvTestsDir, "rv64ui-p-"+name)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		tb.Skipf("rv64ui-p-%s not found — run make riscv-tests: %v", name, err)
+	}
+	return rvTestELF{name: name, data: data}
+}
+
 func newRVTestCPU(tb testing.TB, elfData []byte) (*riscv.CPU, *riscv.GuestMemory) {
 	tb.Helper()
 	mem, err := riscv.NewGuestMemory(riscv.Size1MB)
@@ -136,6 +146,81 @@ func newRVTestCPU(tb testing.TB, elfData []byte) (*riscv.CPU, *riscv.GuestMemory
 	o.HandleEcall(riscv.RiscvTestsEcall)
 	cpu.Notes.Push(o.Handle)
 	return cpu, mem
+}
+
+func reportRVTestMIPS(b *testing.B, totalInsns uint64) {
+	b.Helper()
+	elapsed := b.Elapsed().Seconds()
+	if elapsed > 0 && totalInsns > 0 {
+		b.ReportMetric(float64(totalInsns)/elapsed/1e6, "MIPS")
+	}
+}
+
+func benchRVTestUICached(b *testing.B, name string) {
+	e := loadRVTestELF(b, name)
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	totalInsns := uint64(0)
+	for i := 0; i < b.N; i++ {
+		cpu, mem := newRVTestCPU(b, e.data)
+		code, insns := runCachedBenchGuest(cpu)
+		mem.Free()
+		if code != 0 {
+			b.Fatalf("rv64ui-p-%s cached interpreter exit %d, want 0", name, code)
+		}
+		totalInsns += insns
+	}
+
+	b.StopTimer()
+	reportRVTestMIPS(b, totalInsns)
+}
+
+func benchRVTestUILazyJIT(b *testing.B, name string) {
+	e := loadRVTestELF(b, name)
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	totalInsns := uint64(0)
+	for i := 0; i < b.N; i++ {
+		cpu, mem := newRVTestCPU(b, e.data)
+		jit := riscv.NewJIT()
+		jit.DisableAutoAOT = true
+		code, insns := runJITBenchGuestWith(cpu, jit)
+		mem.Free()
+		if code != 0 {
+			b.Fatalf("rv64ui-p-%s lazy JIT exit %d, want 0", name, code)
+		}
+		totalInsns += insns
+	}
+
+	b.StopTimer()
+	reportRVTestMIPS(b, totalInsns)
+}
+
+func benchRVTestUIAotJIT(b *testing.B, name string) {
+	e := loadRVTestELF(b, name)
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	totalInsns := uint64(0)
+	for i := 0; i < b.N; i++ {
+		cpu, mem := newRVTestCPU(b, e.data)
+		jit := riscv.NewJIT()
+		if err := jit.InstallAOT(mem, e.data); err != nil {
+			mem.Free()
+			b.Fatalf("InstallAOT rv64ui-p-%s: %v", name, err)
+		}
+		code, insns := runJITBenchGuestWith(cpu, jit)
+		mem.Free()
+		if code != 0 {
+			b.Fatalf("rv64ui-p-%s AOT JIT exit %d, want 0", name, code)
+		}
+		totalInsns += insns
+	}
+
+	b.StopTimer()
+	reportRVTestMIPS(b, totalInsns)
 }
 
 func BenchmarkRVTests_UI_AotJIT(b *testing.B) {
@@ -179,32 +264,14 @@ func BenchmarkRVTests_UI_LazyJIT(b *testing.B) {
 	}
 }
 
-// just get 'add' benchmark working AOT
+func BenchmarkRVTests_UI_Interp2(b *testing.B) {
+	benchRVTestUICached(b, "add")
+}
+
+func BenchmarkRVTests_UI_LazyJIT2(b *testing.B) {
+	benchRVTestUILazyJIT(b, "add")
+}
 
 func BenchmarkRVTests_UI_AotJIT2(b *testing.B) {
-	elfs := loadRVTestELFs(b)
-
-	for j, e := range elfs {
-		if e.name != "add" {
-			continue
-		}
-
-		b.ReportAllocs()
-		b.ResetTimer()
-
-		for i := 0; i < b.N; i++ {
-			t0 := time.Now()
-			cpu, mem := newRVTestCPU(b, e.data)
-			jit := riscv.NewJIT()
-			vv("b.N=%v jit.InstallAOT: %v", b.N, e.name)
-			if err := jit.InstallAOT(mem, e.data); err != nil {
-				b.Fatalf("InstallAOT: %v", err)
-			}
-			vv("runJITBenchGuestWith: %v", e.name) // seen
-			runJITBenchGuestWith(cpu, jit)
-			vv("back from runJITBenchGuestWith: %v", e.name)
-			mem.Free()
-			fmt.Fprintf(os.Stderr, "  AotJIT  [%2d/%d] %-12s %v\n", j+1, len(elfs), e.name, time.Since(t0))
-		}
-	}
+	benchRVTestUIAotJIT(b, "add")
 }
