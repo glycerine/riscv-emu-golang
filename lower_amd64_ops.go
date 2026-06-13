@@ -22,6 +22,7 @@ const (
 	stgB  int16 = goasm.REG_AMD64_CX  // integer staging slot B
 	stgFA int16 = goasm.REG_AMD64_X15 // FP staging slot A
 	stgFB int16 = goasm.REG_AMD64_X14 // FP staging slot B
+	stgFC int16 = goasm.REG_AMD64_X13 // FP staging slot C for ternary ops
 )
 
 // Register file offsets (relative to RBP).
@@ -67,6 +68,17 @@ func (lc *lowerOps) emit2(op obj.As, src, dst int16) {
 	p.As = op
 	p.From.Type = obj.TYPE_REG
 	p.From.Reg = src
+	p.To.Type = obj.TYPE_REG
+	p.To.Reg = dst
+	lc.c.Append(p)
+}
+
+func (lc *lowerOps) emit3(op obj.As, src, reg, dst int16) {
+	p := lc.c.NewProg()
+	p.As = op
+	p.From.Type = obj.TYPE_REG
+	p.From.Reg = src
+	p.AddRestSource(obj.Addr{Type: obj.TYPE_REG, Reg: reg})
 	p.To.Type = obj.TYPE_REG
 	p.To.Reg = dst
 	lc.c.Append(p)
@@ -230,8 +242,11 @@ func (lc *lowerOps) stageInt(v VReg, idx int) int16 {
 
 func (lc *lowerOps) stageFP(v VReg, idx int) int16 {
 	stg := stgFA
-	if idx != 0 {
+	switch idx {
+	case 1:
 		stg = stgFB
+	case 2:
+		stg = stgFC
 	}
 	if v == VRegZero {
 		lc.emit2(x86.APXOR, stg, stg)
@@ -1215,6 +1230,26 @@ func (lc *lowerOps) opsFPBinop(ins *IRInstr, f64op, f32op obj.As) {
 	lc.commitDst(ins.Dst, dst)
 }
 
+func (lc *lowerOps) opsFMA(ins *IRInstr, f64op, f32op obj.As) {
+	a := lc.stageFP(ins.A, 0)
+	b := lc.stageFP(ins.B, 1)
+	c := lc.stageFP(ins.C, 2)
+	op := f64op
+	movOp := x86.AMOVSD
+	if ins.T == F32 {
+		op = f32op
+		movOp = x86.AMOVSS
+	}
+	// V*213 form: dst = f(dst, reg, src). We stage A in dst, B in reg,
+	// and C in src, matching the RISC-V ternary operand order.
+	lc.emit3(op, c, b, a)
+	dst := lc.writeDstFP(ins.Dst)
+	if dst != a {
+		lc.emit2(movOp, a, dst)
+	}
+	lc.commitDst(ins.Dst, dst)
+}
+
 func (lc *lowerOps) opsFPUnary(ins *IRInstr, f64op, f32op obj.As) {
 	a := lc.stageFP(ins.A, 0)
 	op := f64op
@@ -1520,6 +1555,14 @@ func (lc *lowerOps) lowerInstrCommon(ins *IRInstr) (bool, error) {
 		lc.opsFPBinop(ins, x86.ADIVSD, x86.ADIVSS)
 	case IRFSqrt:
 		lc.opsFPUnary(ins, x86.ASQRTSD, x86.ASQRTSS)
+	case IRFma:
+		lc.opsFMA(ins, x86.AVFMADD213SD, x86.AVFMADD213SS)
+	case IRFmsub:
+		lc.opsFMA(ins, x86.AVFMSUB213SD, x86.AVFMSUB213SS)
+	case IRFnmadd:
+		lc.opsFMA(ins, x86.AVFNMSUB213SD, x86.AVFNMSUB213SS)
+	case IRFnmsub:
+		lc.opsFMA(ins, x86.AVFNMADD213SD, x86.AVFNMADD213SS)
 	case IRFNeg:
 		lc.opsFNeg(ins)
 	case IRFAbs:

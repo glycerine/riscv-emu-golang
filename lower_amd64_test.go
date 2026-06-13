@@ -402,7 +402,7 @@ func TestLower_AllOpsHandled(t *testing.T) {
 		IRMov, IRConst, IRSext, IRZext,
 		IRLabel, IRBranch, IRBranchImm, IRJump, IRCall, IRRet,
 		IRFAdd, IRFSub, IRFMul, IRFDiv, IRFSqrt, IRFCmp,
-		IRFNeg, IRFAbs,
+		IRFma, IRFmsub, IRFnmadd, IRFnmsub, IRFNeg, IRFAbs,
 		IRFCvtToI, IRFCvtToU, IRFCvtFromI, IRFCvtFromU, IRFCvtFF,
 		IRStopperLoad,
 		IRMarkLive, IRMarkDead, IRWriteback,
@@ -436,6 +436,32 @@ func TestLower_AllOpsHandled(t *testing.T) {
 		}
 		if err := lc.lowerInstr(&ins); err != nil {
 			t.Errorf("op %v: %v", op, err)
+		}
+	}
+}
+
+func TestLower_IRFMAFamily_Assembles(t *testing.T) {
+	ops := []struct {
+		name string
+		emit func(e *Emitter, dst, a, b, c VReg, typ Type)
+	}{
+		{"fma", (*Emitter).FMA},
+		{"fmsub", (*Emitter).Fmsub},
+		{"fnmadd", (*Emitter).Fnmadd},
+		{"fnmsub", (*Emitter).Fnmsub},
+	}
+	for _, typ := range []Type{F32, F64} {
+		for _, tc := range ops {
+			t.Run(tc.name+"/"+typ.String(), func(t *testing.T) {
+				e := NewEmitter(nil)
+				tc.emit(e, e.FRegV(1), e.FRegV(2), e.FRegV(3), e.FRegV(4), typ)
+				e.Ret(0x1000, 0, VRegZero)
+
+				bytes, _ := lowerBlockWithRet(t, e.Block)
+				if len(bytes) == 0 {
+					t.Fatal("expected non-empty output")
+				}
+			})
 		}
 	}
 }
@@ -531,8 +557,8 @@ func TestRV8Pool(t *testing.T) {
 	if len(pool.IntRegs) != 12 {
 		t.Fatalf("want 12 int regs, got %d", len(pool.IntRegs))
 	}
-	if len(pool.FPRegs) != 14 {
-		t.Errorf("want 14 FP regs (X14/X15 reserved for FP staging), got %d", len(pool.FPRegs))
+	if len(pool.FPRegs) != 13 {
+		t.Errorf("want 13 FP regs (X13-X15 reserved for FP staging), got %d", len(pool.FPRegs))
 	}
 
 	excluded := map[int16]string{
@@ -619,8 +645,8 @@ func TestABJITPool(t *testing.T) {
 	if len(pool.IntRegs) != 11 {
 		t.Fatalf("want 11 int regs, got %d", len(pool.IntRegs))
 	}
-	if len(pool.FPRegs) != 14 {
-		t.Errorf("want 14 FP regs, got %d", len(pool.FPRegs))
+	if len(pool.FPRegs) != 13 {
+		t.Errorf("want 13 FP regs, got %d", len(pool.FPRegs))
 	}
 
 	for _, r := range pool.IntRegs {

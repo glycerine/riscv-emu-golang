@@ -72,6 +72,9 @@ func (f *FixedStaticAllocator) Allocate(b *Block, pool RegPool, pinned map[VReg]
 		if ins.B != VRegZero && int(ins.B) < numVRegs {
 			used[ins.B] = true
 		}
+		if ins.C != VRegZero && int(ins.C) < numVRegs {
+			used[ins.C] = true
+		}
 	}
 	// Classify FP VRegs.
 	for vr := VReg(32); vr < 64 && int(vr) < numVRegs; vr++ {
@@ -80,8 +83,12 @@ func (f *FixedStaticAllocator) Allocate(b *Block, pool RegPool, pinned map[VReg]
 	// Also classify by instruction type usage.
 	for i := range b.Instrs {
 		ins := &b.Instrs[i]
-		switch ins.T {
-		case F32, F64:
+		producesFP := ins.T == F32 || ins.T == F64
+		switch ins.Op {
+		case IRFCmp, IRFCvtToI, IRFCvtToU:
+			producesFP = false
+		}
+		if producesFP {
 			if ins.Dst != VRegZero && int(ins.Dst) < numVRegs {
 				isFP[ins.Dst] = true
 			}

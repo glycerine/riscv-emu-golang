@@ -1,6 +1,7 @@
 package riscv
 
 import (
+	"syscall"
 	"testing"
 )
 
@@ -19,8 +20,9 @@ import (
 
 // runJITFP compiles and runs `code` through the JIT (via StepBlock),
 // seeds f2/f3/f4 with the provided values, and returns the resulting CPU.
-// The test asserts the JIT actually compiled a block (not just
-// interpreted) so we know the JIT path was exercised.
+// The test asserts the entry block compiled, not just the appended exit
+// block, so these tests cannot pass by interpreting the instruction under
+// test and then compiling the ECALL tail.
 func runJITFP(t *testing.T, code []uint32, fregs map[uint8]uint64) *CPU {
 	t.Helper()
 	const va = uint64(0x10000)
@@ -50,15 +52,32 @@ func runJITFP(t *testing.T, code []uint32, fregs map[uint8]uint64) *CPU {
 			break
 		}
 	}
-	if len(jit.lazyBlocks) == 0 {
-		t.Fatalf("JIT did not compile a block — test is not exercising JIT path")
+	if jit.noJIT[va] {
+		detail := "no emit result"
+		if res := jit.emitBlock(&cpu.mem, va); res != nil {
+			blk, err := jit.jitCompile(res, &cpu.mem)
+			if err != nil {
+				detail = err.Error()
+			} else {
+				detail = "recompile unexpectedly succeeded"
+				if blk != nil && blk.nativeMmap != nil {
+					_ = syscall.Munmap(blk.nativeMmap)
+				}
+			}
+		}
+		t.Fatalf("JIT failed to compile entry block at pc=0x%x: %s", va, detail)
+	}
+	if jit.lookupBlock(va) == nil {
+		t.Fatalf("JIT did not compile entry block at pc=0x%x", va)
 	}
 	return cpu
 }
 
 // encFP encodes an RV32F FP-OP instruction (opcode 0x53).
-//   funct5 [31:27]  fmt [26:25]  rs2 [24:20]  rs1 [19:15]  funct3 [14:12]
-//   rd [11:7]  opcode=0x53 [6:0]
+//
+//	funct5 [31:27]  fmt [26:25]  rs2 [24:20]  rs1 [19:15]  funct3 [14:12]
+//	rd [11:7]  opcode=0x53 [6:0]
+//
 // For FSQRT, rs2 is unused (must be 0).
 func encFP(funct5, fmt, rd, rs1, rs2, funct3 uint32) uint32 {
 	return 0x53 |
@@ -79,26 +98,26 @@ const (
 	nanBoxUpper32 = uint64(0xFFFFFFFF00000000)
 
 	// f32 bit patterns.
-	f32_1_0    uint32 = 0x3F800000
-	f32_2_0    uint32 = 0x40000000
-	f32_3_0    uint32 = 0x40400000
-	f32_neg1_0 uint32 = 0xBF800000
-	f32_posInf uint32 = 0x7F800000
-	f32_negInf uint32 = 0xFF800000
+	f32_1_0     uint32 = 0x3F800000
+	f32_2_0     uint32 = 0x40000000
+	f32_3_0     uint32 = 0x40400000
+	f32_neg1_0  uint32 = 0xBF800000
+	f32_posInf  uint32 = 0x7F800000
+	f32_negInf  uint32 = 0xFF800000
 	f32_posZero uint32 = 0x00000000
 	f32_negZero uint32 = 0x80000000
-	f32_canonQ uint32 = 0x7FC00000
+	f32_canonQ  uint32 = 0x7FC00000
 
 	// f64 bit patterns.
-	f64_1_0    uint64 = 0x3FF0000000000000
-	f64_2_0    uint64 = 0x4000000000000000
-	f64_3_0    uint64 = 0x4008000000000000
-	f64_neg1_0 uint64 = 0xBFF0000000000000
-	f64_posInf uint64 = 0x7FF0000000000000
-	f64_negInf uint64 = 0xFFF0000000000000
+	f64_1_0     uint64 = 0x3FF0000000000000
+	f64_2_0     uint64 = 0x4000000000000000
+	f64_3_0     uint64 = 0x4008000000000000
+	f64_neg1_0  uint64 = 0xBFF0000000000000
+	f64_posInf  uint64 = 0x7FF0000000000000
+	f64_negInf  uint64 = 0xFFF0000000000000
 	f64_posZero uint64 = 0
 	f64_negZero uint64 = 0x8000000000000000
-	f64_canonQ uint64 = 0x7FF8000000000000
+	f64_canonQ  uint64 = 0x7FF8000000000000
 )
 
 func nb32(v uint32) uint64 { return nanBoxUpper32 | uint64(v) }
@@ -254,10 +273,11 @@ func TestJIT_FMAX_S_BothNaN_Canonical(t *testing.T) {
 // ── FMA single-rounding ────────────────────────────────────────────────
 
 // Classic fused-vs-non-fused witness:
-//   a=0.1f, b=10.0f, c=-1.0f
-//   Two-rounded: (0.1f * 10.0f = 1.0f exactly) + (-1.0f) = 0.0
-//   Single-rounded fma: infinite-precision (0.1f * 10.0f = 1.0000000149...)
-//     + (-1.0) = 1.49e-8, rounded to 0x32800000.
+//
+//	a=0.1f, b=10.0f, c=-1.0f
+//	Two-rounded: (0.1f * 10.0f = 1.0f exactly) + (-1.0f) = 0.0
+//	Single-rounded fma: infinite-precision (0.1f * 10.0f = 1.0000000149...)
+//	  + (-1.0) = 1.49e-8, rounded to 0x32800000.
 func TestJIT_FMADD_S_Fused(t *testing.T) {
 	// FMADD.S f1, f2, f3, f4 rm=RNE
 	insn := encFMA(0x43, 0, 1, 2, 3, 4, 0)
