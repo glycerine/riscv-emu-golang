@@ -148,6 +148,43 @@ func newRVTestCPU(tb testing.TB, elfData []byte) (*riscv.CPU, *riscv.GuestMemory
 	return cpu, mem
 }
 
+func newRVTestLoaded(tb testing.TB, elfData []byte) (*riscv.GuestMemory, uint64, uint64) {
+	tb.Helper()
+	mem, err := riscv.NewGuestMemory(riscv.Size1MB)
+	if err != nil {
+		tb.Fatal(err)
+	}
+	elf, err := riscv.LoadELFBytes(mem, elfData)
+	if err != nil {
+		mem.Free()
+		tb.Fatal(err)
+	}
+	return mem, elf.Entry, elf.TohostAddr
+}
+
+func newRVTestCPUFromLoaded(mem *riscv.GuestMemory, entry, tohost uint64) *riscv.CPU {
+	cpu := riscv.NewCPU(*mem)
+	cpu.SetPC(entry)
+	cpu.SetWatchAddr(tohost)
+
+	o := riscv.NewOS()
+	o.HandleSyscall(93, riscv.LinuxExit)
+	o.HandleSyscall(94, riscv.LinuxExit)
+	o.HandleEcall(riscv.RiscvTestsEcall)
+	cpu.Notes.Push(o.Handle)
+	return cpu
+}
+
+func resetRVTestTohost(tb testing.TB, mem *riscv.GuestMemory, tohost uint64) {
+	tb.Helper()
+	if tohost == 0 {
+		return
+	}
+	if f := mem.Store64(tohost, 0); f != nil {
+		tb.Fatalf("reset tohost: %v", f)
+	}
+}
+
 func reportRVTestMIPS(b *testing.B, totalInsns uint64) {
 	b.Helper()
 	elapsed := b.Elapsed().Seconds()
@@ -177,6 +214,10 @@ func benchRVTestUICached(b *testing.B, name string) {
 }
 
 func benchRVTestUILazyJIT(b *testing.B, name string) {
+	benchRVTestUILazyJITPolicy(b, name, riscv.PolicyABJIT)
+}
+
+func benchRVTestUILazyJITPolicy(b *testing.B, name string, policy riscv.RegPolicy) {
 	e := loadRVTestELF(b, name)
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -185,6 +226,7 @@ func benchRVTestUILazyJIT(b *testing.B, name string) {
 	for i := 0; i < b.N; i++ {
 		cpu, mem := newRVTestCPU(b, e.data)
 		jit := riscv.NewJIT()
+		jit.SetRegPolicy(policy)
 		jit.DisableAutoAOT = true
 		code, insns := runJITBenchGuestWith(cpu, jit)
 		mem.Free()
@@ -195,6 +237,98 @@ func benchRVTestUILazyJIT(b *testing.B, name string) {
 	}
 
 	b.StopTimer()
+	reportRVTestMIPS(b, totalInsns)
+}
+
+func benchRVTestUILazyJITHotPolicy(b *testing.B, name string, policy riscv.RegPolicy) {
+	e := loadRVTestELF(b, name)
+	jit := riscv.NewJIT()
+	jit.SetRegPolicy(policy)
+	jit.DisableAutoAOT = true
+
+	warmCPU, warmMem := newRVTestCPU(b, e.data)
+	code, _ := runJITBenchGuestWith(warmCPU, jit)
+	warmMem.Free()
+	if code != 0 {
+		b.Fatalf("rv64ui-p-%s warm lazy JIT exit %d, want 0", name, code)
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	totalInsns := uint64(0)
+	for i := 0; i < b.N; i++ {
+		cpu, mem := newRVTestCPU(b, e.data)
+		code, insns := runJITBenchGuestWith(cpu, jit)
+		mem.Free()
+		if code != 0 {
+			b.Fatalf("rv64ui-p-%s hot lazy JIT exit %d, want 0", name, code)
+		}
+		totalInsns += insns
+	}
+
+	b.StopTimer()
+	reportRVTestMIPS(b, totalInsns)
+}
+
+func benchRVTestUIRunOnlyCached(b *testing.B, name string) {
+	e := loadRVTestELF(b, name)
+	mem, entry, tohost := newRVTestLoaded(b, e.data)
+	defer mem.Free()
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	b.StopTimer()
+
+	totalInsns := uint64(0)
+	for i := 0; i < b.N; i++ {
+		resetRVTestTohost(b, mem, tohost)
+		cpu := newRVTestCPUFromLoaded(mem, entry, tohost)
+		b.StartTimer()
+		code, insns := runCachedBenchGuest(cpu)
+		b.StopTimer()
+		if code != 0 {
+			b.Fatalf("rv64ui-p-%s run-only cached interpreter exit %d, want 0", name, code)
+		}
+		totalInsns += insns
+	}
+
+	reportRVTestMIPS(b, totalInsns)
+}
+
+func benchRVTestUIRunOnlyHotJITPolicy(b *testing.B, name string, policy riscv.RegPolicy) {
+	e := loadRVTestELF(b, name)
+	mem, entry, tohost := newRVTestLoaded(b, e.data)
+	defer mem.Free()
+
+	jit := riscv.NewJIT()
+	jit.SetRegPolicy(policy)
+	jit.DisableAutoAOT = true
+
+	resetRVTestTohost(b, mem, tohost)
+	warmCPU := newRVTestCPUFromLoaded(mem, entry, tohost)
+	code, _ := runJITBenchGuestWith(warmCPU, jit)
+	if code != 0 {
+		b.Fatalf("rv64ui-p-%s warm run-only JIT exit %d, want 0", name, code)
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	b.StopTimer()
+
+	totalInsns := uint64(0)
+	for i := 0; i < b.N; i++ {
+		resetRVTestTohost(b, mem, tohost)
+		cpu := newRVTestCPUFromLoaded(mem, entry, tohost)
+		b.StartTimer()
+		code, insns := runJITBenchGuestWith(cpu, jit)
+		b.StopTimer()
+		if code != 0 {
+			b.Fatalf("rv64ui-p-%s run-only hot JIT exit %d, want 0", name, code)
+		}
+		totalInsns += insns
+	}
+
 	reportRVTestMIPS(b, totalInsns)
 }
 
@@ -270,6 +404,30 @@ func BenchmarkRVTests_UI_Interp2(b *testing.B) {
 
 func BenchmarkRVTests_UI_LazyJIT2(b *testing.B) {
 	benchRVTestUILazyJIT(b, "add")
+}
+
+func BenchmarkRVTests_UI_LazyJIT2_RV8(b *testing.B) {
+	benchRVTestUILazyJITPolicy(b, "add", riscv.PolicyRV8)
+}
+
+func BenchmarkRVTests_UI_LazyJIT2_Hot(b *testing.B) {
+	benchRVTestUILazyJITHotPolicy(b, "add", riscv.PolicyABJIT)
+}
+
+func BenchmarkRVTests_UI_LazyJIT2_Hot_RV8(b *testing.B) {
+	benchRVTestUILazyJITHotPolicy(b, "add", riscv.PolicyRV8)
+}
+
+func BenchmarkRVTests_UI_RunOnlyInterp2(b *testing.B) {
+	benchRVTestUIRunOnlyCached(b, "add")
+}
+
+func BenchmarkRVTests_UI_RunOnlyLazyJIT2_Hot(b *testing.B) {
+	benchRVTestUIRunOnlyHotJITPolicy(b, "add", riscv.PolicyABJIT)
+}
+
+func BenchmarkRVTests_UI_RunOnlyLazyJIT2_Hot_RV8(b *testing.B) {
+	benchRVTestUIRunOnlyHotJITPolicy(b, "add", riscv.PolicyRV8)
 }
 
 func BenchmarkRVTests_UI_AotJIT2(b *testing.B) {

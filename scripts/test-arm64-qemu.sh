@@ -164,7 +164,9 @@ run_qemu_case() {
 		-cpu "${ARM64_QEMU_CPU}" \
 		-smp "${ARM64_QEMU_CPUS}" \
 		-m "${ARM64_QEMU_MEM}" \
-		-nographic \
+		-display none \
+		-chardev stdio,id=serial0,signal=on \
+		-serial chardev:serial0 \
 		-no-reboot \
 		-kernel "${ARM64_QEMU_KERNEL}" \
 		-initrd "${initramfs}" \

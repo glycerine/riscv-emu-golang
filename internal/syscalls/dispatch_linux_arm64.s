@@ -40,7 +40,13 @@ jit_write_callback:
 	MOVD	80(R9), R0          // fd
 	MOVD	R10, R1             // host buf
 	MOVD	96(R9), R2          // count
+	// ARM64 CALL clobbers LR. Preserve the dispatcher's return address so
+	// the final RET goes back to JIT code, not to the post-callback MOVD.
+	SUB	$16, RSP, RSP       // preserve dispatcher return LR across callback
+	MOVD	R30, 0(RSP)
 	CALL	(R12)
+	MOVD	0(RSP), R30
+	ADD	$16, RSP, RSP
 	MOVD	R0, 80(R9)
 	MOVD	$0, R0
 	RET

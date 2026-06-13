@@ -76,7 +76,7 @@ GUEST_CFLAGS := -O2 -target $(ZIG_TARGET) -static -mcpu=generic_rv64+m+a+f+d+c \
             -I riscv-elf-tests/isa/macros/scalar \
             -nostdlib
 
-ARM64_QEMU_BENCH ?= ^BenchmarkRVTests_UI_(Interp2|LazyJIT2)$$
+ARM64_QEMU_BENCH ?= ^BenchmarkRVTests_UI_(Interp2|LazyJIT2|LazyJIT2_RV8|LazyJIT2_Hot|LazyJIT2_Hot_RV8|RunOnlyInterp2|RunOnlyLazyJIT2_Hot|RunOnlyLazyJIT2_Hot_RV8)$$
 ARM64_QEMU_BENCHTIME ?= 3x
 
 # ── paths ──────────────────────────────────────────────────────────────────
