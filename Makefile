@@ -188,7 +188,7 @@ endif
 	@echo ""
 	@echo "  Other:"
 	@echo "    make test             unit tests"
-	@echo "    make test-arm64-qemu  cross-build root tests and run under qemu-system-aarch64"
+	@echo "    make test-arm64-qemu  cross-build root/lockstep tests and run under qemu-system-aarch64"
 	@echo "    make clean            remove xendor/build_capi and generated ELF"
 	@echo ""
 	@echo "  Overrides:"

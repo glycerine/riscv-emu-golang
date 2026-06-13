@@ -8,7 +8,8 @@ ARM64_QEMU_CACHE="${ARM64_QEMU_CACHE:-/tmp/riscv-arm64-qemu}"
 ARM64_QEMU_KERNEL="${ARM64_QEMU_KERNEL:-${ROOT}/vmlinuz-virt}"
 ARM64_QEMU_MEM="${ARM64_QEMU_MEM:-1024M}"
 ARM64_QEMU_CPUS="${ARM64_QEMU_CPUS:-2}"
-ARM64_QEMU_RUN="${ARM64_QEMU_RUN:-TestGuestMemory|TestCPU|TestDecode|TestRunCached|TestELF}"
+ARM64_QEMU_TIMEOUT="${ARM64_QEMU_TIMEOUT:-60m}"
+ARM64_QEMU_RUN="${ARM64_QEMU_RUN:-Test(GuestMemory|CPU|Decode|RunCached|LoadELF|FindSymbolAddr|FindExecLoads|FindTextSection|LowerARM64|JIT_|RISCVTests_|R15IC_MatchesInterpreter)}"
 
 if ! command -v "${QEMU_AARCH64}" >/dev/null 2>&1; then
 	echo "qemu-system-aarch64 not found. Set QEMU_AARCH64=/path/to/qemu-system-aarch64." >&2
@@ -61,9 +62,33 @@ chmod 0755 "${rootfs}/init" "${rootfs}/riscv-arm64.test"
 
 if [[ "$#" -gt 0 ]]; then
 	test_args=("$@")
+	require_riscv_tests="${ARM64_QEMU_REQUIRE_RISCV_TESTS:-0}"
 else
-	test_args=(-test.v -test.run "${ARM64_QEMU_RUN}")
+	test_args=(-test.v -test.timeout "${ARM64_QEMU_TIMEOUT}" -test.run "${ARM64_QEMU_RUN}")
+	require_riscv_tests="${ARM64_QEMU_REQUIRE_RISCV_TESTS:-1}"
 fi
+
+shopt -s nullglob
+riscv_test_elfs=(
+	"${ROOT}"/riscv-elf-tests/rv64ui-p-*
+	"${ROOT}"/riscv-elf-tests/rv64um-p-*
+	"${ROOT}"/riscv-elf-tests/rv64ua-p-*
+	"${ROOT}"/riscv-elf-tests/rv64uc-p-*
+	"${ROOT}"/riscv-elf-tests/rv64uf-p-*
+	"${ROOT}"/riscv-elf-tests/rv64ud-p-*
+)
+if [[ "${#riscv_test_elfs[@]}" -eq 0 ]]; then
+	if [[ "${require_riscv_tests}" != "0" ]]; then
+		echo "missing prebuilt riscv-test ELFs under ${ROOT}/riscv-elf-tests" >&2
+		echo "expected files like riscv-elf-tests/rv64ui-p-add" >&2
+		exit 2
+	fi
+else
+	echo "── staging prebuilt RISC-V test ELFs (${#riscv_test_elfs[@]})"
+	mkdir -p "${rootfs}/riscv-elf-tests"
+	cp "${riscv_test_elfs[@]}" "${rootfs}/riscv-elf-tests/"
+fi
+
 printf '%s\n' "${test_args[@]}" > "${rootfs}/test-argv"
 if [[ "${ARM64_QEMU_VIZJIT:-}" != "" || "${ARM64_QEMU_DEBUG_JIT:-}" != "" ]]; then
 	: > "${rootfs}/test-env"
