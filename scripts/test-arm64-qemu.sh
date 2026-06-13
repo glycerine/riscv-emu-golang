@@ -5,7 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 GO="${GO:-go}"
 QEMU_AARCH64="${QEMU_AARCH64:-qemu-system-aarch64}"
 ARM64_QEMU_CACHE="${ARM64_QEMU_CACHE:-/tmp/riscv-arm64-qemu}"
-ARM64_QEMU_KERNEL="${ARM64_QEMU_KERNEL:-${ARM64_QEMU_CACHE}/vmlinuz-virt}"
+ARM64_QEMU_KERNEL="${ARM64_QEMU_KERNEL:-${ROOT}/vmlinuz-virt}"
 ARM64_QEMU_MEM="${ARM64_QEMU_MEM:-1024M}"
 ARM64_QEMU_CPUS="${ARM64_QEMU_CPUS:-2}"
 ARM64_QEMU_RUN="${ARM64_QEMU_RUN:-TestGuestMemory|TestCPU|TestDecode|TestRunCached|TestELF}"
@@ -19,10 +19,9 @@ if [[ ! -f "${ARM64_QEMU_KERNEL}" ]]; then
 	cat >&2 <<EOF
 Missing ARM64 kernel: ${ARM64_QEMU_KERNEL}
 
-Cache an Alpine aarch64 virt kernel outside the repo, for example:
+Place an Alpine aarch64 virt kernel at the repo root, or override the path:
 
-  mkdir -p "${ARM64_QEMU_CACHE}"
-  curl -L -o "${ARM64_QEMU_KERNEL}" \\
+  curl -L -o "${ROOT}/vmlinuz-virt" \\
     https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/aarch64/netboot/vmlinuz-virt
 
 Override with ARM64_QEMU_KERNEL=/path/to/vmlinuz-virt if you already have one.
