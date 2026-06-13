@@ -3,9 +3,11 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 GO="${GO:-go}"
-QEMU_AARCH64="${QEMU_AARCH64:-qemu-system-aarch64}"
+QEMU_AARCH64="${QEMU_AARCH64:-}"
 ARM64_QEMU_CACHE="${ARM64_QEMU_CACHE:-/tmp/riscv-arm64-qemu}"
 ARM64_QEMU_KERNEL="${ARM64_QEMU_KERNEL:-${ROOT}/vmlinuz-virt}"
+ARM64_QEMU_MACHINE="${ARM64_QEMU_MACHINE:-virt}"
+ARM64_QEMU_CPU="${ARM64_QEMU_CPU:-cortex-a72}"
 ARM64_QEMU_MEM="${ARM64_QEMU_MEM:-1024M}"
 ARM64_QEMU_CPUS="${ARM64_QEMU_CPUS:-2}"
 ARM64_QEMU_TIMEOUT="${ARM64_QEMU_TIMEOUT:-60m}"
@@ -14,8 +16,16 @@ ARM64_QEMU_MAIN="${ARM64_QEMU_MAIN:-1}"
 ARM64_QEMU_LOCKSTEP="${ARM64_QEMU_LOCKSTEP:-1}"
 ARM64_QEMU_RUN="${ARM64_QEMU_RUN:-^(Test(GuestMemory.*|CPU.*|Decode.*|RunCached.*|LoadELF.*|FindSymbolAddr.*|FindExecLoads.*|FindTextSection.*|LowerARM64.*|JIT_.*|JITIC_MatchesInterpreter.*)|TestRISCVTests_(UI|UM|Smoke|UA|UF|UD|UC|UI_JIT_AOT|UM_JIT_AOT|UA_JIT_AOT|UF_JIT_AOT|UD_JIT_AOT|UC_JIT_AOT|UI_JIT_Lazy|UM_JIT_Lazy|UA_JIT_Lazy|UC_JIT_Lazy))$}"
 
-if ! command -v "${QEMU_AARCH64}" >/dev/null 2>&1; then
-	echo "qemu-system-aarch64 not found. Set QEMU_AARCH64=/path/to/qemu-system-aarch64." >&2
+if [[ -z "${QEMU_AARCH64}" ]]; then
+	if command -v qemu-system-aarch64 >/dev/null 2>&1; then
+		QEMU_AARCH64=qemu-system-aarch64
+	elif command -v qemu-system-arm64 >/dev/null 2>&1; then
+		QEMU_AARCH64=qemu-system-arm64
+	fi
+fi
+
+if [[ -z "${QEMU_AARCH64}" || ! -x "$(command -v "${QEMU_AARCH64}" 2>/dev/null)" ]]; then
+	echo "qemu-system-aarch64/qemu-system-arm64 not found. Set QEMU_AARCH64=/path/to/qemu-system-aarch64." >&2
 	exit 127
 fi
 
@@ -122,11 +132,12 @@ run_qemu_case() {
 		find . -print | cpio -o -H newc 2>/dev/null
 	) | gzip -9 > "${initramfs}"
 
-	echo "── booting qemu-system-aarch64 (${label})"
+	echo "── booting ${QEMU_AARCH64} (${label})"
+	echo "   machine=${ARM64_QEMU_MACHINE} cpu=${ARM64_QEMU_CPU} smp=${ARM64_QEMU_CPUS} mem=${ARM64_QEMU_MEM}"
 	set +e
 	"${QEMU_AARCH64}" \
-		-M virt \
-		-cpu max \
+		-M "${ARM64_QEMU_MACHINE}" \
+		-cpu "${ARM64_QEMU_CPU}" \
 		-smp "${ARM64_QEMU_CPUS}" \
 		-m "${ARM64_QEMU_MEM}" \
 		-nographic \
