@@ -1,3 +1,5 @@
+//go:build amd64
+
 package fenv
 
 // ops.go — Go declarations for the float operation + flag capture asm functions.

@@ -19,12 +19,6 @@ func lowerBlock(t *testing.T, b *Block) ([]byte, *Allocation) {
 	return lowerBlockRV8(t, b)
 }
 
-// helperTestAllocate runs the fixed static register allocator on b.
-func helperTestAllocate(b *Block, pool RegPool, pinned map[VReg]int16, freq []float64) *Allocation {
-	a := NewFixedStaticAllocator()
-	return a.Allocate(b, pool, pinned, freq)
-}
-
 // lowerBlockWithRet runs pipeline for blocks that already contain IRRet.
 func lowerBlockWithRet(t *testing.T, b *Block) ([]byte, *Allocation) {
 	t.Helper()

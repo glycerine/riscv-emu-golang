@@ -1,31 +1,5 @@
 package riscv
 
-/*
-#include <sys/mman.h>
-#include <stdint.h>
-
-static void* stopper_alloc() {
-	void* p = mmap(NULL, 4096, PROT_READ | PROT_WRITE,
-	               MAP_PRIVATE | MAP_ANON, -1, 0);
-	return (p == MAP_FAILED) ? NULL : p;
-}
-
-static void stopper_free(void* p) {
-	munmap(p, 4096);
-}
-
-// stopper_arm makes the page unreadable. Any load from it will SIGSEGV.
-static int stopper_arm(void* p) {
-	return mprotect(p, 4096, PROT_NONE);
-}
-
-// stopper_disarm restores read/write access.
-static int stopper_disarm(void* p) {
-	return mprotect(p, 4096, PROT_READ | PROT_WRITE);
-}
-*/
-import "C"
-
 import (
 	"fmt"
 	"unsafe"
@@ -39,9 +13,9 @@ import (
 // PROT_NONE — the next backward branch faults, and RunJIT's
 // defer/recover catches the panic.
 func (j *JIT) initStopperPage() error {
-	p := C.stopper_alloc()
-	if p == nil {
-		return fmt.Errorf("stopper_alloc: mmap failed")
+	p, err := guestAlloc(GuestPageSize)
+	if err != nil {
+		return fmt.Errorf("stopper mmap: %w", err)
 	}
 	j.stopperPage = uintptr(p)
 	return nil
@@ -50,7 +24,7 @@ func (j *JIT) initStopperPage() error {
 // freeStopperPage releases the stopper page.
 func (j *JIT) freeStopperPage() {
 	if j.stopperPage != 0 {
-		C.stopper_free(unsafe.Pointer(j.stopperPage))
+		_ = guestFree(unsafe.Pointer(j.stopperPage), GuestPageSize)
 		j.stopperPage = 0
 	}
 }
@@ -60,7 +34,7 @@ func (j *JIT) freeStopperPage() {
 // Safe to call from any goroutine.
 func (j *JIT) RequestPreemption() {
 	if j.stopperPage != 0 {
-		C.stopper_arm(unsafe.Pointer(j.stopperPage))
+		_ = guestGuard(unsafe.Pointer(j.stopperPage), GuestPageSize)
 	}
 }
 
@@ -68,7 +42,7 @@ func (j *JIT) RequestPreemption() {
 // Must be called before re-entering JIT after a preemption.
 func (j *JIT) ClearPreemption() {
 	if j.stopperPage != 0 {
-		C.stopper_disarm(unsafe.Pointer(j.stopperPage))
+		_ = guestUnguard(unsafe.Pointer(j.stopperPage), GuestPageSize)
 	}
 }
 

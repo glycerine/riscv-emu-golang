@@ -5,7 +5,6 @@ package riscv
 // code via the goasm package (no cgo).
 
 import (
-	"encoding/binary"
 	"fmt"
 	"syscall"
 	"unsafe"
@@ -15,14 +14,27 @@ import (
 
 // Reusable assembler context — Prog slabs are recycled across compilations.
 var jitCtx *goasm.Ctx
+var jitCtxArch goasm.Arch
 
-func getJITCtx() *goasm.Ctx {
-	if jitCtx == nil {
-		jitCtx = goasm.New(goasm.AMD64)
+func getJITCtx(arch goasm.Arch) *goasm.Ctx {
+	if jitCtx == nil || jitCtxArch != arch {
+		jitCtx = goasm.New(arch)
+		jitCtxArch = arch
 	} else {
 		jitCtx.Reset()
 	}
 	return jitCtx
+}
+
+func (j *JIT) checkNativeBackend() error {
+	if j.regPolicy.Arch != goasm.HostArch() {
+		return fmt.Errorf("jit: policy %q targets arch %d, host arch is %d",
+			j.regPolicy.Name, j.regPolicy.Arch, goasm.HostArch())
+	}
+	if j.regPolicy.PatchImm64 == nil {
+		return fmt.Errorf("jit: policy %q has no patcher", j.regPolicy.Name)
+	}
+	return nil
 }
 
 // jitCompile compiles an IR block to native code and returns a compiledBlock.
@@ -30,15 +42,18 @@ func (j *JIT) jitCompile(res *emitResult, mem ...*GuestMemory) (*compiledBlock, 
 	if res.block == nil {
 		return nil, fmt.Errorf("jit: nil block")
 	}
+	if err := j.checkNativeBackend(); err != nil {
+		return nil, err
+	}
 
 	pool := j.regPolicy.Pool(res.block)
 	pinned := j.regPolicy.Pinned()
-	if j.UseR15InstructionCounter || j.DebugOneBlockLockstepMode {
-		pool.IntRegs = removeReg(pool.IntRegs, goasm.REG_AMD64_R15)
+	if (j.UseR15InstructionCounter || j.DebugOneBlockLockstepMode) && j.regPolicy.InstructionCounterReg != 0 {
+		pool.IntRegs = removeReg(pool.IntRegs, j.regPolicy.InstructionCounterReg)
 	}
 	alloc := j.irAlloc.Allocate(res.block, pool, pinned, nil)
 
-	ctx := getJITCtx()
+	ctx := getJITCtx(j.regPolicy.Arch)
 	ctx.Append(ctx.NewATEXT())
 
 	lowerResult, lowerErr := j.regPolicy.Lower(ctx, res.block, alloc)
@@ -86,14 +101,17 @@ func (j *JIT) jitCompile(res *emitResult, mem ...*GuestMemory) (*compiledBlock, 
 	if lowerResult != nil && lowerResult.ChainEntryProg != nil {
 		blk.chainEntry = codeBase + uintptr(lowerResult.ChainEntryProg.Pc)
 		for _, ce := range lowerResult.ChainExits {
-			patchOff := int(ce.MovProg.Pc) + 2
-
 			// If a slow exit stub exists, backpatch the sentinel to
 			// point to it. Otherwise the sentinel remains until chain
 			// linking patches in the real target address.
+			patchValue := nativePatchSentinel
 			if ce.StubProg != nil {
 				stubAddr := codeBase + uintptr(ce.StubProg.Pc)
-				binary.LittleEndian.PutUint64(execMem[patchOff:], uint64(stubAddr))
+				patchValue = uint64(stubAddr)
+			}
+			patchOff, patchErr := j.regPolicy.PatchImm64(execMem, ce.MovProg, patchValue)
+			if patchErr != nil {
+				return nil, fmt.Errorf("jit patch chain exit: %w", patchErr)
 			}
 
 			blk.chainExits = append(blk.chainExits, chainPatchInfo{
@@ -101,9 +119,14 @@ func (j *JIT) jitCompile(res *emitResult, mem ...*GuestMemory) (*compiledBlock, 
 				patchOffset: patchOff,
 			})
 		}
-		backpatchJalrICs(execMem, codeBase, lowerResult, blk)
-		backpatchGocallResumes(execMem, codeBase, lowerResult)
+		if err := backpatchJalrICs(execMem, codeBase, lowerResult, blk, j.regPolicy.PatchImm64); err != nil {
+			return nil, err
+		}
+		if err := backpatchGocallResumes(execMem, codeBase, lowerResult, j.regPolicy.PatchImm64); err != nil {
+			return nil, err
+		}
 	}
+	flushIcache(codeBase, len(code))
 
 	return blk, nil
 }
@@ -118,7 +141,7 @@ func (j *JIT) jitCompile(res *emitResult, mem ...*GuestMemory) (*compiledBlock, 
 //
 // On first miss the Go dispatcher calls patchJalrIC to swap in a real
 // target.
-func backpatchJalrICs(execMem []byte, codeBase uintptr, lowerResult *LowerResult, blk *compiledBlock) {
+func backpatchJalrICs(execMem []byte, codeBase uintptr, lowerResult *LowerResult, blk *compiledBlock, patch PatchImm64) error {
 	for _, ic := range lowerResult.JalrICs {
 		var info jalrICPatchInfo
 		info.siteIdx = ic.SiteIdx
@@ -132,24 +155,31 @@ func backpatchJalrICs(execMem []byte, codeBase uintptr, lowerResult *LowerResult
 			if ic.PcMov[k] == nil || ic.FnMov[k] == nil {
 				continue
 			}
-			pcOff := int(ic.PcMov[k].Pc) + 2
-			fnOff := int(ic.FnMov[k].Pc) + 2
+			pcOff, err := patch(execMem, ic.PcMov[k], ^uint64(0))
+			if err != nil {
+				return fmt.Errorf("jit patch jalr pc slot: %w", err)
+			}
+			fnOff, err := patch(execMem, ic.FnMov[k], uint64(stubAddr))
+			if err != nil {
+				return fmt.Errorf("jit patch jalr fn slot: %w", err)
+			}
 			info.pcPatchOff[k] = pcOff
 			info.fnPatchOff[k] = fnOff
-			binary.LittleEndian.PutUint64(execMem[pcOff:], ^uint64(0))
-			binary.LittleEndian.PutUint64(execMem[fnOff:], uint64(stubAddr))
 		}
 
 		blk.jalrICs = append(blk.jalrICs, info)
 	}
+	return nil
 }
 
-func backpatchGocallResumes(execMem []byte, codeBase uintptr, lr *LowerResult) {
+func backpatchGocallResumes(execMem []byte, codeBase uintptr, lr *LowerResult, patch PatchImm64) error {
 	for _, gr := range lr.GocallResumes {
-		patchOff := int(gr.AddrMov.Pc) + 2
 		resumeAddr := codeBase + uintptr(gr.ResumeProg.Pc)
-		binary.LittleEndian.PutUint64(execMem[patchOff:], uint64(resumeAddr))
+		if _, err := patch(execMem, gr.AddrMov, uint64(resumeAddr)); err != nil {
+			return fmt.Errorf("jit patch gocall resume: %w", err)
+		}
 	}
+	return nil
 }
 
 // compileDebugInfo holds debug artifacts from compilation.
@@ -163,15 +193,18 @@ func (j *JIT) jitCompileDebug(res *emitResult) (*compiledBlock, *compileDebugInf
 	if res.block == nil {
 		return nil, nil, fmt.Errorf("jit: nil block")
 	}
+	if err := j.checkNativeBackend(); err != nil {
+		return nil, nil, err
+	}
 
 	pool := j.regPolicy.Pool(res.block)
 	pinned := j.regPolicy.Pinned()
-	if j.UseR15InstructionCounter || j.DebugOneBlockLockstepMode {
-		pool.IntRegs = removeReg(pool.IntRegs, goasm.REG_AMD64_R15)
+	if (j.UseR15InstructionCounter || j.DebugOneBlockLockstepMode) && j.regPolicy.InstructionCounterReg != 0 {
+		pool.IntRegs = removeReg(pool.IntRegs, j.regPolicy.InstructionCounterReg)
 	}
 	alloc := j.irAlloc.Allocate(res.block, pool, pinned, nil)
 
-	ctx := goasm.New(goasm.AMD64)
+	ctx := goasm.New(j.regPolicy.Arch)
 	ctx.Append(ctx.NewATEXT())
 
 	lowerResult, lowerErr := j.regPolicy.Lower(ctx, res.block, alloc)
@@ -206,18 +239,25 @@ func (j *JIT) jitCompileDebug(res *emitResult) (*compiledBlock, *compileDebugInf
 	if lowerResult != nil && lowerResult.ChainEntryProg != nil {
 		blk.chainEntry = codeBase + uintptr(lowerResult.ChainEntryProg.Pc)
 		for _, ce := range lowerResult.ChainExits {
-			patchOff := int(ce.MovProg.Pc) + 2
+			patchValue := nativePatchSentinel
 			if ce.StubProg != nil {
 				stubAddr := codeBase + uintptr(ce.StubProg.Pc)
-				binary.LittleEndian.PutUint64(execMem[patchOff:], uint64(stubAddr))
+				patchValue = uint64(stubAddr)
+			}
+			patchOff, patchErr := j.regPolicy.PatchImm64(execMem, ce.MovProg, patchValue)
+			if patchErr != nil {
+				return nil, nil, fmt.Errorf("jit patch chain exit: %w", patchErr)
 			}
 			blk.chainExits = append(blk.chainExits, chainPatchInfo{
 				targetPC:    ce.TargetPC,
 				patchOffset: patchOff,
 			})
 		}
-		backpatchJalrICs(execMem, codeBase, lowerResult, blk)
+		if err := backpatchJalrICs(execMem, codeBase, lowerResult, blk, j.regPolicy.PatchImm64); err != nil {
+			return nil, nil, err
+		}
 	}
+	flushIcache(codeBase, len(code))
 
 	dbg := &compileDebugInfo{code: code, progs: progDump}
 	return blk, dbg, nil

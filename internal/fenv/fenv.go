@@ -1,3 +1,5 @@
+//go:build amd64
+
 // Package fenv provides access to the host CPU's floating-point
 // exception flags for translating them into RISC-V fflags format.
 package fenv

@@ -1,5 +1,5 @@
 // Package riscv implements a sandboxed RISC-V RV64IMAC emulator.
-// This file defines GuestMemory: the fixed-size, C mmap-backed memory
+// This file defines GuestMemory: the fixed-size, mmap-backed memory
 // slab that forms the address space of a single guest process.
 //
 // Security invariant
@@ -16,49 +16,6 @@
 // are demand-faulted by the OS as the guest writes to them, so a 512 GB
 // guest costs only as much RAM as its actual working set.
 package riscv
-
-/*
-#include <sys/mman.h>
-#include <stdint.h>
-#include <stdlib.h>
-#include <errno.h>
-
-// guest_alloc allocates size bytes of virtual address space with
-// MAP_NORESERVE. Physical pages are allocated on first access (demand
-// paging). Returns NULL on failure and sets errno.
-static void* guest_alloc(size_t size) {
-    void* p = mmap(NULL, size,
-                   PROT_READ | PROT_WRITE,
-                   MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE,
-                   -1, 0);
-    if (p == MAP_FAILED) return NULL;
-    return p;
-}
-
-// guest_free releases a slab previously returned by guest_alloc.
-static void guest_free(void* p, size_t size) {
-    munmap(p, size);
-}
-
-// guest_zero_range returns physical pages in [p, p+size) to the OS and
-// re-zeros them on next access. Virtual address reservation is retained.
-// Use after a guest process exits to reclaim RAM without reallocating
-// the virtual address space.
-static void guest_zero_range(void* p, size_t size) {
-    madvise(p, size, MADV_DONTNEED);
-}
-
-// guest_guard marks a page as PROT_NONE so any access triggers SIGSEGV.
-static int guest_guard(void* p, size_t size) {
-    return mprotect(p, size, PROT_NONE);
-}
-
-// guest_unguard restores read/write access to a previously guarded page.
-static int guest_unguard(void* p, size_t size) {
-    return mprotect(p, size, PROT_READ | PROT_WRITE);
-}
-*/
-import "C"
 
 import (
 	"fmt"
@@ -154,7 +111,7 @@ func (f *MemFault) Error() string {
 		f.Kind, f.Addr, f.Width)
 }
 
-// GuestMemory is a fixed-size, power-of-two, C mmap-backed address space
+// GuestMemory is a fixed-size, power-of-two, mmap-backed address space
 // for a single guest. It is safe to use from multiple goroutines only if
 // the caller enforces its own synchronization (the scheduler does this).
 //
@@ -166,7 +123,7 @@ type GuestMemory struct {
 	// base is the host address of the first byte of the guest memory slab.
 	// Stored as unsafe.Pointer so that pointer arithmetic via unsafe.Add
 	// satisfies Go's unsafe.Pointer rules (rule #3). The underlying
-	// memory is C mmap, never traced or moved by the GC.
+	// memory is mmap, never traced or moved by the GC.
 	base unsafe.Pointer
 
 	// mask is size-1. Because size is a power of two, mask has all
@@ -208,9 +165,9 @@ func NewGuestMemory(size uint64) (*GuestMemory, error) {
 		return nil, fmt.Errorf("guestmem: size %d exceeds maximum %d", size, MaxGuestMemory)
 	}
 
-	ptr := C.guest_alloc(C.size_t(size))
-	if ptr == nil {
-		return nil, fmt.Errorf("guestmem: mmap failed for size %d", size)
+	ptr, err := guestAlloc(size)
+	if err != nil {
+		return nil, fmt.Errorf("guestmem: mmap failed for size %d: %w", size, err)
 	}
 
 	m := &GuestMemory{
@@ -225,10 +182,10 @@ func NewGuestMemory(size uint64) (*GuestMemory, error) {
 	// Page 0 is NOT guarded — riscv-tests ELFs load code at VA 0x0000.
 	// The mask already contains all guest accesses, so a guest null
 	// dereference just hits offset 0 of the mmap (harmless to the host).
-	pg := C.size_t(GuestPageSize)
-	//C.guest_guard(ptr, pg)
-	//C.guest_guard(unsafe.Pointer(uintptr(ptr)+uintptr(size/2)), pg)             // midpoint
-	C.guest_guard(unsafe.Pointer(uintptr(ptr)+uintptr(size)-2*uintptr(pg)), pg) // stack/regfile // unexpected fault address 0x15783f000 on go test -v -run TestFusion_SLLI_SRLI_ZextW (intermittant).
+	pg := uintptr(GuestPageSize)
+	//guestGuard(ptr, GuestPageSize)
+	//guestGuard(unsafe.Pointer(uintptr(ptr)+uintptr(size/2)), GuestPageSize)             // midpoint
+	_ = guestGuard(unsafe.Pointer(uintptr(ptr)+uintptr(size)-2*pg), GuestPageSize) // stack/regfile // unexpected fault address 0x15783f000 on go test -v -run TestFusion_SLLI_SRLI_ZextW (intermittant).
 
 	return m, nil
 }
@@ -237,7 +194,7 @@ func NewGuestMemory(size uint64) (*GuestMemory, error) {
 // After Free, any use of the GuestMemory is undefined behavior.
 func (m *GuestMemory) Free() {
 	if m.base != nil {
-		C.guest_free(m.base, C.size_t(m.size))
+		_ = guestFree(m.base, m.size)
 		m.base = nil
 	}
 }
@@ -258,19 +215,19 @@ func (m *GuestMemory) Free() {
 func (m *GuestMemory) CowClone() (*GuestMemory, error) {
 	// Temporarily unguard so COWRemap can read the entire mmap.
 	guardOff := uintptr(m.size) - 2*GuestPageSize
-	C.guest_unguard(unsafe.Add(m.base, guardOff), C.size_t(GuestPageSize))
+	_ = guestUnguard(unsafe.Add(m.base, guardOff), GuestPageSize)
 
 	newBase, err := COWRemap(m.size, m.base)
 
 	// Re-guard the parent.
-	C.guest_guard(unsafe.Add(m.base, guardOff), C.size_t(GuestPageSize))
+	_ = guestGuard(unsafe.Add(m.base, guardOff), GuestPageSize)
 
 	if err != nil {
 		return nil, fmt.Errorf("guestmem: CowClone: %w", err)
 	}
 
 	// Guard the child's stack/regfile page too.
-	C.guest_guard(unsafe.Add(newBase, guardOff), C.size_t(GuestPageSize))
+	_ = guestGuard(unsafe.Add(newBase, guardOff), GuestPageSize)
 
 	var execRegionsCopy []ExecRegion
 	if len(m.execRegions) > 0 {
@@ -309,7 +266,7 @@ func (m *GuestMemory) ZeroRange(addr, length uint64) *MemFault {
 	if end > m.size || end < addr { // second condition catches wraparound
 		return &MemFault{addr, length, FaultStore}
 	}
-	C.guest_zero_range(unsafe.Add(m.base, uintptr(addr)), C.size_t(length))
+	_ = guestZeroRange(unsafe.Add(m.base, uintptr(addr)), length)
 	return nil
 }
 

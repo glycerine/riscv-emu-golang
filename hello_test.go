@@ -7,6 +7,8 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+
+	"golang.org/x/sys/unix"
 )
 
 // TestHelloGoCPU runs bench/hello_guest/hello_gocpu.elf through the
@@ -139,20 +141,20 @@ func captureStdout(t *testing.T, fn func()) []byte {
 	}
 	defer syscall.Close(saved)
 
-	if err := syscall.Dup2(int(tmpf.Fd()), 1); err != nil {
+	if err := unix.Dup2(int(tmpf.Fd()), 1); err != nil {
 		t.Fatalf("dup2(tmpf, 1): %v", err)
 	}
 	restoreDone := false
 	defer func() {
 		if !restoreDone {
-			syscall.Dup2(saved, 1)
+			_ = unix.Dup2(saved, 1)
 		}
 	}()
 
 	fn()
 
 	// Restore fd=1 before reading — some readers may flush via fmt.
-	if err := syscall.Dup2(saved, 1); err != nil {
+	if err := unix.Dup2(saved, 1); err != nil {
 		t.Fatalf("dup2(restore): %v", err)
 	}
 	restoreDone = true

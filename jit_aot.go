@@ -44,6 +44,9 @@ func (j *JIT) jitCompileAOTSegment(
 	if vaddrBegin >= vaddrEnd {
 		return nil, fmt.Errorf("jitCompileAOTSegment: empty range")
 	}
+	if err := j.checkNativeBackend(); err != nil {
+		return nil, err
+	}
 
 	// ── Pass 1: lower + assemble each range; accumulate byte lengths ──
 	compiles := make([]*aotBlockCompile, 0, len(ranges))
@@ -55,12 +58,12 @@ func (j *JIT) jitCompileAOTSegment(
 		}
 		pool := j.regPolicy.Pool(res.block)
 		pinned := j.regPolicy.Pinned()
-		if j.UseR15InstructionCounter || j.DebugOneBlockLockstepMode {
-			pool.IntRegs = removeReg(pool.IntRegs, goasm.REG_AMD64_R15)
+		if (j.UseR15InstructionCounter || j.DebugOneBlockLockstepMode) && j.regPolicy.InstructionCounterReg != 0 {
+			pool.IntRegs = removeReg(pool.IntRegs, j.regPolicy.InstructionCounterReg)
 		}
 		alloc := j.irAlloc.Allocate(res.block, pool, pinned, nil)
 
-		ctx := goasm.New(goasm.AMD64)
+		ctx := goasm.New(j.regPolicy.Arch)
 		ctx.Append(ctx.NewATEXT())
 		lowerResult, lowerErr := j.regPolicy.Lower(ctx, res.block, alloc)
 		if lowerErr != nil {
@@ -131,10 +134,14 @@ func (j *JIT) jitCompileAOTSegment(
 		// For the initial sentinel write below, we need the absolute
 		// position into execMem — that's bc.baseOffset + patchOff.
 		for _, ce := range bc.lowerResult.ChainExits {
-			patchOff := int(ce.MovProg.Pc) + 2
+			patchValue := nativePatchSentinel
 			if ce.StubProg != nil {
 				stubAddr := blockBase + uintptr(ce.StubProg.Pc)
-				binary.LittleEndian.PutUint64(execMem[bc.baseOffset+patchOff:], uint64(stubAddr))
+				patchValue = uint64(stubAddr)
+			}
+			patchOff, patchErr := j.regPolicy.PatchImm64(execMem[bc.baseOffset:], ce.MovProg, patchValue)
+			if patchErr != nil {
+				return nil, fmt.Errorf("jitCompileAOTSegment: patch chain exit: %w", patchErr)
 			}
 			bc.blk.chainExits = append(bc.blk.chainExits, chainPatchInfo{
 				targetPC:    ce.TargetPC,
@@ -143,9 +150,13 @@ func (j *JIT) jitCompileAOTSegment(
 		}
 
 		// JALR IC sentinel init — same offset convention.
-		aotBackpatchJalrICs(execMem, blockBase, bc.baseOffset, bc.lowerResult, bc.blk)
+		if err := aotBackpatchJalrICs(execMem, blockBase, bc.baseOffset, bc.lowerResult, bc.blk, j.regPolicy.PatchImm64); err != nil {
+			return nil, err
+		}
 
-		aotBackpatchGocallResumes(execMem, blockBase, bc.baseOffset, bc.lowerResult)
+		if err := aotBackpatchGocallResumes(execMem, blockBase, bc.baseOffset, bc.lowerResult, j.regPolicy.PatchImm64); err != nil {
+			return nil, err
+		}
 
 		blocks[bc.startPC] = bc.blk
 	}
@@ -172,6 +183,7 @@ func (j *JIT) jitCompileAOTSegment(
 			prePatches++
 		}
 	}
+	flushIcache(codeBase, totalSize)
 
 	// ── Pass 4: build the decoder_cache mmap ──
 	// Slot layout: 8 bytes per 2-byte-aligned PC slot.
@@ -268,7 +280,8 @@ func aotBackpatchJalrICs(
 	baseOffset int,
 	lowerResult *LowerResult,
 	blk *compiledBlock,
-) {
+	patch PatchImm64,
+) error {
 	for _, ic := range lowerResult.JalrICs {
 		var info jalrICPatchInfo
 		info.siteIdx = ic.SiteIdx
@@ -278,22 +291,28 @@ func aotBackpatchJalrICs(
 				continue
 			}
 			// Relative to blk.fn:
-			pcOff := int(ic.PcMov[k].Pc) + 2
-			fnOff := int(ic.FnMov[k].Pc) + 2
+			pcOff, err := patch(execMem[baseOffset:], ic.PcMov[k], ^uint64(0))
+			if err != nil {
+				return fmt.Errorf("jitCompileAOTSegment: patch jalr pc slot: %w", err)
+			}
+			fnOff, err := patch(execMem[baseOffset:], ic.FnMov[k], uint64(stubAddr))
+			if err != nil {
+				return fmt.Errorf("jitCompileAOTSegment: patch jalr fn slot: %w", err)
+			}
 			info.pcPatchOff[k] = pcOff
 			info.fnPatchOff[k] = fnOff
-			// Absolute into execMem for the initial write:
-			binary.LittleEndian.PutUint64(execMem[baseOffset+pcOff:], ^uint64(0))
-			binary.LittleEndian.PutUint64(execMem[baseOffset+fnOff:], uint64(stubAddr))
 		}
 		blk.jalrICs = append(blk.jalrICs, info)
 	}
+	return nil
 }
 
-func aotBackpatchGocallResumes(execMem []byte, blockBase uintptr, baseOffset int, lr *LowerResult) {
+func aotBackpatchGocallResumes(execMem []byte, blockBase uintptr, baseOffset int, lr *LowerResult, patch PatchImm64) error {
 	for _, gr := range lr.GocallResumes {
-		patchOff := int(gr.AddrMov.Pc) + 2
 		resumeAddr := blockBase + uintptr(gr.ResumeProg.Pc)
-		binary.LittleEndian.PutUint64(execMem[baseOffset+patchOff:], uint64(resumeAddr))
+		if _, err := patch(execMem[baseOffset:], gr.AddrMov, uint64(resumeAddr)); err != nil {
+			return fmt.Errorf("jitCompileAOTSegment: patch gocall resume: %w", err)
+		}
 	}
+	return nil
 }

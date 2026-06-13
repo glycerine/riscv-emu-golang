@@ -1,4 +1,4 @@
-//go:build arm64 && darwin
+//go:build arm64 && darwin && cgo
 
 package riscv
 

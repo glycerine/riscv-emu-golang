@@ -1,3 +1,5 @@
+//go:build amd64
+
 // Package syscalls implements the direct-SYSCALL fast path for guest
 // ECALLs. The hot-path dispatcher is written in Go assembly per OS
 // (linux/darwin) using the System V AMD64 ABI so the JIT can call it
