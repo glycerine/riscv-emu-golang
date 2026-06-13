@@ -42,6 +42,7 @@ const (
 	a64C    int16 = goasm.REG_ARM64_R8
 	a64D    int16 = goasm.REG_ARM64_R9
 	a64Call int16 = goasm.REG_ARM64_R16
+	a64IC   int16 = goasm.REG_ARM64_R15
 
 	a64ABJITBase int16 = goasm.REG_ARM64_R20
 
@@ -57,7 +58,7 @@ func init() {
 	PolicyRV8 = RegPolicy{
 		Name:                  "rv8",
 		Arch:                  goasm.ARM64,
-		InstructionCounterReg: 0,
+		InstructionCounterReg: a64IC,
 		Pool:                  ARM64Pool,
 		Pinned:                ARM64Pinned,
 		Lower:                 LowerARM64_RV8,
@@ -66,7 +67,7 @@ func init() {
 	PolicyABJIT = RegPolicy{
 		Name:                  "abjit",
 		Arch:                  goasm.ARM64,
-		InstructionCounterReg: 0,
+		InstructionCounterReg: a64IC,
 		Pool:                  ARM64Pool,
 		Pinned:                ARM64Pinned,
 		Lower:                 LowerARM64_ABJIT,
@@ -77,8 +78,9 @@ func init() {
 func ARM64Pool(_ *Block) RegPool {
 	// R6-R9 are fixed staging registers in this lowerer, R16 is the
 	// indirect-call scratch register, and R20 carries the ABJIT State
-	// pointer. Keep the first allocator-aware ARM64 path on caller-scratch
-	// integer registers that the lowerer otherwise leaves alone.
+	// pointer. R15 is available only when the JIT's IC register path is
+	// disabled; jitCompile removes RegPolicy.InstructionCounterReg from
+	// this pool for normal IC-counted blocks.
 	intRegs := []int16{
 		goasm.REG_ARM64_R10, goasm.REG_ARM64_R11, goasm.REG_ARM64_R12, goasm.REG_ARM64_R13,
 		goasm.REG_ARM64_R14, goasm.REG_ARM64_R15,
@@ -117,13 +119,46 @@ type lowerARM64Ctx struct {
 	abi            arm64ABI
 	dirtyArch      [32]bool
 	tempSlots      map[VReg]int64
-	frameSize      int64
+	frame          arm64FrameLayout
 	labelProg      map[Label]*obj.Prog
 	pending        map[Label][]*obj.Prog
 	chainEntryProg *obj.Prog
 	chainExits     []chainExitInfo
 	jalrICs        []jalrICInfo
-	callScratchOff int64
+}
+
+type arm64FrameLayout struct {
+	tempSize    int64
+	hostSaveOff int64
+	hostSaveLen int64
+	frameSize   int64
+}
+
+var arm64HostCallSaveRegs = []int16{
+	a64SRet,
+	a64XBase,
+	a64FBase,
+	a64FCSR,
+	a64MemBase,
+	a64MemMask,
+	a64ABJITBase,
+	goasm.REG_ARM64_R30,
+}
+
+func newARM64FrameLayout(tempSlots int, hasHostCall bool) arm64FrameLayout {
+	f := arm64FrameLayout{
+		tempSize: int64(tempSlots) * 8,
+	}
+	n := f.tempSize
+	if hasHostCall {
+		f.hostSaveOff = n
+		f.hostSaveLen = int64(len(arm64HostCallSaveRegs)) * 8
+		n += f.hostSaveLen
+	}
+	if n > 0 {
+		f.frameSize = (n + 15) &^ 15
+	}
+	return f
 }
 
 func lowerARM64(ctx *goasm.Ctx, b *Block, alloc *Allocation, abi arm64ABI) (*LowerResult, error) {
@@ -135,28 +170,19 @@ func lowerARM64(ctx *goasm.Ctx, b *Block, alloc *Allocation, abi arm64ABI) (*Low
 		tempSlots: make(map[VReg]int64),
 		labelProg: make(map[Label]*obj.Prog),
 		pending:   make(map[Label][]*obj.Prog),
-		// Negative means this block has no reserved call scratch.
-		callScratchOff: -1,
 	}
 	if alloc != nil {
 		lc.rIdx = buildRegIndex(alloc)
 	}
 	lc.collectDirtyArch()
 	lc.collectTemps()
-	n := int64(len(lc.tempSlots) * 8)
-	if abi == arm64RV8 && blockHasSyscall(b) {
-		lc.callScratchOff = n
-		n += 16
-	}
-	if n > 0 {
-		lc.frameSize = (n + 15) &^ 15
-	}
+	lc.frame = newARM64FrameLayout(len(lc.tempSlots), blockHasHostCall(b))
 
 	lc.chainEntryProg = lc.c.NewProg()
 	lc.chainEntryProg.As = obj.ANOP
 	lc.c.Append(lc.chainEntryProg)
-	if lc.frameSize != 0 {
-		lc.emitRRI(arm64.ASUB, lc.frameSize, goasm.REG_ARM64_RSP, goasm.REG_ARM64_RSP)
+	if lc.frame.frameSize != 0 {
+		lc.emitRRI(arm64.ASUB, lc.frame.frameSize, goasm.REG_ARM64_RSP, goasm.REG_ARM64_RSP)
 	}
 	lc.loadAllocatedRegs()
 
@@ -283,6 +309,13 @@ func (lc *lowerARM64Ctx) loadAllocatedRegs() {
 	}
 }
 
+func (lc *lowerARM64Ctx) reloadAllocatedGuestReg(vr VReg) {
+	host := lc.hostReg(vr)
+	if host >= 0 {
+		lc.emitLoad(arm64.AMOVD, lc.xBaseReg(), int64(vr)*8, host)
+	}
+}
+
 func (lc *lowerARM64Ctx) storeRegsBack() {
 	for vr := VReg(1); vr < 32; vr++ {
 		if !lc.dirtyArch[vr] {
@@ -295,9 +328,10 @@ func (lc *lowerARM64Ctx) storeRegsBack() {
 	}
 }
 
-func blockHasSyscall(b *Block) bool {
+func blockHasHostCall(b *Block) bool {
 	for i := range b.Instrs {
-		if b.Instrs[i].Op == IRSyscall {
+		switch b.Instrs[i].Op {
+		case IRCall, IRSyscall:
 			return true
 		}
 	}
@@ -813,17 +847,22 @@ func (lc *lowerARM64Ctx) lowerInstr(ins *IRInstr) error {
 	case IRSyscall:
 		return lc.syscall(ins)
 	case IRZeroIC:
-		lc.storeICImm(0)
+		lc.zeroICReg()
 		return nil
 	case IRIncIC:
-		return lc.addIC(1)
-	case IRLoadIC, IRSpillIC, IRMarkLive, IRMarkDead, IRWriteback:
+		return lc.addICReg(1)
+	case IRLoadIC:
+		lc.loadICReg()
+		return nil
+	case IRSpillIC:
+		lc.spillICReg()
+		return nil
+	case IRMarkLive, IRMarkDead, IRWriteback:
 		return nil
 	case IRDecIC:
-		return lc.addIC(-1)
+		return lc.addICReg(-1)
 	case IRRegBudget:
-		lc.loadIC(a64A)
-		lc.cmpImm(a64A, ins.Imm2)
+		lc.cmpImm(a64IC, ins.Imm2)
 		lc.emitBranch(arm64.ABGE, Label(ins.Dst))
 		return nil
 	case IRMemAdd:
@@ -1569,6 +1608,31 @@ func (lc *lowerARM64Ctx) loadIC(dst int16) {
 	lc.emitLoad(arm64.AMOVD, lc.sretBase(), icOff, dst)
 }
 
+func (lc *lowerARM64Ctx) zeroICReg() {
+	lc.loadImm(0, a64IC)
+}
+
+func (lc *lowerARM64Ctx) loadICReg() {
+	lc.loadIC(a64IC)
+}
+
+func (lc *lowerARM64Ctx) spillICReg() {
+	_, _, _, icOff := lc.resultOffsets()
+	lc.emitStore(arm64.AMOVD, a64IC, lc.sretBase(), icOff)
+}
+
+func (lc *lowerARM64Ctx) addICReg(v int64) error {
+	if v == 0 {
+		return nil
+	}
+	if v > 0 {
+		lc.emitRRI(arm64.AADD, v, a64IC, a64IC)
+	} else {
+		lc.emitRRI(arm64.ASUB, -v, a64IC, a64IC)
+	}
+	return nil
+}
+
 func (lc *lowerARM64Ctx) addIC(v int64) error {
 	if v == 0 {
 		return nil
@@ -1724,6 +1788,7 @@ func (lc *lowerARM64Ctx) twoSlotJalrIC(siteIdx int, targetReg int16) {
 
 func (lc *lowerARM64Ctx) emitJalrMiss(siteIdx int) {
 	_, statusOff, faultOff, _ := lc.resultOffsets()
+	lc.spillICReg()
 	lc.loadImm(int64(JitOKJalrMiss), a64A)
 	lc.emitStore(arm64.AMOVD, a64A, lc.sretBase(), statusOff)
 	lc.loadImm(int64(siteIdx), a64A)
@@ -1747,6 +1812,7 @@ func (lc *lowerARM64Ctx) call(ins *IRInstr) error {
 	}
 
 	lc.storeRegsBack()
+	lc.spillICReg()
 	lc.loadImm(int64(sym.Addr), a64Call)
 	lc.emitIndirectCall(a64Call)
 
@@ -1754,6 +1820,7 @@ func (lc *lowerARM64Ctx) call(ins *IRInstr) error {
 		lc.emitLoad(arm64.AMOVD, goasm.REG_ARM64_RSP, int64(i)*8, reg)
 	}
 	lc.emitRRI(arm64.AADD, saveSize, goasm.REG_ARM64_RSP, goasm.REG_ARM64_RSP)
+	lc.loadICReg()
 	lc.loadAllocatedRegs()
 	return nil
 }
@@ -1775,6 +1842,7 @@ func (lc *lowerARM64Ctx) syscall(ins *IRInstr) error {
 	}
 
 	lc.storeRegsBack()
+	lc.spillICReg()
 	lc.emitRR(arm64.AMOVD, lc.xBaseReg(), goasm.REG_ARM64_R0)
 	lc.loadMemBase(goasm.REG_ARM64_R1)
 	lc.loadMemMask(goasm.REG_ARM64_R2)
@@ -1787,6 +1855,7 @@ func (lc *lowerARM64Ctx) syscall(ins *IRInstr) error {
 	if lc.abi == arm64RV8 {
 		lc.emitLoad(arm64.AMOVD, goasm.REG_ARM64_RSP, lc.callScratchOff, a64SRet)
 	}
+	lc.loadICReg()
 	lc.loadAllocatedRegs()
 	lc.emitChainExit(uint64(ins.Imm))
 

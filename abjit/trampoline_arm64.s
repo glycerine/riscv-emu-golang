@@ -5,6 +5,7 @@
 //
 // ARM64 abjit convention used by the conservative lowerer:
 //   R20 = abjit.State / register-file base
+//   R15 = relative instruction counter, loaded from State.IC
 //
 // Generated code exits by jumping back to the instruction after BLR. The
 // assembler-generated ARM64 prologue stores LR at 0(SP), so our save area
@@ -17,6 +18,7 @@ TEXT ·callJIT(SB), NOSPLIT, $48-16
 	MOVD R23, 32(RSP)
 
 	MOVD regFileBase+8(FP), R20
+	MOVD 600(R20), R15
 	MOVD code+0(FP), R16
 	BL (R16)
 
