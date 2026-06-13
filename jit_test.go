@@ -227,6 +227,9 @@ func TestJIT_ADD(t *testing.T) {
 	if got != want {
 		t.Errorf("x1 = %d, want %d", got, want)
 	}
+	if got := jit.InterpretedInsns; got != 0 {
+		t.Fatalf("InterpretedInsns = %d, want 0 for fully JIT-covered ADD block", got)
+	}
 }
 
 func TestJIT_MulHighAndPopcount(t *testing.T) {
@@ -931,6 +934,9 @@ func TestJIT_TranslationFailure(t *testing.T) {
 	// immediately so the interpreter handles the CSR.
 	// x1 should have a cycle count value (nonzero after at least 1 instruction)
 	t.Logf("x1 (cycle) = %d", cpu.Reg(1))
+	if got := jit.InterpretedInsns; got != 1 {
+		t.Fatalf("InterpretedInsns = %d, want 1 for single CSR fallback", got)
+	}
 }
 
 // ── Test 12: Bail label safety net ───────────────────────────────────────
@@ -1353,9 +1359,8 @@ func TestJIT_FSD_Misaligned(t *testing.T) {
 //  1. The block JIT-compiled (DispatchCompile > 0).
 //     Pre-fix, this block failed at the assembler with
 //     "invalid instruction: ORQ R11, X0" and silently fell back to the
-//     interpreter (DispatchCompile would still increment, but every
-//     instruction in the block went through DispatchInterp instead).
-//  2. The interpreter was never invoked (DispatchInterp == 0).
+//     interpreter. InterpretedInsns is the exact regression tripwire here.
+//  2. The interpreter was never invoked (InterpretedInsns == 0).
 //  3. f3 holds the correct NaN-boxed Float32(4.0).
 func TestJIT_NaNBoxF32_Roundtrip(t *testing.T) {
 	const entryPC = 0x1000
@@ -1398,6 +1403,9 @@ func TestJIT_NaNBoxF32_Roundtrip(t *testing.T) {
 	if jit.DispatchInterp != 0 {
 		t.Errorf("interpreter was invoked %d times — JIT block(s) fell back due to compile failure (boxF32/unboxF32 lowering regressed?)",
 			jit.DispatchInterp)
+	}
+	if got := jit.InterpretedInsns; got != 0 {
+		t.Errorf("JIT-owned interpreter fallback retired %d instructions — expected full native coverage", got)
 	}
 
 	const nanBoxHi = uint64(0xFFFFFFFF00000000)

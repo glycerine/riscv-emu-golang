@@ -368,6 +368,10 @@ func TestMixedExecution_FullSequence(t *testing.T) {
 	ic3, err3 := jit.StepBlock(cpu)
 	_, _ = ic3, err3
 	//t.Logf("  after block2: pc=0x%x ic=%d err=%v x4=%d x5=%d", cpu.PC(), ic3, err3, cpu.Reg(4), cpu.Reg(5))
+
+	if got := jit.InterpretedInsns; got != 1 {
+		t.Fatalf("InterpretedInsns = %d, want 1 for CSR StepBlock fallback", got)
+	}
 }
 
 // TestSrc1EqDest tests SUB x1, x1, x2 (rd==rs1 aliasing).

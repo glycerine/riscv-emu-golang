@@ -249,8 +249,9 @@ type JIT struct {
 	// Dispatch counters (for diagnostics).
 	DispatchOK       uint64 // jitOK returns to Go dispatch
 	DispatchOther    uint64 // non-OK returns (ecall, fault, etc.)
-	DispatchInterp   uint64 // interpreter fallback
+	DispatchInterp   uint64 // no-block interpreter fallback dispatches
 	DispatchCompile  uint64 // new block compilations
+	InterpretedInsns uint64 // guest instructions retired by JIT-owned interpreter fallback
 	ChainPatched     uint64 // chain exits successfully patched
 	ChainPatchedJalr uint64 // JALR IC sites successfully patched
 	JalrICMisses     uint64 // JALR IC returns to Go (site not warm or polymorphic)
@@ -294,6 +295,15 @@ func (j *JIT) SetRegPolicy(p RegPolicy) {
 
 // NoJITSize returns the number of PCs in the noJIT set (translation failures).
 func (j *JIT) NoJITSize() int { return len(j.noJIT) }
+
+// stepInterpreted executes exactly one guest instruction through the
+// interpreter while the JIT dispatcher is active.
+func (j *JIT) stepInterpreted(cpu *CPU) error {
+	err := cpu.step()
+	cpu.riscvInstrBegun++
+	j.InterpretedInsns++
+	return err
+}
 
 // InstallAOT runs the whole-program AOT translator on the ELF bytes.
 // For every PT_LOAD segment with PF_X set, it registers an ExecRegion
@@ -601,10 +611,9 @@ func (j *JIT) StepBlock(cpu *CPU) (ic uint64, err error) {
 		case jitOKJalrMiss:
 			return cpu.riscvInstrBegun, nil
 		case jitMisalign:
-			if err := cpu.step(); err != nil {
+			if err := j.stepInterpreted(cpu); err != nil {
 				return cpu.riscvInstrBegun, err
 			}
-			cpu.riscvInstrBegun++
 			return cpu.riscvInstrBegun, nil
 		case jitEcall:
 			if cpu.mtvec != 0 {
@@ -622,8 +631,7 @@ func (j *JIT) StepBlock(cpu *CPU) (ic uint64, err error) {
 		case jitStoreFault:
 			return cpu.riscvInstrBegun, &MemFault{Addr: res.FaultAddr, Width: 8, Kind: FaultStore}
 		default:
-			err = cpu.step()
-			cpu.riscvInstrBegun++
+			err = j.stepInterpreted(cpu)
 			return cpu.riscvInstrBegun, err
 		}
 	}
@@ -642,8 +650,7 @@ func (j *JIT) StepBlock(cpu *CPU) (ic uint64, err error) {
 	}
 
 	// Interpreter fallback
-	err = cpu.step()
-	cpu.riscvInstrBegun++
+	err = j.stepInterpreted(cpu)
 	return cpu.riscvInstrBegun, err
 }
 
@@ -802,10 +809,9 @@ func (j *JIT) RunJIT(cpu *CPU) (err0 error) {
 				// Misaligned access: re-execute the faulting instruction via
 				// the interpreter (which handles misalignment with byte-by-byte
 				// reads/writes), then continue JIT dispatch.
-				if err := cpu.step(); err != nil {
+				if err := j.stepInterpreted(cpu); err != nil {
 					return err
 				}
-				cpu.riscvInstrBegun++
 				continue
 
 			case jitEcall:
@@ -862,8 +868,7 @@ func (j *JIT) RunJIT(cpu *CPU) (err0 error) {
 				}
 
 			default:
-				err := cpu.step()
-				cpu.riscvInstrBegun++
+				err := j.stepInterpreted(cpu)
 				if err == nil {
 					continue
 				}
@@ -918,8 +923,7 @@ func (j *JIT) RunJIT(cpu *CPU) (err0 error) {
 
 		// Interpret one instruction.
 		j.DispatchInterp++
-		err := cpu.step()
-		cpu.riscvInstrBegun++
+		err := j.stepInterpreted(cpu)
 		if err == nil {
 			continue
 		}

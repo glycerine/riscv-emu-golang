@@ -38,6 +38,7 @@ func TestJIT_DispatchStats(t *testing.T) {
 	t.Logf("  jitOK returns:   %d", jit.DispatchOK)
 	t.Logf("  other returns:   %d", jit.DispatchOther)
 	t.Logf("  interp fallback: %d", jit.DispatchInterp)
+	t.Logf("  interp insns:    %d", jit.InterpretedInsns)
 	t.Logf("  compilations:    %d", jit.DispatchCompile)
 	t.Logf("  chains patched:  %d", jit.ChainPatched)
 	t.Logf("  insns/dispatch:  %.1f", float64(insns)/float64(jit.DispatchOK+jit.DispatchOther+jit.DispatchInterp))
