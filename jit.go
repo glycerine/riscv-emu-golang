@@ -16,7 +16,7 @@ import (
 )
 
 // debugJIT enables diagnostic logging in emitBlock.
-var debugJIT bool
+var debugJIT = os.Getenv("GOCPU_DEBUG_JIT") != ""
 
 // SetDebugJIT enables/disables emitBlock diagnostic logging.
 func SetDebugJIT(on bool) {

@@ -6,6 +6,7 @@ package riscv
 
 import (
 	"fmt"
+	"os"
 	"syscall"
 	"unsafe"
 
@@ -76,6 +77,10 @@ func (j *JIT) jitCompile(res *emitResult, mem ...*GuestMemory) (*compiledBlock, 
 		return nil, fmt.Errorf("jit mmap: %w", err)
 	}
 	copy(execMem, code)
+	if debugJIT {
+		fmt.Fprintf(os.Stderr, "COMPILE_OK pc=0x%x numInsns=%d bytes=%d\n%s\n",
+			res.startPC, res.numInsns, len(code), ctx.DumpProgs())
+	}
 
 	// VizJit dump — DumpProgs after Assemble so branch targets show
 	// resolved byte offsets.

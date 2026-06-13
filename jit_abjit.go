@@ -1,6 +1,9 @@
 package riscv
 
 import (
+	"fmt"
+	"os"
+
 	"github.com/glycerine/riscv-emu-golang/abjit"
 	"github.com/glycerine/riscv-emu-golang/internal/jitcall"
 )
@@ -51,6 +54,10 @@ func abjitDispatch(
 	s.FCSR = cpu.fcsr
 	s.MemBase = cpu.mem.Base()
 	s.MemMask = cpu.mem.Mask()
+	if debugJIT {
+		fmt.Fprintf(os.Stderr, "ABJIT_STATE memBase=0x%x memMask=0x%x pc=0x%x fn=0x%x\n",
+			s.MemBase, s.MemMask, cpu.pc, blk.fn)
+	}
 	s.DCBase = dcBase
 	s.DCMask = dcMask
 	s.VAddrBegin = vBegin

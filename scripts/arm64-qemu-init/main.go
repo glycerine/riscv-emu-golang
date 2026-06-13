@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"syscall"
 )
 
@@ -42,25 +44,36 @@ func run() int {
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+	extraEnv := readArgs("/test-env")
 	cmd.Env = []string{
-		"GOCPU_VIZJIT_OFF=1",
 		"TMPDIR=/tmp",
 		"HOME=/",
 		"PATH=/",
 	}
+	if !hasEnvKey(extraEnv, "GOCPU_VIZJIT") && !hasEnvKey(extraEnv, "GOCPU_VIZJIT_OFF") {
+		cmd.Env = append(cmd.Env, "GOCPU_VIZJIT_OFF=1")
+	}
+	cmd.Env = append(cmd.Env, extraEnv...)
+
+	var status int
 	if err := cmd.Run(); err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			if ws, ok := exitErr.Sys().(syscall.WaitStatus); ok {
 				if ws.Signaled() {
-					return 128 + int(ws.Signal())
+					status = 128 + int(ws.Signal())
+				} else {
+					status = ws.ExitStatus()
 				}
-				return ws.ExitStatus()
 			}
+		} else {
+			fmt.Fprintf(os.Stderr, "qemu init: running test binary: %v\n", err)
+			status = 125
 		}
-		fmt.Fprintf(os.Stderr, "qemu init: running test binary: %v\n", err)
-		return 125
 	}
-	return 0
+	if hasEnvKey(extraEnv, "GOCPU_QEMU_DUMP_VIZJIT") {
+		dumpVizJIT(envValue(extraEnv, "GOCPU_VIZJIT"))
+	}
+	return status
 }
 
 func sync() {
@@ -93,4 +106,43 @@ func readArgs(path string) []string {
 		args = append(args, arg)
 	}
 	return args
+}
+
+func hasEnvKey(env []string, key string) bool {
+	prefix := key + "="
+	for _, item := range env {
+		if strings.HasPrefix(item, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func envValue(env []string, key string) string {
+	prefix := key + "="
+	for _, item := range env {
+		if strings.HasPrefix(item, prefix) {
+			return strings.TrimPrefix(item, prefix)
+		}
+	}
+	return ""
+}
+
+func dumpVizJIT(dir string) {
+	if dir == "" {
+		return
+	}
+	entries, err := filepath.Glob(filepath.Join(dir, "*.asm"))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "qemu init: glob VizJIT dumps: %v\n", err)
+		return
+	}
+	for _, path := range entries {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "qemu init: read VizJIT dump %s: %v\n", path, err)
+			continue
+		}
+		fmt.Printf("\n==== %s ====\n%s\n", path, data)
+	}
 }

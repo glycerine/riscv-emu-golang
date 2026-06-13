@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"runtime"
 
+	"github.com/glycerine/riscv-emu-golang/abjit"
 	"github.com/glycerine/riscv-emu-golang/goasm"
 	"github.com/glycerine/riscv-emu-golang/goasm/obj"
 	"github.com/glycerine/riscv-emu-golang/goasm/obj/arm64"
@@ -426,6 +427,10 @@ func (lc *lowerARM64Ctx) lowerInstr(ins *IRInstr) error {
 		return lc.lowerLoad(ins, true)
 	case IRStoreX:
 		return lc.lowerStore(ins, true)
+	case IRMisalignLoad:
+		return lc.lowerMisalignLoad(ins)
+	case IRMisalignStore:
+		return lc.lowerMisalignStore(ins)
 	case IRLabel:
 		lc.placeLabel(Label(ins.Imm))
 		return nil
@@ -597,7 +602,7 @@ func (lc *lowerARM64Ctx) lowerZext(ins *IRInstr) error {
 }
 
 func (lc *lowerARM64Ctx) lowerLoad(ins *IRInstr, indexed bool) error {
-	if err := lc.effectiveAddr(ins, indexed, a64A); err != nil {
+	if err := lc.hostAddr(ins, indexed, a64A); err != nil {
 		return err
 	}
 	op := arm64.AMOVD
@@ -618,7 +623,7 @@ func (lc *lowerARM64Ctx) lowerLoad(ins *IRInstr, indexed bool) error {
 }
 
 func (lc *lowerARM64Ctx) lowerStore(ins *IRInstr, indexed bool) error {
-	if err := lc.effectiveAddr(ins, indexed, a64A); err != nil {
+	if err := lc.hostAddr(ins, indexed, a64A); err != nil {
 		return err
 	}
 	val := ins.B
@@ -645,7 +650,7 @@ func (lc *lowerARM64Ctx) lowerStore(ins *IRInstr, indexed bool) error {
 	return nil
 }
 
-func (lc *lowerARM64Ctx) effectiveAddr(ins *IRInstr, indexed bool, dst int16) error {
+func (lc *lowerARM64Ctx) hostAddr(ins *IRInstr, indexed bool, dst int16) error {
 	if err := lc.loadV(ins.A, dst); err != nil {
 		return err
 	}
@@ -654,17 +659,82 @@ func (lc *lowerARM64Ctx) effectiveAddr(ins *IRInstr, indexed bool, dst int16) er
 			return err
 		}
 		if ins.Scale != 0 {
-			lc.emitRRI(arm64.ALSL, int64(ins.Scale), a64B, a64B)
+			lc.emitRRI(arm64.ALSL, int64(scaleShift(ins.Scale)), a64B, a64B)
 		}
 		lc.emitRRR(arm64.AADD, dst, a64B, dst)
 	} else if ins.Imm != 0 {
 		lc.loadImm(ins.Imm, a64B)
 		lc.emitRRR(arm64.AADD, dst, a64B, dst)
 	}
+	return nil
+}
+
+func scaleShift(scale uint8) uint8 {
+	switch scale {
+	case 1:
+		return 0
+	case 2:
+		return 1
+	case 4:
+		return 2
+	case 8:
+		return 3
+	default:
+		return scale
+	}
+}
+
+func (lc *lowerARM64Ctx) guestByteAddr(addr VReg, add int, dst int16) error {
+	if err := lc.loadV(addr, dst); err != nil {
+		return err
+	}
+	if add != 0 {
+		lc.emitRRI(arm64.AADD, int64(add), dst, dst)
+	}
 	lc.loadMemMask(a64B)
 	lc.emitRRR(arm64.AAND, dst, a64B, dst)
 	lc.loadMemBase(a64B)
 	lc.emitRRR(arm64.AADD, dst, a64B, dst)
+	return nil
+}
+
+func (lc *lowerARM64Ctx) lowerMisalignLoad(ins *IRInstr) error {
+	width := typeWidth(ins.T)
+	if width <= 0 {
+		return fmt.Errorf("arm64 lower: misaligned load type %s is not implemented", ins.T)
+	}
+	lc.loadImm(0, a64C)
+	for i := 0; i < width; i++ {
+		if err := lc.guestByteAddr(ins.A, i, a64A); err != nil {
+			return err
+		}
+		lc.emitLoad(arm64.AMOVBU, a64A, 0, a64B)
+		if i != 0 {
+			lc.emitRRI(arm64.ALSL, int64(i*8), a64B, a64B)
+		}
+		lc.emitRRR(arm64.AORR, a64C, a64B, a64C)
+	}
+	return lc.storeV(ins.Dst, a64C)
+}
+
+func (lc *lowerARM64Ctx) lowerMisalignStore(ins *IRInstr) error {
+	width := typeWidth(ins.T)
+	if width <= 0 {
+		return fmt.Errorf("arm64 lower: misaligned store type %s is not implemented", ins.T)
+	}
+	if err := lc.loadV(ins.B, a64C); err != nil {
+		return err
+	}
+	for i := 0; i < width; i++ {
+		if err := lc.guestByteAddr(ins.A, i, a64A); err != nil {
+			return err
+		}
+		lc.emitRR(arm64.AMOVD, a64C, a64B)
+		if i != 0 {
+			lc.emitRRI(arm64.ALSR, int64(i*8), a64B, a64B)
+		}
+		lc.emitStore(arm64.AMOVB, a64B, a64A, 0)
+	}
 	return nil
 }
 
@@ -845,6 +915,15 @@ func (lc *lowerARM64Ctx) addIC(v int64) error {
 func (lc *lowerARM64Ctx) emitReturn() {
 	if lc.frameSize != 0 {
 		lc.emitRRI(arm64.AADD, lc.frameSize, goasm.REG_ARM64_RSP, goasm.REG_ARM64_RSP)
+	}
+	if lc.abi == arm64ABJIT {
+		lc.loadImm(int64(abjit.RetStubAddr()), a64A)
+		p := lc.c.NewProg()
+		p.As = obj.AJMP
+		p.To.Type = obj.TYPE_MEM
+		p.To.Reg = a64A
+		lc.c.Append(p)
+		return
 	}
 	lc.c.Append(lc.c.NewRET())
 }

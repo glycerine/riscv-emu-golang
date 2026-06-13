@@ -65,6 +65,20 @@ else
 	test_args=(-test.v -test.run "${ARM64_QEMU_RUN}")
 fi
 printf '%s\n' "${test_args[@]}" > "${rootfs}/test-argv"
+if [[ "${ARM64_QEMU_VIZJIT:-}" != "" || "${ARM64_QEMU_DEBUG_JIT:-}" != "" ]]; then
+	: > "${rootfs}/test-env"
+fi
+if [[ "${ARM64_QEMU_VIZJIT:-}" != "" ]]; then
+	cat >> "${rootfs}/test-env" <<EOF
+GOCPU_VIZJIT=/tmp/vizjit
+GOCPU_QEMU_DUMP_VIZJIT=1
+EOF
+fi
+if [[ "${ARM64_QEMU_DEBUG_JIT:-}" != "" ]]; then
+	cat >> "${rootfs}/test-env" <<EOF
+GOCPU_DEBUG_JIT=1
+EOF
+fi
 
 echo "── packing initramfs"
 (
