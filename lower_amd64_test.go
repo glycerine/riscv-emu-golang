@@ -1141,16 +1141,14 @@ func execBlockRV8(t *testing.T, b *Block, x *[32]uint64) jitcall.Result {
 		t.Fatalf("Assemble: %v", err)
 	}
 
-	ps := syscall.Getpagesize()
-	sz := ((len(code) + ps - 1) / ps) * ps
-	mem, err := syscall.Mmap(-1, 0, sz,
-		syscall.PROT_READ|syscall.PROT_WRITE|syscall.PROT_EXEC,
-		syscall.MAP_ANON|syscall.MAP_PRIVATE)
+	mem, err := allocExec(len(code))
 	if err != nil {
 		t.Fatalf("mmap: %v", err)
 	}
 	defer syscall.Munmap(mem)
-	copy(mem, code)
+	withExecWrite(func() {
+		copy(mem, code)
+	})
 
 	var f [32]uint64
 	var fcsr uint32

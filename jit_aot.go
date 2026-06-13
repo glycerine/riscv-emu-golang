@@ -109,79 +109,89 @@ func (j *JIT) jitCompileAOTSegment(
 	codeBase := uintptr(unsafe.Pointer(&execMem[0]))
 
 	blocks := make(map[uint64]*compiledBlock, len(compiles))
-	for _, bc := range compiles {
-		copy(execMem[bc.baseOffset:bc.baseOffset+len(bc.bytes)], bc.bytes)
-
-		blockBase := codeBase + uintptr(bc.baseOffset)
-		bc.blk = &compiledBlock{fn: blockBase, hasFP: bc.hasFP}
-
-		if bc.lowerResult.ChainEntryProg == nil {
-			// V2 or debug variants don't produce ChainEntryProg; skip.
-			blocks[bc.startPC] = bc.blk
-			continue
-		}
-		bc.blk.chainEntry = blockBase + uintptr(bc.lowerResult.ChainEntryProg.Pc)
-
-		// Backpatch chain-exit sentinels → slow-exit stub addresses.
-		//
-		// Offsets are stored RELATIVE TO blk.fn (i.e., just
-		// ce.MovProg.Pc + 2), not absolute into the big mmap. This
-		// matches the existing patchChainTarget invariant:
-		// `patchChainTarget(blk.fn, offset, ...)` computes blk.fn +
-		// offset. In the big-mmap AOT layout, blk.fn already includes
-		// baseOffset, so the offset field must not include it again.
-		//
-		// For the initial sentinel write below, we need the absolute
-		// position into execMem — that's bc.baseOffset + patchOff.
-		for _, ce := range bc.lowerResult.ChainExits {
-			patchValue := nativePatchSentinel
-			if ce.StubProg != nil {
-				stubAddr := blockBase + uintptr(ce.StubProg.Pc)
-				patchValue = uint64(stubAddr)
-			}
-			patchOff, patchErr := j.regPolicy.PatchImm64(execMem[bc.baseOffset:], ce.MovProg, patchValue)
-			if patchErr != nil {
-				return nil, fmt.Errorf("jitCompileAOTSegment: patch chain exit: %w", patchErr)
-			}
-			bc.blk.chainExits = append(bc.blk.chainExits, chainPatchInfo{
-				targetPC:    ce.TargetPC,
-				patchOffset: patchOff,
-			})
-		}
-
-		// JALR IC sentinel init — same offset convention.
-		if err := aotBackpatchJalrICs(execMem, blockBase, bc.baseOffset, bc.lowerResult, bc.blk, j.regPolicy.PatchImm64); err != nil {
-			return nil, err
-		}
-
-		if err := aotBackpatchGocallResumes(execMem, blockBase, bc.baseOffset, bc.lowerResult, j.regPolicy.PatchImm64); err != nil {
-			return nil, err
-		}
-
-		blocks[bc.startPC] = bc.blk
-	}
-
-	// ── Pass 3: pre-resolve static chain exits whose target is in the segment ──
-	// Writes the target's absolute chainEntry into each backend patch
-	// slot, overwriting the slow-exit-stub address written in Pass 2.
-	// At run time the chain jump goes directly to the target block's
-	// chainEntry with no Go round-trip or runtime patching.
-	//
 	prePatches := 0
-	for _, bc := range compiles {
-		for i, ce := range bc.blk.chainExits {
-			target, ok := blocks[ce.targetPC]
-			if !ok || target.chainEntry == 0 {
+	var writeErr error
+	withExecWrite(func() {
+		for _, bc := range compiles {
+			copy(execMem[bc.baseOffset:bc.baseOffset+len(bc.bytes)], bc.bytes)
+
+			blockBase := codeBase + uintptr(bc.baseOffset)
+			bc.blk = &compiledBlock{fn: blockBase, hasFP: bc.hasFP}
+
+			if bc.lowerResult.ChainEntryProg == nil {
+				// V2 or debug variants don't produce ChainEntryProg; skip.
+				blocks[bc.startPC] = bc.blk
 				continue
 			}
-			if i >= len(bc.lowerResult.ChainExits) || bc.lowerResult.ChainExits[i].TargetPC != ce.targetPC {
-				return nil, fmt.Errorf("jitCompileAOTSegment: chain exit metadata mismatch at block 0x%x exit %d", bc.startPC, i)
+			bc.blk.chainEntry = blockBase + uintptr(bc.lowerResult.ChainEntryProg.Pc)
+
+			// Backpatch chain-exit sentinels → slow-exit stub addresses.
+			//
+			// Offsets are stored RELATIVE TO blk.fn (i.e., just
+			// ce.MovProg.Pc + 2), not absolute into the big mmap. This
+			// matches the existing patchChainTarget invariant:
+			// `patchChainTarget(blk.fn, offset, ...)` computes blk.fn +
+			// offset. In the big-mmap AOT layout, blk.fn already includes
+			// baseOffset, so the offset field must not include it again.
+			//
+			// For the initial sentinel write below, we need the absolute
+			// position into execMem — that's bc.baseOffset + patchOff.
+			for _, ce := range bc.lowerResult.ChainExits {
+				patchValue := nativePatchSentinel
+				if ce.StubProg != nil {
+					stubAddr := blockBase + uintptr(ce.StubProg.Pc)
+					patchValue = uint64(stubAddr)
+				}
+				patchOff, patchErr := j.regPolicy.PatchImm64(execMem[bc.baseOffset:], ce.MovProg, patchValue)
+				if patchErr != nil {
+					writeErr = fmt.Errorf("jitCompileAOTSegment: patch chain exit: %w", patchErr)
+					return
+				}
+				bc.blk.chainExits = append(bc.blk.chainExits, chainPatchInfo{
+					targetPC:    ce.TargetPC,
+					patchOffset: patchOff,
+				})
 			}
-			if _, patchErr := j.regPolicy.PatchImm64(execMem[bc.baseOffset:], bc.lowerResult.ChainExits[i].MovProg, uint64(target.chainEntry)); patchErr != nil {
-				return nil, fmt.Errorf("jitCompileAOTSegment: pre-patch chain exit: %w", patchErr)
+
+			// JALR IC sentinel init — same offset convention.
+			if err := aotBackpatchJalrICs(execMem, blockBase, bc.baseOffset, bc.lowerResult, bc.blk, j.regPolicy.PatchImm64); err != nil {
+				writeErr = err
+				return
 			}
-			prePatches++
+
+			if err := aotBackpatchGocallResumes(execMem, blockBase, bc.baseOffset, bc.lowerResult, j.regPolicy.PatchImm64); err != nil {
+				writeErr = err
+				return
+			}
+
+			blocks[bc.startPC] = bc.blk
 		}
+
+		// ── Pass 3: pre-resolve static chain exits whose target is in the segment ──
+		// Writes the target's absolute chainEntry into each backend patch
+		// slot, overwriting the slow-exit-stub address written in Pass 2.
+		// At run time the chain jump goes directly to the target block's
+		// chainEntry with no Go round-trip or runtime patching.
+		for _, bc := range compiles {
+			for i, ce := range bc.blk.chainExits {
+				target, ok := blocks[ce.targetPC]
+				if !ok || target.chainEntry == 0 {
+					continue
+				}
+				if i >= len(bc.lowerResult.ChainExits) || bc.lowerResult.ChainExits[i].TargetPC != ce.targetPC {
+					writeErr = fmt.Errorf("jitCompileAOTSegment: chain exit metadata mismatch at block 0x%x exit %d", bc.startPC, i)
+					return
+				}
+				if _, patchErr := j.regPolicy.PatchImm64(execMem[bc.baseOffset:], bc.lowerResult.ChainExits[i].MovProg, uint64(target.chainEntry)); patchErr != nil {
+					writeErr = fmt.Errorf("jitCompileAOTSegment: pre-patch chain exit: %w", patchErr)
+					return
+				}
+				prePatches++
+			}
+		}
+	})
+	if writeErr != nil {
+		return nil, writeErr
 	}
 	flushIcache(codeBase, totalSize)
 

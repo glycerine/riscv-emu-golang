@@ -50,18 +50,24 @@ func (c *CodeBuilder) Len() int { return c.off }
 func (c *CodeBuilder) Reset() { c.off = 0 }
 
 func (c *CodeBuilder) emit(b ...byte) {
-	copy(c.buf[c.off:], b)
-	c.off += len(b)
+	withExecWrite(func() {
+		copy(c.buf[c.off:], b)
+		c.off += len(b)
+	})
 }
 
 func (c *CodeBuilder) imm32(v int32) {
-	binary.LittleEndian.PutUint32(c.buf[c.off:], uint32(v))
-	c.off += 4
+	withExecWrite(func() {
+		binary.LittleEndian.PutUint32(c.buf[c.off:], uint32(v))
+		c.off += 4
+	})
 }
 
 func (c *CodeBuilder) imm64(v uint64) {
-	binary.LittleEndian.PutUint64(c.buf[c.off:], v)
-	c.off += 8
+	withExecWrite(func() {
+		binary.LittleEndian.PutUint64(c.buf[c.off:], v)
+		c.off += 8
+	})
 }
 
 func (c *CodeBuilder) Movabs(reg int, imm uint64) {
@@ -132,19 +138,19 @@ func (c *CodeBuilder) SubReg(dst, src int) {
 func (c *CodeBuilder) Callback(goFunc uintptr) {
 	c.Movabs(R11, uint64(gocallAddr))
 	c.emit(0x4C, 0x8D, 0x15, 0x11, 0x00, 0x00, 0x00) // LEA R10,[RIP+17]
-	c.emit(0x4C, 0x89, 0x14, 0x24)                     // MOV [RSP],R10
+	c.emit(0x4C, 0x89, 0x14, 0x24)                   // MOV [RSP],R10
 	c.Movabs(R10, uint64(goFunc))
 	c.emit(0x41, 0xFF, 0xE3) // JMP R11
 }
 
 func (c *CodeBuilder) Exit() {
-	c.emit(0x48, 0x8B, 0x5C, 0x24, 0x08) // MOV RBX, [RSP+0x08]
-	c.emit(0x4C, 0x8B, 0x64, 0x24, 0x18) // MOV R12, [RSP+0x18]
-	c.emit(0x4C, 0x8B, 0x6C, 0x24, 0x20) // MOV R13, [RSP+0x20]
-	c.emit(0x4C, 0x8B, 0x7C, 0x24, 0x28) // MOV R15, [RSP+0x28]
+	c.emit(0x48, 0x8B, 0x5C, 0x24, 0x08)             // MOV RBX, [RSP+0x08]
+	c.emit(0x4C, 0x8B, 0x64, 0x24, 0x18)             // MOV R12, [RSP+0x18]
+	c.emit(0x4C, 0x8B, 0x6C, 0x24, 0x20)             // MOV R13, [RSP+0x20]
+	c.emit(0x4C, 0x8B, 0x7C, 0x24, 0x28)             // MOV R15, [RSP+0x28]
 	c.emit(0x48, 0x81, 0xC4, 0xF8, 0xFF, 0x00, 0x00) // ADD RSP, 0xFFF8
-	c.emit(0x5D) // POP RBP
-	c.emit(0xC3) // RET
+	c.emit(0x5D)                                     // POP RBP
+	c.emit(0xC3)                                     // RET
 }
 
 func (c *CodeBuilder) MovRegReg(dst, src int) {

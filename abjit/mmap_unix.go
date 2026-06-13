@@ -1,4 +1,4 @@
-//go:build unix
+//go:build unix && !(darwin && arm64)
 
 package abjit
 
@@ -12,4 +12,8 @@ func mmapExec(size int) ([]byte, error) {
 
 func munmapExec(b []byte) error {
 	return syscall.Munmap(b)
+}
+
+func withExecWrite(fn func()) {
+	fn()
 }

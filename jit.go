@@ -939,13 +939,14 @@ func (j *JIT) RunJIT(cpu *CPU) (err0 error) {
 
 // patchChainTarget overwrites the backend's 8-byte patch data slot at
 // codeBase+patchOffset to redirect to targetAddr.
-//
-//go:nosplit
 func patchChainTarget(codeBase uintptr, patchOffset int, targetAddr uintptr) {
-	//nolint:gosec // JIT code patching requires direct memory writes to RWX pages.
-	p := (*[8]byte)(unsafe.Pointer(codeBase + uintptr(patchOffset))) //nolint:govet
-	binary.LittleEndian.PutUint64(p[:], uint64(targetAddr))
-	flushIcache(codeBase+uintptr(patchOffset), 8)
+	patchAddr := codeBase + uintptr(patchOffset)
+	withExecWrite(func() {
+		//nolint:gosec // JIT code patching requires direct memory writes.
+		p := (*[8]byte)(unsafe.Pointer(patchAddr)) //nolint:govet
+		binary.LittleEndian.PutUint64(p[:], uint64(targetAddr))
+	})
+	flushIcache(patchAddr, 8)
 }
 
 // tryPatchChain patches a previous block's chain exit to jump directly

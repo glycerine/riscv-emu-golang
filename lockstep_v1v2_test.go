@@ -36,7 +36,9 @@ func compileIR(t *testing.T, b *Block) (uintptr, []byte) {
 	if err != nil {
 		t.Fatalf("mmap: %v", err)
 	}
-	copy(execMem, code)
+	withExecWrite(func() {
+		copy(execMem, code)
+	})
 	return uintptr(unsafe.Pointer(&execMem[0])), execMem
 }
 
@@ -104,7 +106,9 @@ func mmapCode(t *testing.T, code []byte) (uintptr, []byte) {
 	if err != nil {
 		t.Fatalf("mmap: %v", err)
 	}
-	copy(execMem, code)
+	withExecWrite(func() {
+		copy(execMem, code)
+	})
 	return uintptr(unsafe.Pointer(&execMem[0])), execMem
 }
 

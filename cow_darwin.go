@@ -1,4 +1,4 @@
-//go:build darwin
+//go:build darwin && cgo
 
 package riscv
 
@@ -44,11 +44,11 @@ func COWRemap(size uint64, sourceAddr unsafe.Pointer) (unsafe.Pointer, error) {
 		C.mach_task_self_,
 		&targetAddr,
 		C.mach_vm_size_t(size),
-		0,                    // alignment mask: 0 = no alignment constraint
-		C.VM_FLAGS_ANYWHERE,  // let the kernel pick the target address
+		0,                   // alignment mask: 0 = no alignment constraint
+		C.VM_FLAGS_ANYWHERE, // let the kernel pick the target address
 		C.mach_task_self_,
 		C.mach_vm_address_t(uintptr(sourceAddr)),
-		C.boolean_t(1),       // copy=TRUE ⇒ copy-on-write (not shared)
+		C.boolean_t(1), // copy=TRUE ⇒ copy-on-write (not shared)
 		&curProt,
 		&maxProt,
 		C.VM_INHERIT_DEFAULT,

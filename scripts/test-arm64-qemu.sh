@@ -12,7 +12,7 @@ ARM64_QEMU_TIMEOUT="${ARM64_QEMU_TIMEOUT:-60m}"
 ARM64_QEMU_LOCKSTEP_TIMEOUT="${ARM64_QEMU_LOCKSTEP_TIMEOUT:-75m}"
 ARM64_QEMU_MAIN="${ARM64_QEMU_MAIN:-1}"
 ARM64_QEMU_LOCKSTEP="${ARM64_QEMU_LOCKSTEP:-1}"
-ARM64_QEMU_RUN="${ARM64_QEMU_RUN:-^(Test(GuestMemory.*|CPU.*|Decode.*|RunCached.*|LoadELF.*|FindSymbolAddr.*|FindExecLoads.*|FindTextSection.*|LowerARM64.*|JIT_.*|R15IC_MatchesInterpreter.*)|TestRISCVTests_(UI|UM|Smoke|UA|UF|UD|UC|UI_JIT_AOT|UM_JIT_AOT|UA_JIT_AOT|UF_JIT_AOT|UD_JIT_AOT|UC_JIT_AOT|UI_JIT_Lazy|UM_JIT_Lazy|UA_JIT_Lazy|UC_JIT_Lazy))$}"
+ARM64_QEMU_RUN="${ARM64_QEMU_RUN:-^(Test(GuestMemory.*|CPU.*|Decode.*|RunCached.*|LoadELF.*|FindSymbolAddr.*|FindExecLoads.*|FindTextSection.*|LowerARM64.*|JIT_.*|JITIC_MatchesInterpreter.*)|TestRISCVTests_(UI|UM|Smoke|UA|UF|UD|UC|UI_JIT_AOT|UM_JIT_AOT|UA_JIT_AOT|UF_JIT_AOT|UD_JIT_AOT|UC_JIT_AOT|UI_JIT_Lazy|UM_JIT_Lazy|UA_JIT_Lazy|UC_JIT_Lazy))$}"
 
 if ! command -v "${QEMU_AARCH64}" >/dev/null 2>&1; then
 	echo "qemu-system-aarch64 not found. Set QEMU_AARCH64=/path/to/qemu-system-aarch64." >&2

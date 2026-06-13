@@ -456,10 +456,10 @@ func TestRISCVTests_UC_JIT_Lazy(t *testing.T) {
 }
 
 // ══════════════════════════════════════════════════════════════════════════
-// R15 IC accuracy: JIT instruction count must match interpreter
+// JIT IC accuracy: native instruction count must match interpreter
 // ══════════════════════════════════════════════════════════════════════════
 
-func TestR15IC_MatchesInterpreter(t *testing.T) {
+func TestJITIC_MatchesInterpreter(t *testing.T) {
 	elfPath := filepath.Join(rvTestsDir, "rv64ui-p-add")
 	data, err := os.ReadFile(elfPath)
 	if err != nil {
@@ -488,7 +488,7 @@ func TestR15IC_MatchesInterpreter(t *testing.T) {
 	}
 	interpIC := interpCPU.RiscvInstrBegun()
 
-	// JIT run (lazy, R15 IC enabled)
+	// JIT run (lazy IC enabled)
 	jitMem, err := NewGuestMemory(Size1MB)
 	if err != nil {
 		t.Fatal(err)
@@ -513,12 +513,12 @@ func TestR15IC_MatchesInterpreter(t *testing.T) {
 	_ = jit.RunJIT(jitCPU)
 	jitIC := jitCPU.RiscvInstrBegun()
 
-	t.Logf("interpreter IC=%d, JIT R15 IC=%d", interpIC, jitIC)
+	t.Logf("interpreter IC=%d, JIT IC=%d", interpIC, jitIC)
 	if interpIC == 0 {
 		t.Fatal("interpreter IC is 0")
 	}
 	if jitIC == 0 {
-		t.Fatal("JIT IC is 0 — R15 counting not working")
+		t.Fatal("JIT IC is 0")
 	}
 	if interpIC != jitIC {
 		diff := int64(jitIC) - int64(interpIC)

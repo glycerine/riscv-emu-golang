@@ -76,7 +76,54 @@ func (j *JIT) jitCompile(res *emitResult, mem ...*GuestMemory) (*compiledBlock, 
 	if err != nil {
 		return nil, fmt.Errorf("jit mmap: %w", err)
 	}
-	copy(execMem, code)
+	codeBase := uintptr(unsafe.Pointer(&execMem[0]))
+	blk := &compiledBlock{
+		fn:         codeBase,
+		nativeMmap: execMem,
+		hasFP:      allocHasFP(alloc),
+		numInsns:   res.numInsns,
+	}
+
+	var writeErr error
+	withExecWrite(func() {
+		copy(execMem, code)
+
+		// Step 6: Block chaining setup — backpatch MOVABS sentinels and record metadata.
+		if lowerResult != nil && lowerResult.ChainEntryProg != nil {
+			blk.chainEntry = codeBase + uintptr(lowerResult.ChainEntryProg.Pc)
+			for _, ce := range lowerResult.ChainExits {
+				// If a slow exit stub exists, backpatch the sentinel to
+				// point to it. Otherwise the sentinel remains until chain
+				// linking patches in the real target address.
+				patchValue := nativePatchSentinel
+				if ce.StubProg != nil {
+					stubAddr := codeBase + uintptr(ce.StubProg.Pc)
+					patchValue = uint64(stubAddr)
+				}
+				patchOff, patchErr := j.regPolicy.PatchImm64(execMem, ce.MovProg, patchValue)
+				if patchErr != nil {
+					writeErr = fmt.Errorf("jit patch chain exit: %w", patchErr)
+					return
+				}
+
+				blk.chainExits = append(blk.chainExits, chainPatchInfo{
+					targetPC:    ce.TargetPC,
+					patchOffset: patchOff,
+				})
+			}
+			if err := backpatchJalrICs(execMem, codeBase, lowerResult, blk, j.regPolicy.PatchImm64); err != nil {
+				writeErr = err
+				return
+			}
+			if err := backpatchGocallResumes(execMem, codeBase, lowerResult, j.regPolicy.PatchImm64); err != nil {
+				writeErr = err
+				return
+			}
+		}
+	})
+	if writeErr != nil {
+		return nil, writeErr
+	}
 	if debugJIT {
 		fmt.Fprintf(os.Stderr, "COMPILE_OK pc=0x%x numInsns=%d bytes=%d\n%s\n",
 			res.startPC, res.numInsns, len(code), ctx.DumpProgs())
@@ -94,43 +141,6 @@ func (j *JIT) jitCompile(res *emitResult, mem ...*GuestMemory) (*compiledBlock, 
 			code, uintptr(unsafe.Pointer(&execMem[0])))
 	}
 
-	codeBase := uintptr(unsafe.Pointer(&execMem[0]))
-	blk := &compiledBlock{
-		fn:         codeBase,
-		nativeMmap: execMem,
-		hasFP:      allocHasFP(alloc),
-		numInsns:   res.numInsns,
-	}
-
-	// Step 6: Block chaining setup — backpatch MOVABS sentinels and record metadata.
-	if lowerResult != nil && lowerResult.ChainEntryProg != nil {
-		blk.chainEntry = codeBase + uintptr(lowerResult.ChainEntryProg.Pc)
-		for _, ce := range lowerResult.ChainExits {
-			// If a slow exit stub exists, backpatch the sentinel to
-			// point to it. Otherwise the sentinel remains until chain
-			// linking patches in the real target address.
-			patchValue := nativePatchSentinel
-			if ce.StubProg != nil {
-				stubAddr := codeBase + uintptr(ce.StubProg.Pc)
-				patchValue = uint64(stubAddr)
-			}
-			patchOff, patchErr := j.regPolicy.PatchImm64(execMem, ce.MovProg, patchValue)
-			if patchErr != nil {
-				return nil, fmt.Errorf("jit patch chain exit: %w", patchErr)
-			}
-
-			blk.chainExits = append(blk.chainExits, chainPatchInfo{
-				targetPC:    ce.TargetPC,
-				patchOffset: patchOff,
-			})
-		}
-		if err := backpatchJalrICs(execMem, codeBase, lowerResult, blk, j.regPolicy.PatchImm64); err != nil {
-			return nil, err
-		}
-		if err := backpatchGocallResumes(execMem, codeBase, lowerResult, j.regPolicy.PatchImm64); err != nil {
-			return nil, err
-		}
-	}
 	flushIcache(codeBase, len(code))
 
 	return blk, nil
@@ -232,8 +242,6 @@ func (j *JIT) jitCompileDebug(res *emitResult) (*compiledBlock, *compileDebugInf
 	if err != nil {
 		return nil, nil, fmt.Errorf("jit mmap: %w", err)
 	}
-	copy(execMem, code)
-
 	codeBase := uintptr(unsafe.Pointer(&execMem[0]))
 	blk := &compiledBlock{fn: codeBase, nativeMmap: execMem, hasFP: allocHasFP(alloc)}
 
@@ -241,46 +249,40 @@ func (j *JIT) jitCompileDebug(res *emitResult) (*compiledBlock, *compileDebugInf
 	// metadata, same as jitCompile. Without this, any chain exit in
 	// the block would JMP to the literal sentinel 0x7BADC0DE7BADC0DE and
 	// segfault when executed.
-	if lowerResult != nil && lowerResult.ChainEntryProg != nil {
-		blk.chainEntry = codeBase + uintptr(lowerResult.ChainEntryProg.Pc)
-		for _, ce := range lowerResult.ChainExits {
-			patchValue := nativePatchSentinel
-			if ce.StubProg != nil {
-				stubAddr := codeBase + uintptr(ce.StubProg.Pc)
-				patchValue = uint64(stubAddr)
+	var writeErr error
+	withExecWrite(func() {
+		copy(execMem, code)
+		if lowerResult != nil && lowerResult.ChainEntryProg != nil {
+			blk.chainEntry = codeBase + uintptr(lowerResult.ChainEntryProg.Pc)
+			for _, ce := range lowerResult.ChainExits {
+				patchValue := nativePatchSentinel
+				if ce.StubProg != nil {
+					stubAddr := codeBase + uintptr(ce.StubProg.Pc)
+					patchValue = uint64(stubAddr)
+				}
+				patchOff, patchErr := j.regPolicy.PatchImm64(execMem, ce.MovProg, patchValue)
+				if patchErr != nil {
+					writeErr = fmt.Errorf("jit patch chain exit: %w", patchErr)
+					return
+				}
+				blk.chainExits = append(blk.chainExits, chainPatchInfo{
+					targetPC:    ce.TargetPC,
+					patchOffset: patchOff,
+				})
 			}
-			patchOff, patchErr := j.regPolicy.PatchImm64(execMem, ce.MovProg, patchValue)
-			if patchErr != nil {
-				return nil, nil, fmt.Errorf("jit patch chain exit: %w", patchErr)
+			if err := backpatchJalrICs(execMem, codeBase, lowerResult, blk, j.regPolicy.PatchImm64); err != nil {
+				writeErr = err
+				return
 			}
-			blk.chainExits = append(blk.chainExits, chainPatchInfo{
-				targetPC:    ce.TargetPC,
-				patchOffset: patchOff,
-			})
 		}
-		if err := backpatchJalrICs(execMem, codeBase, lowerResult, blk, j.regPolicy.PatchImm64); err != nil {
-			return nil, nil, err
-		}
+	})
+	if writeErr != nil {
+		return nil, nil, writeErr
 	}
 	flushIcache(codeBase, len(code))
 
 	dbg := &compileDebugInfo{code: code, progs: progDump}
 	return blk, dbg, nil
-}
-
-// allocExec allocates executable memory via mmap.
-func allocExec(size int) ([]byte, error) {
-	pageSize := syscall.Getpagesize()
-	mapSize := ((size + pageSize - 1) / pageSize) * pageSize
-	mem, err := syscall.Mmap(
-		-1, 0, mapSize,
-		syscall.PROT_READ|syscall.PROT_WRITE|syscall.PROT_EXEC,
-		syscall.MAP_ANON|syscall.MAP_PRIVATE,
-	)
-	if err != nil {
-		return nil, err
-	}
-	return mem, nil
 }
 
 func allocHasFP(alloc *Allocation) bool {

@@ -137,16 +137,14 @@ func execJalrIC(t *testing.T, targetPC uint64, siteIdx int,
 		t.Fatalf("Assemble: %v", err)
 	}
 
-	ps := syscall.Getpagesize()
-	sz := ((len(code) + ps - 1) / ps) * ps
-	mem, err := syscall.Mmap(-1, 0, sz,
-		syscall.PROT_READ|syscall.PROT_WRITE|syscall.PROT_EXEC,
-		syscall.MAP_ANON|syscall.MAP_PRIVATE)
+	mem, err := allocExec(len(code))
 	if err != nil {
 		t.Fatalf("mmap: %v", err)
 	}
 	defer syscall.Munmap(mem)
-	copy(mem, code)
+	withExecWrite(func() {
+		copy(mem, code)
+	})
 
 	var x [32]uint64
 	var f [32]uint64
@@ -245,9 +243,7 @@ func TestLower_RV8_JalrIC_CacheHit_JumpsToEntry(t *testing.T) {
 
 	// Allocate an executable page for the "hit stub" — a tiny chainEntry
 	// that writes a distinctive Result.PC and returns.
-	stubMem, err := syscall.Mmap(-1, 0, ps,
-		syscall.PROT_READ|syscall.PROT_WRITE|syscall.PROT_EXEC,
-		syscall.MAP_ANON|syscall.MAP_PRIVATE)
+	stubMem, err := allocExec(ps)
 	if err != nil {
 		t.Fatalf("mmap stubMem: %v", err)
 	}
@@ -270,7 +266,9 @@ func TestLower_RV8_JalrIC_CacheHit_JumpsToEntry(t *testing.T) {
 		0x48, 0xC7, 0x40, 0x10, 0x00, 0x00, 0x00, 0x00, // MOV QWORD [RAX+16], 0
 		0xC3, // RET
 	}
-	copy(stubMem, stub)
+	withExecWrite(func() {
+		copy(stubMem, stub)
+	})
 
 	// Segment covers [0x1000, 0x2000). Target = 0x1000.
 	// Cache index for target 0x1000 with vaddrBegin=0x1000:
