@@ -29,7 +29,8 @@
         coremark-elf dhrystone-elf bench-coremark bench-dhrystone \
         bench-jit-coremark bench-jit-dhrystone bench-chain-ref \
         darwin-perf bench-wasm build-luajit-riscv \
-        hello hello-elfs quad standard test-arm64-qemu
+        hello hello-elfs quad standard test-arm64-qemu \
+        test-arm64-qemu-main test-arm64-qemu-lockstep
 
 # ── platform detection ─────────────────────────────────────────────────────
 
@@ -188,7 +189,9 @@ endif
 	@echo ""
 	@echo "  Other:"
 	@echo "    make test             unit tests"
-	@echo "    make test-arm64-qemu  cross-build root/lockstep tests and run under qemu-system-aarch64"
+	@echo "    make test-arm64-qemu           cross-build root/riscv-tests/lockstep under qemu-system-aarch64"
+	@echo "    make test-arm64-qemu-main      same, but skip sharded lockstep"
+	@echo "    make test-arm64-qemu-lockstep  sharded non-FP lockstep only"
 	@echo "    make clean            remove xendor/build_capi and generated ELF"
 	@echo ""
 	@echo "  Overrides:"
@@ -689,6 +692,14 @@ test:
 test-arm64-qemu:
 	@echo "── linux/arm64 qemu-system test lane ───────────────────────────"
 	GO=$(GO) $(ROOT)scripts/test-arm64-qemu.sh
+
+test-arm64-qemu-main:
+	@echo "── linux/arm64 qemu-system main lane ───────────────────────────"
+	ARM64_QEMU_LOCKSTEP=0 GO=$(GO) $(ROOT)scripts/test-arm64-qemu.sh
+
+test-arm64-qemu-lockstep:
+	@echo "── linux/arm64 qemu-system lockstep lane ───────────────────────"
+	ARM64_QEMU_MAIN=0 ARM64_QEMU_LOCKSTEP=1 GO=$(GO) $(ROOT)scripts/test-arm64-qemu.sh
 
 # ── clean ──────────────────────────────────────────────────────────────────
 
