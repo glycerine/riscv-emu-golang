@@ -57,6 +57,7 @@ const (
 	opLUI    = uint32(0x37)
 	opAUIPC  = uint32(0x17)
 	opSYSTEM = uint32(0x73)
+	opOP32   = uint32(0x3B)
 
 	instrECALL  = uint32(0x00000073)
 	instrEBREAK = uint32(0x00100073)
@@ -225,6 +226,96 @@ func TestJIT_ADD(t *testing.T) {
 	want := uint64(142)
 	if got != want {
 		t.Errorf("x1 = %d, want %d", got, want)
+	}
+}
+
+func TestJIT_MulHighAndPopcount(t *testing.T) {
+	cpopImm := int32((0x60 << 5) | 2)
+	tests := []struct {
+		name string
+		insn uint32
+		x2   uint64
+		x3   uint64
+		want uint64
+	}{
+		{
+			name: "MULH_NegPos",
+			insn: renc(opOP, 1, 0x01, 1, 2, 3),
+			x2:   ^uint64(0),
+			x3:   2,
+			want: ^uint64(0),
+		},
+		{
+			name: "MULH_NegNeg",
+			insn: renc(opOP, 1, 0x01, 1, 2, 3),
+			x2:   ^uint64(0),
+			x3:   ^uint64(0),
+			want: 0,
+		},
+		{
+			name: "MULHU_MaxMax",
+			insn: renc(opOP, 3, 0x01, 1, 2, 3),
+			x2:   ^uint64(0),
+			x3:   ^uint64(0),
+			want: ^uint64(1),
+		},
+		{
+			name: "MULHSU_NegPos",
+			insn: renc(opOP, 2, 0x01, 1, 2, 3),
+			x2:   ^uint64(0),
+			x3:   2,
+			want: ^uint64(0),
+		},
+		{
+			name: "MULHSU_IntMinMax",
+			insn: renc(opOP, 2, 0x01, 1, 2, 3),
+			x2:   0x8000000000000000,
+			x3:   ^uint64(0),
+			want: 0x8000000000000000,
+		},
+		{
+			name: "CPOP",
+			insn: ienc(opOPIMM, 1, 1, 2, cpopImm),
+			x2:   0xf0f0f0f0f0f0f0f0,
+			want: 32,
+		},
+		{
+			name: "CPOPW",
+			insn: renc(opOP32, 2, 0x60, 1, 2, 2),
+			x2:   0xffffffff0000000f,
+			want: 4,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mem, err := NewGuestMemory(Size64MB)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer mem.Free()
+
+			codeVA := uint64(0x1000)
+			storeInsns(mem, codeVA, []uint32{tt.insn, instrECALL})
+
+			cpu := NewCPU(*mem)
+			cpu.SetPC(codeVA)
+			cpu.SetReg(2, tt.x2)
+			cpu.SetReg(3, tt.x3)
+			cpu.Notes.Push(ecallStop)
+
+			jit := NewJIT()
+			_ = jit.RunJIT(cpu)
+			if jit.DispatchCompile == 0 {
+				t.Fatalf("DispatchCompile = 0, block did not JIT")
+			}
+			if got := jit.NoJITSize(); got != 0 {
+				t.Fatalf("NoJITSize = %d, want 0", got)
+			}
+			if got := cpu.Reg(1); got != tt.want {
+				t.Fatalf("x1 = 0x%016x, want 0x%016x", got, tt.want)
+			}
+		})
 	}
 }
 

@@ -681,6 +681,21 @@ func (lc *lowerOps) opsUnary(ins *IRInstr, op obj.As) {
 	lc.commitDst(ins.Dst, dst)
 }
 
+func (lc *lowerOps) opsPopcount(ins *IRInstr, op obj.As) {
+	dstHR := lc.directReg(ins.Dst)
+	aHR := lc.directReg(ins.A)
+	if dstHR >= 0 && aHR >= 0 {
+		lc.emit2(op, aHR, dstHR)
+		lc.commitDst(ins.Dst, dstHR)
+		return
+	}
+
+	a := lc.stageInt(ins.A, 0)
+	dst := lc.writeDst(ins.Dst)
+	lc.emit2(op, a, dst)
+	lc.commitDst(ins.Dst, dst)
+}
+
 // ── Shifts ──
 // CX is a staging reg, so it's always available for shifts — no save needed.
 
@@ -1457,9 +1472,9 @@ func (lc *lowerOps) lowerInstrCommon(ins *IRInstr) (bool, error) {
 		}
 	case IRPopcount:
 		if ins.T == I32 {
-			lc.opsUnary(ins, x86.APOPCNTL)
+			lc.opsPopcount(ins, x86.APOPCNTL)
 		} else {
-			lc.opsUnary(ins, x86.APOPCNTQ)
+			lc.opsPopcount(ins, x86.APOPCNTQ)
 		}
 	case IRBswap:
 		lc.opsUnary(ins, x86.ABSWAPQ)

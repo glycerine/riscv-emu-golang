@@ -397,6 +397,7 @@ func TestLower_AllOpsHandled(t *testing.T) {
 		IRNeg,
 		IRShl, IRShlImm, IRShr, IRShrImm, IRSar, IRSarImm,
 		IRAnd, IRAndImm, IROr, IROrImm, IRXor, IRXorImm, IRNot,
+		IRPopcount,
 		IRSet, IRSetImm,
 		IRMov, IRConst, IRSext, IRZext,
 		IRLabel, IRBranch, IRBranchImm, IRJump, IRCall, IRRet,

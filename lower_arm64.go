@@ -486,6 +486,12 @@ func (lc *lowerARM64Ctx) lowerInstr(ins *IRInstr) error {
 		return lc.lowerBinopImm(ins, arm64.ASUB)
 	case IRMul:
 		return lc.lowerBinop(ins, arm64.AMUL)
+	case IRMulHS:
+		return lc.lowerMulHigh(ins, arm64.ASMULH)
+	case IRMulHU:
+		return lc.lowerMulHigh(ins, arm64.AUMULH)
+	case IRMulHSU:
+		return lc.lowerMulHSU(ins)
 	case IRDivS:
 		return lc.lowerBinop(ins, arm64.ASDIV)
 	case IRDivU:
@@ -551,6 +557,8 @@ func (lc *lowerARM64Ctx) lowerInstr(ins *IRInstr) error {
 		}
 		lc.emitRR(op, a64A, a64A)
 		return lc.storeV(ins.Dst, a64A)
+	case IRPopcount:
+		return lc.lowerPopcount(ins)
 	case IRBswap:
 		if err := lc.loadV(ins.A, a64A); err != nil {
 			return err
@@ -639,6 +647,8 @@ func (lc *lowerARM64Ctx) lowerInstr(ins *IRInstr) error {
 		return nil
 	case IRJalrIC:
 		return lc.jalrIC(ins)
+	case IRCall:
+		return lc.call(ins)
 	case IRSyscall:
 		return lc.syscall(ins)
 	case IRZeroIC:
@@ -715,6 +725,64 @@ func (lc *lowerARM64Ctx) lowerRem(ins *IRInstr, signed bool) error {
 	}
 	lc.emitRRR(divOp, a64A, a64B, a64C)              // q = a / b
 	lc.emitRRRR(arm64.AMSUB, a64C, a64B, a64A, a64A) // a - q*b
+	return lc.storeV(ins.Dst, a64A)
+}
+
+func (lc *lowerARM64Ctx) lowerMulHigh(ins *IRInstr, op obj.As) error {
+	if err := lc.loadV(ins.A, a64A); err != nil {
+		return err
+	}
+	if err := lc.loadV(ins.B, a64B); err != nil {
+		return err
+	}
+	lc.emitRRR(op, a64A, a64B, a64A)
+	return lc.storeV(ins.Dst, a64A)
+}
+
+func (lc *lowerARM64Ctx) lowerMulHSU(ins *IRInstr) error {
+	if err := lc.loadV(ins.A, a64A); err != nil {
+		return err
+	}
+	if err := lc.loadV(ins.B, a64B); err != nil {
+		return err
+	}
+	lc.emitRRR(arm64.AUMULH, a64A, a64B, a64C)
+	lc.emitRRI(arm64.AASR, 63, a64A, a64D)
+	lc.emitRRR(arm64.AAND, a64D, a64B, a64D)
+	lc.emitRRR(arm64.ASUB, a64C, a64D, a64A)
+	return lc.storeV(ins.Dst, a64A)
+}
+
+func (lc *lowerARM64Ctx) lowerPopcount(ins *IRInstr) error {
+	if err := lc.loadV(ins.A, a64A); err != nil {
+		return err
+	}
+	if ins.T == I32 {
+		lc.loadImm(0xffffffff, a64B)
+		lc.emitRRR(arm64.AAND, a64A, a64B, a64A)
+	}
+
+	lc.emitRRI(arm64.ALSR, 1, a64A, a64B)
+	lc.loadImm(0x5555555555555555, a64C)
+	lc.emitRRR(arm64.AAND, a64B, a64C, a64B)
+	lc.emitRRR(arm64.ASUB, a64A, a64B, a64A)
+
+	lc.emitRR(arm64.AMOVD, a64A, a64B)
+	lc.emitRRI(arm64.ALSR, 2, a64B, a64B)
+	lc.loadImm(0x3333333333333333, a64C)
+	lc.emitRRR(arm64.AAND, a64A, a64C, a64A)
+	lc.emitRRR(arm64.AAND, a64B, a64C, a64B)
+	lc.emitRRR(arm64.AADD, a64A, a64B, a64A)
+
+	lc.emitRR(arm64.AMOVD, a64A, a64B)
+	lc.emitRRI(arm64.ALSR, 4, a64B, a64B)
+	lc.emitRRR(arm64.AADD, a64A, a64B, a64A)
+	lc.loadImm(0x0f0f0f0f0f0f0f0f, a64C)
+	lc.emitRRR(arm64.AAND, a64A, a64C, a64A)
+
+	lc.loadImm(0x0101010101010101, a64C)
+	lc.emitRRR(arm64.AMUL, a64A, a64C, a64A)
+	lc.emitRRI(arm64.ALSR, 56, a64A, a64A)
 	return lc.storeV(ins.Dst, a64A)
 }
 
@@ -1471,6 +1539,31 @@ func (lc *lowerARM64Ctx) emitJalrMiss(siteIdx int) {
 	lc.loadImm(int64(siteIdx), a64A)
 	lc.emitStore(arm64.AMOVD, a64A, lc.sretBase(), faultOff)
 	lc.emitReturn()
+}
+
+func (lc *lowerARM64Ctx) call(ins *IRInstr) error {
+	if int(ins.Imm) < 0 || int(ins.Imm) >= len(lc.blk.CTab) {
+		return fmt.Errorf("arm64 lower: CTab index %d out of range (len=%d)", ins.Imm, len(lc.blk.CTab))
+	}
+	sym := lc.blk.CTab[ins.Imm]
+
+	saveRegs := []int16{
+		a64SRet, a64XBase, a64FBase, a64FCSR, a64MemBase, a64MemMask, a64ABJITBase,
+	}
+	const saveSize = int64(64)
+	lc.emitRRI(arm64.ASUB, saveSize, goasm.REG_ARM64_RSP, goasm.REG_ARM64_RSP)
+	for i, reg := range saveRegs {
+		lc.emitStore(arm64.AMOVD, reg, goasm.REG_ARM64_RSP, int64(i)*8)
+	}
+
+	lc.loadImm(int64(sym.Addr), a64Call)
+	lc.emitIndirectCall(a64Call)
+
+	for i, reg := range saveRegs {
+		lc.emitLoad(arm64.AMOVD, goasm.REG_ARM64_RSP, int64(i)*8, reg)
+	}
+	lc.emitRRI(arm64.AADD, saveSize, goasm.REG_ARM64_RSP, goasm.REG_ARM64_RSP)
+	return nil
 }
 
 func (lc *lowerARM64Ctx) syscall(ins *IRInstr) error {
