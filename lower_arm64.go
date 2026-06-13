@@ -724,7 +724,7 @@ func (lc *lowerARM64Ctx) lowerRem(ins *IRInstr, signed bool) error {
 		divOp = arm64.ASDIV
 	}
 	lc.emitRRR(divOp, a64A, a64B, a64C)              // q = a / b
-	lc.emitRRRR(arm64.AMSUB, a64C, a64B, a64A, a64A) // a - q*b
+	lc.emitRRRR(arm64.AMSUB, a64B, a64A, a64C, a64A) // a - q*b
 	return lc.storeV(ins.Dst, a64A)
 }
 

@@ -4,7 +4,7 @@ package riscv
 
 import "unsafe"
 
-// icacheFlush is a compile-time fallback for cgo-free ARM64 test binaries.
-// It is sufficient for non-JIT cross-build gates; executable ARM64 backend
-// tests must use a real cache flush path before parity can be claimed.
-func icacheFlush(start, end unsafe.Pointer) {}
+// icacheFlush cleans D-cache and invalidates I-cache for [start, end). The
+// cgo-free implementation lives in jit_icache_arm64_nocgo.s so linux/arm64
+// QEMU tests exercise real code-patch coherency.
+func icacheFlush(start, end unsafe.Pointer)

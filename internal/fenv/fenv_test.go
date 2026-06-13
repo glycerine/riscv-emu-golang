@@ -4,7 +4,7 @@ import (
 	"math"
 	"testing"
 
-	"riscv/internal/fenv"
+	"github.com/glycerine/riscv-emu-golang/internal/fenv"
 )
 
 // Prevent constant-folding by going through bit patterns
@@ -32,6 +32,7 @@ func TestFFlags_NoSpillFromNonFloat(t *testing.T) {
 }
 
 var sinkVal float32
+
 //go:noinline
 func sink(v float32) { sinkVal = v }
 
@@ -41,7 +42,9 @@ func TestOps_Inexact(t *testing.T) {
 		math.Float32frombits(0x40400000), // 3.0
 	)
 	_ = r
-	if flags&1 == 0 { t.Errorf("DivF32(1/3) NX not set, flags=0x%02X", flags) }
+	if flags&1 == 0 {
+		t.Errorf("DivF32(1/3) NX not set, flags=0x%02X", flags)
+	}
 }
 
 func TestOps_DivByZero(t *testing.T) {
@@ -50,24 +53,30 @@ func TestOps_DivByZero(t *testing.T) {
 		math.Float32frombits(0x00000000),
 	)
 	_ = r
-	if flags&8 == 0 { t.Errorf("DivF32(1/0) DZ not set, flags=0x%02X", flags) }
+	if flags&8 == 0 {
+		t.Errorf("DivF32(1/0) DZ not set, flags=0x%02X", flags)
+	}
 }
 
 func TestOps_Invalid(t *testing.T) {
 	inf := math.Float32frombits(0x7F800000)
 	r, flags := fenv.SubF32(inf, inf) // Inf - Inf = NaN
 	_ = r
-	if flags&16 == 0 { t.Errorf("SubF32(Inf-Inf) NV not set, flags=0x%02X", flags) }
+	if flags&16 == 0 {
+		t.Errorf("SubF32(Inf-Inf) NV not set, flags=0x%02X", flags)
+	}
 }
 
 func TestOps_MAdd_Inexact(t *testing.T) {
 	a := math.Float32frombits(0x3F800000) // 1.0
 	b := math.Float32frombits(0x40400000) // 3.0
 	c := math.Float32frombits(0x3F800000) // 1.0
-	r, flags := fenv.MAddF32(a, b, c) // 1*3+1 = 4 (exact, NX=0)
+	r, flags := fenv.MAddF32(a, b, c)     // 1*3+1 = 4 (exact, NX=0)
 	_ = r
-	if flags&1 != 0 { t.Errorf("MAddF32 exact op has NX set, flags=0x%02X", flags) }
-	
+	if flags&1 != 0 {
+		t.Errorf("MAddF32 exact op has NX set, flags=0x%02X", flags)
+	}
+
 	// 1/3 + 0: fused, should be inexact
 	r2, flags2 := fenv.MAddF32(
 		math.Float32frombits(0x3F800000),
