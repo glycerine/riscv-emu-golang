@@ -162,24 +162,24 @@ func (j *JIT) jitCompileAOTSegment(
 	}
 
 	// ── Pass 3: pre-resolve static chain exits whose target is in the segment ──
-	// Writes the target's absolute chainEntry into each MOVABS imm64,
-	// overwriting the slow-exit-stub address written in Pass 2. At run
-	// time the chain JMP goes directly to the target block's chainEntry
-	// with no Go round-trip or runtime patching.
+	// Writes the target's absolute chainEntry into each backend patch
+	// slot, overwriting the slow-exit-stub address written in Pass 2.
+	// At run time the chain jump goes directly to the target block's
+	// chainEntry with no Go round-trip or runtime patching.
 	//
-	// ce.patchOffset is relative to bc.blk.fn, so the absolute
-	// offset into execMem is bc.baseOffset + ce.patchOffset.
 	prePatches := 0
 	for _, bc := range compiles {
-		for _, ce := range bc.blk.chainExits {
+		for i, ce := range bc.blk.chainExits {
 			target, ok := blocks[ce.targetPC]
 			if !ok || target.chainEntry == 0 {
 				continue
 			}
-			binary.LittleEndian.PutUint64(
-				execMem[bc.baseOffset+ce.patchOffset:],
-				uint64(target.chainEntry),
-			)
+			if i >= len(bc.lowerResult.ChainExits) || bc.lowerResult.ChainExits[i].TargetPC != ce.targetPC {
+				return nil, fmt.Errorf("jitCompileAOTSegment: chain exit metadata mismatch at block 0x%x exit %d", bc.startPC, i)
+			}
+			if _, patchErr := j.regPolicy.PatchImm64(execMem[bc.baseOffset:], bc.lowerResult.ChainExits[i].MovProg, uint64(target.chainEntry)); patchErr != nil {
+				return nil, fmt.Errorf("jitCompileAOTSegment: pre-patch chain exit: %w", patchErr)
+			}
 			prePatches++
 		}
 	}

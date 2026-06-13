@@ -46,6 +46,7 @@ const (
 
 	a64FA int16 = goasm.REG_ARM64_F0
 	a64FB int16 = goasm.REG_ARM64_F1
+	a64FC int16 = goasm.REG_ARM64_F2
 )
 
 func init() {
@@ -570,10 +571,30 @@ func (lc *lowerARM64Ctx) lowerInstr(ins *IRInstr) error {
 		return lc.lowerFPBinop(ins, arm64.AFDIVD, arm64.AFDIVS)
 	case IRFSqrt:
 		return lc.lowerFPUnary(ins, arm64.AFSQRTD, arm64.AFSQRTS)
+	case IRFma:
+		return lc.lowerFMA(ins, arm64.AFMADDD, arm64.AFMADDS)
+	case IRFmsub:
+		return lc.lowerFMA(ins, arm64.AFNMSUBD, arm64.AFNMSUBS)
+	case IRFnmadd:
+		return lc.lowerFMA(ins, arm64.AFNMADDD, arm64.AFNMADDS)
+	case IRFnmsub:
+		return lc.lowerFMA(ins, arm64.AFMSUBD, arm64.AFMSUBS)
+	case IRFCmp:
+		return lc.lowerFCmp(ins)
 	case IRFNeg:
 		return lc.lowerFPUnary(ins, arm64.AFNEGD, arm64.AFNEGS)
 	case IRFAbs:
 		return lc.lowerFPUnary(ins, arm64.AFABSD, arm64.AFABSS)
+	case IRFCvtToI:
+		return lc.lowerFCvtToInt(ins, false)
+	case IRFCvtToU:
+		return lc.lowerFCvtToInt(ins, true)
+	case IRFCvtFromI:
+		return lc.lowerFCvtFromInt(ins, false)
+	case IRFCvtFromU:
+		return lc.lowerFCvtFromInt(ins, true)
+	case IRFCvtFF:
+		return lc.lowerFCvtFF(ins)
 	case IRLoad:
 		return lc.lowerLoad(ins, false)
 	case IRStore:
@@ -959,6 +980,186 @@ func (lc *lowerARM64Ctx) lowerFPUnary(ins *IRInstr, f64op, f32op obj.As) error {
 	op := f64op
 	if ins.T == F32 {
 		op = f32op
+	}
+	p := lc.c.NewProg()
+	p.As = op
+	p.From.Type = obj.TYPE_REG
+	p.From.Reg = a64FA
+	p.To.Type = obj.TYPE_REG
+	p.To.Reg = a64FA
+	lc.c.Append(p)
+	return lc.storeFP(ins.Dst, a64FA, ins.T)
+}
+
+func (lc *lowerARM64Ctx) lowerFMA(ins *IRInstr, f64op, f32op obj.As) error {
+	if err := lc.loadFP(ins.A, a64FA, ins.T); err != nil {
+		return err
+	}
+	if err := lc.loadFP(ins.B, a64FB, ins.T); err != nil {
+		return err
+	}
+	if err := lc.loadFP(ins.C, a64FC, ins.T); err != nil {
+		return err
+	}
+	op := f64op
+	if ins.T == F32 {
+		op = f32op
+	}
+	p := lc.c.NewProg()
+	p.As = op
+	p.From.Type = obj.TYPE_REG
+	p.From.Reg = a64FB // Fm
+	p.Reg = a64FC      // Fa
+	p.AddRestSource(obj.Addr{Type: obj.TYPE_REG, Reg: a64FA})
+	p.To.Type = obj.TYPE_REG
+	p.To.Reg = a64FA
+	lc.c.Append(p)
+	return lc.storeFP(ins.Dst, a64FA, ins.T)
+}
+
+func (lc *lowerARM64Ctx) lowerFCmp(ins *IRInstr) error {
+	if err := lc.loadFP(ins.A, a64FA, ins.T); err != nil {
+		return err
+	}
+	if err := lc.loadFP(ins.B, a64FB, ins.T); err != nil {
+		return err
+	}
+	op := arm64.AFCMPD
+	if ins.T == F32 {
+		op = arm64.AFCMPS
+	}
+	p := lc.c.NewProg()
+	p.As = op
+	p.From.Type = obj.TYPE_REG
+	p.From.Reg = a64FB
+	p.Reg = a64FA
+	lc.c.Append(p)
+
+	lc.loadImm(0, a64A)
+	var setBranches []*obj.Prog
+	var doneBranches []*obj.Prog
+	switch ins.Pred {
+	case EQ:
+		doneBranches = append(doneBranches, lc.branchTo(arm64.ABVS), lc.branchTo(arm64.ABNE))
+		setBranches = append(setBranches, lc.branchTo(arm64.AB))
+	case NE:
+		setBranches = append(setBranches, lc.branchTo(arm64.ABVS), lc.branchTo(arm64.ABNE))
+	case LT:
+		setBranches = append(setBranches, lc.branchTo(arm64.ABMI))
+	case LE:
+		setBranches = append(setBranches, lc.branchTo(arm64.ABLS))
+	case GT:
+		setBranches = append(setBranches, lc.branchTo(arm64.ABGT))
+	case GE:
+		setBranches = append(setBranches, lc.branchTo(arm64.ABGE))
+	default:
+		return fmt.Errorf("arm64 lower: FP predicate %s is not implemented", ins.Pred)
+	}
+
+	done := lc.c.NewProg()
+	done.As = obj.ANOP
+	if len(setBranches) > 0 {
+		skipSet := lc.branchTo(arm64.AB)
+		setProg := lc.c.NewProg()
+		setProg.As = obj.ANOP
+		lc.c.Append(setProg)
+		for _, br := range setBranches {
+			br.To.SetTarget(setProg)
+		}
+		lc.loadImm(1, a64A)
+		lc.c.Append(done)
+		skipSet.To.SetTarget(done)
+	} else {
+		lc.c.Append(done)
+	}
+	for _, br := range doneBranches {
+		br.To.SetTarget(done)
+	}
+	return lc.storeV(ins.Dst, a64A)
+}
+
+func (lc *lowerARM64Ctx) lowerFCvtToInt(ins *IRInstr, unsigned bool) error {
+	if err := lc.loadFP(ins.A, a64FA, ins.U); err != nil {
+		return err
+	}
+	var op obj.As
+	switch {
+	case !unsigned && ins.U == F64 && ins.T == I64:
+		op = arm64.AFCVTZSD
+	case !unsigned && ins.U == F64:
+		op = arm64.AFCVTZSDW
+	case !unsigned && ins.U == F32 && ins.T == I64:
+		op = arm64.AFCVTZSS
+	case !unsigned && ins.U == F32:
+		op = arm64.AFCVTZSSW
+	case unsigned && ins.U == F64 && ins.T == I64:
+		op = arm64.AFCVTZUD
+	case unsigned && ins.U == F64:
+		op = arm64.AFCVTZUDW
+	case unsigned && ins.U == F32 && ins.T == I64:
+		op = arm64.AFCVTZUS
+	case unsigned && ins.U == F32:
+		op = arm64.AFCVTZUSW
+	default:
+		return fmt.Errorf("arm64 lower: FP-to-int conversion %s to %s is not implemented", ins.U, ins.T)
+	}
+	p := lc.c.NewProg()
+	p.As = op
+	p.From.Type = obj.TYPE_REG
+	p.From.Reg = a64FA
+	p.To.Type = obj.TYPE_REG
+	p.To.Reg = a64A
+	lc.c.Append(p)
+	return lc.storeV(ins.Dst, a64A)
+}
+
+func (lc *lowerARM64Ctx) lowerFCvtFromInt(ins *IRInstr, unsigned bool) error {
+	if err := lc.loadV(ins.A, a64A); err != nil {
+		return err
+	}
+	var op obj.As
+	switch {
+	case !unsigned && ins.U == I64 && ins.T == F64:
+		op = arm64.ASCVTFD
+	case !unsigned && ins.T == F64:
+		op = arm64.ASCVTFWD
+	case !unsigned && ins.U == I64 && ins.T == F32:
+		op = arm64.ASCVTFS
+	case !unsigned && ins.T == F32:
+		op = arm64.ASCVTFWS
+	case unsigned && ins.U == I64 && ins.T == F64:
+		op = arm64.AUCVTFD
+	case unsigned && ins.T == F64:
+		op = arm64.AUCVTFWD
+	case unsigned && ins.U == I64 && ins.T == F32:
+		op = arm64.AUCVTFS
+	case unsigned && ins.T == F32:
+		op = arm64.AUCVTFWS
+	default:
+		return fmt.Errorf("arm64 lower: int-to-FP conversion %s to %s is not implemented", ins.U, ins.T)
+	}
+	p := lc.c.NewProg()
+	p.As = op
+	p.From.Type = obj.TYPE_REG
+	p.From.Reg = a64A
+	p.To.Type = obj.TYPE_REG
+	p.To.Reg = a64FA
+	lc.c.Append(p)
+	return lc.storeFP(ins.Dst, a64FA, ins.T)
+}
+
+func (lc *lowerARM64Ctx) lowerFCvtFF(ins *IRInstr) error {
+	if err := lc.loadFP(ins.A, a64FA, ins.U); err != nil {
+		return err
+	}
+	var op obj.As
+	switch {
+	case ins.U == F32 && ins.T == F64:
+		op = arm64.AFCVTSD
+	case ins.U == F64 && ins.T == F32:
+		op = arm64.AFCVTDS
+	default:
+		return fmt.Errorf("arm64 lower: FP conversion %s to %s is not implemented", ins.U, ins.T)
 	}
 	p := lc.c.NewProg()
 	p.As = op

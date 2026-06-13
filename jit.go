@@ -26,7 +26,7 @@ func SetDebugJIT(on bool) {
 // chainPatchInfo describes a chain exit that can be patched by Go.
 type chainPatchInfo struct {
 	targetPC    uint64 // guest PC this exit targets
-	patchOffset int    // byte offset of imm64 in MOVABS within the code page
+	patchOffset int    // byte offset of backend patch data within the code page
 }
 
 // jalrICPatchInfo describes a 2-way JALR inline-cache site. Slot [k]
@@ -933,8 +933,8 @@ func (j *JIT) RunJIT(cpu *CPU) (err0 error) {
 	}
 }
 
-// patchChainTarget overwrites the 8-byte imm64 in a MOVABS instruction
-// at codeBase+patchOffset to redirect to targetAddr.
+// patchChainTarget overwrites the backend's 8-byte patch data slot at
+// codeBase+patchOffset to redirect to targetAddr.
 //
 //go:nosplit
 func patchChainTarget(codeBase uintptr, patchOffset int, targetAddr uintptr) {
