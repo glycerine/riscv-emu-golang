@@ -11,6 +11,7 @@ package riscv
 // interpreter for that block instead of miscompiling.
 
 import (
+	"encoding/binary"
 	"fmt"
 	"runtime"
 
@@ -41,6 +42,9 @@ const (
 	a64D int16 = goasm.REG_ARM64_R9
 
 	a64ABJITBase int16 = goasm.REG_ARM64_R20
+
+	a64FA int16 = goasm.REG_ARM64_F0
+	a64FB int16 = goasm.REG_ARM64_F1
 )
 
 func init() {
@@ -54,7 +58,7 @@ func init() {
 		Pool:                  ARM64Pool,
 		Pinned:                ARM64Pinned,
 		Lower:                 LowerARM64_RV8,
-		PatchImm64:            patchARM64Unsupported,
+		PatchImm64:            patchARM64LiteralImm64,
 	}
 	PolicyABJIT = RegPolicy{
 		Name:                  "abjit",
@@ -63,7 +67,7 @@ func init() {
 		Pool:                  ARM64Pool,
 		Pinned:                ARM64Pinned,
 		Lower:                 LowerARM64_ABJIT,
-		PatchImm64:            patchARM64Unsupported,
+		PatchImm64:            patchARM64LiteralImm64,
 	}
 }
 
@@ -84,8 +88,16 @@ func ARM64Pool(_ *Block) RegPool {
 
 func ARM64Pinned() map[VReg]int16 { return nil }
 
-func patchARM64Unsupported(code []byte, prog *obj.Prog, value uint64) (int, error) {
-	return 0, fmt.Errorf("arm64 patch sites are not implemented yet")
+func patchARM64LiteralImm64(code []byte, prog *obj.Prog, value uint64) (int, error) {
+	if prog == nil {
+		return 0, fmt.Errorf("nil patch prog")
+	}
+	patchOff := int(prog.Pc) + 8
+	if patchOff < 0 || patchOff+8 > len(code) {
+		return 0, fmt.Errorf("patch offset %d outside code length %d", patchOff, len(code))
+	}
+	binary.LittleEndian.PutUint64(code[patchOff:], value)
+	return patchOff, nil
 }
 
 func LowerARM64_RV8(ctx *goasm.Ctx, b *Block, alloc *Allocation) (*LowerResult, error) {
@@ -105,6 +117,7 @@ type lowerARM64Ctx struct {
 	labelProg      map[Label]*obj.Prog
 	pending        map[Label][]*obj.Prog
 	chainEntryProg *obj.Prog
+	chainExits     []chainExitInfo
 }
 
 func lowerARM64(ctx *goasm.Ctx, b *Block, abi arm64ABI) (*LowerResult, error) {
@@ -136,7 +149,18 @@ func lowerARM64(ctx *goasm.Ctx, b *Block, abi arm64ABI) (*LowerResult, error) {
 	if len(lc.pending) != 0 {
 		return nil, fmt.Errorf("arm64 lower: %d unresolved labels", len(lc.pending))
 	}
-	return &LowerResult{ChainEntryProg: lc.chainEntryProg}, nil
+	for i := range lc.chainExits {
+		lc.chainExits[i].stubProg = lc.emitSlowExitStub(lc.chainExits[i].targetPC)
+	}
+	result := &LowerResult{ChainEntryProg: lc.chainEntryProg}
+	for i := range lc.chainExits {
+		result.ChainExits = append(result.ChainExits, ChainExitDesc{
+			TargetPC: lc.chainExits[i].targetPC,
+			MovProg:  lc.chainExits[i].movProg,
+			StubProg: lc.chainExits[i].stubProg,
+		})
+	}
+	return result, nil
 }
 
 func (lc *lowerARM64Ctx) collectTemps() {
@@ -220,8 +244,89 @@ func (lc *lowerARM64Ctx) emitStore(op obj.As, src, base int16, off int64) {
 	lc.c.Append(p)
 }
 
+func (lc *lowerARM64Ctx) emitFLoad(op obj.As, base int16, off int64, dst int16) {
+	p := lc.c.NewProg()
+	p.As = op
+	p.From.Type = obj.TYPE_MEM
+	p.From.Reg = base
+	p.From.Offset = off
+	p.To.Type = obj.TYPE_REG
+	p.To.Reg = dst
+	lc.c.Append(p)
+}
+
+func (lc *lowerARM64Ctx) emitFStore(op obj.As, src, base int16, off int64) {
+	p := lc.c.NewProg()
+	p.As = op
+	p.From.Type = obj.TYPE_REG
+	p.From.Reg = src
+	p.To.Type = obj.TYPE_MEM
+	p.To.Reg = base
+	p.To.Offset = off
+	lc.c.Append(p)
+}
+
+func (lc *lowerARM64Ctx) emitWord(word uint32) *obj.Prog {
+	p := lc.c.NewProg()
+	p.As = arm64.AWORD
+	p.To.Type = obj.TYPE_CONST
+	p.To.Offset = int64(word)
+	lc.c.Append(p)
+	return p
+}
+
 func (lc *lowerARM64Ctx) loadImm(imm int64, dst int16) {
 	lc.emitRI(arm64.AMOVD, imm, dst)
+}
+
+func (lc *lowerARM64Ctx) loadFP(v VReg, dst int16, t Type) error {
+	op := arm64.AFMOVD
+	if t == F32 {
+		op = arm64.AFMOVS
+	}
+	switch {
+	case v >= 32 && v < 64:
+		base, off := lc.fpMem(v)
+		lc.emitFLoad(op, base, off, dst)
+	case v >= VRegTempStart:
+		off, ok := lc.tempSlots[v]
+		if !ok {
+			return fmt.Errorf("arm64 lower: temp %s has no slot", v)
+		}
+		lc.emitFLoad(op, goasm.REG_ARM64_RSP, off, dst)
+	default:
+		return fmt.Errorf("arm64 lower: cannot load FP %s", v)
+	}
+	return nil
+}
+
+func (lc *lowerARM64Ctx) storeFP(v VReg, src int16, t Type) error {
+	op := arm64.AFMOVD
+	if t == F32 {
+		op = arm64.AFMOVS
+	}
+	switch {
+	case v >= 32 && v < 64:
+		base, off := lc.fpMem(v)
+		if t == F32 {
+			lc.loadImm(0, a64A)
+			lc.emitStore(arm64.AMOVD, a64A, base, off)
+		}
+		lc.emitFStore(op, src, base, off)
+	case v >= VRegTempStart:
+		off, ok := lc.tempSlots[v]
+		if !ok {
+			return fmt.Errorf("arm64 lower: temp %s has no slot", v)
+		}
+		if t == F32 {
+			lc.loadImm(0, a64A)
+			lc.emitStore(arm64.AMOVD, a64A, goasm.REG_ARM64_RSP, off)
+		}
+		lc.emitFStore(op, src, goasm.REG_ARM64_RSP, off)
+	default:
+		return fmt.Errorf("arm64 lower: cannot store FP %s", v)
+	}
+	return nil
 }
 
 func (lc *lowerARM64Ctx) loadV(v VReg, dst int16) error {
@@ -239,7 +344,8 @@ func (lc *lowerARM64Ctx) loadV(v VReg, dst int16) error {
 	case v >= 1 && v < 32:
 		lc.emitLoad(arm64.AMOVD, lc.xBaseReg(), int64(v)*8, dst)
 	case v >= 32 && v < 64:
-		return fmt.Errorf("arm64 lower: FP VReg %s is not implemented", v)
+		base, off := lc.fpMem(v)
+		lc.emitLoad(arm64.AMOVD, base, off, dst)
 	case v >= VRegTempStart:
 		off, ok := lc.tempSlots[v]
 		if !ok {
@@ -259,7 +365,8 @@ func (lc *lowerARM64Ctx) storeV(v VReg, src int16) error {
 	case v >= 1 && v < 32:
 		lc.emitStore(arm64.AMOVD, src, lc.xBaseReg(), int64(v)*8)
 	case v >= 32 && v < 64:
-		return fmt.Errorf("arm64 lower: FP VReg %s is not implemented", v)
+		base, off := lc.fpMem(v)
+		lc.emitStore(arm64.AMOVD, src, base, off)
 	case v >= VRegTempStart:
 		off, ok := lc.tempSlots[v]
 		if !ok {
@@ -270,6 +377,13 @@ func (lc *lowerARM64Ctx) storeV(v VReg, src int16) error {
 		return fmt.Errorf("arm64 lower: cannot store %s", v)
 	}
 	return nil
+}
+
+func (lc *lowerARM64Ctx) fpMem(v VReg) (base int16, off int64) {
+	if lc.abi == arm64ABJIT {
+		return a64ABJITBase, int64(fpRegOffset) + int64(v-32)*8
+	}
+	return a64FBase, int64(v-32) * 8
 }
 
 func (lc *lowerARM64Ctx) xBaseReg() int16 {
@@ -419,6 +533,20 @@ func (lc *lowerARM64Ctx) lowerInstr(ins *IRInstr) error {
 		return lc.lowerSet(ins, false)
 	case IRSetImm:
 		return lc.lowerSet(ins, true)
+	case IRFAdd:
+		return lc.lowerFPBinop(ins, arm64.AFADDD, arm64.AFADDS)
+	case IRFSub:
+		return lc.lowerFPBinop(ins, arm64.AFSUBD, arm64.AFSUBS)
+	case IRFMul:
+		return lc.lowerFPBinop(ins, arm64.AFMULD, arm64.AFMULS)
+	case IRFDiv:
+		return lc.lowerFPBinop(ins, arm64.AFDIVD, arm64.AFDIVS)
+	case IRFSqrt:
+		return lc.lowerFPUnary(ins, arm64.AFSQRTD, arm64.AFSQRTS)
+	case IRFNeg:
+		return lc.lowerFPUnary(ins, arm64.AFNEGD, arm64.AFNEGS)
+	case IRFAbs:
+		return lc.lowerFPUnary(ins, arm64.AFABSD, arm64.AFABSS)
 	case IRLoad:
 		return lc.lowerLoad(ins, false)
 	case IRStore:
@@ -459,9 +587,7 @@ func (lc *lowerARM64Ctx) lowerInstr(ins *IRInstr) error {
 		lc.emitReturn()
 		return nil
 	case IRChainExit:
-		lc.loadImm(0, a64A)
-		lc.emitResultImm(ins.Imm, jitOK, a64A)
-		lc.emitReturn()
+		lc.emitChainExit(uint64(ins.Imm))
 		return nil
 	case IRSyscall:
 		lc.loadImm(0, a64A)
@@ -472,15 +598,30 @@ func (lc *lowerARM64Ctx) lowerInstr(ins *IRInstr) error {
 		lc.storeICImm(0)
 		return nil
 	case IRIncIC:
-		return lc.addIC(ins.Imm)
-	case IRSpillIC, IRLoadIC, IRDecIC, IRRegBudget, IRMemBudget, IRMarkLive, IRMarkDead, IRWriteback:
+		return lc.addIC(1)
+	case IRLoadIC, IRSpillIC, IRMarkLive, IRMarkDead, IRWriteback:
 		return nil
+	case IRDecIC:
+		return lc.addIC(-1)
+	case IRRegBudget:
+		lc.loadIC(a64A)
+		lc.cmpImm(a64A, ins.Imm2)
+		lc.emitBranch(arm64.ABGE, Label(ins.Dst))
+		return nil
+	case IRMemAdd:
+		return lc.memAdd(ins.Imm, ins.Imm2)
+	case IRMemBudget:
+		return lc.memBudget(ins)
 	case IRStopperLoad:
 		lc.loadImm(ins.Imm, a64A)
 		lc.emitLoad(arm64.AMOVD, a64A, 0, a64A)
 		return nil
-	case IRSetPC, IRRetBudget:
-		return fmt.Errorf("arm64 lower: %s is not implemented", ins.Op)
+	case IRSetPC:
+		lc.setPC(ins.Imm)
+		return nil
+	case IRRetBudget:
+		lc.retBudget()
+		return nil
 	default:
 		return fmt.Errorf("arm64 lower: %s is not implemented", ins.Op)
 	}
@@ -763,6 +904,46 @@ func (lc *lowerARM64Ctx) lowerSet(ins *IRInstr, imm bool) error {
 	return lc.storeV(ins.Dst, a64C)
 }
 
+func (lc *lowerARM64Ctx) lowerFPBinop(ins *IRInstr, f64op, f32op obj.As) error {
+	if err := lc.loadFP(ins.A, a64FA, ins.T); err != nil {
+		return err
+	}
+	if err := lc.loadFP(ins.B, a64FB, ins.T); err != nil {
+		return err
+	}
+	op := f64op
+	if ins.T == F32 {
+		op = f32op
+	}
+	p := lc.c.NewProg()
+	p.As = op
+	p.From.Type = obj.TYPE_REG
+	p.From.Reg = a64FB
+	p.Reg = a64FA
+	p.To.Type = obj.TYPE_REG
+	p.To.Reg = a64FA
+	lc.c.Append(p)
+	return lc.storeFP(ins.Dst, a64FA, ins.T)
+}
+
+func (lc *lowerARM64Ctx) lowerFPUnary(ins *IRInstr, f64op, f32op obj.As) error {
+	if err := lc.loadFP(ins.A, a64FA, ins.T); err != nil {
+		return err
+	}
+	op := f64op
+	if ins.T == F32 {
+		op = f32op
+	}
+	p := lc.c.NewProg()
+	p.As = op
+	p.From.Type = obj.TYPE_REG
+	p.From.Reg = a64FA
+	p.To.Type = obj.TYPE_REG
+	p.To.Reg = a64FA
+	lc.c.Append(p)
+	return lc.storeFP(ins.Dst, a64FA, ins.T)
+}
+
 func (lc *lowerARM64Ctx) lowerBranch(ins *IRInstr, imm bool) error {
 	if err := lc.loadV(ins.A, a64A); err != nil {
 		return err
@@ -901,28 +1082,128 @@ func (lc *lowerARM64Ctx) storeICImm(v int64) {
 	lc.emitStore(arm64.AMOVD, a64A, lc.sretBase(), icOff)
 }
 
+func (lc *lowerARM64Ctx) loadIC(dst int16) {
+	_, _, _, icOff := lc.resultOffsets()
+	lc.emitLoad(arm64.AMOVD, lc.sretBase(), icOff, dst)
+}
+
 func (lc *lowerARM64Ctx) addIC(v int64) error {
 	if v == 0 {
 		return nil
 	}
 	_, _, _, icOff := lc.resultOffsets()
 	lc.emitLoad(arm64.AMOVD, lc.sretBase(), icOff, a64A)
-	lc.emitRRI(arm64.AADD, v, a64A, a64A)
+	if v > 0 {
+		lc.emitRRI(arm64.AADD, v, a64A, a64A)
+	} else {
+		lc.emitRRI(arm64.ASUB, -v, a64A, a64A)
+	}
 	lc.emitStore(arm64.AMOVD, a64A, lc.sretBase(), icOff)
 	return nil
+}
+
+func (lc *lowerARM64Ctx) memAdd(off, delta int64) error {
+	lc.emitLoad(arm64.AMOVD, lc.sretBase(), off, a64A)
+	if delta > 0 {
+		lc.emitRRI(arm64.AADD, delta, a64A, a64A)
+	} else if delta < 0 {
+		lc.emitRRI(arm64.ASUB, -delta, a64A, a64A)
+	}
+	lc.emitStore(arm64.AMOVD, a64A, lc.sretBase(), off)
+	return nil
+}
+
+func (lc *lowerARM64Ctx) memBudget(ins *IRInstr) error {
+	_, _, _, icOff := lc.resultOffsets()
+	if err := lc.memAdd(icOff, ins.Imm); err != nil {
+		return err
+	}
+	lc.loadIC(a64A)
+	lc.cmpImm(a64A, ins.Imm2)
+	lc.emitBranch(arm64.ABGE, Label(ins.Dst))
+	return nil
+}
+
+func (lc *lowerARM64Ctx) setPC(pc int64) {
+	pcOff, _, _, _ := lc.resultOffsets()
+	lc.loadImm(pc, a64A)
+	lc.emitStore(arm64.AMOVD, a64A, lc.sretBase(), pcOff)
+}
+
+func (lc *lowerARM64Ctx) retBudget() {
+	_, statusOff, faultOff, _ := lc.resultOffsets()
+	lc.loadImm(0, a64A)
+	lc.emitStore(arm64.AMOVD, a64A, lc.sretBase(), statusOff)
+	lc.emitStore(arm64.AMOVD, a64A, lc.sretBase(), faultOff)
+	lc.emitReturn()
+}
+
+func arm64GPRegNum(reg int16) uint32 {
+	return uint32(reg - goasm.REG_ARM64_R0)
+}
+
+func arm64LDRLiteral64(rt int16, imm19 int32) uint32 {
+	return 0x58000000 | (uint32(imm19)&0x7ffff)<<5 | arm64GPRegNum(rt)
+}
+
+func (lc *lowerARM64Ctx) emitPatchableAddrLoad(dst int16, value uint64) *obj.Prog {
+	// LDR literal loads the 8-byte slot after the following JMP:
+	//
+	//   LDR dst, [PC+8]
+	//   JMP (dst)
+	//   WORD low32
+	//   WORD high32
+	//
+	// PatchImm64 returns the data-slot offset so the shared runtime patcher
+	// can keep writing a plain little-endian uint64.
+	load := lc.emitWord(arm64LDRLiteral64(dst, 2))
+	lc.emitIndirectJump(dst)
+	lc.emitWord(uint32(value))
+	lc.emitWord(uint32(value >> 32))
+	return load
+}
+
+func (lc *lowerARM64Ctx) emitIndirectJump(reg int16) {
+	p := lc.c.NewProg()
+	p.As = obj.AJMP
+	p.To.Type = obj.TYPE_MEM
+	p.To.Reg = reg
+	lc.c.Append(p)
+}
+
+func (lc *lowerARM64Ctx) emitChainExit(targetPC uint64) {
+	if lc.frameSize != 0 {
+		lc.emitRRI(arm64.AADD, lc.frameSize, goasm.REG_ARM64_RSP, goasm.REG_ARM64_RSP)
+	}
+	load := lc.emitPatchableAddrLoad(a64D, nativePatchSentinel)
+	lc.chainExits = append(lc.chainExits, chainExitInfo{
+		targetPC: targetPC,
+		movProg:  load,
+	})
+}
+
+func (lc *lowerARM64Ctx) emitSlowExitStub(targetPC uint64) *obj.Prog {
+	first := lc.c.NewProg()
+	first.As = obj.ANOP
+	lc.c.Append(first)
+
+	lc.loadImm(0, a64A)
+	lc.emitResultImm(int64(targetPC), jitOK, a64A)
+	lc.emitReturnFrameFreed()
+	return first
 }
 
 func (lc *lowerARM64Ctx) emitReturn() {
 	if lc.frameSize != 0 {
 		lc.emitRRI(arm64.AADD, lc.frameSize, goasm.REG_ARM64_RSP, goasm.REG_ARM64_RSP)
 	}
+	lc.emitReturnFrameFreed()
+}
+
+func (lc *lowerARM64Ctx) emitReturnFrameFreed() {
 	if lc.abi == arm64ABJIT {
 		lc.loadImm(int64(abjit.RetStubAddr()), a64A)
-		p := lc.c.NewProg()
-		p.As = obj.AJMP
-		p.To.Type = obj.TYPE_MEM
-		p.To.Reg = a64A
-		lc.c.Append(p)
+		lc.emitIndirectJump(a64A)
 		return
 	}
 	lc.c.Append(lc.c.NewRET())
