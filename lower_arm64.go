@@ -115,6 +115,7 @@ type lowerARM64Ctx struct {
 	rIdx           regIndex
 	idx            int
 	abi            arm64ABI
+	dirtyArch      [32]bool
 	tempSlots      map[VReg]int64
 	frameSize      int64
 	labelProg      map[Label]*obj.Prog
@@ -140,6 +141,7 @@ func lowerARM64(ctx *goasm.Ctx, b *Block, alloc *Allocation, abi arm64ABI) (*Low
 	if alloc != nil {
 		lc.rIdx = buildRegIndex(alloc)
 	}
+	lc.collectDirtyArch()
 	lc.collectTemps()
 	n := int64(len(lc.tempSlots) * 8)
 	if abi == arm64RV8 && blockHasSyscall(b) {
@@ -206,6 +208,36 @@ func (lc *lowerARM64Ctx) collectTemps() {
 	}
 }
 
+func (lc *lowerARM64Ctx) collectDirtyArch() {
+	for i := range lc.blk.Instrs {
+		ins := &lc.blk.Instrs[i]
+		if !arm64OpWritesDst(ins.Op) {
+			continue
+		}
+		if ins.Dst > VRegZero && ins.Dst < 32 {
+			lc.dirtyArch[ins.Dst] = true
+		}
+	}
+}
+
+func arm64OpWritesDst(op IROp) bool {
+	switch op {
+	case IRMov, IRConst, IRSext, IRZext,
+		IRAdd, IRAddImm, IRSub, IRSubImm,
+		IRMul, IRMulHS, IRMulHU, IRMulHSU, IRDivS, IRDivU, IRRem, IRRemU,
+		IRNeg,
+		IRShl, IRShlImm, IRShr, IRShrImm, IRSar, IRSarImm,
+		IRAnd, IRAndImm, IROr, IROrImm, IRXor, IRXorImm, IRNot,
+		IRClz, IRCtz, IRPopcount, IRBswap,
+		IRSet, IRSetImm,
+		IRFCmp, IRFCvtToI, IRFCvtToU,
+		IRLoad, IRLoadX, IRMisalignLoad:
+		return true
+	default:
+		return false
+	}
+}
+
 func (lc *lowerARM64Ctx) canUseHostReg(v VReg) bool {
 	if v == VRegZero {
 		return false
@@ -253,6 +285,9 @@ func (lc *lowerARM64Ctx) loadAllocatedRegs() {
 
 func (lc *lowerARM64Ctx) storeRegsBack() {
 	for vr := VReg(1); vr < 32; vr++ {
+		if !lc.dirtyArch[vr] {
+			continue
+		}
 		host := lc.hostReg(vr)
 		if host >= 0 {
 			lc.emitStore(arm64.AMOVD, host, lc.xBaseReg(), int64(vr)*8)
@@ -453,7 +488,9 @@ func (lc *lowerARM64Ctx) loadV(v VReg, dst int16) error {
 
 func (lc *lowerARM64Ctx) storeV(v VReg, src int16) error {
 	if host := lc.hostReg(v); host >= 0 {
-		lc.emitRR(arm64.AMOVD, src, host)
+		if src != host {
+			lc.emitRR(arm64.AMOVD, src, host)
+		}
 		return nil
 	}
 	switch {
@@ -474,6 +511,50 @@ func (lc *lowerARM64Ctx) storeV(v VReg, src int16) error {
 		return fmt.Errorf("arm64 lower: cannot store %s", v)
 	}
 	return nil
+}
+
+func (lc *lowerARM64Ctx) valueReg(v VReg, scratch int16) (int16, error) {
+	if host := lc.hostReg(v); host >= 0 {
+		return host, nil
+	}
+	if err := lc.loadV(v, scratch); err != nil {
+		return 0, err
+	}
+	return scratch, nil
+}
+
+func (lc *lowerARM64Ctx) resultReg(v VReg, scratch int16) (reg int16, direct bool) {
+	if host := lc.hostReg(v); host >= 0 {
+		return host, true
+	}
+	return scratch, false
+}
+
+func (lc *lowerARM64Ctx) finishResult(v VReg, reg int16, direct bool) error {
+	if direct || v == VRegZero {
+		return nil
+	}
+	return lc.storeV(v, reg)
+}
+
+func (lc *lowerARM64Ctx) moveV(dst, src VReg) error {
+	if dst == VRegZero {
+		return nil
+	}
+	if dstReg, direct := lc.resultReg(dst, a64A); direct {
+		srcReg, err := lc.valueReg(src, dstReg)
+		if err != nil {
+			return err
+		}
+		if srcReg != dstReg {
+			lc.emitRR(arm64.AMOVD, srcReg, dstReg)
+		}
+		return nil
+	}
+	if err := lc.loadV(src, a64A); err != nil {
+		return err
+	}
+	return lc.storeV(dst, a64A)
 }
 
 func (lc *lowerARM64Ctx) fpMem(v VReg) (base int16, off int64) {
@@ -534,13 +615,14 @@ func (lc *lowerARM64Ctx) lowerInstr(ins *IRInstr) error {
 	case IROpInvalid:
 		return fmt.Errorf("arm64 lower: invalid op")
 	case IRMov:
-		if err := lc.loadV(ins.A, a64A); err != nil {
-			return err
-		}
-		return lc.storeV(ins.Dst, a64A)
+		return lc.moveV(ins.Dst, ins.A)
 	case IRConst:
-		lc.loadImm(ins.Imm, a64A)
-		return lc.storeV(ins.Dst, a64A)
+		if ins.Dst == VRegZero {
+			return nil
+		}
+		dst, direct := lc.resultReg(ins.Dst, a64A)
+		lc.loadImm(ins.Imm, dst)
+		return lc.finishResult(ins.Dst, dst, direct)
 	case IRSext:
 		return lc.lowerSext(ins)
 	case IRZext:
@@ -569,11 +651,13 @@ func (lc *lowerARM64Ctx) lowerInstr(ins *IRInstr) error {
 		return lc.lowerRem(ins, ins.Op == IRRem)
 	case IRNeg:
 		lc.loadImm(0, a64A)
-		if err := lc.loadV(ins.A, a64B); err != nil {
+		src, err := lc.valueReg(ins.A, a64B)
+		if err != nil {
 			return err
 		}
-		lc.emitRRR(arm64.ASUB, a64A, a64B, a64A)
-		return lc.storeV(ins.Dst, a64A)
+		dst, direct := lc.resultReg(ins.Dst, a64A)
+		lc.emitRRR(arm64.ASUB, a64A, src, dst)
+		return lc.finishResult(ins.Dst, dst, direct)
 	case IRShl:
 		return lc.lowerShift(ins, arm64.ALSL)
 	case IRShlImm:
@@ -599,41 +683,49 @@ func (lc *lowerARM64Ctx) lowerInstr(ins *IRInstr) error {
 	case IRXorImm:
 		return lc.lowerBinopImmViaReg(ins, arm64.AEOR)
 	case IRNot:
-		if err := lc.loadV(ins.A, a64A); err != nil {
+		src, err := lc.valueReg(ins.A, a64A)
+		if err != nil {
 			return err
 		}
 		lc.loadImm(-1, a64B)
-		lc.emitRRR(arm64.AEOR, a64A, a64B, a64A)
-		return lc.storeV(ins.Dst, a64A)
+		dst, direct := lc.resultReg(ins.Dst, a64A)
+		lc.emitRRR(arm64.AEOR, src, a64B, dst)
+		return lc.finishResult(ins.Dst, dst, direct)
 	case IRClz:
-		if err := lc.loadV(ins.A, a64A); err != nil {
+		src, err := lc.valueReg(ins.A, a64A)
+		if err != nil {
 			return err
 		}
 		op := arm64.ACLZ
 		if ins.T == I32 {
 			op = arm64.ACLZW
 		}
-		lc.emitRR(op, a64A, a64A)
-		return lc.storeV(ins.Dst, a64A)
+		dst, direct := lc.resultReg(ins.Dst, a64A)
+		lc.emitRR(op, src, dst)
+		return lc.finishResult(ins.Dst, dst, direct)
 	case IRCtz:
-		if err := lc.loadV(ins.A, a64A); err != nil {
+		src, err := lc.valueReg(ins.A, a64A)
+		if err != nil {
 			return err
 		}
-		lc.emitRR(arm64.ARBIT, a64A, a64A)
+		dst, direct := lc.resultReg(ins.Dst, a64A)
+		lc.emitRR(arm64.ARBIT, src, dst)
 		op := arm64.ACLZ
 		if ins.T == I32 {
 			op = arm64.ACLZW
 		}
-		lc.emitRR(op, a64A, a64A)
-		return lc.storeV(ins.Dst, a64A)
+		lc.emitRR(op, dst, dst)
+		return lc.finishResult(ins.Dst, dst, direct)
 	case IRPopcount:
 		return lc.lowerPopcount(ins)
 	case IRBswap:
-		if err := lc.loadV(ins.A, a64A); err != nil {
+		src, err := lc.valueReg(ins.A, a64A)
+		if err != nil {
 			return err
 		}
-		lc.emitRR(arm64.AREV, a64A, a64A)
-		return lc.storeV(ins.Dst, a64A)
+		dst, direct := lc.resultReg(ins.Dst, a64A)
+		lc.emitRR(arm64.AREV, src, dst)
+		return lc.finishResult(ins.Dst, dst, direct)
 	case IRSet:
 		return lc.lowerSet(ins, false)
 	case IRSetImm:
@@ -754,31 +846,38 @@ func (lc *lowerARM64Ctx) lowerInstr(ins *IRInstr) error {
 }
 
 func (lc *lowerARM64Ctx) lowerBinop(ins *IRInstr, op obj.As) error {
-	if err := lc.loadV(ins.A, a64A); err != nil {
+	a, err := lc.valueReg(ins.A, a64A)
+	if err != nil {
 		return err
 	}
-	if err := lc.loadV(ins.B, a64B); err != nil {
+	b, err := lc.valueReg(ins.B, a64B)
+	if err != nil {
 		return err
 	}
-	lc.emitRRR(op, a64A, a64B, a64A)
-	return lc.storeV(ins.Dst, a64A)
+	dst, direct := lc.resultReg(ins.Dst, a64A)
+	lc.emitRRR(op, a, b, dst)
+	return lc.finishResult(ins.Dst, dst, direct)
 }
 
 func (lc *lowerARM64Ctx) lowerBinopImm(ins *IRInstr, op obj.As) error {
-	if err := lc.loadV(ins.A, a64A); err != nil {
+	a, err := lc.valueReg(ins.A, a64A)
+	if err != nil {
 		return err
 	}
-	lc.emitRRI(op, ins.Imm, a64A, a64A)
-	return lc.storeV(ins.Dst, a64A)
+	dst, direct := lc.resultReg(ins.Dst, a64A)
+	lc.emitRRI(op, ins.Imm, a, dst)
+	return lc.finishResult(ins.Dst, dst, direct)
 }
 
 func (lc *lowerARM64Ctx) lowerBinopImmViaReg(ins *IRInstr, op obj.As) error {
-	if err := lc.loadV(ins.A, a64A); err != nil {
+	a, err := lc.valueReg(ins.A, a64A)
+	if err != nil {
 		return err
 	}
 	lc.loadImm(ins.Imm, a64B)
-	lc.emitRRR(op, a64A, a64B, a64A)
-	return lc.storeV(ins.Dst, a64A)
+	dst, direct := lc.resultReg(ins.Dst, a64A)
+	lc.emitRRR(op, a, a64B, dst)
+	return lc.finishResult(ins.Dst, dst, direct)
 }
 
 func (lc *lowerARM64Ctx) lowerRem(ins *IRInstr, signed bool) error {
@@ -798,14 +897,17 @@ func (lc *lowerARM64Ctx) lowerRem(ins *IRInstr, signed bool) error {
 }
 
 func (lc *lowerARM64Ctx) lowerMulHigh(ins *IRInstr, op obj.As) error {
-	if err := lc.loadV(ins.A, a64A); err != nil {
+	a, err := lc.valueReg(ins.A, a64A)
+	if err != nil {
 		return err
 	}
-	if err := lc.loadV(ins.B, a64B); err != nil {
+	b, err := lc.valueReg(ins.B, a64B)
+	if err != nil {
 		return err
 	}
-	lc.emitRRR(op, a64A, a64B, a64A)
-	return lc.storeV(ins.Dst, a64A)
+	dst, direct := lc.resultReg(ins.Dst, a64A)
+	lc.emitRRR(op, a, b, dst)
+	return lc.finishResult(ins.Dst, dst, direct)
 }
 
 func (lc *lowerARM64Ctx) lowerMulHSU(ins *IRInstr) error {
@@ -868,26 +970,32 @@ func (lc *lowerARM64Ctx) emitRRRR(op obj.As, a, b, c, dst int16) {
 }
 
 func (lc *lowerARM64Ctx) lowerShift(ins *IRInstr, op obj.As) error {
-	if err := lc.loadV(ins.A, a64A); err != nil {
+	a, err := lc.valueReg(ins.A, a64A)
+	if err != nil {
 		return err
 	}
-	if err := lc.loadV(ins.B, a64B); err != nil {
+	b, err := lc.valueReg(ins.B, a64B)
+	if err != nil {
 		return err
 	}
-	lc.emitRRR(op, a64A, a64B, a64A)
-	return lc.storeV(ins.Dst, a64A)
+	dst, direct := lc.resultReg(ins.Dst, a64A)
+	lc.emitRRR(op, a, b, dst)
+	return lc.finishResult(ins.Dst, dst, direct)
 }
 
 func (lc *lowerARM64Ctx) lowerShiftImm(ins *IRInstr, op obj.As) error {
-	if err := lc.loadV(ins.A, a64A); err != nil {
+	a, err := lc.valueReg(ins.A, a64A)
+	if err != nil {
 		return err
 	}
-	lc.emitRRI(op, ins.Imm, a64A, a64A)
-	return lc.storeV(ins.Dst, a64A)
+	dst, direct := lc.resultReg(ins.Dst, a64A)
+	lc.emitRRI(op, ins.Imm, a, dst)
+	return lc.finishResult(ins.Dst, dst, direct)
 }
 
 func (lc *lowerARM64Ctx) lowerSext(ins *IRInstr) error {
-	if err := lc.loadV(ins.A, a64A); err != nil {
+	a, err := lc.valueReg(ins.A, a64A)
+	if err != nil {
 		return err
 	}
 	var sh int64
@@ -899,15 +1007,17 @@ func (lc *lowerARM64Ctx) lowerSext(ins *IRInstr) error {
 	case I32:
 		sh = 32
 	default:
-		return lc.storeV(ins.Dst, a64A)
+		return lc.moveV(ins.Dst, ins.A)
 	}
-	lc.emitRRI(arm64.ALSL, sh, a64A, a64A)
-	lc.emitRRI(arm64.AASR, sh, a64A, a64A)
-	return lc.storeV(ins.Dst, a64A)
+	dst, direct := lc.resultReg(ins.Dst, a64A)
+	lc.emitRRI(arm64.ALSL, sh, a, dst)
+	lc.emitRRI(arm64.AASR, sh, dst, dst)
+	return lc.finishResult(ins.Dst, dst, direct)
 }
 
 func (lc *lowerARM64Ctx) lowerZext(ins *IRInstr) error {
-	if err := lc.loadV(ins.A, a64A); err != nil {
+	a, err := lc.valueReg(ins.A, a64A)
+	if err != nil {
 		return err
 	}
 	var mask int64
@@ -919,11 +1029,12 @@ func (lc *lowerARM64Ctx) lowerZext(ins *IRInstr) error {
 	case I32:
 		mask = 0xffffffff
 	default:
-		return lc.storeV(ins.Dst, a64A)
+		return lc.moveV(ins.Dst, ins.A)
 	}
 	lc.loadImm(mask, a64B)
-	lc.emitRRR(arm64.AAND, a64A, a64B, a64A)
-	return lc.storeV(ins.Dst, a64A)
+	dst, direct := lc.resultReg(ins.Dst, a64A)
+	lc.emitRRR(arm64.AAND, a, a64B, dst)
+	return lc.finishResult(ins.Dst, dst, direct)
 }
 
 func (lc *lowerARM64Ctx) lowerLoad(ins *IRInstr, indexed bool) error {
@@ -943,8 +1054,9 @@ func (lc *lowerARM64Ctx) lowerLoad(ins *IRInstr, indexed bool) error {
 	default:
 		return fmt.Errorf("arm64 lower: load type %s is not implemented", ins.T)
 	}
-	lc.emitLoad(op, a64A, 0, a64B)
-	return lc.storeV(ins.Dst, a64B)
+	dst, direct := lc.resultReg(ins.Dst, a64B)
+	lc.emitLoad(op, a64A, 0, dst)
+	return lc.finishResult(ins.Dst, dst, direct)
 }
 
 func (lc *lowerARM64Ctx) lowerStore(ins *IRInstr, indexed bool) error {
@@ -955,7 +1067,8 @@ func (lc *lowerARM64Ctx) lowerStore(ins *IRInstr, indexed bool) error {
 	if indexed {
 		val = ins.Dst
 	}
-	if err := lc.loadV(val, a64B); err != nil {
+	valReg, err := lc.valueReg(val, a64B)
+	if err != nil {
 		return err
 	}
 	op := arm64.AMOVD
@@ -971,7 +1084,7 @@ func (lc *lowerARM64Ctx) lowerStore(ins *IRInstr, indexed bool) error {
 	default:
 		return fmt.Errorf("arm64 lower: store type %s is not implemented", ins.T)
 	}
-	lc.emitStore(op, a64B, a64A, 0)
+	lc.emitStore(op, valReg, a64A, 0)
 	return nil
 }
 
@@ -1064,28 +1177,31 @@ func (lc *lowerARM64Ctx) lowerMisalignStore(ins *IRInstr) error {
 }
 
 func (lc *lowerARM64Ctx) lowerSet(ins *IRInstr, imm bool) error {
-	if err := lc.loadV(ins.A, a64A); err != nil {
+	a, err := lc.valueReg(ins.A, a64A)
+	if err != nil {
 		return err
 	}
 	if imm {
-		lc.cmpImm(a64A, ins.Imm)
+		lc.cmpImm(a, ins.Imm)
 	} else {
-		if err := lc.loadV(ins.B, a64B); err != nil {
+		b, err := lc.valueReg(ins.B, a64B)
+		if err != nil {
 			return err
 		}
-		lc.cmp(a64A, a64B)
+		lc.cmp(a, b)
 	}
-	lc.loadImm(0, a64C)
+	dst, direct := lc.resultReg(ins.Dst, a64C)
+	lc.loadImm(0, dst)
 	skip := lc.c.NewProg()
 	skip.As = invertBranch(predBranch(ins.Pred))
 	skip.To.Type = obj.TYPE_BRANCH
 	lc.c.Append(skip)
-	lc.loadImm(1, a64C)
+	lc.loadImm(1, dst)
 	done := lc.c.NewProg()
 	done.As = obj.ANOP
 	skip.To.SetTarget(done)
 	lc.c.Append(done)
-	return lc.storeV(ins.Dst, a64C)
+	return lc.finishResult(ins.Dst, dst, direct)
 }
 
 func (lc *lowerARM64Ctx) lowerFPBinop(ins *IRInstr, f64op, f32op obj.As) error {
@@ -1309,16 +1425,18 @@ func (lc *lowerARM64Ctx) lowerFCvtFF(ins *IRInstr) error {
 }
 
 func (lc *lowerARM64Ctx) lowerBranch(ins *IRInstr, imm bool) error {
-	if err := lc.loadV(ins.A, a64A); err != nil {
+	a, err := lc.valueReg(ins.A, a64A)
+	if err != nil {
 		return err
 	}
 	if imm {
-		lc.cmpImm(a64A, ins.Imm2)
+		lc.cmpImm(a, ins.Imm2)
 	} else {
-		if err := lc.loadV(ins.B, a64B); err != nil {
+		b, err := lc.valueReg(ins.B, a64B)
+		if err != nil {
 			return err
 		}
-		lc.cmp(a64A, a64B)
+		lc.cmp(a, b)
 	}
 	lc.emitBranch(predBranch(ins.Pred), Label(ins.Imm))
 	return nil
