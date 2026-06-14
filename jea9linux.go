@@ -291,6 +291,45 @@ type Jea9LinuxStartOptions struct {
 	StackTop uint64
 }
 
+type Jea9LinuxSyscallTraceEntry struct {
+	TID         uint64
+	PC          uint64
+	Num         uint64
+	Args        [6]uint64
+	Ret         int64
+	Disposition NoteDisposition
+}
+
+type Jea9LinuxScheduleTraceEntry struct {
+	Event           string
+	TID             uint64
+	NextTID         uint64
+	MonotonicNS     int64
+	RiscvInstrBegun uint64
+}
+
+type Jea9LinuxRandomTraceEntry struct {
+	Source string
+	TID    uint64
+	N      uint64
+	Flags  uint64
+	Bytes  []byte
+}
+
+type Jea9LinuxClockTraceEntry struct {
+	Source  string
+	TID     uint64
+	ClockID uint64
+	NS      int64
+}
+
+type Jea9LinuxTraceSnapshot struct {
+	Syscalls []Jea9LinuxSyscallTraceEntry
+	Schedule []Jea9LinuxScheduleTraceEntry
+	Random   []Jea9LinuxRandomTraceEntry
+	Clock    []Jea9LinuxClockTraceEntry
+}
+
 type Jea9Linux struct {
 	clockMode         Jea9LinuxClockMode
 	monotonicNS       int64
@@ -328,6 +367,7 @@ type Jea9Linux struct {
 	signalActions       map[uint64]jea9LinuxSignalAction
 	signalFrames        map[jea9LinuxSignalFrameKey]jea9LinuxSignalFrame
 	signalRestorer      uint64
+	trace               Jea9LinuxTraceSnapshot
 }
 
 type jea9LinuxAuxEntry struct {
@@ -496,6 +536,80 @@ func (j *Jea9Linux) SetMonotonicNS(ns int64) {
 func (j *Jea9Linux) MonotonicNS() int64 { return j.monotonicNS }
 
 func (j *Jea9Linux) BudgetYields() uint64 { return j.budgetYields }
+
+func (j *Jea9Linux) TraceSnapshot() Jea9LinuxTraceSnapshot {
+	out := Jea9LinuxTraceSnapshot{
+		Syscalls: append([]Jea9LinuxSyscallTraceEntry(nil), j.trace.Syscalls...),
+		Schedule: append([]Jea9LinuxScheduleTraceEntry(nil),
+			j.trace.Schedule...),
+		Clock: append([]Jea9LinuxClockTraceEntry(nil), j.trace.Clock...),
+	}
+	if len(j.trace.Random) > 0 {
+		out.Random = make([]Jea9LinuxRandomTraceEntry, len(j.trace.Random))
+		for i := range j.trace.Random {
+			out.Random[i] = j.trace.Random[i]
+			out.Random[i].Bytes = append([]byte(nil), j.trace.Random[i].Bytes...)
+		}
+	}
+	return out
+}
+
+func (j *Jea9Linux) traceTID() uint64 {
+	if j.currentTID != 0 {
+		return j.currentTID
+	}
+	if j.tid != 0 {
+		return j.tid
+	}
+	return j.pid
+}
+
+func (j *Jea9Linux) recordSyscallTrace(cpu *CPU, n Note, args SyscallArgs, d NoteDisposition) {
+	j.trace.Syscalls = append(j.trace.Syscalls, Jea9LinuxSyscallTraceEntry{
+		TID: j.traceTID(),
+		PC:  n.PC,
+		Num: args.Num,
+		Args: [6]uint64{
+			args.A0,
+			args.A1,
+			args.A2,
+			args.A3,
+			args.A4,
+			args.A5,
+		},
+		Ret:         int64(cpu.Reg(10)),
+		Disposition: d,
+	})
+}
+
+func (j *Jea9Linux) recordScheduleTrace(cpu *CPU, event string, tid, nextTID uint64) {
+	j.trace.Schedule = append(j.trace.Schedule, Jea9LinuxScheduleTraceEntry{
+		Event:           event,
+		TID:             tid,
+		NextTID:         nextTID,
+		MonotonicNS:     j.monotonicNS,
+		RiscvInstrBegun: cpu.RiscvInstrBegun(),
+	})
+}
+
+func (j *Jea9Linux) recordRandomTrace(source string, n, flags uint64, b []byte) {
+	j.trace.Random = append(j.trace.Random, Jea9LinuxRandomTraceEntry{
+		Source: source,
+		TID:    j.traceTID(),
+		N:      n,
+		Flags:  flags,
+		Bytes:  append([]byte(nil), b...),
+	})
+}
+
+func (j *Jea9Linux) recordClockTrace(source string, clockID uint64, ns int64) {
+	j.trace.Clock = append(j.trace.Clock, Jea9LinuxClockTraceEntry{
+		Source:  source,
+		TID:     j.traceTID(),
+		ClockID: clockID,
+		NS:      ns,
+	})
+}
 
 func (j *Jea9Linux) Blocked() bool {
 	j.refreshBlocked()
@@ -1107,12 +1221,16 @@ func (j *Jea9Linux) Run(cpu *CPU) error {
 	case RunBudgetExpired:
 		j.budgetYields++
 		if j.contexts != nil {
+			from := j.traceTID()
+			to := from
 			ctx := j.ensureScheduler(cpu)
 			ctx.state = jea9LinuxContextRunnable
 			ctx.snapshot = snapshotJea9LinuxCPU(cpu)
 			if next, ok := j.nextRunnableAfterCurrent(); ok {
 				j.loadContext(cpu, next)
+				to = next
 			}
+			j.recordScheduleTrace(cpu, "budget", from, to)
 		}
 		return ErrJea9LinuxBudget
 	case RunBudgetExit:
@@ -1129,7 +1247,7 @@ func (j *Jea9Linux) accountRetired(delta uint64) {
 	j.monotonicNS += int64(delta) * j.nsPerInstruction
 }
 
-func (j *Jea9Linux) Handle(cpu *CPU, n Note) NoteDisposition {
+func (j *Jea9Linux) Handle(cpu *CPU, n Note) (disp NoteDisposition) {
 	if !IsEcall(n) {
 		if jea9LinuxNoteIsFault(n) {
 			return j.handleFaultSignal(cpu, n)
@@ -1145,6 +1263,9 @@ func (j *Jea9Linux) Handle(cpu *CPU, n Note) NoteDisposition {
 		A4:  cpu.Reg(14),
 		A5:  cpu.Reg(15),
 	}
+	defer func() {
+		j.recordSyscallTrace(cpu, n, args, disp)
+	}()
 	switch args.Num {
 	case jea9LinuxSysEventfd2:
 		cpu.SetReg(10, uint64(j.sysEventfd2(args.A0, args.A1)))
@@ -2243,12 +2364,16 @@ func jea9LinuxCloneFlagsSupported(flags uint64) bool {
 
 func (j *Jea9Linux) sysSchedYield(cpu *CPU) NoteDisposition {
 	ctx := j.ensureScheduler(cpu)
+	from := j.traceTID()
+	to := from
 	cpu.SetReg(10, 0)
 	ctx.state = jea9LinuxContextRunnable
 	ctx.snapshot = snapshotJea9LinuxCPU(cpu)
 	if next, ok := j.nextRunnableAfterCurrent(); ok {
 		j.loadContext(cpu, next)
+		to = next
 	}
+	j.recordScheduleTrace(cpu, "yield", from, to)
 	return NoteHandled
 }
 
@@ -2428,6 +2553,7 @@ func (j *Jea9Linux) sysGetrandom(cpu *CPU, bufAddr, n, flags uint64) int64 {
 	}
 	buf := make([]byte, int(n))
 	j.fillRandom(buf)
+	j.recordRandomTrace("getrandom", n, flags, buf)
 	if f := cpu.mem.WriteBytes(bufAddr, buf); f != nil {
 		return jea9LinuxErrEFAULT
 	}
@@ -2498,6 +2624,7 @@ func (j *Jea9Linux) sysRead(cpu *CPU, fdRaw, bufAddr, n uint64) int64 {
 	case jea9LinuxFDRandom:
 		buf := make([]byte, int(n))
 		j.fillRandom(buf)
+		j.recordRandomTrace("random-device", n, 0, buf)
 		if fault := cpu.mem.WriteBytes(bufAddr, buf); fault != nil {
 			return jea9LinuxErrEFAULT
 		}
@@ -3023,12 +3150,14 @@ func (j *Jea9Linux) sysClockGettime(cpu *CPU, clockID, tsAddr uint64) int64 {
 	if !ok {
 		return jea9LinuxErrEINVAL
 	}
+	j.recordClockTrace("clock_gettime", clockID, ns)
 	return storeLinuxTimespec(cpu, tsAddr, ns)
 }
 
 func (j *Jea9Linux) sysGettimeofday(cpu *CPU, tvAddr, tzAddr uint64) int64 {
 	if tvAddr != 0 {
 		ns := j.monotonicNS + j.realtimeOffsetNS
+		j.recordClockTrace("gettimeofday", jea9LinuxClockRealtime, ns)
 		sec, nsec := splitLinuxNS(ns)
 		if f := cpu.mem.Store64(tvAddr, uint64(sec)); f != nil {
 			return jea9LinuxErrEFAULT
@@ -3148,15 +3277,31 @@ func splitLinuxNS(ns int64) (sec int64, nsec int64) {
 }
 
 func InstallJea9Linux(cpu *CPU, j *Jea9Linux) func() {
-	vm := j.ensureVM(cpu)
-	j.ensureScheduler(cpu)
 	directSyscallWasDisabled := directSyscallDisabled
 	DisableDirectSyscall()
+	cleanupCore := installJea9LinuxCore(cpu, j)
+	return func() {
+		cleanupCore()
+		directSyscallDisabled = directSyscallWasDisabled
+	}
+}
+
+func InstallJea9LinuxJIT(cpu *CPU, jit *JIT, j *Jea9Linux) func() {
+	cleanupCore := installJea9LinuxCore(cpu, j)
+	cleanupJIT := jit.installPersonalityEcallHandler(j.Handle, true)
+	return func() {
+		cleanupCore()
+		cleanupJIT()
+	}
+}
+
+func installJea9LinuxCore(cpu *CPU, j *Jea9Linux) func() {
+	vm := j.ensureVM(cpu)
+	j.ensureScheduler(cpu)
 	cpu.Notes.Push(j.Handle)
 	return func() {
 		cpu.Notes.Pop()
 		(&cpu.mem).clearAccessOverlay(vm)
-		directSyscallDisabled = directSyscallWasDisabled
 	}
 }
 

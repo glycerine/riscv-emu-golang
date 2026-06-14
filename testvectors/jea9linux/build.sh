@@ -21,3 +21,12 @@ for src in testvectors/jea9linux/src/*.c; do
   name="$(basename "$src" .c)"
   "$ZIG_CC" "${CFLAGS[@]}" "$src" -o "testvectors/jea9linux/elf/$name.elf"
 done
+
+mkdir -p testvectors/jea9linux/go/elf
+
+for src in testvectors/jea9linux/go/src/*; do
+  [[ -d "$src" ]] || continue
+  name="$(basename "$src")"
+  GOOS=linux GOARCH=riscv64 CGO_ENABLED=0 \
+    go build -o "testvectors/jea9linux/go/elf/$name.elf" "./$src"
+done

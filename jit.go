@@ -276,6 +276,12 @@ type JIT struct {
 	useABJIT   bool
 	abjitState *abjit.State
 
+	syscallDispatcherOverride bool
+	syscallDispatcherAddr     uintptr
+	ecallHandler              JITEcallHandler
+	personalityEcallCount     uint64
+	faultPageZero             bool
+
 	stopperPage uintptr // InfiniteLoopStopperPage: mmap'd guard page for preemption
 	watchAddr   uint64  // tohost address; JIT blocks exit when a store hits this address
 
@@ -1009,7 +1015,7 @@ func (j *JIT) RunJIT(cpu *CPU) (err0 error) {
 					continue
 				}
 				n := noteFromStepErr(ErrEcall, cpu.pc)
-				switch cpu.Notes.Deliver(cpu, n) {
+				switch j.deliverEcall(cpu, n) {
 				case NoteHandled:
 					continue
 				case NoteExit:

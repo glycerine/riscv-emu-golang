@@ -1307,7 +1307,7 @@ func (e *emitter) emit32(insn uint32) {
 			// entry (registered by aot.go's termFT), and lowerSyscall
 			// chain-exits into it on the hot path when the flag is on.
 			e.advancePC(4)
-			e.emitSyscall(e.pc, currentSyscallDispatcherAddr())
+			e.emitSyscall(e.pc, e.irEm.j.currentSyscallDispatcherAddr())
 			e.terminated = true
 		case 0x00100073: // EBREAK
 			e.advancePC(4)
@@ -1950,6 +1950,11 @@ func (e *emitter) emitLoad(rd, rs1 uint32, imm int64, funct3 uint32) {
 	addr := e.irEm.Tmp()
 	e.irEm.AddImm(addr, base, imm)
 	faultLabel := e.allocFaultLabel(addr, jitLoadFault)
+	if e.staticPageZeroFault(rs1, imm, width) {
+		e.irEm.Jump(faultLabel)
+		e.terminated = true
+		return
+	}
 	if width > 1 {
 		alignedLabel := e.irEm.NewLabel()
 		doneLabel := e.irEm.NewLabel()
@@ -1994,6 +1999,13 @@ func (e *emitter) emitOOBCheck(addr VReg, width int, faultLabel Label) {
 	oob := e.irEm.Tmp()
 	e.irEm.And(oob, endAddr, maskNot)
 	e.irEm.Branch(oob, VRegZero, NE, faultLabel)
+}
+
+func (e *emitter) staticPageZeroFault(rs1 uint32, imm int64, width int) bool {
+	if e.irEm.j == nil || !e.irEm.j.faultPageZero || rs1 != 0 || imm < 0 {
+		return false
+	}
+	return uint64(imm)+uint64(width) <= GuestPageSize
 }
 
 // emitMisalignedLoad emits byte-by-byte loads for a misaligned address.
@@ -2059,6 +2071,11 @@ func (e *emitter) emitStore(rs1, rs2 uint32, imm int64, funct3 uint32) {
 	addr := e.irEm.Tmp()
 	e.irEm.AddImm(addr, base, imm)
 	faultLabel := e.allocFaultLabel(addr, jitStoreFault)
+	if e.staticPageZeroFault(rs1, imm, width) {
+		e.irEm.Jump(faultLabel)
+		e.terminated = true
+		return
+	}
 	if width > 1 {
 		alignedLabel := e.irEm.NewLabel()
 		doneLabel := e.irEm.NewLabel()

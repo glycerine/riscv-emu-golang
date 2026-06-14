@@ -15,6 +15,11 @@ used to discover missing behavior.
 
 The name of the personality is `jea9linux`.
 
+Line-reference policy, 2026-06-14: implementation-status notes in this document
+now prefer file names, symbol names, and test names over numeric line
+references. Numeric line references in older completion notes went stale as the
+implementation evolved; use `rg` on the named symbols for the current location.
+
 ## 1. Determinism Controls
 
 Determinism controls are implemented first because every later subsystem depends
@@ -84,7 +89,7 @@ instruction count. It is useful for tests that want simulated CPU time to move
 with work rather than with blocked deadlines.
 
 `Jea9ClockManual` never advances automatically. `nanosleep`, futex timeouts,
-epoll timeouts, and timer deadlines block until the caller explicitly advances
+epoll timeouts, and timer deadblock until the caller explicitly advances
 time with `AdvanceTime` or `SetMonotonicNS`. If all contexts are blocked in
 manual mode and no external time advance occurs, the run loop should return a
 distinguishable blocked/deadlock error rather than silently inventing time.
@@ -121,21 +126,20 @@ it as a production scheduler budget for `jea9linux`.
 
 Implementation status, 2026-06-14: this phase is complete for the initial
 single-context scheduler slice. Added `jea9linux.go` with `Jea9LinuxClockMode`
-and clock mode constants starting at line 11, `Jea9LinuxOptions` at line 137,
-`Jea9Linux` state at line 159, `NewJea9Linux` at line 204, deterministic seed
-derivation at line 250, clock/budget/blocking accessors at lines 262-292,
-deterministic PRNG helpers at lines 294 and 307, the budgeted `Jea9Linux.Run`
-loop at line 684, IC-tick accounting at line 706, `Jea9Linux.Handle` at line
-713, and install/run helpers at lines 1421 and 1430. Changed `run_cached.go` to
-add `RunBudgetResult` at line 22, `RunDefaultBudget` at line 185, and the
-internal `runCachedBudget` entry point at line 198 so budgeted execution remains
+and clock mode constants, `Jea9LinuxOptions`,
+`Jea9Linux` state, `NewJea9Linux`, deterministic seed
+derivation, clock/budget/blocking accessors,
+deterministic PRNG helpers, the budgeted `Jea9Linux.Run`
+loop, IC-tick accounting, `Jea9Linux.Handle`, and install/run helpers. Changed `run_cached.go` to
+add `RunBudgetResult`, `RunDefaultBudget`, and the
+internal `runCachedBudget` entry point so budgeted execution remains
 inside the `run_cached.go` call-site boundary. Changed `jit.go` to add
-`JIT.StepBlockBudget` at line 430, bridging the existing lockstep budget gate
+`JIT.StepBlockBudget`, bridging the existing lockstep budget gate
 into a scheduler-facing "N retired instructions" API. Added
-`jea9linux_phase1_test.go`, with deterministic option/entropy tests at lines
-21-67, cached-interpreter budget tests at lines 69-126, IC-tick/manual-clock
-tests at lines 128-183, JIT budget coverage at line 143, and install/default
-writer coverage at lines 185-220.
+`jea9linux_phase1_test.go`, with deterministic option/entropy tests,
+cached-interpreter budget tests, IC-tick/manual-clock
+tests, JIT budget coverage, and install/default
+writer coverage.
 
 ### Determinism tests
 
@@ -393,23 +397,22 @@ bridge until Linux signal-frame delivery is complete.
 
 Implementation status, 2026-06-14: this phase is complete for the initial
 Linux process stack and deterministic auxv contract. `jea9linux.go` now defines
-the auxv tags needed for startup at lines 71-87, exposes `ExecPath` in
-`Jea9LinuxStartOptions` at line 155, adds `jea9LinuxAuxEntry` and the
-`jea9LinuxStackBuilder` helper type at lines 187 and 199, implements stack
-byte/string/vector construction through `newJea9LinuxStackBuilder` at line 472,
-`pushBytes` at line 479, `pushString` at line 490, `pushStrings` at line 494,
-and `writeInitialVector` at line 506, implements `InitELFStack` at line 557,
-builds the deterministic Linux auxv in `buildJea9LinuxAuxv` at line 610, and
-discovers the loaded program-header address in `elfProgramHeaderVA` at line
-634. The refactor pass split the previous monolithic stack routine into those
+the auxv tags needed for startup, exposes `ExecPath` in
+`Jea9LinuxStartOptions`, adds `jea9LinuxAuxEntry` and the
+`jea9LinuxStackBuilder` helper type, implements stack
+byte/string/vector construction through `newJea9LinuxStackBuilder`,
+`pushBytes`, `pushString`, `pushStrings`,
+and `writeInitialVector`, implements `InitELFStack`,
+builds the deterministic Linux auxv in `buildJea9LinuxAuxv`, and
+discovers the loaded program-header address in `elfProgramHeaderVA`. The refactor pass split the previous monolithic stack routine into those
 helpers, added deterministic identity/security/platform auxv defaults
 (`AT_UID`, `AT_EUID`, `AT_GID`, `AT_EGID`, `AT_SECURE`, `AT_HWCAP`,
 `AT_HWCAP2`, `AT_CLKTCK`, `AT_PLATFORM`, and `AT_EXECFN`), and preserved the
 rule that `AT_RANDOM` uses a separate labeled stream from syscall randomness.
-Added `jea9linux_phase4_test.go`, with stack/argv/env/auxv coverage at line 75,
-repeatable `AT_RANDOM` coverage at line 150, syscall-random separation coverage
-at line 168, Linux auxv personality defaults at line 192, and input/stack error
-coverage at line 230.
+Added `jea9linux_phase4_test.go`, with stack/argv/env/auxv coverage,
+repeatable `AT_RANDOM` coverage, syscall-random separation coverage,
+Linux auxv personality defaults, and input/stack error
+coverage.
 
 ## 5. Clock And Sleep Syscalls
 
@@ -432,17 +435,17 @@ context runs until it blocks, exits, or consumes its budget.
 
 Implementation status, 2026-06-14: this phase is complete for the
 single-context clock/sleep model. `jea9linux.go` now defines Linux errno,
-syscall, and clock constants at lines 26-69, routes `clock_gettime(113)`,
-`gettimeofday(169)`, and `nanosleep(101)` through `Jea9Linux.Handle` starting
-at line 713, implements `sysClockGettime` at line 1328, `sysGettimeofday` at
-line 1336, `sysNanosleep` at line 1358, manual-clock blocked-state refresh at
-line 1383, clock selection at line 1389, and Linux timespec/nanosecond splitting
-helpers at lines 1400 and 1411. Manual clock sleeps now mark the OS blocked until
+syscall, and clock constants, routes `clock_gettime(113)`,
+`gettimeofday(169)`, and `nanosleep(101)` through `Jea9Linux.Handle`,
+implements `sysClockGettime`, `sysGettimeofday`,
+`sysNanosleep`, manual-clock blocked-state refresh,
+clock selection, and Linux timespec/nanosecond splitting
+helpers. Manual clock sleeps now mark the OS blocked until
 explicit `AdvanceTime` or `SetMonotonicNS` reaches the deadline. Added
-`jea9linux_phase2_test.go`, with syscall helper scaffolding at lines 18-50,
-`clock_gettime` tests at lines 52-93, `gettimeofday` at lines 95-112,
-idle-jump and invalid `nanosleep` tests at lines 114-155, manual-clock blocking
-tests at lines 157-186, and ELF fixture execution at lines 188-220.
+`jea9linux_phase2_test.go`, with syscall helper scaffolding,
+`clock_gettime` tests, `gettimeofday`,
+idle-jump and invalid `nanosleep` tests, manual-clock blocking
+tests, and ELF fixture execution.
 Added checked-in fixture infrastructure under `testvectors/jea9linux/`: the
 regeneration script `build.sh`, source fixtures
 `src/clock_gettime_basic.c` and `src/nanosleep_idle_jump.c`, and generated ELF
@@ -504,15 +507,14 @@ from perturbing later explicit random reads.
 
 Implementation status, 2026-06-14: this phase is complete for `getrandom(278)`
 and the minimal virtual random-device path. `jea9linux.go` now has fd kinds and
-fd state at lines 120-134 and 166-170, initializes the fd table in
-`NewJea9Linux` at lines 236-238, routes `openat(56)`, `close(57)`, `read(63)`,
-and `getrandom(278)` through `Jea9Linux.Handle` starting at line 713, implements
-`sysGetrandom` at line 813, implements virtual random-device `openat` at line
-832, `read` at line 858, `close` at line 951, and guest C-string path loading
-at line 1051. Added `jea9linux_phase3_test.go`, with
-repeatability coverage at lines 26-46, chunking at lines 48-70, zero-length and
-invalid-flag handling at lines 72-89, `/dev/urandom` open/read/close/reopen
-coverage at lines 91-131, and ELF fixture execution at lines 133-158. Added
+fd state-170, initializes the fd table in
+`NewJea9Linux`, routes `openat(56)`, `close(57)`, `read(63)`,
+and `getrandom(278)` through `Jea9Linux.Handle`, implements
+`sysGetrandom`, implements virtual random-device `openat`, `read`, `close`, and guest C-string path loading
+at . Added `jea9linux_phase3_test.go`, with
+repeatability coverage, chunking, zero-length and
+invalid-flag handling, `/dev/urandom` open/read/close/reopen
+coverage, and ELF fixture execution. Added
 `testvectors/jea9linux/src/getrandom_repeat.c` and generated
 `testvectors/jea9linux/elf/getrandom_repeat.elf`.
 
@@ -625,30 +627,28 @@ threading, but its default behavior is already decided: expose exactly one CPU.
 
 Implementation status, 2026-06-14: this phase is complete for deterministic
 stdio, read-only virtual files, and the first process/resource syscall surface.
-`jea9linux.go` now defines fd/process syscall constants and errno values at
-lines 26-64, fcntl/seek/resource/prctl constants at lines 94-117, fd kinds and
-fd records at lines 120-134, `Files`, `PID`, and `TID` options in
-`Jea9LinuxOptions` at line 137, and fd/process state in `Jea9Linux` at line
-159. `NewJea9Linux` at line 204 now initializes fds 0, 1, and 2, default pid/tid
+`jea9linux.go` now defines fd/process syscall constants and errno values,
+fcntl/seek/resource/prctl constants, fd kinds and
+fd records, `Files`, `PID`, and `TID` options in
+`Jea9LinuxOptions`, and fd/process state in `Jea9Linux`. `NewJea9Linux` now initializes fds 0, 1, and 2, default pid/tid
 identity, default discard writers, and cloned read-only virtual file contents.
-`Jea9Linux.Handle` routes the Phase 5 syscalls starting at line 713, with fd
-cases at lines 727-746 and process/resource cases at lines 754-794. The fd
-implementation lives in `sysOpenat` at line 832, `sysRead` at line 858,
-`sysWrite` at line 913, `sysClose` at line 951, `sysFcntl` at line 960,
-`sysLseek` at line 982, `sysPread64` at line 1011, and the refactored shared
-read-only-file range helper `readJea9LinuxFileRange` at line 1033. The
-process/resource implementation lives in `sysUname` at line 1066,
-`sysGetrlimit` at line 1088, `sysPrlimit64` at line 1096, `sysSysinfo` at line
-1143, `sysPrctl` at line 1160, and `readLinuxThreadName` at line 1184. Added
-`jea9linux_phase5_test.go`, with syscall assertion helpers at lines 48-67,
-stdout/stderr/partial-write coverage at line 71, bad-fd write coverage at line
-115, stdin EOF/configured-input coverage at line 129, close/read behavior at
-line 158, unsupported path coverage at line 173, configured read-only
-file/read/seek/pread/fcntl coverage at line 185, virtual-file option-copy
-coverage at line 241, fd error-edge coverage at line 264, nonseekable lseek
-coverage at line 295, pid/tid coverage at line 306, uname coverage at line 321,
-resource/sysinfo coverage at line 341, prctl thread-name coverage at line 377,
-and ELF fixture execution at line 400. Added checked-in fixture sources
+`Jea9Linux.Handle` routes the Phase 5 syscalls, with fd
+cases and process/resource cases. The fd
+implementation lives in `sysOpenat`, `sysRead`,
+`sysWrite`, `sysClose`, `sysFcntl`,
+`sysLseek`, `sysPread64`, and the refactored shared
+read-only-file range helper `readJea9LinuxFileRange`. The
+process/resource implementation lives in `sysUname`,
+`sysGetrlimit`, `sysPrlimit64`, `sysSysinfo`, `sysPrctl`, and `readLinuxThreadName`. Added
+`jea9linux_phase5_test.go`, with syscall assertion helpers,
+stdout/stderr/partial-write coverage, bad-fd write coverage,
+stdin EOF/configured-input coverage, close/read behavior,
+unsupported path coverage, configured read-only
+file/read/seek/pread/fcntl coverage, virtual-file option-copy
+coverage, fd error-edge coverage, nonseekable lseek
+coverage, pid/tid coverage, uname coverage,
+resource/sysinfo coverage, prctl thread-name coverage,
+and ELF fixture execution. Added checked-in fixture sources
 `testvectors/jea9linux/src/write_stdout.c`,
 `testvectors/jea9linux/src/read_stdin_echo.c`, and
 `testvectors/jea9linux/src/pid_tid.c`, plus generated ELF fixtures
@@ -732,36 +732,33 @@ running stale translated code.
 
 Implementation status, 2026-06-14: this phase is complete for the first
 jea9linux VM overlay and anonymous-memory syscall surface. `guestmem.go` now
-has an optional personality access overlay field at lines 150-154, the
-`guestMemoryAccessOverlay` interface at line 162, install/cleanup helpers
-`setAccessOverlay` and `clearAccessOverlay` at lines 263 and 267, and
-`checkAccessOverlay` at line 331. Normal memory operations now consult the
-overlay only when installed: scalar loads at lines 370, 386, 402, and 418;
-scalar stores at lines 438, 455, 472, and 489; instruction fetch at lines 583
-and 596; bulk `ReadBytes` at line 631; and bulk `WriteBytes` at line 652.
+has an optional personality access overlay field, the
+`guestMemoryAccessOverlay` interface, install/cleanup helpers
+`setAccessOverlay` and `clearAccessOverlay`, and
+`checkAccessOverlay`. Normal memory operations now consult the
+overlay only when installed: scalar loads, scalar stores, instruction fetch,
+bulk `ReadBytes`, and bulk `WriteBytes`.
 `note.go` maps `FaultFetch` to an instruction-fault note in
-`faultCauseAndText` at lines 132-143.
+`faultCauseAndText`.
 
-`jea9linux.go` defines the VM syscall numbers at lines 57-62 and prot/map
-constants at lines 111-117, adds `jea9LinuxVM` state at line 192, creates and
-attaches the overlay through `newJea9LinuxVM` at line 319,
-`jea9LinuxDefaultMmapBase` at line 332, and `ensureVM` at line 343, and
-implements the access policy in `CheckGuestAccess` at line 351. Page/range
-helpers live at lines 375-464. `InitELFStack` adjusts the initial program break
-from the loaded ELF at line 562 using `elfProgramBreak` at line 659.
-`Jea9Linux.Handle` routes the VM syscalls at lines 775-791. The syscall bodies
-are `sysBrk` at line 1199, `sysMmap` at line 1229, `sysMunmap` at line 1263,
-`sysMprotect` at line 1277, `sysMincore` at line 1294, and `sysMadvise` at
-line 1317. `InstallJea9Linux` at line 1421 attaches the overlay and removes it
+`jea9linux.go` defines the VM syscall numbers and prot/map
+constants, adds `jea9LinuxVM` state, creates and
+attaches the overlay through `newJea9LinuxVM`,
+`jea9LinuxDefaultMmapBase`, and `ensureVM`, and
+implements the access policy in `CheckGuestAccess`. Page/range
+helpers live. `InitELFStack` adjusts the initial program break
+from the loaded ELF using `elfProgramBreak`.
+`Jea9Linux.Handle` routes the VM syscalls. The syscall bodies
+are `sysBrk`, `sysMmap`, `sysMunmap`,
+`sysMprotect`, `sysMincore`, and `sysMadvise`.
+`InstallJea9Linux` attaches the overlay and removes it
 on cleanup, keeping bare-metal memory behavior unchanged.
 
 Added `jea9linux_phase8_test.go`, with brk grow/shrink/zero-fill/fault coverage
-at line 33, anonymous/fixed/non-overlap mmap coverage at line 77, munmap fault
-coverage at line 110, mprotect read-only and exec metadata coverage at line
-134, page-zero load/store/fetch fault coverage at line 170, mincore/madvise
-coverage at line 186, overlay install cleanup coverage at line 217,
-syscall-buffer permission coverage at line 239, invalid-range coverage at line
-270, and ELF fixture execution at line 293. Added checked-in fixture sources
+coverage, anonymous/fixed/non-overlap mmap coverage, munmap fault
+coverage, mprotect read-only and exec metadata coverage, page-zero load/store/fetch fault coverage, mincore/madvise
+coverage, overlay install cleanup coverage,
+syscall-buffer permission coverage, invalid-range coverage, and ELF fixture execution. Added checked-in fixture sources
 `testvectors/jea9linux/src/brk_basic.c`,
 `testvectors/jea9linux/src/mmap_rw.c`, and
 `testvectors/jea9linux/src/mprotect_ro.c`, plus generated ELF fixtures
@@ -869,35 +866,34 @@ faulting/unaligned futex waits, affinity faults, and `Blocked()` behavior
 around manual futex deadlines. The broader jea9linux gate was rerun after the
 refactor.
 
-`jea9linux.go` now defines the new errno/syscall constants at lines 37-73 and
-the futex/clone flag constants at lines 128-142. Scheduler state was added to
-`Jea9Linux` at lines 212-217. Guest context state, CPU snapshots, and per-thread
-fields are defined at lines 232-277. The single-hart scheduler helpers are
-`ensureScheduler` at line 431, `snapshotJea9LinuxCPU` at line 471,
-`restoreJea9LinuxCPU` at line 487, `loadContext` at line 502,
-`nextRunnableAfterCurrent` at line 514, `hasRunnableContext` at line 537,
-`markRunnable` at line 546, and `removeFutexWaiter` at line 558. `Run` now uses
-the instruction budget as a deterministic scheduling boundary at lines 907-935.
-`Handle` routes the new syscalls at lines 979-996 and `gettid` through the
-current guest context at lines 1012-1015. `sysClone` starts at line 1060,
-`jea9LinuxCloneFlagsSupported` at line 1115, `sysSchedYield` at line 1133,
-`sysSchedGetAffinity` at line 1144, `sysSetTidAddress` at line 1161,
-`sysSetRobustList` at line 1168, `sysExit` at line 1176,
-`exitCurrentThread` at line 1191, `sysFutex` at line 1202, `futexWait` at line
-1235, `futexDeadline` at line 1272, and `wakeFutex` at line 1292.
-`refreshBlocked` now refreshes futex timeouts at line 1890 using
-`refreshFutexTimeouts` at line 1898.
+`jea9linux.go` now defines the new errno/syscall constants and
+the futex/clone flag constants. Scheduler state was added to
+`Jea9Linux`. Guest context state, CPU snapshots, and per-thread
+fields are defined. The single-hart scheduler helpers are
+`ensureScheduler`, `snapshotJea9LinuxCPU`,
+`restoreJea9LinuxCPU`, `loadContext`,
+`nextRunnableAfterCurrent`, `hasRunnableContext`,
+`markRunnable`, and `removeFutexWaiter`. `Run` now uses
+the instruction budget as a deterministic scheduling boundary.
+`Handle` routes the new syscalls and `gettid` through the
+current guest context. `sysClone` starts,
+`jea9LinuxCloneFlagsSupported`, `sysSchedYield`,
+`sysSchedGetAffinity`, `sysSetTidAddress`,
+`sysSetRobustList`, `sysExit`,
+`exitCurrentThread`, `sysFutex`, `futexWait`, `futexDeadline`, and `wakeFutex`.
+`refreshBlocked` now refreshes futex timeouts using
+`refreshFutexTimeouts`.
 
 `jea9linux_phase9_test.go` covers clone parent/child return and copied register
-state at line 74, unsupported clone flags at line 136, deterministic
-round-robin yield and the single-hart loaded-context invariant at line 150,
-single-context yield at line 190, budget-boundary rotation at line 210,
-one-CPU affinity at line 242, affinity faults at line 264, `set_tid_address`
-and `set_robust_list` state at line 280, futex `-EAGAIN` at line 305, empty
-wake at line 326, futex fault/alignment errors at line 340, wait/wake resume at
-line 356, FIFO wake order at line 393, idle-jump timeout at line 442,
-manual-clock timeout at line 470, clear-child-tid on thread exit at line 518,
-and checked-in ELF fixtures at line 542. Added fixture sources
+state, unsupported clone flags, deterministic
+round-robin yield and the single-hart loaded-context invariant,
+single-context yield, budget-boundary rotation,
+one-CPU affinity, affinity faults, `set_tid_address`
+and `set_robust_list` state, futex `-EAGAIN`, empty
+wake, futex fault/alignment errors, wait/wake resume, FIFO wake order,
+idle-jump timeout,
+manual-clock timeout, clear-child-tid on thread exit,
+and checked-in ELF fixtures. Added fixture sources
 `testvectors/jea9linux/src/sched_affinity.c`,
 `testvectors/jea9linux/src/clone_child_stack.c`,
 `testvectors/jea9linux/src/yield_pingpong.c`,
@@ -983,36 +979,34 @@ pipe readiness through epoll. Checked-in tiny C fixtures were added and rebuilt
 under `testvectors/jea9linux/elf/`. The Phase 10 focused suite and the broader
 jea9linux gate both pass.
 
-`jea9linux.go` defines the Phase 10 syscall numbers at lines 42-54 and eventfd,
-epoll, and fd flag constants at lines 140-149. The fd kinds now include
-eventfd, epoll, and pipe endpoints at lines 171-174. `jea9LinuxFD` carries
-eventfd counters, epoll state, and pipe pointers at lines 176-184.
-`jea9LinuxEpollRegistration`, `jea9LinuxEpoll`, and `jea9LinuxPipe` live at
-lines 187-201. Epoll wait state is represented through `jea9LinuxWaitEpoll` at
-line 285 and the per-context wait fields at lines 313-318.
+`jea9linux.go` defines the Phase 10 syscall numbers and eventfd,
+epoll, and fd flag constants. The fd kinds now include
+eventfd, epoll, and pipe endpoints. `jea9LinuxFD` carries
+eventfd counters, epoll state, and pipe pointers.
+`jea9LinuxEpollRegistration`, `jea9LinuxEpoll`, and `jea9LinuxPipe` carry the
+eventfd, epoll, and pipe state. Epoll wait state is represented through
+`jea9LinuxWaitEpoll` and the per-context wait fields.
 
 `Jea9Linux.Handle` routes `eventfd2`, `epoll_create1`, `epoll_ctl`,
-`epoll_pwait`, `pipe2`, and `pselect6` at lines 1014-1050. FD allocation is
-centralized in `allocFD` at line 1133. The new syscall bodies and helpers are
-`sysEventfd2` at line 1140, `sysEpollCreate1` at line 1153, `sysEpollCtl` at
-line 1167, packed `epoll_event` loaders/storers at lines 1217 and 1230,
-`sysEpollPwait` at line 1242, `epollDeadline` at line 1292,
-`epollCollectReady` at line 1300, `fdReadyEvents` at line 1329,
-`wakeEpollWaitersForFD` at line 1355, `sysPipe2` at line 1378,
-`sysPselect6` at line 1401, and shared `timespecDeadline` at line 1416.
-Existing `sysRead` and `sysWrite` dispatch to eventfd and pipe handlers at
-lines 1777-1786 and 1801-1810. The fd bodies are `sysEventfdRead` at line
-1826, `sysEventfdWrite` at line 1847, `sysPipeRead` at line 1864, and
-`sysPipeWrite` at line 1884. `refreshBlocked` invokes epoll timeout refresh at
-line 2341 using `refreshEpollTimeouts` at line 2365.
+`epoll_pwait`, `pipe2`, and `pselect6`. FD allocation is
+centralized in `allocFD`. The new syscall bodies and helpers are
+`sysEventfd2`, `sysEpollCreate1`, `sysEpollCtl`, packed `epoll_event`
+loaders/storers,
+`sysEpollPwait`, `epollDeadline`,
+`epollCollectReady`, `fdReadyEvents`,
+`wakeEpollWaitersForFD`, `sysPipe2`,
+`sysPselect6`, and shared `timespecDeadline`.
+Existing `sysRead` and `sysWrite` dispatch to eventfd and pipe handlers. The fd
+bodies are `sysEventfdRead`, `sysEventfdWrite`, `sysPipeRead`, and
+`sysPipeWrite`. `refreshBlocked` invokes epoll timeout refresh through
+`refreshEpollTimeouts`.
 
 `jea9linux_phase10_test.go` covers eventfd initial/read/write/nonblocking and
-overflow paths at lines 95, 111, 133, and 145; epoll create/close,
-add/modify/delete, error handling, immediate readiness, blocking wake, timeout,
-and deterministic order at lines 163, 179, 215, 242, 265, 304, and 319; pipe
-readiness through epoll and pipe read/write/nonblocking empty reads at lines
-345, 388, and 422; pselect timeout at line 441; and checked-in ELF fixtures at
-line 462. Added fixture sources `testvectors/jea9linux/src/eventfd_basic.c`,
+overflow paths; epoll create/close, add/modify/delete, error handling,
+immediate readiness, blocking wake, timeout, and deterministic order; pipe
+readiness through epoll and pipe read/write/nonblocking empty reads; pselect
+timeout; and checked-in ELF fixtures. Added fixture sources
+`testvectors/jea9linux/src/eventfd_basic.c`,
 `testvectors/jea9linux/src/epoll_eventfd.c`,
 `testvectors/jea9linux/src/epoll_timeout.c`,
 `testvectors/jea9linux/src/pipe2_basic.c`, and
@@ -1098,30 +1092,24 @@ handler is installed; otherwise they remain fatal notes.
 
 Phase 11 completion note: completed the Plan 9 note to Linux signal bridge with
 red tests first, a green implementation, and a refactor/coverage pass before
-moving on. `jea9linux.go` now defines signal syscall constants at lines 58-64,
-signal action/info/frame types at lines 224-253, shared signal/frame maps at
-lines 310-311, per-context masks, pending queues, and altstack state at lines
-382-386, and signal state initialization at lines 410 and 585-590. The ECALL
-router dispatches signal syscalls at lines 1133-1148, while the production
-signal implementation lives in `handleFaultSignal` at line 1545,
-`sysRtSigaction` at line 1565, `sysRtSigprocmask` at line 1626,
-`sysSigaltstack` at line 1666, `sysKill`/`sysTkill`/`sysTgkill` at lines
-1718/1730/1738, `signalTIDSyscall` at line 1750, `sysRtSigreturn` at line
-1785, compiled-restorer frame lookup in `findSignalFrame` at line 1799,
-delivery/pending helpers at lines 1824-1858, guest frame construction in
-`writeSignalFrame` at line 1891, `storeJea9LinuxSignalInfo` at line 1938, and
-wait cancellation at line 1960. `sysClone` now copies the parent signal mask at
-line 2015. The refactor pass also found and fixed an older VM-overlay hole in
+moving on. `jea9linux.go` now defines signal syscall constants, signal
+action/info/frame types, shared signal/frame maps, per-context masks, pending
+queues, altstack state, and signal-state initialization. The ECALL router
+dispatches signal syscalls, while the production signal implementation lives in
+`handleFaultSignal`, `sysRtSigaction`, `sysRtSigprocmask`, `sysSigaltstack`,
+`sysKill`, `sysTkill`, `sysTgkill`, `signalTIDSyscall`, `sysRtSigreturn`,
+compiled-restorer frame lookup in `findSignalFrame`, delivery/pending helpers,
+guest frame construction in `writeSignalFrame`, `storeJea9LinuxSignalInfo`,
+and wait cancellation. `sysClone` now copies the parent signal mask. The
+refactor pass also found and fixed an older VM-overlay hole in
 the cached interpreter: aligned LD/SD fast paths in `run_cached.go` now require
-`accessOverlay == nil` at lines 276, 443, 717, 738, 854, and 895, and the RVC
-slot helper mirrors that guard in `exec_slot.go` at lines 68, 85, 108, and
-125. Added `jea9linux_phase11_test.go`, with signal action helpers at lines
-28-68, unit coverage for actions/masks/pending signals/altstack/tgkill/siginfo
-and `rt_sigreturn` at lines 71-414, and checked-in ELF fixture execution at
-line 416. Added cached overlay regression tests in `jea9linux_phase8_test.go`
-at lines 186 and 205. Added fixture sources
+`accessOverlay == nil`, and the RVC slot helper mirrors that guard in
+`exec_slot.go`. Added `jea9linux_phase11_test.go`, with signal action helpers,
+unit coverage for actions/masks/pending signals/altstack/tgkill/siginfo and
+`rt_sigreturn`, and checked-in ELF fixture execution. Added cached overlay
+regression tests in `jea9linux_phase8_test.go`. Added fixture sources
 `testvectors/jea9linux/src/jea9linux_signal_common.h` with syscall/restorer
-helpers at lines 37, 84, 90, and 99, plus
+helpers, plus
 `sigaction_basic.c`, `sigmask_pending.c`, `sigaltstack_frame.c`,
 `tgkill_self.c`, and `sigsegv_null.c`; their generated ELFs live under
 `testvectors/jea9linux/elf/`. Verified with the Phase 11 focused suite, the
@@ -1181,10 +1169,10 @@ proves the need.
 Phase 12 completion note: completed the capability and miscellaneous runtime
 syscall pass with red tests first, a small green implementation, and a refactor
 survey before moving on. `jea9linux.go` now explicitly owns timer compatibility
-syscall numbers at lines 58-61 and `riscv_hwprobe(258)` at line 89. The ECALL
-router dispatches timer compatibility syscalls at lines 1138-1139 and
-`riscv_hwprobe` at lines 1210-1211. The narrow deterministic implementations
-are `sysTimerCompatibility` at line 1533 and `sysRiscvHwprobe` at line 1538;
+syscall numbers and `riscv_hwprobe(258)`. The ECALL
+router dispatches timer compatibility syscalls and
+`riscv_hwprobe`. The narrow deterministic implementations
+are `sysTimerCompatibility` and `sysRiscvHwprobe`;
 both return `-ENOSYS` deliberately so the guest observes stable Linux-compatible
 absence rather than host-dependent timer or CPU capability state. Existing
 resource-limit, `prctl`, and `sysinfo` helpers remain the implementation for
@@ -1192,13 +1180,13 @@ that part of the phase, with additional error-edge coverage added in
 `jea9linux_phase12_test.go`.
 
 Added `jea9linux_phase12_test.go`, with `riscv_hwprobe` deterministic ENOSYS
-coverage at lines 16 and 27, timer compatibility ENOSYS coverage at line 51,
-resource-limit error edges at line 74, `prctl`/`sysinfo` deterministic edge
-coverage at line 93, and checked-in ELF fixture execution at line 120. Added
+coverage, timer compatibility ENOSYS coverage,
+resource-limit error edges, `prctl`/`sysinfo` deterministic edge
+coverage, and checked-in ELF fixture execution. Added
 fixture sources `testvectors/jea9linux/src/riscv_hwprobe.c` with the raw
-`riscv_hwprobe` call at line 30, `resource_limits.c` with getrlimit/prlimit
-checks starting at line 37, and `sysinfo_basic.c` with sysinfo validation
-starting at line 14. Generated fixture binaries
+`riscv_hwprobe` call, `resource_limits.c` with getrlimit/prlimit
+checks, and `sysinfo_basic.c` with sysinfo validation
+starting. Generated fixture binaries
 `testvectors/jea9linux/elf/riscv_hwprobe.elf`,
 `testvectors/jea9linux/elf/resource_limits.elf`, and
 `testvectors/jea9linux/elf/sysinfo_basic.elf`. Verified with the Phase 12
@@ -1280,17 +1268,17 @@ function top) while preventing guest syscalls from reaching host fd, tid,
 clock, random, or resource state through `internal/syscalls`.
 
 `jea9linux.go` now saves the prior host-direct-syscall flag in
-`InstallJea9Linux` at lines 2974-2978, disables only the host dispatcher while
-the personality is installed, and restores the exact previous flag value at
-line 2983. Added `jea9linux_phase13_test.go`, with direct/inline ECALL test
-setup at line 8, a JIT-with-jea9linux helper at line 25,
-`TestJea9Linux_JITDoesNotUseHostWrite` at line 36 proving guest `write(1, ...)`
+`InstallJea9Linux`, disables only the host dispatcher while
+the personality is installed, and restores the exact previous flag value. Added
+`jea9linux_phase13_test.go`, with direct/inline ECALL test
+setup, a JIT-with-jea9linux helper,
+`TestJea9Linux_JITDoesNotUseHostWrite` proving guest `write(1, ...)`
 goes to configured jea9linux stdout rather than host fd 1,
-`TestJea9Linux_JITGettidUsesVirtualTid` at line 79,
-`TestJea9Linux_JITClockUsesDeterministicClock` at line 102,
-`TestJea9Linux_JITRandomMatchesInterpreter` at line 132,
-`TestJea9Linux_JITDirectEcallDoesNotRewind` at line 176, and
-`TestJea9Linux_InstallRestoresDirectSyscallPolicy` at line 215. Verified with
+`TestJea9Linux_JITGettidUsesVirtualTid`,
+`TestJea9Linux_JITClockUsesDeterministicClock`,
+`TestJea9Linux_JITRandomMatchesInterpreter`,
+`TestJea9Linux_JITDirectEcallDoesNotRewind`, and
+`TestJea9Linux_InstallRestoresDirectSyscallPolicy`. Verified with
 the Phase 13 focused suite and the broader jea9linux gate. The remaining
 Phase 13 budget/AOT/direct-callout refinements should build on this guarded
 policy, especially if the temporary process-global bridge is replaced with a
@@ -1359,34 +1347,33 @@ and should be removed from final acceptance runs.
 Phase 14 completion note: completed the first Go runtime acceptance pass with
 checked-in `linux/riscv64` Go ELF fixtures under `testvectors/jea9linux/go/elf/`
 and source under `testvectors/jea9linux/go/src/`. The acceptance harness lives in
-`jea9linux_phase14_test.go`, with `TestJea9Linux_GoHello` at line 35,
-`TestJea9Linux_GoSchedAffinityOneP` at line 43,
-`TestJea9Linux_GoTimeNowDeterministic` at line 51,
-`TestJea9Linux_GoCryptoRandDeterministic` at line 71,
-`TestJea9Linux_GoGoroutineFutexWake` at line 95,
-`TestJea9Linux_GoTimerSelectIdleJump` at line 103,
-`TestJea9Linux_GoNilPointerPanic` at line 114,
-`TestJea9Linux_GoMathRandStartupUnaffectedByHost` at line 123,
-`TestJea9Linux_GoManualClockTimerBlocksUntilAdvance` at line 137, and
-`TestJea9Linux_GoReplayIdentical` at line 184. Shared fixture setup is in
-`runJea9LinuxGoFixture` at line 199 and `newJea9LinuxGoMachine` at line 214.
+`jea9linux_phase14_test.go`, with `TestJea9Linux_GoHello`,
+`TestJea9Linux_GoSchedAffinityOneP`,
+`TestJea9Linux_GoTimeNowDeterministic`,
+`TestJea9Linux_GoCryptoRandDeterministic`,
+`TestJea9Linux_GoGoroutineFutexWake`,
+`TestJea9Linux_GoTimerSelectIdleJump`,
+`TestJea9Linux_GoNilPointerPanic`,
+`TestJea9Linux_GoMathRandStartupUnaffectedByHost`,
+`TestJea9Linux_GoManualClockTimerBlocksUntilAdvance`, and
+`TestJea9Linux_GoReplayIdentical`. Shared fixture setup is in
+`runJea9LinuxGoFixture` and `newJea9LinuxGoMachine`.
 The red tests exposed three lower level Linux personality gaps that are now
 covered bottom-up: initial stack reservation is implemented by
-`reserveInitialStackMapping` in `jea9linux.go` at line 999 and tested by
-`TestJea9Linux_InitELFStackReservesStackMapping` in `jea9linux_phase8_test.go`
-at line 306; `PROT_NONE` reservations are represented separately from unmapped
-holes by `mapRange`, `unmapRange`, and `rangeUnmapped` in `jea9linux.go` at
-lines 782, 793, and 804 and tested by
-`TestJea9Linux_MmapProtNoneReserveCanBeMprotected` at line 134; Linux/riscv64
+`reserveInitialStackMapping` in `jea9linux.go` and tested by
+`TestJea9Linux_InitELFStackReservesStackMapping` in `jea9linux_phase8_test.go`;
+`PROT_NONE` reservations are represented separately from unmapped holes by
+`mapRange`, `unmapRange`, and `rangeUnmapped` in `jea9linux.go` and tested by
+`TestJea9Linux_MmapProtNoneReserveCanBeMprotected`; Linux/riscv64
 signal action, `siginfo`, `ucontext`, modified-`rt_sigreturn`, and synthetic
-restorer behavior are implemented by `loadJea9LinuxSignalAction` at line 1663,
-`sysRtSigreturn` at line 1869, `ensureSignalRestorer` at line 1988,
-`storeJea9LinuxSignalUContext` at line 2055, and
-`loadJea9LinuxSignalUContext` at line 2069. The signal compatibility tests are
-`TestJea9Linux_RtSigactionAcceptsLinuxRiscv64Layout` at line 95,
-`TestJea9Linux_RtSigreturnRestoresModifiedLinuxUContext` at line 392,
-`TestJea9Linux_SignalWithoutRestorerUsesSyntheticRtSigreturn` at line 416, and
-`TestJea9Linux_SignalFrameHasLinuxRiscv64UContext` at line 505. Manual-clock Go
+restorer behavior are implemented by `loadJea9LinuxSignalAction`,
+`sysRtSigreturn`, `ensureSignalRestorer`,
+`storeJea9LinuxSignalUContext`, and
+`loadJea9LinuxSignalUContext`. The signal compatibility tests are
+`TestJea9Linux_RtSigactionAcceptsLinuxRiscv64Layout`,
+`TestJea9Linux_RtSigreturnRestoresModifiedLinuxUContext`,
+`TestJea9Linux_SignalWithoutRestorerUsesSyntheticRtSigreturn`, and
+`TestJea9Linux_SignalFrameHasLinuxRiscv64UContext`. Manual-clock Go
 timer acceptance remains present but skipped because Go needs resumable
 sleep/futex scheduling beyond the current blocked-deadline model. Verified with
 the Phase 8 VM suite, the Phase 11 signal suite, the full Phase 14 Go acceptance

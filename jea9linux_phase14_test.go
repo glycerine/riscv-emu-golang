@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -22,6 +23,7 @@ type jea9LinuxGoRunResult struct {
 	code   int
 	stdout string
 	stderr string
+	trace  Jea9LinuxTraceSnapshot
 }
 
 type jea9LinuxGoMachine struct {
@@ -111,12 +113,28 @@ func TestJea9Linux_GoTimerSelectIdleJump(t *testing.T) {
 	}
 }
 
+func TestJea9Linux_GoNetpollEventfdEpoll(t *testing.T) {
+	result := runJea9LinuxGoFixture(t, jea9LinuxGoRunConfig{Name: "netpoll_eventfd_epoll"})
+	requireJea9LinuxGoExit(t, result, 0)
+	if got, want := result.stdout, "eventfd_epoll_ready\n"; got != want {
+		t.Fatalf("stdout = %q, want %q", got, want)
+	}
+}
+
 func TestJea9Linux_GoNilPointerPanic(t *testing.T) {
 	result := runJea9LinuxGoFixture(t, jea9LinuxGoRunConfig{Name: "nilpanic"})
 	requireJea9LinuxGoExit(t, result, 2)
 	if !strings.Contains(result.stderr, "panic: runtime error") ||
 		!strings.Contains(result.stderr, "invalid memory address") {
 		t.Fatalf("stderr = %q, want Go nil pointer panic", result.stderr)
+	}
+}
+
+func TestJea9Linux_GoSIGURGPreemption(t *testing.T) {
+	result := runJea9LinuxGoFixture(t, jea9LinuxGoRunConfig{Name: "sigurg_preempt"})
+	requireJea9LinuxGoExit(t, result, 0)
+	if got, want := result.stdout, "sigurg_preempt_ok\n"; got != want {
+		t.Fatalf("stdout = %q, want %q", got, want)
 	}
 }
 
@@ -191,7 +209,7 @@ func TestJea9Linux_GoReplayIdentical(t *testing.T) {
 	}
 	first := runJea9LinuxGoFixture(t, cfg)
 	second := runJea9LinuxGoFixture(t, cfg)
-	if first != second {
+	if !reflect.DeepEqual(first, second) {
 		t.Fatalf("replay mismatch: first=%+v second=%+v", first, second)
 	}
 }
@@ -208,6 +226,7 @@ func runJea9LinuxGoFixture(t *testing.T, cfg jea9LinuxGoRunConfig) jea9LinuxGoRu
 		code:   code,
 		stdout: m.stdout.String(),
 		stderr: m.stderr.String(),
+		trace:  m.os.TraceSnapshot(),
 	}
 }
 

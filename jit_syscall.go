@@ -43,6 +43,50 @@ func currentSyscallDispatcherAddr() uintptr {
 	return syscallDispatcherAddr
 }
 
+// JITEcallHandler handles a JIT ECALL note after compiled code has written
+// guest-visible state back to CPU memory and returned to the JIT dispatcher.
+type JITEcallHandler func(cpu *CPU, n Note) NoteDisposition
+
+func (j *JIT) currentSyscallDispatcherAddr() uintptr {
+	if j != nil && j.syscallDispatcherOverride {
+		return j.syscallDispatcherAddr
+	}
+	return currentSyscallDispatcherAddr()
+}
+
+func (j *JIT) installPersonalityEcallHandler(h JITEcallHandler, faultPageZero bool) func() {
+	oldOverride := j.syscallDispatcherOverride
+	oldAddr := j.syscallDispatcherAddr
+	oldHandler := j.ecallHandler
+	oldFaultPageZero := j.faultPageZero
+	j.syscallDispatcherOverride = true
+	j.syscallDispatcherAddr = 0
+	j.ecallHandler = h
+	j.faultPageZero = faultPageZero
+	j.resetCompiledCode()
+	return func() {
+		j.syscallDispatcherOverride = oldOverride
+		j.syscallDispatcherAddr = oldAddr
+		j.ecallHandler = oldHandler
+		j.faultPageZero = oldFaultPageZero
+		j.resetCompiledCode()
+	}
+}
+
+func (j *JIT) deliverEcall(cpu *CPU, n Note) NoteDisposition {
+	if j.ecallHandler != nil {
+		j.personalityEcallCount++
+		if d := j.ecallHandler(cpu, n); d != NoteForward {
+			return d
+		}
+	}
+	return cpu.Notes.Deliver(cpu, n)
+}
+
+func (j *JIT) PersonalityEcallCount() uint64 {
+	return j.personalityEcallCount
+}
+
 // inlineEcallEnabled gates the Phase 5-B "inline ECALL" codegen
 // (Option D): when true, lowerSyscall emits an inline TESTQ+JNZ that
 // chain-exits to the post-ECALL AOT block on dispatcher success
