@@ -12,33 +12,33 @@ import (
 // Uses a persistent heap-allocated State buffer instead of the shadow
 // register file page, eliminating the save/restore of guest memory.
 //
-// ── IC (instruction counter) boundary ──────────────────────────
+// ── Native budget boundary ─────────────────────────────────────
 //
-// Inside JIT code, R15 is a RELATIVE instruction counter: it starts
-// at 0 for each dispatch and increments (INCQ R15) once per guest
-// instruction. Budget checks compare R15 against a fixed threshold,
-// so the relative basis is essential for correctness.
+// Inside JIT code, R15 is always the REMAINING guest-instruction budget for
+// this dispatch. Native code reserves one instruction, or an entire fused group,
+// before executing guest work. The Go boundary converts
+// initialBudget-finalBudget into the retired-instruction delta.
 //
 // Outside JIT code (Go), cpu.riscvInstrBegun is the ABSOLUTE cumulative count
 // of all guest instructions ever retired.
 //
 // The conversion happens here, at the dispatch boundary:
 //
-//	Go  →  s.IC = 0                        (relative origin)
-//	       trampoline loads R15 from s.IC   (R15 = 0)
-//	       ── JIT code: R15 relative ──
+//	Go  →  s.IC = budget
+//	       trampoline loads R15 from s.IC
+//	       ── JIT code: R15 remaining budget ──
 //	       SpillIC writes R15 back to s.IC
-//	Go  ←  cpu.riscvInstrBegun += s.IC               (relative → absolute)
+//	Go  ←  cpu.riscvInstrBegun += initialBudget - s.IC
 //
 // Chain exits preserve R15 across blocks (no re-zeroing).
 // Gocall sequences (SpillIC/LoadIC) preserve R15 across Go callbacks.
-// The defer below guarantees the += fires even on panic (exit syscall).
 func abjitDispatch(
 	blk *compiledBlock,
 	cpu *CPU,
 	j *JIT,
 	dcBase uintptr,
 	dcMask, vBegin, segSize uint64,
+	budget uint64,
 
 ) jitcall.Result {
 
@@ -62,15 +62,20 @@ func abjitDispatch(
 	s.DCMask = dcMask
 	s.VAddrBegin = vBegin
 	s.SegSize = segSize
-	s.IC = 0 // relative origin — trampoline loads this into R15
+	initialBudget := budget
+	s.IC = initialBudget
 
 	abjit.CallJIT(blk.fn, s.RegFileBase())
 
-	cpu.riscvInstrBegun += s.IC // relative → absolute
+	var icDelta uint64
+	if s.IC <= initialBudget {
+		icDelta = initialBudget - s.IC
+	}
+	cpu.riscvInstrBegun += icDelta // relative/budget delta → absolute
 
 	res := jitcall.Result{
 		PC:        s.PC,
-		ICdelta:   s.IC,
+		ICdelta:   icDelta,
 		Status:    s.Status,
 		FaultAddr: s.FaultAddr,
 	}

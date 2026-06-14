@@ -301,11 +301,11 @@ func (lc *lowerCtxABJIT) abjitSetPC(ins *IRInstr) {
 	lc.emitMI(x86.AMOVQ, ins.Imm, goasm.REG_AMD64_BP, abjitPCOff)
 }
 
-// abjitRetBudget emits the shared budget exit: status=0, exitinfo=0,
+// abjitRetBudget emits the shared budget exit: status=jitBudget, exitinfo=0,
 // restore SP, jump to exit thunk. PC is already in State (set by SetPC).
 func (lc *lowerCtxABJIT) abjitRetBudget() {
 	lc.storeRegsBack()
-	lc.emitMI(x86.AMOVQ, 0, goasm.REG_AMD64_BP, abjitStatusOff)
+	lc.emitMI(x86.AMOVQ, jitBudget, goasm.REG_AMD64_BP, abjitStatusOff)
 	lc.emitMI(x86.AMOVQ, 0, goasm.REG_AMD64_BP, abjitFaultAddrOff)
 	lc.jmpExitThunk()
 }

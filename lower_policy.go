@@ -26,8 +26,8 @@ const VRRegFile = VReg(VRegTempStart + 4) // t68
 // allocates sequential VRegs starting at VRegTempStart+5 (after the 5
 // parameter slots t64-t68). Any constant defined here collides with
 // those temps — the allocator sees the pinned VReg, assigns R15 to
-// the temp, and silently clobbers the IC register. Instead, reserve it
-// through RegPolicy.InstructionCounterReg. The IC ops use R15 directly
+// the temp, and silently clobbers the budget register. Instead, reserve it
+// through RegPolicy.InstructionCounterReg. The budget ops use R15 directly
 // on AMD64 without going through the allocator.
 //
 // const VRIC = VReg(VRegTempStart + 5) // DO NOT USE — collides with first Tmp()

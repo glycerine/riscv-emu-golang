@@ -16,7 +16,8 @@ JitResult jit_sandbox_call(
 	uintptr_t mem_base, uint64_t mem_mask,
 	uintptr_t reg_file, uintptr_t sandbox_stack_top,
 	uintptr_t dc_base, uint64_t dc_mask,
-	uint64_t vaddr_begin, uint64_t seg_size)
+	uint64_t vaddr_begin, uint64_t seg_size,
+	uint64_t budget)
 {
 	char *rf = (char*)reg_file;
 
@@ -34,7 +35,7 @@ JitResult jit_sandbox_call(
 	/* 144-byte sret buffer at top of sandbox stack. */
 	char *sret = (char*)sandbox_stack_top - 144;
 	memset(sret, 0, 144);
-	*(uint64_t*)(sret + 24) = 0; /* IC = 0 (relative origin, same as ABJIT s.IC = 0) */
+	*(uint64_t*)(sret + 24) = budget; /* R15 remaining guest-instruction budget */
 	*(uint64_t*)(sret + 80) = reg_file + 512;
 	*(uint64_t*)(sret + 88)  = dc_base;
 	*(uint64_t*)(sret + 96)  = dc_mask;
@@ -48,7 +49,8 @@ JitResult jit_sandbox_call(
 	result.pc                = *(uint64_t*)(sret + 0);
 	result.status            = *(uint64_t*)(sret + 8);
 	result.fault_addr        = *(uint64_t*)(sret + 16);
-	result.ic               = *(uint64_t*)(sret + 24);
+	uint64_t remaining       = *(uint64_t*)(sret + 24);
+	result.ic                = remaining <= budget ? budget - remaining : 0;
 
 	/* Copy shadow register file → Go registers. */
 	memcpy(go_x, rf, 256);
@@ -60,4 +62,3 @@ JitResult jit_sandbox_call(
 
 	return result;
 }
-

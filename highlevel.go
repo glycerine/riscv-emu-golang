@@ -14,7 +14,6 @@ const JitOKJalrMiss = 6
 // reads/writes) and then continues JIT dispatch from the next PC.
 const JitMisalign = 7
 
-
 // MaskedLoad performs a bounds-checked guest memory load:
 //
 //	addr = base + off
@@ -181,24 +180,36 @@ func (e *Emitter) MemBudget(delta int, budget int64, overflowLabel Label) {
 	})
 }
 
-// ZeroIC emits XOR R15, R15 to zero the IC register at block entry.
+// ZeroIC emits XOR R15, R15. It is retained for legacy tests.
 func (e *Emitter) ZeroIC() { e.emit(IRInstr{Op: IRZeroIC}) }
 
-// LoadIC emits MOV R15, [RBP+IC_offset] to restore the cumulative IC.
+// LoadIC restores the remaining native budget register from the trampoline
+// state after a Go callback.
 func (e *Emitter) LoadIC() { e.emit(IRInstr{Op: IRLoadIC}) }
 
-// IncIC emits INC R15 to count one RISC-V instruction.
+// IncIC emits INC R15. It is retained for legacy tests and budget undo paths.
 func (e *Emitter) IncIC() { e.emit(IRInstr{Op: IRIncIC}) }
 
-// DecIC emits DEC R15 to undo IncIC for non-emitted terminators.
+// DecIC emits DEC R15. It is retained for legacy tests.
 func (e *Emitter) DecIC() { e.emit(IRInstr{Op: IRDecIC}) }
 
-// SpillIC emits MOV [RBP+IC_offset], R15 to write the IC register to State.
+// SpillIC writes the remaining native budget register to trampoline state.
 func (e *Emitter) SpillIC() { e.emit(IRInstr{Op: IRSpillIC}) }
 
-// RegBudget emits CMP R15, budget; JGE overflowLabel.
+// RegBudget emits the legacy count-up CMP R15, budget; JGE overflowLabel form.
 func (e *Emitter) RegBudget(budget int64, overflowLabel Label) {
 	e.emit(IRInstr{Op: IRRegBudget, Imm2: budget, Dst: VReg(overflowLabel)})
+}
+
+// BudgetZero emits the legacy TEST R15,R15; JE exhaustedLabel form.
+func (e *Emitter) BudgetZero(exhaustedLabel Label) {
+	e.emit(IRInstr{Op: IRBudgetZero, Dst: VReg(exhaustedLabel)})
+}
+
+// BudgetReserve atomically reserves n guest instructions from R15.
+// If R15 < n, it jumps to exhaustedLabel with R15 unchanged.
+func (e *Emitter) BudgetReserve(n int64, exhaustedLabel Label) {
+	e.emit(IRInstr{Op: IRBudgetReserve, Imm: n, Dst: VReg(exhaustedLabel)})
 }
 
 // SetPC emits MOV [RBP+PC_offset], $pc — used by budget cold paths.
@@ -206,7 +217,7 @@ func (e *Emitter) SetPC(pc uint64) {
 	e.emit(IRInstr{Op: IRSetPC, Imm: int64(pc)})
 }
 
-// RetBudget emits the shared budget exit: status=0, exitinfo=0, restore SP, return.
+// RetBudget emits the shared budget exit.
 func (e *Emitter) RetBudget() { e.emit(IRInstr{Op: IRRetBudget}) }
 
 // ClearDirtySyscallRegs clears dirty flags for a0 (x10) and a1 (x11)

@@ -1,7 +1,7 @@
 #include "textflag.h"
 
 // func Call(fn uintptr, x *[32]uint64, f *[32]uint64, fcsr *uint32,
-//           memBase uintptr, memMask uint64) Result
+//           memBase uintptr, memMask uint64, budget uint64) Result
 //
 // Calls a JIT-compiled native block using the System V AMD64 ABI.
 // No cgo overhead — just a plain CALL instruction.
@@ -13,7 +13,8 @@
 //   fcsr+24(FP)     *uint32     8 bytes
 //   memBase+32(FP)  uintptr     8 bytes
 //   memMask+40(FP)  uint64      8 bytes
-//   ret+48(FP)      Result      32 bytes (PC, Status, FaultAddr, Cycles)
+//   budget+48(FP)   uint64      8 bytes
+//   ret+56(FP)      Result      32 bytes (PC, Status, FaultAddr, ICdelta)
 //
 // System V AMD64 ABI — struct return > 16 bytes uses hidden sret pointer:
 //   RDI = hidden pointer to caller-allocated Result
@@ -25,13 +26,13 @@
 //
 // Local frame layout (the callee-visible sret buffer is RDI = &frame[0]):
 //   [0, 24)   Result fields: PC(0), Status(8), FaultAddr(16)
-//   [24, 32)  (unused, was RDTSC start)
+//   [24, 32)  reserved metadata slot
 //   [32, 80)  trampoline's own callee-save stashes (BX, BP, R12-R15)
 //   [80, 88)  fcsr pointer — written here once per Call so JIT code can
 //             access it via [RBX+80] even from chained blocks.
 //   [88, …)   unused / JIT code may spill below its own RSP.
 // NOSPLIT frame size 65536 is well above any reasonable callee usage.
-TEXT ·Call(SB), $65536-80
+TEXT ·Call(SB), $65536-88
 
 	// Save callee-saved registers that JIT/TCC code may clobber.
 	MOVQ	BX,  32(SP)
@@ -64,20 +65,23 @@ TEXT ·Call(SB), $65536-80
 	MOVQ	fcsr+24(FP), CX    // RCX = fcsr
 	MOVQ	memBase+32(FP), R8  // R8  = memBase
 	MOVQ	memMask+40(FP), R9  // R9  = memMask
+	MOVQ	budget+48(FP), R15  // R15 = remaining guest-instruction budget
 
 	// Call the JIT'd native function.
 	MOVQ	fn+0(FP), AX
 	CALL	AX
 
 	// Copy Result from local buffer at 0(SP) to Go return area.
-	// Result is 32 bytes = 4 quadwords: PC, Status, FaultAddr, Cycles.
+	// Result is 32 bytes = 4 quadwords: PC, Status, FaultAddr, ICdelta.
 	MOVQ	0(SP),  CX
 	MOVQ	8(SP),  DX
 	MOVQ	16(SP), SI
-	MOVQ	CX, ret_PC+48(FP)
-	MOVQ	DX, ret_Status+56(FP)
-	MOVQ	SI, ret_FaultAddr+64(FP)
-	MOVQ	$0, ret_Cycles+72(FP)
+	MOVQ	budget+48(FP), AX
+	SUBQ	R15, AX
+	MOVQ	CX, ret_PC+56(FP)
+	MOVQ	DX, ret_Status+64(FP)
+	MOVQ	SI, ret_FaultAddr+72(FP)
+	MOVQ	AX, ret_Cycles+80(FP)
 
 	// Restore callee-saved registers.
 	MOVQ	32(SP), BX
@@ -89,7 +93,7 @@ TEXT ·Call(SB), $65536-80
 
 	RET
 
-// func CallAOT(fn, x, f, fcsr, memBase, memMask, dcBase, dcMask, vBegin, segSize) Result
+// func CallAOT(fn, x, f, fcsr, memBase, memMask, dcBase, dcMask, vBegin, segSize, budget) Result
 //
 // Same as Call but also publishes four AOT-related values into the
 // sret buffer at [SP+88..112] so the JIT's JALR decoder_cache
@@ -106,8 +110,9 @@ TEXT ·Call(SB), $65536-80
 //   dcMask+56(FP)    uint64         8
 //   vBegin+64(FP)    uint64         8
 //   segSize+72(FP)   uint64         8
-//   ret+80(FP)       Result         32
-TEXT ·CallAOT(SB), $65536-112
+//   budget+80(FP)    uint64         8
+//   ret+88(FP)       Result         32
+TEXT ·CallAOT(SB), $65536-120
 
 	// Save callee-saved registers that JIT/TCC code may clobber.
 	MOVQ	BX,  32(SP)
@@ -138,6 +143,7 @@ TEXT ·CallAOT(SB), $65536-112
 	MOVQ	fcsr+24(FP), CX     // RCX = fcsr
 	MOVQ	memBase+32(FP), R8  // R8  = memBase
 	MOVQ	memMask+40(FP), R9  // R9  = memMask
+	MOVQ	budget+80(FP), R15  // R15 = remaining guest-instruction budget
 
 	// Call the JIT'd native function.
 	MOVQ	fn+0(FP), AX
@@ -147,10 +153,12 @@ TEXT ·CallAOT(SB), $65536-112
 	MOVQ	0(SP),  CX
 	MOVQ	8(SP),  DX
 	MOVQ	16(SP), SI
-	MOVQ	CX, ret_PC+80(FP)
-	MOVQ	DX, ret_Status+88(FP)
-	MOVQ	SI, ret_FaultAddr+96(FP)
-	MOVQ	$0, ret_Cycles+104(FP)
+	MOVQ	budget+80(FP), AX
+	SUBQ	R15, AX
+	MOVQ	CX, ret_PC+88(FP)
+	MOVQ	DX, ret_Status+96(FP)
+	MOVQ	SI, ret_FaultAddr+104(FP)
+	MOVQ	AX, ret_Cycles+112(FP)
 
 	// Restore callee-saved registers.
 	MOVQ	32(SP), BX

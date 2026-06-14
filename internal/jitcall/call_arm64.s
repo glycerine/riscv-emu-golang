@@ -1,7 +1,7 @@
 #include "textflag.h"
 
 // func Call(fn uintptr, x *[32]uint64, f *[32]uint64, fcsr *uint32,
-//           memBase uintptr, memMask uint64) Result
+//           memBase uintptr, memMask uint64, budget uint64) Result
 //
 // ARM64 JIT ABI:
 //   R0 = sret buffer
@@ -10,12 +10,12 @@
 //   R3 = fcsr pointer
 //   R4 = memBase
 //   R5 = memMask
-//   R15 = relative instruction counter, zeroed per dispatch
+//   R15 = remaining guest-instruction budget
 //
 // Go's ARM64 prologue stores LR at 0(SP) for this non-leaf function. Keep
 // the JIT-visible sret buffer at 8(SP) so native code never overwrites the
 // return address that the generated epilogue will restore.
-TEXT ·Call(SB), $65536-80
+TEXT ·Call(SB), $65536-88
 	MOVD R19, 40(RSP)
 	MOVD R20, 48(RSP)
 	MOVD R21, 56(RSP)
@@ -36,7 +36,7 @@ TEXT ·Call(SB), $65536-80
 	MOVD fcsr+24(FP), R3
 	MOVD memBase+32(FP), R4
 	MOVD memMask+40(FP), R5
-	MOVD $0, R15
+	MOVD budget+48(FP), R15
 
 	MOVD fn+0(FP), R16
 	BL (R16)
@@ -44,11 +44,12 @@ TEXT ·Call(SB), $65536-80
 	MOVD 8(RSP), R6
 	MOVD 16(RSP), R7
 	MOVD 24(RSP), R8
-	MOVD 32(RSP), R9
-	MOVD R6, ret_PC+48(FP)
-	MOVD R7, ret_Status+56(FP)
-	MOVD R8, ret_FaultAddr+64(FP)
-	MOVD R9, ret_Cycles+72(FP)
+	MOVD budget+48(FP), R9
+	SUB R15, R9, R9
+	MOVD R6, ret_PC+56(FP)
+	MOVD R7, ret_Status+64(FP)
+	MOVD R8, ret_FaultAddr+72(FP)
+	MOVD R9, ret_Cycles+80(FP)
 
 	MOVD 40(RSP), R19
 	MOVD 48(RSP), R20
@@ -60,11 +61,11 @@ TEXT ·Call(SB), $65536-80
 	MOVD 96(RSP), R26
 	RET
 
-// func CallAOT(fn, x, f, fcsr, memBase, memMask, dcBase, dcMask, vBegin, segSize) Result
+// func CallAOT(fn, x, f, fcsr, memBase, memMask, dcBase, dcMask, vBegin, segSize, budget) Result
 //
 // Same as Call, with decoder-cache metadata published at sret[32..56].
-// R15 is the relative instruction counter, zeroed per dispatch.
-TEXT ·CallAOT(SB), $65536-112
+// R15 is the remaining guest-instruction budget.
+TEXT ·CallAOT(SB), $65536-120
 	MOVD R19, 72(RSP)
 	MOVD R20, 80(RSP)
 	MOVD R21, 88(RSP)
@@ -93,7 +94,7 @@ TEXT ·CallAOT(SB), $65536-112
 	MOVD fcsr+24(FP), R3
 	MOVD memBase+32(FP), R4
 	MOVD memMask+40(FP), R5
-	MOVD $0, R15
+	MOVD budget+80(FP), R15
 
 	MOVD fn+0(FP), R16
 	BL (R16)
@@ -101,11 +102,12 @@ TEXT ·CallAOT(SB), $65536-112
 	MOVD 8(RSP), R6
 	MOVD 16(RSP), R7
 	MOVD 24(RSP), R8
-	MOVD 32(RSP), R9
-	MOVD R6, ret_PC+80(FP)
-	MOVD R7, ret_Status+88(FP)
-	MOVD R8, ret_FaultAddr+96(FP)
-	MOVD R9, ret_Cycles+104(FP)
+	MOVD budget+80(FP), R9
+	SUB R15, R9, R9
+	MOVD R6, ret_PC+88(FP)
+	MOVD R7, ret_Status+96(FP)
+	MOVD R8, ret_FaultAddr+104(FP)
+	MOVD R9, ret_Cycles+112(FP)
 
 	MOVD 72(RSP), R19
 	MOVD 80(RSP), R20

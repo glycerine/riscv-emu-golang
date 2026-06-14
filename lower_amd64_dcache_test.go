@@ -152,7 +152,7 @@ func execJalrIC(t *testing.T, targetPC uint64, siteIdx int,
 	fn := uintptr(unsafe.Pointer(&mem[0]))
 
 	return jitcall.CallAOT(fn, &x, &f, &fcsr, 0, 0,
-		dcBase, dcMask, vaddrBegin, segSize)
+		dcBase, dcMask, vaddrBegin, segSize, jitMaxBudget)
 }
 
 // DC4 — When dcBase == 0 (no AOT segment, plain Call), the JALR IC

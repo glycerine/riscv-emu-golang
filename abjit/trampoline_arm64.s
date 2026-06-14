@@ -5,7 +5,7 @@
 //
 // ARM64 abjit convention used by the conservative lowerer:
 //   R20 = abjit.State / register-file base
-//   R15 = relative instruction counter, loaded from State.IC
+//   R15 = remaining guest-instruction budget, loaded from State.IC
 //
 // Generated code exits by jumping back to the instruction after BLR. The
 // assembler-generated ARM64 prologue stores LR at 0(SP), so our save area

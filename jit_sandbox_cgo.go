@@ -18,11 +18,12 @@ const useRv8SandboxTrampoline = true
 
 func sandboxRv8Call(fn uintptr, cpu *CPU,
 	regFile, stackTop uintptr,
-	dcBase uintptr, dcMask, vBegin, segSize uint64) jitcall.Result {
+	dcBase uintptr, dcMask, vBegin, segSize uint64,
+	budget uint64) jitcall.Result {
 
 	if !useRv8SandboxTrampoline {
 		return jitcall.Call(fn, &cpu.x, &cpu.f, &cpu.fcsr,
-			cpu.mem.Base(), cpu.mem.Mask())
+			cpu.mem.Base(), cpu.mem.Mask(), budget)
 	}
 
 	r := C.jit_sandbox_call(
@@ -34,6 +35,7 @@ func sandboxRv8Call(fn uintptr, cpu *CPU,
 		C.uintptr_t(regFile), C.uintptr_t(stackTop),
 		C.uintptr_t(dcBase), C.uint64_t(dcMask),
 		C.uint64_t(vBegin), C.uint64_t(segSize),
+		C.uint64_t(budget),
 	)
 	return jitcall.Result{
 		PC:        uint64(r.pc),

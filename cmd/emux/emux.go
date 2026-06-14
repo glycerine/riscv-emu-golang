@@ -16,6 +16,7 @@ var ProgramName = "emux"
 const (
 	defaultEmuxMemorySize        = riscv.Size16GB
 	defaultEmuxInstructionBudget = uint64(1 << 20)
+	defaultEmuxJIT               = true
 	defaultEmuxClockMode         = "idle-jump"
 	defaultEmuxMonotonicStartNS  = int64(1)
 	defaultEmuxNSPerInstruction  = int64(1)
@@ -72,7 +73,7 @@ func (c *EmuxConfig) DefineFlags(fs *flag.FlagSet) {
 	fs.Uint64Var(&c.Seed, "seed", 0, "pseudo random number generator seed")
 	fs.Uint64Var(&c.MemorySize, "mem", defaultEmuxMemorySize, "guest memory size in bytes")
 	fs.Uint64Var(&c.InstructionBudget, "budget", defaultEmuxInstructionBudget, "jea9linux instruction budget per scheduler slice")
-	fs.BoolVar(&c.JIT, "jit", true, "run with the native JIT instead of the interpreter")
+	fs.BoolVar(&c.JIT, "jit", defaultEmuxJIT, "run with the native JIT instead of the interpreter")
 	fs.StringVar(&c.ClockMode, "clock", defaultEmuxClockMode, "clock mode: idle-jump, ic-tick, or manual")
 	fs.Int64Var(&c.MonotonicStartNS, "monotonic-ns", defaultEmuxMonotonicStartNS, "initial monotonic clock value in nanoseconds")
 	fs.Int64Var(&c.RealtimeOffsetNS, "realtime-offset-ns", 0, "realtime clock offset from monotonic time in nanoseconds")
@@ -186,18 +187,9 @@ func runEmux(cfg EmuxConfig) (int, error) {
 func runEmuxJIT(cpu *riscv.CPU, jlinux *riscv.Jea9Linux) (int, error) {
 	jit := riscv.NewJIT()
 	defer jit.Close()
+	jit.DisableAutoAOT = true
 
-	cleanup := riscv.InstallJea9LinuxJIT(cpu, jit, jlinux)
-	defer cleanup()
-
-	err := jit.RunJIT(cpu)
-	if ex, ok := err.(*riscv.ExitError); ok {
-		return ex.Code, nil
-	}
-	if err != nil {
-		return 0, err
-	}
-	return cpu.ExitCode, nil
+	return riscv.RunWithJea9LinuxJIT(cpu, jit, jlinux)
 }
 
 func (c EmuxConfig) withDefaults() EmuxConfig {

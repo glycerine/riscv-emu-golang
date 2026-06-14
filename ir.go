@@ -266,21 +266,23 @@ const (
 	// ADD [RBP+Imm], Imm2. Modifies only EFLAGS — no GP registers.
 	IRMemAdd
 
-	// Batched IC budget check at back-edges (lockstep mode only).
+	// Legacy batched IC budget check at back-edges.
 	// ADD [RBP+IC_OFFSET], Imm; CMP [RBP+IC_OFFSET], Imm2; JGE Label(Dst).
 	// IC_OFFSET is hardcoded (State.IC offset). Imm=delta, Imm2=budget.
 	// Modifies only EFLAGS — no GP registers touched.
 	IRMemBudget
 
-	// Per-instruction IC ops (R15 dedicated).
-	IRZeroIC    // XOR R15, R15 — emitted at block entry (lockstep only)
-	IRLoadIC    // MOV R15, [RBP+IC_offset] — restore cumulative IC at block entry
-	IRIncIC     // INC R15 — emitted before each RISC-V instruction
-	IRDecIC     // DEC R15 — undo IncIC for non-emitted terminators
-	IRSpillIC   // MOV [RBP+IC_offset], R15 — emitted at every exit
-	IRRegBudget // CMP R15, Imm2; JGE Label(Dst) — per-instruction budget gate
-	IRSetPC     // MOV [RBP+PC_offset], Imm — budget cold path
-	IRRetBudget // status=0, exitinfo=0, restore SP, return (PC already set)
+	// Per-instruction budget ops (R15 dedicated).
+	IRZeroIC        // XOR R15, R15 — legacy helper, not used by normal codegen
+	IRLoadIC        // MOV R15, [RBP+IC_offset] — restore remaining budget after a Go call
+	IRIncIC         // INC R15 — undo a speculative reserve or support legacy tests
+	IRDecIC         // DEC R15 — legacy single-instruction reserve helper
+	IRSpillIC       // MOV [RBP+IC_offset], R15 — preserve remaining budget before Go calls/exits
+	IRRegBudget     // CMP R15, Imm2; JGE Label(Dst) — legacy count-up budget gate
+	IRBudgetZero    // TEST R15,R15; JE Label(Dst) — legacy count-down budget gate
+	IRBudgetReserve // if R15 < Imm: goto Label(Dst); else R15 -= Imm
+	IRSetPC         // MOV [RBP+PC_offset], Imm — budget cold path
+	IRRetBudget     // status=jitBudget, exitinfo=0, restore SP, return (PC already set)
 
 	// Pseudo-ops
 	IRMarkLive  // declares A live here (allocator hint)
@@ -379,6 +381,8 @@ var irOpNames = [...]string{
 	IRDecIC:         "dec_ic",
 	IRSpillIC:       "spill_ic",
 	IRRegBudget:     "reg_budget",
+	IRBudgetZero:    "budget_zero",
+	IRBudgetReserve: "budget_reserve",
 	IRSetPC:         "set_pc",
 	IRRetBudget:     "ret_budget",
 	IRMarkLive:      "mark_live",
@@ -458,6 +462,10 @@ func (ins IRInstr) String() string {
 		return "spill_ic"
 	case IRRegBudget:
 		return fmt.Sprintf("%s budget=%d overflow=L%d", ins.Op, ins.Imm2, ins.Dst)
+	case IRBudgetZero:
+		return fmt.Sprintf("%s exhausted=L%d", ins.Op, ins.Dst)
+	case IRBudgetReserve:
+		return fmt.Sprintf("%s need=%d exhausted=L%d", ins.Op, ins.Imm, ins.Dst)
 	case IRSetPC:
 		return fmt.Sprintf("%s pc=0x%x", ins.Op, uint64(ins.Imm))
 	case IRRetBudget:

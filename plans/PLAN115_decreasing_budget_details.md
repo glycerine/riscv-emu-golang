@@ -8,7 +8,7 @@ and macro-op fusion. The key decision is that emitted native code must have one
 budget meaning, not a proliferation of "precise IC", "lockstep", "debug", and
 "production" modes.
 
-The JIT budget register is a decreasing counter. The host can still compute and
+The JIT budget register is a decreasing counter of guest RISCV64 instructions (NOT native instructions). The host can still compute and
 publish total retired guest instructions, but native code should not switch
 between count-up and count-down semantics depending on who called it.
 
@@ -274,3 +274,46 @@ The change is complete when:
 - Current lockstep tests remain green.
 - Focused tests cover non-fused, 2-instruction fused, and 3-instruction fused
   budget boundaries.
+
+## Implementation Notes
+
+Implemented the decreasing-budget contract in the native JIT path. `jit.go:179`
+defines the distinct `jitBudget` status, `jit.go:190` defines `jitMaxBudget`
+as `^uint64(0)`, and `jit.go:430` / `jit.go:437` route `StepBlock` and
+`StepBlockBudget` through a caller-provided countdown budget. The dispatcher
+handles `jitBudget` at `jit.go:796` and `jit.go:1000`; when a fused group
+cannot enter because the remaining budget is too small and no native guest
+instruction retired, it interprets one guest instruction to make progress.
+
+The emitted IR now uses a single active budget primitive. `ir.go:283` defines
+`IRBudgetReserve`, `highlevel.go:210` exposes `BudgetReserve`, and the emitter
+uses it for ordinary instructions at `jit_emit_ir.go:303`. Fused groups reserve
+their actual fused width before executing: AUIPC-based two-instruction fusions
+start at `jit_emit_ir.go:1152`, and the OP-IMM / OP-IMM-32 fusion helpers cover
+the two- and three-instruction patterns later in the same file. The legacy
+count-up and zero-check ops remain for older tests/helpers, but normal emission
+does not switch modes.
+
+The native boundary now treats R15 as remaining budget. ABJIT sets
+`State.IC = budget` and computes `ICdelta = budget - State.IC` in
+`jit_abjit.go:56`. The older RV8 trampoline path also accepts an explicit
+budget: `internal/jitcall/call_amd64.go` and `internal/jitcall/call_arm64.go`
+include the new argument, while the assembly initializes R15 and writes
+`initial - remaining` back to `Result.ICdelta` in
+`internal/jitcall/call_amd64.s` and `internal/jitcall/call_arm64.s`.
+The C sandbox wrapper mirrors that contract through `jit_sandbox.c`.
+
+Compatibility knobs no longer create emitted-code modes. `jit.go:346` keeps
+`SetInstructionCounterMode` as a validating shim, and `jit.go:359` always
+reports `JITICPrecise` as the effective mode. `UseR15InstructionCounter` is
+retained for API compatibility, but R15 is always reserved by JIT compilation
+because it is the budget register.
+
+Focused coverage was added in `jea9linux_phase1_test.go` for exact budget
+expiry, repeated budget slices, changing budget values without recompilation,
+too-small fused-pair fallback, fitted fused-pair execution, too-small
+fused-triple fallback, and fitted fused-triple execution. The emux regression
+test in `cmd/emux/emux_test.go` remains a bounded completion test for the Go
+`timenow.elf` fixture; its guard is intentionally a hang boundary rather than a
+tight performance assertion because the current default path lazy-compiles many
+Go-runtime blocks.

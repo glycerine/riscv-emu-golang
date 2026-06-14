@@ -220,6 +220,18 @@ func (lc *lowerCtxRV8) emitEpilogue() {
 // ── Instruction dispatch ──
 
 func (lc *lowerCtxRV8) lowerInstr(ins *IRInstr) error {
+	switch ins.Op {
+	case IRLoadIC, IRSpillIC:
+		// The RV8 trampoline carries R15 as the live remaining budget; unlike
+		// ABJIT there is no abjit.State.IC slot at RBP+600 to load/spill.
+		return nil
+	case IRSetPC:
+		lc.rv8SetPC(ins)
+		return nil
+	case IRRetBudget:
+		lc.rv8RetBudget()
+		return nil
+	}
 	if handled, err := lc.lowerOps.lowerInstrCommon(ins); handled || err != nil {
 		return err
 	}
@@ -265,6 +277,20 @@ func (lc *lowerCtxRV8) rv8Ret(ins *IRInstr) {
 		lc.emitMI(x86.AMOVQ, 0, stgA, 16)
 	}
 
+	lc.emitEpilogue()
+}
+
+func (lc *lowerCtxRV8) rv8SetPC(ins *IRInstr) {
+	lc.emitRM(x86.AMOVQ, goasm.REG_AMD64_SP, lc.sretOffset, stgA)
+	lc.loadImm(ins.Imm, stgB)
+	lc.emitMR(x86.AMOVQ, stgB, stgA, 0)
+}
+
+func (lc *lowerCtxRV8) rv8RetBudget() {
+	lc.storeRegsBack()
+	lc.emitRM(x86.AMOVQ, goasm.REG_AMD64_SP, lc.sretOffset, stgA)
+	lc.emitMI(x86.AMOVQ, jitBudget, stgA, 8)
+	lc.emitMI(x86.AMOVQ, 0, stgA, 16)
 	lc.emitEpilogue()
 }
 

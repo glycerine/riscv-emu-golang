@@ -111,7 +111,7 @@ func benchAddImm(b *testing.B, base int16) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		jitcall.Call(fn, &x, &f, &fcsr, 0, 0)
+		jitcall.Call(fn, &x, &f, &fcsr, 0, 0, ^uint64(0))
 	}
 	b.StopTimer()
 	b.ReportMetric(float64(benchAddN), "adds/op")

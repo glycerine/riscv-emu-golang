@@ -21,9 +21,9 @@ func jitcallCall(j *JIT, fn uintptr, x *[32]uint64, f *[32]uint64, fcsr *uint32,
 	var res jitcall.Result
 	if j.useABJIT {
 		blk := &compiledBlock{fn: fn, hasFP: true}
-		res = abjitDispatch(blk, cpu, j, 0, 0, 0, 0)
+		res = abjitDispatch(blk, cpu, j, 0, 0, 0, 0, jitMaxBudget)
 	} else {
-		res = sandboxRv8Call(fn, cpu, gm.RegFileBase(), gm.StackTop(), 0, 0, 0, 0)
+		res = sandboxRv8Call(fn, cpu, gm.RegFileBase(), gm.StackTop(), 0, 0, 0, 0, jitMaxBudget)
 	}
 	*x = cpu.x
 	*f = cpu.f
@@ -282,20 +282,26 @@ func TestJITInstructionCounterMode_Emission(t *testing.T) {
 	if precise == nil {
 		t.Fatal("precise emitBlock returned nil")
 	}
-	if got := countIROp(precise.block, IRIncIC); got == 0 {
-		t.Fatal("precise IC mode emitted no IRIncIC ops")
+	if got := countIROp(precise.block, IRBudgetReserve); got == 0 {
+		t.Fatal("precise IC mode emitted no IRBudgetReserve ops")
+	}
+	if got := countIROp(precise.block, IRRegBudget); got != 0 {
+		t.Fatalf("precise IC mode emitted %d legacy count-up budget checks, want 0", got)
 	}
 
 	j.SetInstructionCounterMode(JITICNone)
-	if got := j.InstructionCounterMode(); got != JITICNone {
-		t.Fatalf("off JIT IC mode = %s, want %s", got, JITICNone)
+	if got := j.InstructionCounterMode(); got != JITICPrecise {
+		t.Fatalf("legacy off JIT IC mode = %s, want effective %s", got, JITICPrecise)
 	}
 	off := j.emitBlock(mem, 0x1000)
 	if off == nil {
 		t.Fatal("off emitBlock returned nil")
 	}
-	if got := countIROp(off.block, IRIncIC); got != 0 {
-		t.Fatalf("no-counter IC mode emitted %d IRIncIC ops, want 0", got)
+	if got := countIROp(off.block, IRBudgetReserve); got == 0 {
+		t.Fatal("legacy no-counter mode emitted no IRBudgetReserve ops")
+	}
+	if got := countIROp(off.block, IRRegBudget); got != 0 {
+		t.Fatalf("legacy no-counter mode emitted %d legacy count-up budget checks, want 0", got)
 	}
 
 	j.DebugOneBlockLockstepMode = true
@@ -303,11 +309,11 @@ func TestJITInstructionCounterMode_Emission(t *testing.T) {
 	if lockstep == nil {
 		t.Fatal("lockstep emitBlock returned nil")
 	}
-	if got := countIROp(lockstep.block, IRIncIC); got == 0 {
-		t.Fatal("lockstep should force precise IC increments")
+	if got := countIROp(lockstep.block, IRBudgetReserve); got == 0 {
+		t.Fatal("lockstep should emit countdown budget reserves")
 	}
-	if got := countIROp(lockstep.block, IRRegBudget); got == 0 {
-		t.Fatal("lockstep should emit budget checks")
+	if got := countIROp(lockstep.block, IRRegBudget); got != 0 {
+		t.Fatalf("lockstep emitted %d legacy count-up budget checks, want 0", got)
 	}
 }
 
@@ -321,8 +327,8 @@ func TestJITInstructionCounterMode_ReservePredicate(t *testing.T) {
 	if res == nil {
 		t.Fatal("emitBlock returned nil")
 	}
-	if j.reserveInstructionCounterReg(res.block) {
-		t.Fatal("straight-line no-counter block should not reserve IC register")
+	if !j.reserveInstructionCounterReg(res.block) {
+		t.Fatal("budgeted block should reserve IC register even through legacy no-counter mode")
 	}
 
 	res.block.Instrs = append(res.block.Instrs, IRInstr{Op: IRJalrIC, A: VReg(1)})

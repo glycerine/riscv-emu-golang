@@ -1152,7 +1152,7 @@ func execBlockRV8(t *testing.T, b *Block, x *[32]uint64) jitcall.Result {
 
 	var f [32]uint64
 	var fcsr uint32
-	return jitcall.Call(uintptr(unsafe.Pointer(&mem[0])), x, &f, &fcsr, 0, 0)
+	return jitcall.Call(uintptr(unsafe.Pointer(&mem[0])), x, &f, &fcsr, 0, 0, jitMaxBudget)
 }
 
 func TestRV8Trampoline_RoundTrip(t *testing.T) {

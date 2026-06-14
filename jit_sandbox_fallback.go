@@ -8,13 +8,14 @@ const useRv8SandboxTrampoline = false
 
 func sandboxRv8Call(fn uintptr, cpu *CPU,
 	regFile, stackTop uintptr,
-	dcBase uintptr, dcMask, vBegin, segSize uint64) jitcall.Result {
+	dcBase uintptr, dcMask, vBegin, segSize uint64,
+	budget uint64) jitcall.Result {
 
 	if dcBase != 0 || dcMask != 0 || vBegin != 0 || segSize != 0 {
 		return jitcall.CallAOT(fn, &cpu.x, &cpu.f, &cpu.fcsr,
 			cpu.mem.Base(), cpu.mem.Mask(),
-			dcBase, dcMask, vBegin, segSize)
+			dcBase, dcMask, vBegin, segSize, budget)
 	}
 	return jitcall.Call(fn, &cpu.x, &cpu.f, &cpu.fcsr,
-		cpu.mem.Base(), cpu.mem.Mask())
+		cpu.mem.Base(), cpu.mem.Mask(), budget)
 }

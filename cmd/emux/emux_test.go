@@ -3,8 +3,10 @@ package main
 import (
 	"bytes"
 	"encoding/binary"
+	"flag"
 	"strings"
 	"testing"
+	"time"
 
 	riscv "github.com/glycerine/riscv-emu-golang"
 )
@@ -86,6 +88,37 @@ func TestRunEmuxJITRunsJea9LinuxFixture(t *testing.T) {
 	}
 }
 
+func TestEmuxDefaultFlagsRunGoTimeNowFixtureCompletes(t *testing.T) {
+	cfg, stdout, stderr := parseEmuxConfigForTest(t,
+		"-run", "../../testvectors/jea9linux/go/elf/timenow.elf",
+	)
+
+	type result struct {
+		code int
+		err  error
+	}
+	done := make(chan result, 1)
+	go func() {
+		code, err := runEmux(cfg)
+		done <- result{code: code, err: err}
+	}()
+
+	select {
+	case got := <-done:
+		if got.err != nil {
+			t.Fatalf("runEmux: %v; stdout=%q stderr=%q", got.err, stdout.String(), stderr.String())
+		}
+		if got.code != 0 {
+			t.Fatalf("exit code = %d, want 0; stdout=%q stderr=%q", got.code, stdout.String(), stderr.String())
+		}
+		if strings.TrimSpace(stdout.String()) == "" {
+			t.Fatalf("stdout is empty; stderr=%q", stderr.String())
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatalf("default emux timenow run did not complete; stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+}
+
 func TestEmuxConfigDefaultsPreserveExplicitZeroClock(t *testing.T) {
 	cfg := EmuxConfig{}.withDefaults()
 	if cfg.MemorySize != defaultEmuxMemorySize {
@@ -134,6 +167,35 @@ func TestParseClockModeAndSeedBytes(t *testing.T) {
 	if got := binary.LittleEndian.Uint64(seedBytes(seed)); got != seed {
 		t.Fatalf("seedBytes round trip = %#x, want %#x", got, seed)
 	}
+}
+
+func parseEmuxConfigForTest(t *testing.T, args ...string) (EmuxConfig, *bytes.Buffer, *bytes.Buffer) {
+	t.Helper()
+	fs := flag.NewFlagSet("emux-test", flag.ContinueOnError)
+	var flagErrors bytes.Buffer
+	fs.SetOutput(&flagErrors)
+
+	cfg := &EmuxConfig{}
+	cfg.DefineFlags(fs)
+	if err := fs.Parse(args); err != nil {
+		t.Fatalf("parse flags: %v; output=%q", err, flagErrors.String())
+	}
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "monotonic-ns" {
+			cfg.MonotonicStartSet = true
+		}
+	})
+	if err := cfg.ValidateConfig(); err != nil {
+		t.Fatalf("validate flags: %v", err)
+	}
+	cfg.Args = append([]string{cfg.RunPath}, fs.Args()...)
+	cfg.Env = []string{}
+
+	var stdout, stderr bytes.Buffer
+	cfg.Stdin = strings.NewReader("")
+	cfg.Stdout = &stdout
+	cfg.Stderr = &stderr
+	return *cfg, &stdout, &stderr
 }
 
 func runEmuxFixtureOutput(t *testing.T, seed uint64) string {

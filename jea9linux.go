@@ -1219,25 +1219,91 @@ func (j *Jea9Linux) Run(cpu *CPU) error {
 	}
 	switch res {
 	case RunBudgetExpired:
-		j.budgetYields++
-		if j.contexts != nil {
-			from := j.traceTID()
-			to := from
-			ctx := j.ensureScheduler(cpu)
-			ctx.state = jea9LinuxContextRunnable
-			ctx.snapshot = snapshotJea9LinuxCPU(cpu)
-			if next, ok := j.nextRunnableAfterCurrent(); ok {
-				j.loadContext(cpu, next)
-				to = next
-			}
-			j.recordScheduleTrace(cpu, "budget", from, to)
-		}
-		return ErrJea9LinuxBudget
+		return j.expireBudget(cpu)
 	case RunBudgetExit:
 		return nil
 	default:
 		return nil
 	}
+}
+
+func (j *Jea9Linux) RunJIT(cpu *CPU, jit *JIT) error {
+	if jit == nil {
+		return errors.New("jea9linux: RunJIT requires a JIT")
+	}
+	budget := j.instructionBudget
+	var used uint64
+	for {
+		remaining := budget
+		if budget != 0 {
+			if used >= budget {
+				return j.expireBudget(cpu)
+			}
+			remaining = budget - used
+		}
+
+		before := cpu.RiscvInstrBegun()
+		res, err := jit.StepBlockBudget(cpu, remaining)
+		delta := cpu.RiscvInstrBegun() - before
+		used += delta
+		j.accountRetired(delta)
+		if j.Blocked() {
+			return ErrJea9LinuxBlocked
+		}
+		if cpu.watchAddr != 0 {
+			if v, _ := (&cpu.mem).Load64(cpu.watchAddr); v != 0 {
+				return &ExitError{Code: tohostExitCode(v)}
+			}
+		}
+
+		if err != nil {
+			if _, ok := err.(*ExitError); ok {
+				return err
+			}
+			n := noteFromStepErr(err, cpu.PC())
+			var disp NoteDisposition
+			if errors.Is(err, ErrEcall) {
+				disp = jit.deliverEcall(cpu, n)
+			} else {
+				disp = cpu.Notes.Deliver(cpu, n)
+			}
+			switch disp {
+			case NoteHandled:
+				if j.Blocked() {
+					return ErrJea9LinuxBlocked
+				}
+				continue
+			case NoteExit:
+				return &ExitError{Code: cpu.ExitCode}
+			default:
+				return err
+			}
+		}
+
+		switch res {
+		case RunBudgetExpired:
+			return j.expireBudget(cpu)
+		case RunBudgetExit:
+			return nil
+		}
+	}
+}
+
+func (j *Jea9Linux) expireBudget(cpu *CPU) error {
+	j.budgetYields++
+	if j.contexts != nil {
+		from := j.traceTID()
+		to := from
+		ctx := j.ensureScheduler(cpu)
+		ctx.state = jea9LinuxContextRunnable
+		ctx.snapshot = snapshotJea9LinuxCPU(cpu)
+		if next, ok := j.nextRunnableAfterCurrent(); ok {
+			j.loadContext(cpu, next)
+			to = next
+		}
+		j.recordScheduleTrace(cpu, "budget", from, to)
+	}
+	return ErrJea9LinuxBudget
 }
 
 func (j *Jea9Linux) accountRetired(delta uint64) {
@@ -3310,6 +3376,24 @@ func RunWithJea9Linux(cpu *CPU, j *Jea9Linux) (exitCode int, err error) {
 	defer cleanup()
 	for {
 		err = j.Run(cpu)
+		if errors.Is(err, ErrJea9LinuxBudget) {
+			continue
+		}
+		if err != nil {
+			if ex, ok := err.(*ExitError); ok {
+				return ex.Code, nil
+			}
+			return 0, err
+		}
+		return cpu.ExitCode, nil
+	}
+}
+
+func RunWithJea9LinuxJIT(cpu *CPU, jit *JIT, j *Jea9Linux) (exitCode int, err error) {
+	cleanup := InstallJea9LinuxJIT(cpu, jit, j)
+	defer cleanup()
+	for {
+		err = j.RunJIT(cpu, jit)
 		if errors.Is(err, ErrJea9LinuxBudget) {
 			continue
 		}

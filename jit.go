@@ -176,6 +176,9 @@ const (
 	// inline. sret.PC = faulting instruction's PC. Dispatcher re-executes
 	// via the interpreter (which does byte-by-byte), then continues.
 	jitMisalign = JitMisalign
+	// jitBudget: native countdown budget gate fired. sret.PC is the
+	// unexecuted guest PC and State.IC/result IC holds the remaining budget.
+	jitBudget = 8
 )
 
 // Block cache: direct-mapped array replaces map[uint64]*compiledBlock.
@@ -184,6 +187,7 @@ const (
 	blockCacheShift = 12                   // 4096 entries
 	blockCacheSize  = 1 << blockCacheShift // must be power of 2
 	blockCacheMask  = blockCacheSize - 1
+	jitMaxBudget    = ^uint64(0)
 )
 
 type blockCacheEntry struct {
@@ -194,13 +198,13 @@ type blockCacheEntry struct {
 type JITInstructionCounterMode uint8
 
 const (
-	// JITICNone emits no per-instruction counter updates in JIT code. This is
-	// intended for throughput measurements; cpu.RiscvInstrBegun remains exact
-	// only for interpreter fallback instructions.
+	// JITICNone is retained for older callers. The native JIT no longer has
+	// a no-counter emission mode: all emitted code uses R15 as a decreasing
+	// guest-instruction budget, and Go derives retired instructions at the
+	// dispatch boundary.
 	JITICNone JITInstructionCounterMode = iota
 
-	// JITICPrecise emits one native counter update per guest instruction and
-	// is the default for parity, lockstep, and instruction-count tests.
+	// JITICPrecise is the only effective native JIT mode.
 	JITICPrecise
 )
 
@@ -285,8 +289,8 @@ type JIT struct {
 	stopperPage uintptr // InfiniteLoopStopperPage: mmap'd guard page for preemption
 	watchAddr   uint64  // tohost address; JIT blocks exit when a store hits this address
 
-	UseR15InstructionCounter  bool  // INC R15 per guest instruction for precise IC
-	DebugOneBlockLockstepMode bool  // emit budget checks at back-edges (implies UseR15InstructionCounter)
+	UseR15InstructionCounter  bool  // compatibility knob; R15 budget codegen is always enabled
+	DebugOneBlockLockstepMode bool  // StepBlock uses LockstepModeBudget as its native dispatch budget
 	LockstepModeBudget        int64 // max IC before forced exit (default 65536)
 
 	// Dispatch counters (for diagnostics).
@@ -339,33 +343,27 @@ func (j *JIT) SetRegPolicy(p RegPolicy) {
 // NoJITSize returns the number of PCs in the noJIT set (translation failures).
 func (j *JIT) NoJITSize() int { return len(j.noJIT) }
 
-// SetInstructionCounterMode selects how future JIT emissions account for
-// retired guest instructions. Switching modes invalidates compiled code so
-// subsequent dispatches cannot mix precise and no-counter blocks.
+// SetInstructionCounterMode validates the legacy instruction-counter mode API.
+// Native code generation no longer switches modes: every emitted block uses
+// R15 as a decreasing budget and Go computes retired instructions from the
+// remaining value returned by the trampoline.
 func (j *JIT) SetInstructionCounterMode(mode JITInstructionCounterMode) {
 	switch mode {
-	case JITICNone:
-		j.UseR15InstructionCounter = false
-	case JITICPrecise:
+	case JITICNone, JITICPrecise:
 		j.UseR15InstructionCounter = true
 	default:
 		panic(fmt.Sprintf("unknown JIT instruction counter mode: %d", uint8(mode)))
 	}
-	j.resetCompiledCode()
 }
 
-// InstructionCounterMode reports the effective non-debug IC mode. Lockstep
-// still forces precise counting at emission time because its budget checks
-// depend on the same native counter register.
+// InstructionCounterMode reports the effective mode. It always reports
+// precise because the JIT has one countdown-budget codegen contract.
 func (j *JIT) InstructionCounterMode() JITInstructionCounterMode {
-	if j.UseR15InstructionCounter {
-		return JITICPrecise
-	}
-	return JITICNone
+	return JITICPrecise
 }
 
 func (j *JIT) preciseInstructionCounterEnabled() bool {
-	return j.UseR15InstructionCounter || j.DebugOneBlockLockstepMode
+	return true
 }
 
 func blockTouchesInstructionCounterReg(b *Block) bool {
@@ -375,7 +373,7 @@ func blockTouchesInstructionCounterReg(b *Block) bool {
 	for i := range b.Instrs {
 		switch b.Instrs[i].Op {
 		case IRZeroIC, IRLoadIC, IRIncIC, IRDecIC, IRSpillIC, IRRegBudget,
-			IRCall, IRSyscall, IRJalrIC:
+			IRBudgetZero, IRBudgetReserve, IRCall, IRSyscall, IRJalrIC:
 			return true
 		}
 	}
@@ -429,34 +427,24 @@ func (j *JIT) stepInterpreted(cpu *CPU) error {
 	return err
 }
 
-// StepBlockBudget executes one JIT dispatch cycle with the production
-// instruction-budget gate enabled. It reuses the lockstep budget lowering path,
-// but reports the budget boundary as a scheduler result instead of continuing
-// dispatch internally.
+func (j *JIT) stepBlockDispatchBudget() uint64 {
+	if j.DebugOneBlockLockstepMode && j.LockstepModeBudget > 0 {
+		return uint64(j.LockstepModeBudget)
+	}
+	return jitMaxBudget
+}
+
+// StepBlockBudget executes JIT work against a caller-provided countdown budget.
 func (j *JIT) StepBlockBudget(cpu *CPU, budget uint64) (RunBudgetResult, error) {
 	if budget == 0 {
-		_, err := j.StepBlock(cpu)
-		return RunBudgetContinue, err
-	}
-	ibudget := int64(budget)
-	if !j.DebugOneBlockLockstepMode || j.LockstepModeBudget != ibudget {
-		j.DebugOneBlockLockstepMode = true
-		j.LockstepModeBudget = ibudget
-		j.resetCompiledCode()
+		return RunBudgetExpired, nil
 	}
 	before := cpu.RiscvInstrBegun()
-	_, err := j.StepBlock(cpu)
+	_, err := j.stepBlockWithBudget(cpu, budget)
 	if err != nil {
 		return RunBudgetContinue, err
 	}
 	if cpu.RiscvInstrBegun()-before >= budget {
-		// The existing lockstep gate fires before executing the instruction
-		// that reaches the budget. For the scheduler-facing API, complete that
-		// boundary instruction so a budget of N means N retired instructions.
-		cpu.riscvInstrBegun--
-		if err := j.stepInterpreted(cpu); err != nil {
-			return RunBudgetContinue, err
-		}
 		return RunBudgetExpired, nil
 	}
 	return RunBudgetContinue, nil
@@ -771,6 +759,10 @@ func (j *JIT) maybeCompileHotRegion(mem *GuestMemory, pc uint64) bool {
 
 // StepBlock executes one dispatch cycle and returns.
 func (j *JIT) StepBlock(cpu *CPU) (ic uint64, err error) {
+	return j.stepBlockWithBudget(cpu, j.stepBlockDispatchBudget())
+}
+
+func (j *JIT) stepBlockWithBudget(cpu *CPU, budget uint64) (ic uint64, err error) {
 	if j.watchAddr == 0 && cpu.watchAddr != 0 {
 		j.watchAddr = cpu.watchAddr
 	}
@@ -783,11 +775,11 @@ func (j *JIT) StepBlock(cpu *CPU) (ic uint64, err error) {
 	if blk != nil {
 		var res jitcall.Result
 		if j.useABJIT {
-			res = abjitDispatch(blk, cpu, j, 0, 0, 0, 0)
+			res = abjitDispatch(blk, cpu, j, 0, 0, 0, 0, budget)
 		} else {
 			res = sandboxRv8Call(blk.fn, cpu,
 				cpu.mem.RegFileBase(), cpu.mem.StackTop(),
-				0, 0, 0, 0)
+				0, 0, 0, 0, budget)
 			cpu.riscvInstrBegun += res.ICdelta
 		}
 		if j.trace {
@@ -800,6 +792,13 @@ func (j *JIT) StepBlock(cpu *CPU) (ic uint64, err error) {
 		case jitOK:
 			return cpu.riscvInstrBegun, nil
 		case jitOKJalrMiss:
+			return cpu.riscvInstrBegun, nil
+		case jitBudget:
+			if res.ICdelta == 0 && budget > 0 {
+				if err := j.stepInterpreted(cpu); err != nil {
+					return cpu.riscvInstrBegun, err
+				}
+			}
 			return cpu.riscvInstrBegun, nil
 		case jitMisalign:
 			if err := j.stepInterpreted(cpu); err != nil {
@@ -833,9 +832,10 @@ func (j *JIT) StepBlock(cpu *CPU) (ic uint64, err error) {
 		if res != nil && res.numInsns > 0 {
 			compiled, cerr := j.jitCompile(res, &cpu.mem)
 			if cerr == nil {
+				j.DispatchCompile++
 				j.insertBlock(pc, compiled)
 				j.maybeCompileHotRegion(&cpu.mem, pc)
-				return j.StepBlock(cpu) // retry — returns cpu.riscvInstrBegun
+				return j.stepBlockWithBudget(cpu, budget) // retry — returns cpu.riscvInstrBegun
 			}
 		}
 		j.noJIT[pc] = true
@@ -950,14 +950,14 @@ func (j *JIT) RunJIT(cpu *CPU) (err0 error) {
 					vBegin = seg.vaddrBegin
 					segSz = seg.vaddrSize
 				}
-				res = abjitDispatch(blk, cpu, j, dcBase, dcMask, vBegin, segSz)
+				res = abjitDispatch(blk, cpu, j, dcBase, dcMask, vBegin, segSz, jitMaxBudget)
 			} else {
 				regFile := cpu.mem.RegFileBase()
 				stackTop := cpu.mem.StackTop()
 				if seg := j.soleSegment; seg != nil {
 					res = sandboxRv8Call(blk.fn, cpu, regFile, stackTop,
 						seg.decoderCacheBase, seg.decoderCacheMask,
-						seg.vaddrBegin, seg.vaddrSize)
+						seg.vaddrBegin, seg.vaddrSize, jitMaxBudget)
 				} else if len(j.aotSegments) > 0 {
 					seg := blk.segment
 					if seg == nil {
@@ -968,10 +968,10 @@ func (j *JIT) RunJIT(cpu *CPU) (err0 error) {
 					}
 					res = sandboxRv8Call(blk.fn, cpu, regFile, stackTop,
 						seg.decoderCacheBase, seg.decoderCacheMask,
-						seg.vaddrBegin, seg.vaddrSize)
+						seg.vaddrBegin, seg.vaddrSize, jitMaxBudget)
 				} else {
 					res = sandboxRv8Call(blk.fn, cpu, regFile, stackTop,
-						0, 0, 0, 0)
+						0, 0, 0, 0, jitMaxBudget)
 				}
 				cpu.riscvInstrBegun += res.ICdelta
 			}
@@ -995,6 +995,14 @@ func (j *JIT) RunJIT(cpu *CPU) (err0 error) {
 				// direct-jump path, then continue dispatch.
 				j.JalrICMisses++
 				j.tryPatchJalrIC(blk, int(res.FaultAddr), cpu.pc)
+				continue
+
+			case jitBudget:
+				if res.ICdelta == 0 {
+					if err := j.stepInterpreted(cpu); err != nil {
+						return err
+					}
+				}
 				continue
 
 			case jitMisalign:

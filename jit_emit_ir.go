@@ -90,9 +90,6 @@ type emitter struct {
 	pcLabels         u64labelmap
 	stopperAddr      int64  // InfiniteLoopStopperPage address for backward-branch probes
 	watchAddr        uint64 // tohost address; stores here trigger a block exit
-	useICR15         bool
-	lockstepMode     bool
-	lockstepBudget   int64
 	budgetExits      []budgetExit
 	sharedBudgetExit Label
 	deferredExits    []deferredExit
@@ -299,15 +296,25 @@ func (e *emitter) emitLabel() {
 	e.irEm.PlaceLabel(e.getOrCreateLabel(e.pc))
 }
 
+func (e *emitter) allowInstructionFusion() bool {
+	return true
+}
+
 func (e *emitter) emitBudgetCheck() {
-	if e.useICR15 {
-		e.irEm.IncIC()
+	e.emitBudgetReserve(1)
+}
+
+func (e *emitter) emitBudgetReserve(n int) {
+	if n <= 0 {
+		return
 	}
-	if e.lockstepMode {
-		coldLabel := e.irEm.NewLabel()
-		e.irEm.RegBudget(e.lockstepBudget, coldLabel)
-		e.budgetExits = append(e.budgetExits, budgetExit{coldLabel, e.pc})
-	}
+	coldLabel := e.irEm.NewLabel()
+	e.irEm.BudgetReserve(int64(n), coldLabel)
+	e.budgetExits = append(e.budgetExits, budgetExit{coldLabel, e.pc})
+}
+
+func (e *emitter) undoBudgetCheck() {
+	e.irEm.IncIC()
 }
 
 // peek32 fetches the 32-bit instruction at the given PC without
@@ -366,9 +373,7 @@ func (e *emitter) advancePC(size uint64) {
 }
 
 func (e *emitter) spillIC() {
-	if e.useICR15 {
-		e.irEm.SpillIC()
-	}
+	e.irEm.SpillIC()
 }
 
 func (e *emitter) emitReturn(pc uint64, status int) {
@@ -772,7 +777,7 @@ func (e *emitter) finalize() *emitResult {
 	}
 
 	// Per-instruction budget cold paths + shared exit stub (lockstep mode).
-	if e.lockstepMode && len(e.budgetExits) > 0 {
+	if len(e.budgetExits) > 0 {
 		for _, be := range e.budgetExits {
 			e.irEm.PlaceLabel(be.label)
 			e.irEm.SetPC(be.pc)
@@ -991,26 +996,21 @@ func (j *JIT) emitBlockRange(mem *GuestMemory, pc, endPC uint64) *emitResult {
 	//gt.IterStart = testIterStart
 
 	e := &emitter{
-		mem:            mem,
-		startPC:        pc,
-		pc:             pc,
-		irEm:           irEm,
-		visited:        make(map[uint64]bool),
-		regionEnd:      endPC,
-		gotoTargets:    gt,
-		pcLabels:       newU64labelmap(),
-		stopperAddr:    int64(j.stopperPage),
-		watchAddr:      j.watchAddr,
-		useICR15:       j.preciseInstructionCounterEnabled(),
-		lockstepMode:   j.DebugOneBlockLockstepMode,
-		lockstepBudget: j.LockstepModeBudget,
+		mem:         mem,
+		startPC:     pc,
+		pc:          pc,
+		irEm:        irEm,
+		visited:     make(map[uint64]bool),
+		regionEnd:   endPC,
+		gotoTargets: gt,
+		pcLabels:    newU64labelmap(),
+		stopperAddr: int64(j.stopperPage),
+		watchAddr:   j.watchAddr,
 	}
 
-	// IC is zeroed by Go (s.IC=0) and loaded into R15 by the trampoline.
-	// No IRZeroIC here — chain entries must not re-zero R15.
-	if e.lockstepMode {
-		e.sharedBudgetExit = e.irEm.NewLabel()
-	}
+	// The remaining instruction budget is loaded into R15 by the trampoline.
+	// No IRZeroIC here — chain entries must preserve the remaining budget.
+	e.sharedBudgetExit = e.irEm.NewLabel()
 
 	// Emit IR (populates regsUsed via xreg/xregDst calls).
 	for !e.terminated && e.pc < e.regionEnd {
@@ -1116,8 +1116,12 @@ func (e *emitter) emit32(insn uint32) {
 	iimm := int64(int32(insn)) >> 20
 
 	savedNumInsns := e.numInsns
+	savedBudgetExits := len(e.budgetExits)
 	e.emitLabel()
-	e.emitBudgetCheck()
+	lateBudget := opcode == 0x17 || opcode == 0x13 || opcode == 0x1B
+	if !lateBudget {
+		e.emitBudgetCheck()
+	}
 
 	switch opcode {
 	case 0x37: // LUI
@@ -1133,7 +1137,7 @@ func (e *emitter) emit32(insn uint32) {
 		//vv("AUIPC entry: pc=0x%x rd=%d addr=0x%x watchAddr=0x%x startPC=0x%x", e.pc, rd, addr, e.watchAddr, e.startPC)
 
 		// Macro-op fusion: peek at the next instruction for AUIPC+X pairs.
-		if rd != 0 {
+		if rd != 0 && e.allowInstructionFusion() {
 			next, ok := e.peek32(e.pc + 4)
 			//vv("AUIPC peek: pc=0x%x peek_ok=%v next=0x%x", e.pc, ok, next)
 			if ok {
@@ -1147,31 +1151,25 @@ func (e *emitter) emit32(insn uint32) {
 				switch {
 				case nextOp == 0x13 && (next>>12)&7 == 0 && nextRd == rd && nextRs1 == rd:
 					// AUIPC+ADDI → la (load address): single Const.
+					e.emitBudgetReserve(2)
 					e.irEm.Const(e.xregDst(rd), addr+nextImm)
 					e.advancePC(4)
-					if e.useICR15 {
-						e.irEm.IncIC()
-					}
 					e.advancePC(4)
 					return
 
 				case nextOp == 0x67 && nextRs1 == rd:
 					// AUIPC+JALR → direct call with known target.
+					e.emitBudgetReserve(2)
 					target := addr + nextImm
 					e.irEm.Const(e.xregDst(rd), int64(e.pc)+4)
 					e.advancePC(4)
-					if e.useICR15 {
-						e.irEm.IncIC()
-					}
 					e.emitJALR(nextRd, rd, target-int64(e.pc), 4)
 					return
 
 				case nextOp == 0x03 && nextRs1 == rd && nextRd == rd:
 					// AUIPC+LOAD → load from absolute guest address.
+					e.emitBudgetReserve(2)
 					e.advancePC(4)
-					if e.useICR15 {
-						e.irEm.IncIC()
-					}
 					e.advancePC(4)
 					funct3 := (next >> 12) & 7
 					e.emitLoadFused(rd, addr+nextImm, funct3)
@@ -1187,12 +1185,10 @@ func (e *emitter) emit32(insn uint32) {
 
 					if storeAddr == int64(e.watchAddr) {
 						//vv("recognized 'tohost'! check if non-zero write...")
+						e.emitBudgetReserve(2)
 						nextRs2 := (next >> 20) & 0x1F
 						e.irEm.Const(e.xregDst(rd), addr)
 						e.advancePC(4)
-						if e.useICR15 {
-							e.irEm.IncIC()
-						}
 						e.emitStore(rd, nextRs2, storeImm, nextFunct3)
 						e.advancePC(4)
 						// tohost written: if stored value != 0, exit block.
@@ -1209,6 +1205,9 @@ func (e *emitter) emit32(insn uint32) {
 					}
 				}
 			}
+		}
+		e.emitBudgetCheck()
+		if rd != 0 {
 			e.irEm.Const(e.xregDst(rd), addr)
 		}
 		e.advancePC(4)
@@ -1245,12 +1244,20 @@ func (e *emitter) emit32(insn uint32) {
 		}
 
 	case 0x13: // OP-IMM
+		if e.tryEmitOpImmFusion(rd, rs1, iimm, funct3, funct7) {
+			return
+		}
+		e.emitBudgetCheck()
 		e.emitOpImm(rd, rs1, iimm, funct3, funct7)
 		if !e.terminated {
 			e.advancePC(4)
 		}
 
 	case 0x1B: // OP-IMM-32
+		if e.tryEmitOpImm32Fusion(rd, rs1, iimm, funct3, funct7) {
+			return
+		}
+		e.emitBudgetCheck()
 		e.emitOpImm32(rd, rs1, iimm, funct3, funct7)
 		if !e.terminated {
 			e.advancePC(4)
@@ -1324,12 +1331,40 @@ func (e *emitter) emit32(insn uint32) {
 		e.terminated = true
 	}
 
-	if e.terminated && e.numInsns == savedNumInsns && e.useICR15 {
-		e.irEm.DecIC()
+	if e.terminated && e.numInsns == savedNumInsns && len(e.budgetExits) > savedBudgetExits {
+		e.undoBudgetCheck()
 	}
 }
 
 // ── OP-IMM ─────────────────────────────────────────────────────────────
+
+func (e *emitter) tryEmitOpImmFusion(rd, rs1 uint32, imm int64, funct3, funct7 uint32) bool {
+	if !e.allowInstructionFusion() || rd == 0 {
+		return false
+	}
+	shamt := imm & 63
+	if funct3 != 1 || funct7>>1 != 0x00 || shamt != 32 || rd != rs1 {
+		return false
+	}
+	next, ok := e.peek32(e.pc + 4)
+	if !ok {
+		return false
+	}
+	nOp := next & 0x7F
+	nRd := (next >> 7) & 0x1F
+	nRs1 := (next >> 15) & 0x1F
+	nF3 := (next >> 12) & 7
+	nF6 := next >> 26
+	nShamt := int64((next >> 20) & 0x3F)
+	if nOp != 0x13 || nF3 != 5 || nF6 != 0 || nShamt != 32 || nRd != rd || nRs1 != rd {
+		return false
+	}
+	e.emitBudgetReserve(2)
+	e.irEm.Zext(e.xregDst(rd), e.xreg(rs1), I32)
+	e.advancePC(4)
+	e.advancePC(4)
+	return true
+}
 
 func (e *emitter) emitOpImm(rd, rs1 uint32, imm int64, funct3, funct7 uint32) {
 	if rd == 0 {
@@ -1354,26 +1389,6 @@ func (e *emitter) emitOpImm(rd, rs1 uint32, imm int64, funct3, funct7 uint32) {
 		funct6 := funct7 >> 1
 		switch funct6 {
 		case 0x00: // SLLI
-			// Fusion: SLLI rd, rs1, 32; SRLI rd, rd, 32 → zext.w
-			if shamt == 32 && rd == rs1 {
-				if next, ok := e.peek32(e.pc + 4); ok {
-					nOp := next & 0x7F
-					nRd := (next >> 7) & 0x1F
-					nRs1 := (next >> 15) & 0x1F
-					nF3 := (next >> 12) & 7
-					nF6 := next >> 26
-					nShamt := int64((next >> 20) & 0x3F)
-					if nOp == 0x13 && nF3 == 5 && nF6 == 0 && nShamt == 32 && nRd == rd && nRs1 == rd {
-						e.irEm.Zext(e.xregDst(rd), e.xreg(rs1), I32)
-						e.advancePC(4)
-						if e.useICR15 {
-							e.irEm.IncIC()
-						}
-						e.advancePC(4)
-						return
-					}
-				}
-			}
 			src := e.xreg(rs1)
 			e.irEm.ShlImm(e.xregDst(rd), src, shamt)
 		case 0x0A: // BSETI
@@ -1477,6 +1492,46 @@ func (e *emitter) emitOpImm(rd, rs1 uint32, imm int64, funct3, funct7 uint32) {
 
 // ── OP-IMM-32 ──────────────────────────────────────────────────────────
 
+func (e *emitter) tryEmitOpImm32Fusion(rd, rs1 uint32, imm int64, funct3, funct7 uint32) bool {
+	if !e.allowInstructionFusion() || rd == 0 || funct3 != 0 || funct7 != 0 {
+		return false
+	}
+	n1, ok1 := e.peek32(e.pc + 4)
+	if !ok1 {
+		return false
+	}
+	n2, ok2 := e.peek32(e.pc + 8)
+	if !ok2 {
+		return false
+	}
+	n1Op, n1Rd, n1Rs1 := n1&0x7F, (n1>>7)&0x1F, (n1>>15)&0x1F
+	n1F3, n1F6 := (n1>>12)&7, n1>>26
+	n1Shamt := int64((n1 >> 20) & 0x3F)
+	n2Op, n2Rd, n2Rs1 := n2&0x7F, (n2>>7)&0x1F, (n2>>15)&0x1F
+	n2F3, n2F6 := (n2>>12)&7, n2>>26
+	n2Shamt := int64((n2 >> 20) & 0x3F)
+	if n1Op != 0x13 || n1F3 != 1 || n1F6 != 0 || n1Shamt != 32 ||
+		n1Rd != rd || n1Rs1 != rd ||
+		n2Op != 0x13 || n2F3 != 5 || n2F6 != 0 || n2Shamt != 32 ||
+		n2Rd != rd || n2Rs1 != rd {
+		return false
+	}
+	e.emitBudgetReserve(3)
+	src := e.xreg(rs1)
+	dst := e.xregDst(rd)
+	if imm == 0 {
+		e.irEm.Zext(dst, src, I32)
+	} else {
+		t := e.irEm.Tmp()
+		e.irEm.AddImm(t, src, imm)
+		e.irEm.Zext(dst, t, I32)
+	}
+	e.advancePC(4) // consumed ADDIW
+	e.advancePC(4) // consumed SLLI
+	e.advancePC(4) // consumed SRLI
+	return true
+}
+
 func (e *emitter) emitOpImm32(rd, rs1 uint32, imm int64, funct3, funct7 uint32) {
 	if rd == 0 {
 		return
@@ -1485,38 +1540,6 @@ func (e *emitter) emitOpImm32(rd, rs1 uint32, imm int64, funct3, funct7 uint32) 
 
 	switch funct3 {
 	case 0: // ADDIW
-		// Fusion: ADDIW rd,rs1,imm; SLLI rd,rd,32; SRLI rd,rd,32 → addiwz
-		// (32-bit add with zero-extension instead of sign-extension)
-		if n1, ok1 := e.peek32(e.pc + 4); ok1 {
-			if n2, ok2 := e.peek32(e.pc + 8); ok2 {
-				n1Op, n1Rd, n1Rs1 := n1&0x7F, (n1>>7)&0x1F, (n1>>15)&0x1F
-				n1F3, n1F6 := (n1>>12)&7, n1>>26
-				n1Shamt := int64((n1 >> 20) & 0x3F)
-				n2Op, n2Rd, n2Rs1 := n2&0x7F, (n2>>7)&0x1F, (n2>>15)&0x1F
-				n2F3, n2F6 := (n2>>12)&7, n2>>26
-				n2Shamt := int64((n2 >> 20) & 0x3F)
-				if n1Op == 0x13 && n1F3 == 1 && n1F6 == 0 && n1Shamt == 32 &&
-					n1Rd == rd && n1Rs1 == rd &&
-					n2Op == 0x13 && n2F3 == 5 && n2F6 == 0 && n2Shamt == 32 &&
-					n2Rd == rd && n2Rs1 == rd {
-					src := e.xreg(rs1)
-					dst := e.xregDst(rd)
-					if imm == 0 {
-						e.irEm.Zext(dst, src, I32)
-					} else {
-						t := e.irEm.Tmp()
-						e.irEm.AddImm(t, src, imm)
-						e.irEm.Zext(dst, t, I32)
-					}
-					e.advancePC(4) // consumed SLLI
-					if e.useICR15 {
-						e.irEm.IncIC()
-					}
-					e.advancePC(4) // consumed SRLI
-					return
-				}
-			}
-		}
 		src := e.xreg(rs1)
 		dst := e.xregDst(rd)
 		if imm == 0 {
@@ -2829,8 +2852,8 @@ func (e *emitter) emitRVC(insn uint16) {
 		e.advancePC(2)
 	}
 
-	if e.terminated && e.numInsns == savedNumInsns && e.useICR15 {
-		e.irEm.DecIC()
+	if e.terminated && e.numInsns == savedNumInsns {
+		e.undoBudgetCheck()
 	}
 }
 

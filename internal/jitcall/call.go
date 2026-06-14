@@ -11,9 +11,9 @@ import (
 // offsets — do not reorder them.
 type Result struct {
 	PC        uint64 // next PC to execute
-	Status    uint64 // 0=ok, 1=ecall, 2=ebreak, 3=load_fault, 4=store_fault, 5=illegal
+	Status    uint64 // 0=ok, 1=ecall, 2=ebreak, 3=load_fault, 4=store_fault, 5=illegal, 8=budget
 	FaultAddr uint64 // guest address that faulted (when Status >= 3)
-	ICdelta   uint64 // Instruction Counter delta (R15): guest instructions begun during this dispatch
+	ICdelta   uint64 // guest instructions begun during this dispatch: initial budget - remaining R15
 }
 
 func statusToString(status uint64) string {
@@ -30,10 +30,12 @@ func statusToString(status uint64) string {
 		return "store_fault"
 	case 5:
 		return "illegal"
-
-		// we see alot of case 6, what does it mean?
-		// case 6:
-		// return "what?"
+	case 6:
+		return "jalr_miss"
+	case 7:
+		return "misalign"
+	case 8:
+		return "budget"
 	}
 	return fmt.Sprintf("unknown status: 0x%x", status)
 }

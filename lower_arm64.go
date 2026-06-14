@@ -56,7 +56,7 @@ const (
 //	RV8:   R0=sret, R1=x, R2=f, R3=fcsr, R4=memBase, R5=memMask.
 //	ABJIT: R20=abjit.State, whose prefix is the x/f/fcsr register file.
 //	       R4/R5 are loaded from State once per block as memBase/memMask.
-//	Both:  R15 is the relative instruction counter while IC tracking is on.
+//	Both:  R15 is the remaining guest-instruction budget.
 //
 // Go reserves R28 for g on arm64; R30 is LR and must be preserved across any
 // helper CALL if generated code may later return through the RV8 trampoline.
@@ -89,10 +89,9 @@ func ARM64Pool(b *Block) RegPool {
 	// intra-procedure call temporaries, R20 carries the ABJIT State pointer,
 	// R27 is Go's linker scratch register, R28 is g, R29 is FP, and R30 is LR.
 	// R18 is the platform register on some targets, so keep it out of the pool
-	// even though linux/arm64 does not currently use it. R15 is available only
-	// when the JIT's IC register path is disabled; jitCompile removes
-	// RegPolicy.InstructionCounterReg from this pool for normal IC-counted
-	// blocks.
+	// even though linux/arm64 does not currently use it. R15 appears in the
+	// raw pool for helper tests; jitCompile removes
+	// RegPolicy.InstructionCounterReg because R15 is the budget register.
 	intRegs := []int16{
 		goasm.REG_ARM64_R10, goasm.REG_ARM64_R11, goasm.REG_ARM64_R12, goasm.REG_ARM64_R13,
 		goasm.REG_ARM64_R14, goasm.REG_ARM64_R15,
@@ -379,7 +378,7 @@ func arm64EntryLoadNeedsConservativeBlock(op IROp) bool {
 	switch op {
 	case IRLabel, IRBranch, IRBranchImm, IRJump,
 		IRJalrIC, IRCall, IRSyscall,
-		IRRegBudget, IRMemBudget:
+		IRRegBudget, IRBudgetZero, IRBudgetReserve, IRMemBudget:
 		return true
 	default:
 		return false
@@ -1234,6 +1233,17 @@ func (lc *lowerARM64Ctx) lowerInstr(ins *IRInstr) error {
 		lc.cmpImm(a64IC, ins.Imm2)
 		lc.emitBranch(arm64.ABGE, Label(ins.Dst))
 		return nil
+	case IRBudgetZero:
+		lc.cmpImm(a64IC, 0)
+		lc.emitBranch(arm64.ABEQ, Label(ins.Dst))
+		return nil
+	case IRBudgetReserve:
+		if ins.Imm <= 0 {
+			return nil
+		}
+		lc.cmpImm(a64IC, ins.Imm)
+		lc.emitBranch(arm64.ABLO, Label(ins.Dst))
+		return lc.addICReg(-ins.Imm)
 	case IRMemAdd:
 		return lc.memAdd(ins.Imm, ins.Imm2)
 	case IRMemBudget:
@@ -2229,8 +2239,9 @@ func (lc *lowerARM64Ctx) setPC(pc int64) {
 
 func (lc *lowerARM64Ctx) retBudget() {
 	_, statusOff, faultOff, _ := lc.resultOffsets()
-	lc.loadImm(0, a64A)
+	lc.loadImm(jitBudget, a64A)
 	lc.emitStore(arm64.AMOVD, a64A, lc.sretBase(), statusOff)
+	lc.loadImm(0, a64A)
 	lc.emitStore(arm64.AMOVD, a64A, lc.sretBase(), faultOff)
 	lc.emitReturn()
 }

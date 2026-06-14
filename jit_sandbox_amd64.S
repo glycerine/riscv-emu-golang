@@ -67,7 +67,7 @@ jit_trampoline_asm:
 	movq	%r8, %r9	/* R9  = memMask */
 	movq	%r11, %r8	/* R8  = memBase */
 
-	/* Load R15 = IC from sret[24] (zeroed by C). */
+	/* Load R15 = remaining guest-instruction budget from sret[24]. */
 	movq	24(%rsp), %r15
 
 	/* Call JIT-compiled native code. */
@@ -75,7 +75,7 @@ jit_trampoline_asm:
 
 	/*
 	 * After JIT's RET: RSP = sret address (CALL pushed, RET popped).
-	 * Store IC (R15) back to sret[24] before restoring callee-saved regs.
+	 * Store remaining budget (R15) back to sret[24] before restoring regs.
 	 */
 	movq	%r15, 24(%rsp)
 

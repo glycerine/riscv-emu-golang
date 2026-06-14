@@ -1703,6 +1703,10 @@ func (lc *lowerOps) lowerInstrCommon(ins *IRInstr) (bool, error) {
 		lc.opsSpillIC()
 	case IRRegBudget:
 		lc.opsRegBudget(ins)
+	case IRBudgetZero:
+		lc.opsBudgetZero(ins)
+	case IRBudgetReserve:
+		lc.opsBudgetReserve(ins)
 
 	// Pseudo-ops
 	case IRMarkLive, IRMarkDead, IRWriteback:
@@ -1846,6 +1850,43 @@ func (lc *lowerOps) opsRegBudget(ins *IRInstr) {
 	p2.To.Type = obj.TYPE_BRANCH
 	lc.c.Append(p2)
 	lc.bindLabel(Label(ins.Dst), p2)
+}
+
+func (lc *lowerOps) opsBudgetZero(ins *IRInstr) {
+	p1 := lc.c.NewProg()
+	p1.As = x86.ATESTQ
+	p1.From.Type = obj.TYPE_REG
+	p1.From.Reg = goasm.REG_AMD64_R15
+	p1.To.Type = obj.TYPE_REG
+	p1.To.Reg = goasm.REG_AMD64_R15
+	lc.c.Append(p1)
+
+	p2 := lc.c.NewProg()
+	p2.As = x86.AJEQ
+	p2.To.Type = obj.TYPE_BRANCH
+	lc.c.Append(p2)
+	lc.bindLabel(Label(ins.Dst), p2)
+}
+
+func (lc *lowerOps) opsBudgetReserve(ins *IRInstr) {
+	need := ins.Imm
+	if need <= 0 {
+		return
+	}
+	if need >= 1<<31 {
+		lc.loadImm(need, stgA)
+		lc.emit2(x86.ACMPQ, stgA, goasm.REG_AMD64_R15)
+	} else {
+		lc.emitCmpRI(goasm.REG_AMD64_R15, need)
+	}
+
+	p := lc.c.NewProg()
+	p.As = x86.AJCS // unsigned R15 < need
+	p.To.Type = obj.TYPE_BRANCH
+	lc.c.Append(p)
+	lc.bindLabel(Label(ins.Dst), p)
+
+	lc.emitRI(x86.ASUBQ, need, goasm.REG_AMD64_R15)
 }
 
 // Ensure imports are used.

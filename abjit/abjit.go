@@ -29,7 +29,7 @@ type State struct {
 	VAddrBegin uint64
 	SegSize    uint64
 	Cycles     uint64 // Reserved for future per-block instruction count (not currently populated)
-	IC         uint64 // instruction count (accumulated by back-edge budget checks)
+	IC         uint64 // remaining guest-instruction budget at native entry/exit
 }
 
 //go:noinline
