@@ -119,6 +119,24 @@ sites outside that file. The JIT should reuse the precise instruction counter
 and budget-return machinery already present for lockstep/debug work, but expose
 it as a production scheduler budget for `jea9linux`.
 
+Implementation status, 2026-06-14: this phase is complete for the initial
+single-context scheduler slice. Added `jea9linux.go` with `Jea9LinuxClockMode`
+and clock mode constants starting at line 11, `Jea9LinuxOptions` at line 122,
+`Jea9Linux` state at line 144, `NewJea9Linux` at line 181, deterministic seed
+derivation at line 227, clock/budget/blocking accessors at lines 239-269,
+deterministic PRNG helpers at lines 271 and 284, the budgeted `Jea9Linux.Run`
+loop at line 478, IC-tick accounting at line 500, `Jea9Linux.Handle` at line
+507, and install/run helpers at lines 1068 and 1073. Changed `run_cached.go` to
+add `RunBudgetResult` at line 22, `RunDefaultBudget` at line 185, and the
+internal `runCachedBudget` entry point at line 198 so budgeted execution remains
+inside the `run_cached.go` call-site boundary. Changed `jit.go` to add
+`JIT.StepBlockBudget` at line 430, bridging the existing lockstep budget gate
+into a scheduler-facing "N retired instructions" API. Added
+`jea9linux_phase1_test.go`, with deterministic option/entropy tests at lines
+21-67, cached-interpreter budget tests at lines 69-126, IC-tick/manual-clock
+tests at lines 128-183, JIT budget coverage at line 143, and install/default
+writer coverage at lines 185-220.
+
 ### Determinism tests
 
 1. `TestJea9Linux_DefaultOptions` constructs `NewJea9Linux(Jea9LinuxOptions{})`
@@ -373,6 +391,26 @@ bridge until Linux signal-frame delivery is complete.
 9. ELF fixture `startup_dump_auxv.elf` walks auxv and prints selected tags in a
    stable order.
 
+Implementation status, 2026-06-14: this phase is complete for the initial
+Linux process stack and deterministic auxv contract. `jea9linux.go` now defines
+the auxv tags needed for startup at lines 48-65, exposes `ExecPath` in
+`Jea9LinuxStartOptions` at line 97, adds `jea9LinuxAuxEntry` and the
+`jea9LinuxStackBuilder` helper types at lines 124 and 129, implements stack
+byte/string/vector construction through `newJea9LinuxStackBuilder` at line 233,
+`pushBytes` at line 240, `pushString` at line 251, `pushStrings` at line 255,
+and `writeInitialVector` at line 267, implements `InitELFStack` at line 318,
+builds the deterministic Linux auxv in `buildJea9LinuxAuxv` at line 366, and
+discovers the loaded program-header address in `elfProgramHeaderVA` at line
+390. The refactor pass split the previous monolithic stack routine into those
+helpers, added deterministic identity/security/platform auxv defaults
+(`AT_UID`, `AT_EUID`, `AT_GID`, `AT_EGID`, `AT_SECURE`, `AT_HWCAP`,
+`AT_HWCAP2`, `AT_CLKTCK`, `AT_PLATFORM`, and `AT_EXECFN`), and preserved the
+rule that `AT_RANDOM` uses a separate labeled stream from syscall randomness.
+Added `jea9linux_phase4_test.go`, with stack/argv/env/auxv coverage at line 75,
+repeatable `AT_RANDOM` coverage at line 150, syscall-random separation coverage
+at line 168, Linux auxv personality defaults at line 192, and input/stack error
+coverage at line 230.
+
 ## 5. Clock And Sleep Syscalls
 
 Implement `clock_gettime(113)`, `gettimeofday(169)`, and `nanosleep(101)`.
@@ -391,6 +429,24 @@ Idle-jump behavior is exact: if a single context sleeps for 10 ms and no other
 context is runnable, monotonic time jumps by exactly 10 ms. If another context
 is runnable, time does not advance merely because one context sleeps; the other
 context runs until it blocks, exits, or consumes its budget.
+
+Implementation status, 2026-06-14: this phase is complete for the
+single-context clock/sleep model. `jea9linux.go` now defines Linux errno,
+syscall, and clock constants at lines 26-65, routes `clock_gettime(113)`,
+`gettimeofday(169)`, and `nanosleep(101)` through `Jea9Linux.Handle` starting
+at line 444, implements `sysClockGettime` at line 578, `sysGettimeofday` at
+line 586, `sysNanosleep` at line 608, manual-clock blocked-state refresh at
+line 633, clock selection at line 639, and Linux timespec/nanosecond splitting
+helpers at lines 650 and 661. Manual clock sleeps now mark the OS blocked until
+explicit `AdvanceTime` or `SetMonotonicNS` reaches the deadline. Added
+`jea9linux_phase2_test.go`, with syscall helper scaffolding at lines 18-50,
+`clock_gettime` tests at lines 52-93, `gettimeofday` at lines 95-112,
+idle-jump and invalid `nanosleep` tests at lines 114-155, manual-clock blocking
+tests at lines 157-186, and ELF fixture execution at lines 188-220.
+Added checked-in fixture infrastructure under `testvectors/jea9linux/`: the
+regeneration script `build.sh`, source fixtures
+`src/clock_gettime_basic.c` and `src/nanosleep_idle_jump.c`, and generated ELF
+fixtures `elf/clock_gettime_basic.elf` and `elf/nanosleep_idle_jump.elf`.
 
 ### Clock and sleep tests
 
@@ -445,6 +501,20 @@ ordered stream of entropy observations for the process.
 `AT_RANDOM` is separate from this stream and is produced from the seed with the
 `"auxv-random-v1"` label. This prevents startup layout or Go runtime startup
 from perturbing later explicit random reads.
+
+Implementation status, 2026-06-14: this phase is complete for `getrandom(278)`
+and the minimal virtual random-device path. `jea9linux.go` now has fd kinds and
+fd state at lines 72-80 and 111-112, initializes the fd table in `NewJea9Linux`
+at lines 144-145, routes `openat(56)`, `close(57)`, `read(63)`, and
+`getrandom(278)` through `Jea9Linux.Handle` starting at line 444, implements
+`sysGetrandom` at line 493, implements virtual random-device `openat` at line
+512, `read` at line 529, `close` at line 554, and guest C-string path loading
+at line 563. Added `jea9linux_phase3_test.go`, with
+repeatability coverage at lines 26-46, chunking at lines 48-70, zero-length and
+invalid-flag handling at lines 72-89, `/dev/urandom` open/read/close/reopen
+coverage at lines 91-131, and ELF fixture execution at lines 133-158. Added
+`testvectors/jea9linux/src/getrandom_repeat.c` and generated
+`testvectors/jea9linux/elf/getrandom_repeat.elf`.
 
 ### Randomness tests
 

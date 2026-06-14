@@ -3,10 +3,11 @@ package riscv
 import (
 	"os"
 	"testing"
+	"time"
 )
 
 const (
-	jea9TestSysNanosleep   = uint64(101)
+	jea9TestSysNanosleep    = uint64(101)
 	jea9TestSysClockGettime = uint64(113)
 	jea9TestSysGettimeofday = uint64(169)
 
@@ -153,6 +154,37 @@ func TestJea9Linux_NanosleepInvalidTimespecSyscall(t *testing.T) {
 	}
 }
 
+func TestJea9Linux_NanosleepManualClockBlocksUntilAdvance(t *testing.T) {
+	j := NewJea9Linux(Jea9LinuxOptions{ClockMode: Jea9ClockManual})
+	cpu, mem := newJea9LinuxSyscallCPU(t, j)
+	defer mem.Free()
+
+	req := uint64(0x4000)
+	if f := mem.Store64(req, 0); f != nil {
+		t.Fatal(f)
+	}
+	if f := mem.Store64(req+8, 10_000_000); f != nil {
+		t.Fatal(f)
+	}
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysNanosleep, req, 0); d != NoteExit {
+		t.Fatalf("disposition = %v, want NoteExit for blocked manual sleep", d)
+	}
+	if !j.Blocked() {
+		t.Fatal("manual nanosleep should mark jea9linux blocked")
+	}
+	if got := j.MonotonicNS(); got != 0 {
+		t.Fatalf("MonotonicNS() = %d, want 0 before explicit advance", got)
+	}
+	j.AdvanceTime(5 * time.Millisecond)
+	if !j.Blocked() {
+		t.Fatal("manual nanosleep unblocked before deadline")
+	}
+	j.AdvanceTime(5 * time.Millisecond)
+	if j.Blocked() {
+		t.Fatal("manual nanosleep still blocked after deadline")
+	}
+}
+
 func TestJea9Linux_Phase2ClockELFFixtures(t *testing.T) {
 	for _, path := range []string{
 		"testvectors/jea9linux/elf/clock_gettime_basic.elf",
@@ -174,6 +206,7 @@ func TestJea9Linux_Phase2ClockELFFixtures(t *testing.T) {
 			}
 			cpu := NewCPU(*mem)
 			cpu.SetPC(elf.Entry)
+			cpu.SetReg(2, 0x03F00000)
 			j := NewJea9Linux(Jea9LinuxOptions{})
 			code, err := RunWithJea9Linux(cpu, j)
 			if err != nil {
