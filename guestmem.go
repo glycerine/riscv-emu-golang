@@ -147,10 +147,20 @@ type GuestMemory struct {
 	// The list stays small (≤ handful of entries); linear scan is fine.
 	execRegions []ExecRegion
 
+	// accessOverlay is an optional personality-owned permission layer.
+	// It is nil for the normal bare-metal/test/JIT paths; jea9linux installs
+	// one to model Linux brk/mmap/munmap/mprotect without changing the slab
+	// containment invariant.
+	accessOverlay guestMemoryAccessOverlay
+
 	// TohostAddr is the address of the "tohost" symbol found during ELF
 	// loading. Non-zero means the loaded binary uses the HTIF tohost
 	// protocol and the JIT must be configured with a matching watchAddr.
 	TohostAddr uint64
+}
+
+type guestMemoryAccessOverlay interface {
+	CheckGuestAccess(addr, width uint64, kind FaultKind, size uint64) *MemFault
 }
 
 // NewGuestMemory allocates a guest address space of the given size.
@@ -250,6 +260,16 @@ func (m *GuestMemory) Size() uint64 { return m.size }
 func (m *GuestMemory) Mask() uint64  { return m.mask }
 func (m *GuestMemory) Base() uintptr { return uintptr(m.base) }
 
+func (m *GuestMemory) setAccessOverlay(o guestMemoryAccessOverlay) {
+	m.accessOverlay = o
+}
+
+func (m *GuestMemory) clearAccessOverlay(o guestMemoryAccessOverlay) {
+	if m.accessOverlay == o {
+		m.accessOverlay = nil
+	}
+}
+
 func (m *GuestMemory) RegFileBase() uintptr { return uintptr(m.base) + uintptr(m.size) - GuestPageSize }
 func (m *GuestMemory) StackTop() uintptr    { return uintptr(m.base) + uintptr(m.size) - 2*GuestPageSize }
 
@@ -308,6 +328,13 @@ func (m *GuestMemory) checkSandboxEscape(addr, width uint64, kind FaultKind) *Me
 	return nil
 }
 
+func (m *GuestMemory) checkAccessOverlay(addr, width uint64, kind FaultKind) *MemFault {
+	if m.accessOverlay == nil {
+		return nil
+	}
+	return m.accessOverlay.CheckGuestAccess(addr, width, kind, m.size)
+}
+
 // hostPtr returns a host pointer to guest address addr.
 // The mask guarantees the result is always within [base, base+size):
 //
@@ -344,6 +371,9 @@ func (m *GuestMemory) Load8(addr uint64) (uint8, *MemFault) {
 	if f := m.checkSandboxEscape(addr, 1, FaultLoad); f != nil {
 		return 0, f
 	}
+	if f := m.checkAccessOverlay(addr, 1, FaultLoad); f != nil {
+		return 0, f
+	}
 	if m.check(addr, 1) != 0 {
 		return 0, m.fault(addr, 1, FaultLoad)
 	}
@@ -355,6 +385,9 @@ func (m *GuestMemory) Load8(addr uint64) (uint8, *MemFault) {
 //go:nosplit
 func (m *GuestMemory) Load16(addr uint64) (uint16, *MemFault) {
 	if f := m.checkSandboxEscape(addr, 2, FaultLoad); f != nil {
+		return 0, f
+	}
+	if f := m.checkAccessOverlay(addr, 2, FaultLoad); f != nil {
 		return 0, f
 	}
 	if m.check(addr, 2) != 0 {
@@ -370,6 +403,9 @@ func (m *GuestMemory) Load32(addr uint64) (uint32, *MemFault) {
 	if f := m.checkSandboxEscape(addr, 4, FaultLoad); f != nil {
 		return 0, f
 	}
+	if f := m.checkAccessOverlay(addr, 4, FaultLoad); f != nil {
+		return 0, f
+	}
 	if m.check(addr, 4) != 0 {
 		return 0, m.fault(addr, 4, FaultLoad)
 	}
@@ -381,6 +417,9 @@ func (m *GuestMemory) Load32(addr uint64) (uint32, *MemFault) {
 //go:nosplit
 func (m *GuestMemory) Load64(addr uint64) (uint64, *MemFault) {
 	if f := m.checkSandboxEscape(addr, 8, FaultLoad); f != nil {
+		return 0, f
+	}
+	if f := m.checkAccessOverlay(addr, 8, FaultLoad); f != nil {
 		return 0, f
 	}
 	if m.check(addr, 8) != 0 {
@@ -400,6 +439,9 @@ func (m *GuestMemory) Store8(addr uint64, v uint8) *MemFault {
 	if f := m.checkSandboxEscape(addr, 1, FaultStore); f != nil {
 		return f
 	}
+	if f := m.checkAccessOverlay(addr, 1, FaultStore); f != nil {
+		return f
+	}
 	if m.check(addr, 1) != 0 {
 		return m.fault(addr, 1, FaultStore)
 	}
@@ -412,6 +454,9 @@ func (m *GuestMemory) Store8(addr uint64, v uint8) *MemFault {
 //go:nosplit
 func (m *GuestMemory) Store16(addr uint64, v uint16) *MemFault {
 	if f := m.checkSandboxEscape(addr, 2, FaultStore); f != nil {
+		return f
+	}
+	if f := m.checkAccessOverlay(addr, 2, FaultStore); f != nil {
 		return f
 	}
 	if m.check(addr, 2) != 0 {
@@ -428,6 +473,9 @@ func (m *GuestMemory) Store32(addr uint64, v uint32) *MemFault {
 	if f := m.checkSandboxEscape(addr, 4, FaultStore); f != nil {
 		return f
 	}
+	if f := m.checkAccessOverlay(addr, 4, FaultStore); f != nil {
+		return f
+	}
 	if m.check(addr, 4) != 0 {
 		return m.fault(addr, 4, FaultStore)
 	}
@@ -440,6 +488,9 @@ func (m *GuestMemory) Store32(addr uint64, v uint32) *MemFault {
 //go:nosplit
 func (m *GuestMemory) Store64(addr uint64, v uint64) *MemFault {
 	if f := m.checkSandboxEscape(addr, 8, FaultStore); f != nil {
+		return f
+	}
+	if f := m.checkAccessOverlay(addr, 8, FaultStore); f != nil {
 		return f
 	}
 	if m.check(addr, 8) != 0 {
@@ -530,6 +581,9 @@ func (m *GuestMemory) Store64U(addr uint64, v uint64) *MemFault {
 //
 //go:nosplit
 func (m *GuestMemory) Fetch16(addr uint64) (uint16, *MemFault) {
+	if f := m.checkAccessOverlay(addr, 2, FaultFetch); f != nil {
+		return 0, f
+	}
 	if m.check(addr, 2) != 0 {
 		return 0, m.fault(addr, 2, FaultFetch)
 	}
@@ -540,6 +594,9 @@ func (m *GuestMemory) Fetch16(addr uint64) (uint16, *MemFault) {
 //
 //go:nosplit
 func (m *GuestMemory) Fetch32(addr uint64) (uint32, *MemFault) {
+	if f := m.checkAccessOverlay(addr, 4, FaultFetch); f != nil {
+		return 0, f
+	}
 	if m.check(addr, 4) != 0 {
 		return 0, m.fault(addr, 4, FaultFetch)
 	}
@@ -576,6 +633,9 @@ func (m *GuestMemory) ReadBytes(addr uint64, dst []byte) *MemFault {
 	if length == 0 {
 		return nil
 	}
+	if f := m.checkAccessOverlay(addr, length, FaultLoad); f != nil {
+		return f
+	}
 	end := addr + length
 	if end > m.size || end < addr { // end < addr catches uint64 wraparound
 		return &MemFault{addr, length, FaultLoad}
@@ -593,6 +653,9 @@ func (m *GuestMemory) WriteBytes(addr uint64, src []byte) *MemFault {
 	length := uint64(len(src))
 	if length == 0 {
 		return nil
+	}
+	if f := m.checkAccessOverlay(addr, length, FaultStore); f != nil {
+		return f
 	}
 	end := addr + length
 	if end > m.size || end < addr {

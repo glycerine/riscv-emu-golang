@@ -1,0 +1,57 @@
+static long sys2(long n, long a0, long a1) {
+	register long x10 __asm__("a0") = a0;
+	register long x11 __asm__("a1") = a1;
+	register long x17 __asm__("a7") = n;
+	__asm__ volatile("ecall" : "+r"(x10) : "r"(x11), "r"(x17) : "memory");
+	return x10;
+}
+
+static long sys3(long n, long a0, long a1, long a2) {
+	register long x10 __asm__("a0") = a0;
+	register long x11 __asm__("a1") = a1;
+	register long x12 __asm__("a2") = a2;
+	register long x17 __asm__("a7") = n;
+	__asm__ volatile("ecall" : "+r"(x10) : "r"(x11), "r"(x12), "r"(x17) : "memory");
+	return x10;
+}
+
+static long sys6(long n, long a0, long a1, long a2, long a3, long a4, long a5) {
+	register long x10 __asm__("a0") = a0;
+	register long x11 __asm__("a1") = a1;
+	register long x12 __asm__("a2") = a2;
+	register long x13 __asm__("a3") = a3;
+	register long x14 __asm__("a4") = a4;
+	register long x15 __asm__("a5") = a5;
+	register long x17 __asm__("a7") = n;
+	__asm__ volatile("ecall" : "+r"(x10) : "r"(x11), "r"(x12), "r"(x13), "r"(x14), "r"(x15), "r"(x17) : "memory");
+	return x10;
+}
+
+static void exit_code(long code) {
+	register long x10 __asm__("a0") = code;
+	register long x17 __asm__("a7") = 93;
+	__asm__ volatile("ecall" : : "r"(x10), "r"(x17) : "memory");
+	for (;;) {
+	}
+}
+
+void _start(void) {
+	long addr = sys6(222, 0, 4096, 3, 0x22, -1, 0);
+	if (addr <= 0 || (addr & 4095) != 0) {
+		exit_code(90);
+	}
+	volatile unsigned char *p = (volatile unsigned char *)addr;
+	p[0] = 0xa5;
+	p[4095] = 0x5a;
+	if (p[0] != 0xa5 || p[4095] != 0x5a) {
+		exit_code(91);
+	}
+	unsigned char vec = 0;
+	if (sys3(232, addr, 4096, (long)&vec) != 0 || vec != 1) {
+		exit_code(92);
+	}
+	if (sys2(215, addr, 4096) != 0) {
+		exit_code(93);
+	}
+	exit_code(0);
+}

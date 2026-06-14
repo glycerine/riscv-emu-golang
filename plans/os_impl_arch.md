@@ -121,12 +121,12 @@ it as a production scheduler budget for `jea9linux`.
 
 Implementation status, 2026-06-14: this phase is complete for the initial
 single-context scheduler slice. Added `jea9linux.go` with `Jea9LinuxClockMode`
-and clock mode constants starting at line 11, `Jea9LinuxOptions` at line 122,
-`Jea9Linux` state at line 144, `NewJea9Linux` at line 181, deterministic seed
-derivation at line 227, clock/budget/blocking accessors at lines 239-269,
-deterministic PRNG helpers at lines 271 and 284, the budgeted `Jea9Linux.Run`
-loop at line 478, IC-tick accounting at line 500, `Jea9Linux.Handle` at line
-507, and install/run helpers at lines 1068 and 1073. Changed `run_cached.go` to
+and clock mode constants starting at line 11, `Jea9LinuxOptions` at line 137,
+`Jea9Linux` state at line 159, `NewJea9Linux` at line 204, deterministic seed
+derivation at line 250, clock/budget/blocking accessors at lines 262-292,
+deterministic PRNG helpers at lines 294 and 307, the budgeted `Jea9Linux.Run`
+loop at line 684, IC-tick accounting at line 706, `Jea9Linux.Handle` at line
+713, and install/run helpers at lines 1421 and 1430. Changed `run_cached.go` to
 add `RunBudgetResult` at line 22, `RunDefaultBudget` at line 185, and the
 internal `runCachedBudget` entry point at line 198 so budgeted execution remains
 inside the `run_cached.go` call-site boundary. Changed `jit.go` to add
@@ -393,15 +393,15 @@ bridge until Linux signal-frame delivery is complete.
 
 Implementation status, 2026-06-14: this phase is complete for the initial
 Linux process stack and deterministic auxv contract. `jea9linux.go` now defines
-the auxv tags needed for startup at lines 48-65, exposes `ExecPath` in
-`Jea9LinuxStartOptions` at line 97, adds `jea9LinuxAuxEntry` and the
-`jea9LinuxStackBuilder` helper types at lines 124 and 129, implements stack
-byte/string/vector construction through `newJea9LinuxStackBuilder` at line 233,
-`pushBytes` at line 240, `pushString` at line 251, `pushStrings` at line 255,
-and `writeInitialVector` at line 267, implements `InitELFStack` at line 318,
-builds the deterministic Linux auxv in `buildJea9LinuxAuxv` at line 366, and
+the auxv tags needed for startup at lines 71-87, exposes `ExecPath` in
+`Jea9LinuxStartOptions` at line 155, adds `jea9LinuxAuxEntry` and the
+`jea9LinuxStackBuilder` helper type at lines 187 and 199, implements stack
+byte/string/vector construction through `newJea9LinuxStackBuilder` at line 472,
+`pushBytes` at line 479, `pushString` at line 490, `pushStrings` at line 494,
+and `writeInitialVector` at line 506, implements `InitELFStack` at line 557,
+builds the deterministic Linux auxv in `buildJea9LinuxAuxv` at line 610, and
 discovers the loaded program-header address in `elfProgramHeaderVA` at line
-390. The refactor pass split the previous monolithic stack routine into those
+634. The refactor pass split the previous monolithic stack routine into those
 helpers, added deterministic identity/security/platform auxv defaults
 (`AT_UID`, `AT_EUID`, `AT_GID`, `AT_EGID`, `AT_SECURE`, `AT_HWCAP`,
 `AT_HWCAP2`, `AT_CLKTCK`, `AT_PLATFORM`, and `AT_EXECFN`), and preserved the
@@ -432,12 +432,12 @@ context runs until it blocks, exits, or consumes its budget.
 
 Implementation status, 2026-06-14: this phase is complete for the
 single-context clock/sleep model. `jea9linux.go` now defines Linux errno,
-syscall, and clock constants at lines 26-65, routes `clock_gettime(113)`,
+syscall, and clock constants at lines 26-69, routes `clock_gettime(113)`,
 `gettimeofday(169)`, and `nanosleep(101)` through `Jea9Linux.Handle` starting
-at line 444, implements `sysClockGettime` at line 578, `sysGettimeofday` at
-line 586, `sysNanosleep` at line 608, manual-clock blocked-state refresh at
-line 633, clock selection at line 639, and Linux timespec/nanosecond splitting
-helpers at lines 650 and 661. Manual clock sleeps now mark the OS blocked until
+at line 713, implements `sysClockGettime` at line 1328, `sysGettimeofday` at
+line 1336, `sysNanosleep` at line 1358, manual-clock blocked-state refresh at
+line 1383, clock selection at line 1389, and Linux timespec/nanosecond splitting
+helpers at lines 1400 and 1411. Manual clock sleeps now mark the OS blocked until
 explicit `AdvanceTime` or `SetMonotonicNS` reaches the deadline. Added
 `jea9linux_phase2_test.go`, with syscall helper scaffolding at lines 18-50,
 `clock_gettime` tests at lines 52-93, `gettimeofday` at lines 95-112,
@@ -504,12 +504,12 @@ from perturbing later explicit random reads.
 
 Implementation status, 2026-06-14: this phase is complete for `getrandom(278)`
 and the minimal virtual random-device path. `jea9linux.go` now has fd kinds and
-fd state at lines 72-80 and 111-112, initializes the fd table in `NewJea9Linux`
-at lines 144-145, routes `openat(56)`, `close(57)`, `read(63)`, and
-`getrandom(278)` through `Jea9Linux.Handle` starting at line 444, implements
-`sysGetrandom` at line 493, implements virtual random-device `openat` at line
-512, `read` at line 529, `close` at line 554, and guest C-string path loading
-at line 563. Added `jea9linux_phase3_test.go`, with
+fd state at lines 120-134 and 166-170, initializes the fd table in
+`NewJea9Linux` at lines 236-238, routes `openat(56)`, `close(57)`, `read(63)`,
+and `getrandom(278)` through `Jea9Linux.Handle` starting at line 713, implements
+`sysGetrandom` at line 813, implements virtual random-device `openat` at line
+832, `read` at line 858, `close` at line 951, and guest C-string path loading
+at line 1051. Added `jea9linux_phase3_test.go`, with
 repeatability coverage at lines 26-46, chunking at lines 48-70, zero-length and
 invalid-flag handling at lines 72-89, `/dev/urandom` open/read/close/reopen
 coverage at lines 91-131, and ELF fixture execution at lines 133-158. Added
@@ -622,6 +622,39 @@ threading, but its default behavior is already decided: expose exactly one CPU.
 17. ELF fixture `pid_tid.elf` prints pid and tid.
 
 18. ELF fixture `exit_codes.elf` exits with several configured codes.
+
+Implementation status, 2026-06-14: this phase is complete for deterministic
+stdio, read-only virtual files, and the first process/resource syscall surface.
+`jea9linux.go` now defines fd/process syscall constants and errno values at
+lines 26-64, fcntl/seek/resource/prctl constants at lines 94-117, fd kinds and
+fd records at lines 120-134, `Files`, `PID`, and `TID` options in
+`Jea9LinuxOptions` at line 137, and fd/process state in `Jea9Linux` at line
+159. `NewJea9Linux` at line 204 now initializes fds 0, 1, and 2, default pid/tid
+identity, default discard writers, and cloned read-only virtual file contents.
+`Jea9Linux.Handle` routes the Phase 5 syscalls starting at line 713, with fd
+cases at lines 727-746 and process/resource cases at lines 754-794. The fd
+implementation lives in `sysOpenat` at line 832, `sysRead` at line 858,
+`sysWrite` at line 913, `sysClose` at line 951, `sysFcntl` at line 960,
+`sysLseek` at line 982, `sysPread64` at line 1011, and the refactored shared
+read-only-file range helper `readJea9LinuxFileRange` at line 1033. The
+process/resource implementation lives in `sysUname` at line 1066,
+`sysGetrlimit` at line 1088, `sysPrlimit64` at line 1096, `sysSysinfo` at line
+1143, `sysPrctl` at line 1160, and `readLinuxThreadName` at line 1184. Added
+`jea9linux_phase5_test.go`, with syscall assertion helpers at lines 48-67,
+stdout/stderr/partial-write coverage at line 71, bad-fd write coverage at line
+115, stdin EOF/configured-input coverage at line 129, close/read behavior at
+line 158, unsupported path coverage at line 173, configured read-only
+file/read/seek/pread/fcntl coverage at line 185, virtual-file option-copy
+coverage at line 241, fd error-edge coverage at line 264, nonseekable lseek
+coverage at line 295, pid/tid coverage at line 306, uname coverage at line 321,
+resource/sysinfo coverage at line 341, prctl thread-name coverage at line 377,
+and ELF fixture execution at line 400. Added checked-in fixture sources
+`testvectors/jea9linux/src/write_stdout.c`,
+`testvectors/jea9linux/src/read_stdin_echo.c`, and
+`testvectors/jea9linux/src/pid_tid.c`, plus generated ELF fixtures
+`testvectors/jea9linux/elf/write_stdout.elf`,
+`testvectors/jea9linux/elf/read_stdin_echo.elf`, and
+`testvectors/jea9linux/elf/pid_tid.elf`.
 
 ## 8. Guest VM Map, Brk, Mmap, And Protection Overlay
 

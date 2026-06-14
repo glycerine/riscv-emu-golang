@@ -137,6 +137,9 @@ func faultCauseAndText(f *MemFault) (cause uint64, text string) {
 	case FaultStore:
 		return CauseStoreFault,
 			fmt.Sprintf("fault: store addr=0x%016X width=%d", f.Addr, f.Width)
+	case FaultFetch:
+		return CauseInsnFault,
+			fmt.Sprintf("fault: fetch addr=0x%016X width=%d", f.Addr, f.Width)
 	default: // FaultMisalign — distinguish by context if we had it; use load
 		return CauseLoadMisalign,
 			fmt.Sprintf("fault: misalign addr=0x%016X width=%d", f.Addr, f.Width)
