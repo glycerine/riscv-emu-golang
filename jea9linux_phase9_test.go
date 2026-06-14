@@ -1,6 +1,10 @@
 package riscv
 
-import "testing"
+import (
+	"errors"
+	"os"
+	"testing"
+)
 
 const (
 	jea9TestSysSetTidAddress    = uint64(96)
@@ -203,6 +207,38 @@ func TestJea9Linux_SchedYieldSingleContextNoop(t *testing.T) {
 	}
 }
 
+func TestJea9Linux_BudgetBoundaryRotatesRunnableContexts(t *testing.T) {
+	cpu, mem, j := testLoopCPU(t, 2)
+	defer mem.Free()
+	cleanup := InstallJea9Linux(cpu, j)
+	defer cleanup()
+
+	parent := j.pid
+	child := cloneJea9LinuxThread(t, cpu, j, 0x870000, 0, 0, 0, jea9TestCloneThreadFlags)
+
+	if err := j.Run(cpu); !errors.Is(err, ErrJea9LinuxBudget) {
+		t.Fatalf("first Run error = %v, want ErrJea9LinuxBudget", err)
+	}
+	requireCurrentTID(t, j, child)
+	if got := j.contexts[parent].snapshot.x[1]; got != 1 {
+		t.Fatalf("parent saved x1 after first budget = %d, want 1", got)
+	}
+	if got := cpu.Reg(1); got != 0 {
+		t.Fatalf("loaded child x1 = %d, want child snapshot 0", got)
+	}
+
+	if err := j.Run(cpu); !errors.Is(err, ErrJea9LinuxBudget) {
+		t.Fatalf("second Run error = %v, want ErrJea9LinuxBudget", err)
+	}
+	requireCurrentTID(t, j, parent)
+	if got := j.contexts[child].snapshot.x[1]; got != 1 {
+		t.Fatalf("child saved x1 after second budget = %d, want 1", got)
+	}
+	if got := cpu.Reg(1); got != 1 {
+		t.Fatalf("reloaded parent x1 = %d, want 1", got)
+	}
+}
+
 func TestJea9Linux_SchedGetAffinityOneCPU(t *testing.T) {
 	j := NewJea9Linux(Jea9LinuxOptions{})
 	cpu, mem := newJea9LinuxSyscallCPU(t, j)
@@ -223,6 +259,22 @@ func TestJea9Linux_SchedGetAffinityOneCPU(t *testing.T) {
 			t.Fatalf("affinity mask = %v, want %v", got, want)
 		}
 	}
+}
+
+func TestJea9Linux_SchedGetAffinityFaultsAndRejectsZeroSize(t *testing.T) {
+	j := NewJea9Linux(Jea9LinuxOptions{})
+	cpu, mem := newJea9LinuxSyscallCPU(t, j)
+	defer mem.Free()
+
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysSchedGetAffinity, 0, 0, 0x5000); d != NoteHandled {
+		t.Fatalf("zero-size sched_getaffinity disposition = %v, want NoteHandled", d)
+	}
+	requireSyscallReturn(t, cpu, jea9LinuxErrEINVAL)
+
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysSchedGetAffinity, 0, 1, 0); d != NoteHandled {
+		t.Fatalf("faulting sched_getaffinity disposition = %v, want NoteHandled", d)
+	}
+	requireSyscallReturn(t, cpu, jea9LinuxErrEFAULT)
 }
 
 func TestJea9Linux_SetTidAddressAndRobustList(t *testing.T) {
@@ -269,6 +321,36 @@ func TestJea9Linux_FutexWaitEAGAINWhenValueDiffers(t *testing.T) {
 	if got := len(j.futexWaiters[addr]); got != 0 {
 		t.Fatalf("waiter count = %d, want 0", got)
 	}
+}
+
+func TestJea9Linux_FutexWakeNoWaiters(t *testing.T) {
+	j := NewJea9Linux(Jea9LinuxOptions{})
+	cpu, mem := newJea9LinuxSyscallCPU(t, j)
+	defer mem.Free()
+
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysFutex, 0x8800, jea9TestFutexWake, 5, 0); d != NoteHandled {
+		t.Fatalf("futex wake disposition = %v, want NoteHandled", d)
+	}
+	requireSyscallReturn(t, cpu, 0)
+	if got := len(j.futexWaiters[0x8800]); got != 0 {
+		t.Fatalf("waiters after empty wake = %d, want 0", got)
+	}
+}
+
+func TestJea9Linux_FutexWaitFaultAndAlignment(t *testing.T) {
+	j := NewJea9Linux(Jea9LinuxOptions{})
+	cpu, mem := newJea9LinuxSyscallCPU(t, j)
+	defer mem.Free()
+
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysFutex, 0x8801, jea9TestFutexWait, 0, 0); d != NoteHandled {
+		t.Fatalf("unaligned futex wait disposition = %v, want NoteHandled", d)
+	}
+	requireSyscallReturn(t, cpu, jea9LinuxErrEINVAL)
+
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysFutex, 0, jea9TestFutexWait, 0, 0); d != NoteHandled {
+		t.Fatalf("faulting futex wait disposition = %v, want NoteHandled", d)
+	}
+	requireSyscallReturn(t, cpu, jea9LinuxErrEFAULT)
 }
 
 func TestJea9Linux_FutexWaitBlocksAndWakeResumes(t *testing.T) {
@@ -410,14 +492,23 @@ func TestJea9Linux_FutexTimeoutManualClock(t *testing.T) {
 	if got := j.contexts[j.pid].state; got != jea9LinuxContextWaiting {
 		t.Fatalf("context state = %v, want waiting", got)
 	}
+	if !j.Blocked() {
+		t.Fatal("Blocked() = false, want true while manual futex wait has no runnable context")
+	}
 
 	j.SetMonotonicNS(99)
 	if got := j.contexts[j.pid].state; got != jea9LinuxContextWaiting {
 		t.Fatalf("context woke early at ns=99 with state %v", got)
 	}
+	if !j.Blocked() {
+		t.Fatal("Blocked() = false at ns=99, want true before futex deadline")
+	}
 	j.SetMonotonicNS(100)
 	if got := j.contexts[j.pid].state; got != jea9LinuxContextRunnable {
 		t.Fatalf("context state at deadline = %v, want runnable", got)
+	}
+	if j.Blocked() {
+		t.Fatal("Blocked() = true at futex deadline, want false after timeout wake")
 	}
 	if got := j.contexts[j.pid].snapshot.x[10]; int64(got) != -110 {
 		t.Fatalf("timed-out context a0 = %d, want -110", int64(got))
@@ -445,5 +536,45 @@ func TestJea9Linux_SetTidAddressClearOnThreadExit(t *testing.T) {
 	requireGuest32(t, mem, ctid, 0)
 	if got := j.contexts[child].state; got != jea9LinuxContextExited {
 		t.Fatalf("child state = %v, want exited", got)
+	}
+}
+
+func TestJea9Linux_Phase9ThreadingFutexELFFixtures(t *testing.T) {
+	for _, path := range []string{
+		"testvectors/jea9linux/elf/sched_affinity.elf",
+		"testvectors/jea9linux/elf/clone_child_stack.elf",
+		"testvectors/jea9linux/elf/yield_pingpong.elf",
+		"testvectors/jea9linux/elf/futex_wait_wake.elf",
+		"testvectors/jea9linux/elf/futex_timeout.elf",
+	} {
+		t.Run(path, func(t *testing.T) {
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("read fixture: %v", err)
+			}
+			mem, err := NewGuestMemory(Size64MB)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer mem.Free()
+			elf, err := LoadELFBytes(mem, data)
+			if err != nil {
+				t.Fatalf("LoadELFBytes: %v", err)
+			}
+			cpu := NewCPU(*mem)
+			cpu.SetPC(elf.Entry)
+			cpu.SetReg(2, 0x03F00000)
+			j := NewJea9Linux(Jea9LinuxOptions{})
+			if err := j.InitELFStack(cpu, elf, Jea9LinuxStartOptions{StackTop: 0x03F00000}); err != nil {
+				t.Fatalf("InitELFStack: %v", err)
+			}
+			code, err := RunWithJea9Linux(cpu, j)
+			if err != nil {
+				t.Fatalf("RunWithJea9Linux: %v", err)
+			}
+			if code != 0 {
+				t.Fatalf("exit code = %d, want 0", code)
+			}
+		})
 	}
 }

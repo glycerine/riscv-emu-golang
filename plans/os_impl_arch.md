@@ -860,6 +860,51 @@ waiters if Linux semantics require it for the tested path.
 20. ELF fixture `sched_affinity.elf` prints the count of CPUs in the affinity
     mask and must print one.
 
+Implementation status, 2026-06-14: this phase is complete for the first
+single-hart deterministic guest-thread scheduler, clone, futex, and affinity
+surface. The red tests were added first in `jea9linux_phase9_test.go`, then the
+implementation was made green, then the refactor pass removed an unused helper
+and added extra edge coverage for budget-boundary rotation, empty futex wakes,
+faulting/unaligned futex waits, affinity faults, and `Blocked()` behavior
+around manual futex deadlines. The broader jea9linux gate was rerun after the
+refactor.
+
+`jea9linux.go` now defines the new errno/syscall constants at lines 37-73 and
+the futex/clone flag constants at lines 128-142. Scheduler state was added to
+`Jea9Linux` at lines 212-217. Guest context state, CPU snapshots, and per-thread
+fields are defined at lines 232-277. The single-hart scheduler helpers are
+`ensureScheduler` at line 431, `snapshotJea9LinuxCPU` at line 471,
+`restoreJea9LinuxCPU` at line 487, `loadContext` at line 502,
+`nextRunnableAfterCurrent` at line 514, `hasRunnableContext` at line 537,
+`markRunnable` at line 546, and `removeFutexWaiter` at line 558. `Run` now uses
+the instruction budget as a deterministic scheduling boundary at lines 907-935.
+`Handle` routes the new syscalls at lines 979-996 and `gettid` through the
+current guest context at lines 1012-1015. `sysClone` starts at line 1060,
+`jea9LinuxCloneFlagsSupported` at line 1115, `sysSchedYield` at line 1133,
+`sysSchedGetAffinity` at line 1144, `sysSetTidAddress` at line 1161,
+`sysSetRobustList` at line 1168, `sysExit` at line 1176,
+`exitCurrentThread` at line 1191, `sysFutex` at line 1202, `futexWait` at line
+1235, `futexDeadline` at line 1272, and `wakeFutex` at line 1292.
+`refreshBlocked` now refreshes futex timeouts at line 1890 using
+`refreshFutexTimeouts` at line 1898.
+
+`jea9linux_phase9_test.go` covers clone parent/child return and copied register
+state at line 74, unsupported clone flags at line 136, deterministic
+round-robin yield and the single-hart loaded-context invariant at line 150,
+single-context yield at line 190, budget-boundary rotation at line 210,
+one-CPU affinity at line 242, affinity faults at line 264, `set_tid_address`
+and `set_robust_list` state at line 280, futex `-EAGAIN` at line 305, empty
+wake at line 326, futex fault/alignment errors at line 340, wait/wake resume at
+line 356, FIFO wake order at line 393, idle-jump timeout at line 442,
+manual-clock timeout at line 470, clear-child-tid on thread exit at line 518,
+and checked-in ELF fixtures at line 542. Added fixture sources
+`testvectors/jea9linux/src/sched_affinity.c`,
+`testvectors/jea9linux/src/clone_child_stack.c`,
+`testvectors/jea9linux/src/yield_pingpong.c`,
+`testvectors/jea9linux/src/futex_wait_wake.c`, and
+`testvectors/jea9linux/src/futex_timeout.c`, with generated binaries under
+`testvectors/jea9linux/elf/` for the same basenames.
+
 ## 10. Eventfd, Epoll, Pipe, And Polling Primitives
 
 Go's Linux netpoller uses `eventfd2(19)`, `epoll_create1(20)`, `epoll_ctl(21)`,

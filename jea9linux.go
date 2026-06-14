@@ -499,12 +499,6 @@ func restoreJea9LinuxCPU(cpu *CPU, snap jea9LinuxCPUSnapshot) {
 	cpu.mtval = snap.mtval
 }
 
-func (j *Jea9Linux) saveCurrentContext(cpu *CPU) *jea9LinuxContext {
-	ctx := j.ensureScheduler(cpu)
-	ctx.snapshot = snapshotJea9LinuxCPU(cpu)
-	return ctx
-}
-
 func (j *Jea9Linux) loadContext(cpu *CPU, tid uint64) bool {
 	ctx := j.contexts[tid]
 	if ctx == nil || ctx.state != jea9LinuxContextRunnable {
@@ -924,6 +918,14 @@ func (j *Jea9Linux) Run(cpu *CPU) error {
 	switch res {
 	case RunBudgetExpired:
 		j.budgetYields++
+		if j.contexts != nil {
+			ctx := j.ensureScheduler(cpu)
+			ctx.state = jea9LinuxContextRunnable
+			ctx.snapshot = snapshotJea9LinuxCPU(cpu)
+			if next, ok := j.nextRunnableAfterCurrent(); ok {
+				j.loadContext(cpu, next)
+			}
+		}
 		return ErrJea9LinuxBudget
 	case RunBudgetExit:
 		return nil
@@ -1888,10 +1890,6 @@ func (j *Jea9Linux) sysNanosleep(cpu *CPU, reqAddr, remAddr uint64) (int64, bool
 func (j *Jea9Linux) refreshBlocked() {
 	j.refreshFutexTimeouts()
 	if j.blocked && j.blockedHasDeadline && j.monotonicNS >= j.blockedUntil {
-		j.blocked = false
-		j.blockedHasDeadline = false
-	}
-	if j.contexts != nil && j.hasRunnableContext() {
 		j.blocked = false
 		j.blockedHasDeadline = false
 	}
