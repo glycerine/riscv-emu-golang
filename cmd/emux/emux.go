@@ -1,23 +1,54 @@
 package main
 
 import (
+	"encoding/binary"
 	"flag"
 	"fmt"
+	"io"
 	"os"
+	"strings"
 
 	riscv "github.com/glycerine/riscv-emu-golang"
 )
 
 var ProgramName = "emux"
 
+const (
+	defaultEmuxMemorySize        = riscv.Size16GB
+	defaultEmuxInstructionBudget = uint64(1 << 20)
+	defaultEmuxClockMode         = "idle-jump"
+	defaultEmuxMonotonicStartNS  = int64(1)
+	defaultEmuxNSPerInstruction  = int64(1)
+)
+
 type EmuxConfig struct {
-	RunPath string
-	Seed    uint64
+	RunPath           string
+	Seed              uint64
+	MemorySize        uint64
+	InstructionBudget uint64
+	JIT               bool
+	ClockMode         string
+	MonotonicStartNS  int64
+	MonotonicStartSet bool
+	RealtimeOffsetNS  int64
+	NSPerInstruction  int64
+	Args              []string
+	Env               []string
+	Stdin             io.Reader
+	Stdout            io.Writer
+	Stderr            io.Writer
 }
 
 func (c *EmuxConfig) DefineFlags(fs *flag.FlagSet) {
 	fs.StringVar(&c.RunPath, "run", "", "path to RISCV ELF binary to run")
 	fs.Uint64Var(&c.Seed, "seed", 0, "pseudo random number generator seed")
+	fs.Uint64Var(&c.MemorySize, "mem", defaultEmuxMemorySize, "guest memory size in bytes")
+	fs.Uint64Var(&c.InstructionBudget, "budget", defaultEmuxInstructionBudget, "jea9linux instruction budget per scheduler slice")
+	fs.BoolVar(&c.JIT, "jit", false, "run with the native JIT instead of the cached interpreter")
+	fs.StringVar(&c.ClockMode, "clock", defaultEmuxClockMode, "clock mode: idle-jump, ic-tick, or manual")
+	fs.Int64Var(&c.MonotonicStartNS, "monotonic-ns", defaultEmuxMonotonicStartNS, "initial monotonic clock value in nanoseconds")
+	fs.Int64Var(&c.RealtimeOffsetNS, "realtime-offset-ns", 0, "realtime clock offset from monotonic time in nanoseconds")
+	fs.Int64Var(&c.NSPerInstruction, "ns-per-instruction", defaultEmuxNSPerInstruction, "nanoseconds advanced per retired instruction in ic-tick mode")
 }
 
 func (c *EmuxConfig) ValidateConfig() error {
@@ -26,6 +57,15 @@ func (c *EmuxConfig) ValidateConfig() error {
 	}
 	if !fileExists(c.RunPath) {
 		return fmt.Errorf("-run path '%v' does not exist", c.RunPath)
+	}
+	if c.MemorySize == 0 || c.MemorySize&(c.MemorySize-1) != 0 {
+		return fmt.Errorf("-mem must be a non-zero power of two, got %d", c.MemorySize)
+	}
+	if c.MemorySize > riscv.MaxGuestMemory {
+		return fmt.Errorf("-mem %d exceeds max guest memory %d", c.MemorySize, riscv.MaxGuestMemory)
+	}
+	if _, err := parseClockMode(c.ClockMode); err != nil {
+		return err
 	}
 	return nil
 }
@@ -41,18 +81,142 @@ func main() {
 		fmt.Fprintf(os.Stderr, "%s command line flag parse error: '%v'\n", ProgramName, err)
 		os.Exit(1)
 	}
+	myflags.Visit(func(f *flag.Flag) {
+		if f.Name == "monotonic-ns" {
+			cfg.MonotonicStartSet = true
+		}
+	})
 	err = cfg.ValidateConfig()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
+	cfg.Args = append([]string{cfg.RunPath}, myflags.Args()...)
+	cfg.Env = []string{}
 
-	// instantiate a virtual machine, use the seed for
-	// /dev/urandom, then run the RunPath binary on it.
-	mem, err := riscv.NewGuestMemory(riscv.Size64MB)
-	panicOn(err)
+	code, err := runEmux(*cfg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "emux: %v\n", err)
+		os.Exit(1)
+	}
+	os.Exit(code)
+}
+
+func runEmux(cfg EmuxConfig) (int, error) {
+	cfg = cfg.withDefaults()
+	if err := cfg.ValidateConfig(); err != nil {
+		return 0, err
+	}
+
+	clockMode, err := parseClockMode(cfg.ClockMode)
+	if err != nil {
+		return 0, err
+	}
+
+	mem, err := riscv.NewGuestMemory(cfg.MemorySize)
+	if err != nil {
+		return 0, err
+	}
+	defer mem.Free()
+
+	elf, err := riscv.LoadELF(mem, cfg.RunPath)
+	if err != nil {
+		return 0, err
+	}
+
 	cpu := riscv.NewCPU(*mem)
-	_ = cpu
+	jlinux := riscv.NewJea9Linux(riscv.Jea9LinuxOptions{
+		EntropySeed:       seedBytes(cfg.Seed),
+		ClockMode:         clockMode,
+		MonotonicStartNS:  cfg.MonotonicStartNS,
+		RealtimeOffsetNS:  cfg.RealtimeOffsetNS,
+		NSPerInstruction:  cfg.NSPerInstruction,
+		InstructionBudget: cfg.InstructionBudget,
+		Stdin:             cfg.Stdin,
+		Stdout:            cfg.Stdout,
+		Stderr:            cfg.Stderr,
+	})
+
+	args := append([]string(nil), cfg.Args...)
+	if len(args) == 0 {
+		args = []string{cfg.RunPath}
+	}
+	if err := jlinux.InitELFStack(cpu, elf, riscv.Jea9LinuxStartOptions{
+		Args:     args,
+		Env:      append([]string(nil), cfg.Env...),
+		ExecPath: args[0],
+	}); err != nil {
+		return 0, err
+	}
+
+	if cfg.JIT {
+		return runEmuxJIT(cpu, jlinux)
+	}
+	return riscv.RunWithJea9Linux(cpu, jlinux)
+}
+
+func runEmuxJIT(cpu *riscv.CPU, jlinux *riscv.Jea9Linux) (int, error) {
+	jit := riscv.NewJIT()
+	defer jit.Close()
+
+	cleanup := riscv.InstallJea9LinuxJIT(cpu, jit, jlinux)
+	defer cleanup()
+
+	err := jit.RunJIT(cpu)
+	if ex, ok := err.(*riscv.ExitError); ok {
+		return ex.Code, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	return cpu.ExitCode, nil
+}
+
+func (c EmuxConfig) withDefaults() EmuxConfig {
+	if c.MemorySize == 0 {
+		c.MemorySize = defaultEmuxMemorySize
+	}
+	if c.InstructionBudget == 0 {
+		c.InstructionBudget = defaultEmuxInstructionBudget
+	}
+	if c.ClockMode == "" {
+		c.ClockMode = defaultEmuxClockMode
+	}
+	if c.MonotonicStartNS == 0 && !c.MonotonicStartSet {
+		c.MonotonicStartNS = defaultEmuxMonotonicStartNS
+	}
+	if c.NSPerInstruction == 0 {
+		c.NSPerInstruction = defaultEmuxNSPerInstruction
+	}
+	if c.Stdin == nil {
+		c.Stdin = os.Stdin
+	}
+	if c.Stdout == nil {
+		c.Stdout = os.Stdout
+	}
+	if c.Stderr == nil {
+		c.Stderr = os.Stderr
+	}
+	return c
+}
+
+func parseClockMode(name string) (riscv.Jea9LinuxClockMode, error) {
+	switch strings.ToLower(name) {
+	case "", "idle-jump", "idlejump":
+		return riscv.Jea9ClockIdleJump, nil
+	case "ic-tick", "ictick":
+		return riscv.Jea9ClockICTick, nil
+	case "manual":
+		return riscv.Jea9ClockManual, nil
+	default:
+		return 0, fmt.Errorf("-clock must be idle-jump, ic-tick, or manual, got %q", name)
+	}
+}
+
+func seedBytes(seed uint64) []byte {
+	var b [8]byte
+	binary.LittleEndian.PutUint64(b[:], seed)
+	return b[:]
 }
 
 func fileExists(name string) bool {
