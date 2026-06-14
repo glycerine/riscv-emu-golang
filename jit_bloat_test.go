@@ -45,15 +45,15 @@ func TestBloat_BenchGuest_0x10de(t *testing.T) {
 		//    host=1582 (+503 bytes). Expected: every operand is staged
 		//    through RAX/RCX. CISC memory operands (Stage 12) will
 		//    recover most of this.
-		//  - After precise countdown budget checks (2026-06-14): ir=116.
-		//    The 11-op net increase is deterministic-IC bookkeeping for
-		//    the 9 guest instructions in this block, not semantic bloat.
-		maxIRInstrs       = 116
-		maxBudgetReserves = 9
-		maxBudgetSetPCs   = 9
-		maxBudgetRets     = 1
-		maxHostBytes      = 1650
-		maxChainExits     = 5
+		//  - After precise countdown budget checks (2026-06-14): ir=116
+		//    for the 9-insn Darwin fixture, ir=126 for a 10-insn Linux
+		//    fixture produced by a different Zig version. The net increase
+		//    is deterministic-IC bookkeeping plus the extra guest insn.
+		maxGuestInsns = 10
+		maxIRInstrs   = 126
+		maxBudgetRets = 1
+		maxHostBytes  = 1650
+		maxChainExits = 5
 	)
 
 	path := os.Getenv("BENCH_ELF")
@@ -83,6 +83,7 @@ func TestBloat_BenchGuest_0x10de(t *testing.T) {
 	}
 	irOps := len(res.block.Instrs)
 	budgetReserves, budgetSetPCs, budgetRets := countBloatBudgetIROps(res.block)
+	wantBudgetOps := res.numInsns
 
 	// Register-allocate and lower through the same AOT path production uses.
 	pool := RV8Pool(res.block)
@@ -111,9 +112,9 @@ func TestBloat_BenchGuest_0x10de(t *testing.T) {
 	hostBytes := len(code)
 	chainExits := len(lowerRes.ChainExits)
 
-	t.Logf("bench_guest pc=0x%x: ir=%d budget_reserve=%d budget_setpc=%d budget_ret=%d host=%d chain_exits=%d (budgets: ir≤%d reserve≤%d setpc≤%d ret≤%d host≤%d exits≤%d)",
-		blockEntryPC, irOps, budgetReserves, budgetSetPCs, budgetRets, hostBytes, chainExits,
-		maxIRInstrs, maxBudgetReserves, maxBudgetSetPCs, maxBudgetRets, maxHostBytes, maxChainExits)
+	t.Logf("bench_guest pc=0x%x: rv_insns=%d ir=%d budget_reserve=%d budget_setpc=%d budget_ret=%d host=%d chain_exits=%d (budgets: rv≤%d ir≤%d reserve=%d setpc=%d ret≤%d host≤%d exits≤%d)",
+		blockEntryPC, res.numInsns, irOps, budgetReserves, budgetSetPCs, budgetRets, hostBytes, chainExits,
+		maxGuestInsns, maxIRInstrs, wantBudgetOps, wantBudgetOps, maxBudgetRets, maxHostBytes, maxChainExits)
 
 	// Optional VizJit dump. If GOCPU_VIZJIT is set (or VIZJIT_DIR
 	// is already pointing somewhere non-empty), respect that so the
@@ -130,16 +131,17 @@ func TestBloat_BenchGuest_0x10de(t *testing.T) {
 		t.Logf("VizJit dump written under %s (set GOCPU_VIZJIT=<dir> to keep)", VIZJIT_DIR)
 	}
 
-	// linux known variation (different zig version? different toolchain?)
-	// jit_bloat_test.go:128: IR bloat regression: got 112 ops, budget 105
-	if irOps > maxIRInstrs+7 {
+	if res.numInsns > maxGuestInsns {
+		t.Errorf("guest-instruction count drift: got %d, budget %d", res.numInsns, maxGuestInsns)
+	}
+	if irOps > maxIRInstrs {
 		t.Errorf("IR bloat regression: got %d ops, budget %d", irOps, maxIRInstrs)
 	}
-	if budgetReserves > maxBudgetReserves {
-		t.Errorf("budget-reserve bloat regression: got %d ops, budget %d", budgetReserves, maxBudgetReserves)
+	if budgetReserves != wantBudgetOps {
+		t.Errorf("budget-reserve count = %d, want %d (one per guest instruction)", budgetReserves, wantBudgetOps)
 	}
-	if budgetSetPCs > maxBudgetSetPCs {
-		t.Errorf("budget set-pc bloat regression: got %d ops, budget %d", budgetSetPCs, maxBudgetSetPCs)
+	if budgetSetPCs != wantBudgetOps {
+		t.Errorf("budget set-pc count = %d, want %d (one per guest instruction)", budgetSetPCs, wantBudgetOps)
 	}
 	if budgetRets > maxBudgetRets {
 		t.Errorf("budget-ret bloat regression: got %d ops, budget %d", budgetRets, maxBudgetRets)
