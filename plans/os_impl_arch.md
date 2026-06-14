@@ -730,6 +730,45 @@ running stale translated code.
     behavior once signals are implemented; before signal support, the unit test
     should assert the raw fault path.
 
+Implementation status, 2026-06-14: this phase is complete for the first
+jea9linux VM overlay and anonymous-memory syscall surface. `guestmem.go` now
+has an optional personality access overlay field at lines 150-154, the
+`guestMemoryAccessOverlay` interface at line 162, install/cleanup helpers
+`setAccessOverlay` and `clearAccessOverlay` at lines 263 and 267, and
+`checkAccessOverlay` at line 331. Normal memory operations now consult the
+overlay only when installed: scalar loads at lines 370, 386, 402, and 418;
+scalar stores at lines 438, 455, 472, and 489; instruction fetch at lines 583
+and 596; bulk `ReadBytes` at line 631; and bulk `WriteBytes` at line 652.
+`note.go` maps `FaultFetch` to an instruction-fault note in
+`faultCauseAndText` at lines 132-143.
+
+`jea9linux.go` defines the VM syscall numbers at lines 57-62 and prot/map
+constants at lines 111-117, adds `jea9LinuxVM` state at line 192, creates and
+attaches the overlay through `newJea9LinuxVM` at line 319,
+`jea9LinuxDefaultMmapBase` at line 332, and `ensureVM` at line 343, and
+implements the access policy in `CheckGuestAccess` at line 351. Page/range
+helpers live at lines 375-464. `InitELFStack` adjusts the initial program break
+from the loaded ELF at line 562 using `elfProgramBreak` at line 659.
+`Jea9Linux.Handle` routes the VM syscalls at lines 775-791. The syscall bodies
+are `sysBrk` at line 1199, `sysMmap` at line 1229, `sysMunmap` at line 1263,
+`sysMprotect` at line 1277, `sysMincore` at line 1294, and `sysMadvise` at
+line 1317. `InstallJea9Linux` at line 1421 attaches the overlay and removes it
+on cleanup, keeping bare-metal memory behavior unchanged.
+
+Added `jea9linux_phase8_test.go`, with brk grow/shrink/zero-fill/fault coverage
+at line 33, anonymous/fixed/non-overlap mmap coverage at line 77, munmap fault
+coverage at line 110, mprotect read-only and exec metadata coverage at line
+134, page-zero load/store/fetch fault coverage at line 170, mincore/madvise
+coverage at line 186, overlay install cleanup coverage at line 217,
+syscall-buffer permission coverage at line 239, invalid-range coverage at line
+270, and ELF fixture execution at line 293. Added checked-in fixture sources
+`testvectors/jea9linux/src/brk_basic.c`,
+`testvectors/jea9linux/src/mmap_rw.c`, and
+`testvectors/jea9linux/src/mprotect_ro.c`, plus generated ELF fixtures
+`testvectors/jea9linux/elf/brk_basic.elf`,
+`testvectors/jea9linux/elf/mmap_rw.elf`, and
+`testvectors/jea9linux/elf/mprotect_ro.elf`.
+
 ## 9. Clone, Guest Thread Contexts, Futex, And Scheduling
 
 `clone(220)` creates a guest Linux thread context, not a host goroutine. The Go
