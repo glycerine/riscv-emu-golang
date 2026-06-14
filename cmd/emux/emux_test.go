@@ -97,8 +97,13 @@ func TestEmuxConfigDefaultsPreserveExplicitZeroClock(t *testing.T) {
 	if cfg.ClockMode != defaultEmuxClockMode {
 		t.Fatalf("ClockMode = %q, want %q", cfg.ClockMode, defaultEmuxClockMode)
 	}
-	if cfg.MonotonicStartNS != 0 {
-		t.Fatalf("MonotonicStartNS = %d, want explicit zero preserved", cfg.MonotonicStartNS)
+	if cfg.MonotonicStartNS != defaultEmuxMonotonicStartNS {
+		t.Fatalf("MonotonicStartNS = %d, want %d", cfg.MonotonicStartNS, defaultEmuxMonotonicStartNS)
+	}
+
+	explicitZero := EmuxConfig{MonotonicStartSet: true}.withDefaults()
+	if explicitZero.MonotonicStartNS != 0 {
+		t.Fatalf("explicit MonotonicStartNS = %d, want zero preserved", explicitZero.MonotonicStartNS)
 	}
 }
 
