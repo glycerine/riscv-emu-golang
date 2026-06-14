@@ -1,0 +1,459 @@
+package riscv
+
+import (
+	"encoding/binary"
+	"testing"
+)
+
+const (
+	jea9TestSysEventfd2    = uint64(19)
+	jea9TestSysEpollCreate = uint64(20)
+	jea9TestSysEpollCtl    = uint64(21)
+	jea9TestSysEpollPwait  = uint64(22)
+	jea9TestSysPipe2       = uint64(59)
+	jea9TestSysPselect6    = uint64(72)
+
+	jea9TestEFDNonblock = uint64(0x800)
+
+	jea9TestEpollCtlAdd = uint64(1)
+	jea9TestEpollCtlDel = uint64(2)
+	jea9TestEpollCtlMod = uint64(3)
+
+	jea9TestEpollIn  = uint32(0x001)
+	jea9TestEpollOut = uint32(0x004)
+)
+
+func writeGuest64(t *testing.T, mem *GuestMemory, addr, value uint64) {
+	t.Helper()
+	if f := mem.Store64(addr, value); f != nil {
+		t.Fatalf("Store64(0x%x): %v", addr, f)
+	}
+}
+
+func readGuest64(t *testing.T, mem *GuestMemory, addr uint64) uint64 {
+	t.Helper()
+	got, f := mem.Load64(addr)
+	if f != nil {
+		t.Fatalf("Load64(0x%x): %v", addr, f)
+	}
+	return got
+}
+
+func writeEpollEvent(t *testing.T, mem *GuestMemory, addr uint64, events uint32, data uint64) {
+	t.Helper()
+	if f := mem.Store32(addr, events); f != nil {
+		t.Fatalf("Store32(epoll events): %v", f)
+	}
+	var raw [8]byte
+	binary.LittleEndian.PutUint64(raw[:], data)
+	if f := mem.WriteBytes(addr+4, raw[:]); f != nil {
+		t.Fatalf("WriteBytes(epoll data): %v", f)
+	}
+}
+
+func requireEpollEvent(t *testing.T, mem *GuestMemory, addr uint64, events uint32, data uint64) {
+	t.Helper()
+	gotEvents, f := mem.Load32(addr)
+	if f != nil {
+		t.Fatalf("Load32(epoll events): %v", f)
+	}
+	var raw [8]byte
+	if f := mem.ReadBytes(addr+4, raw[:]); f != nil {
+		t.Fatalf("ReadBytes(epoll data): %v", f)
+	}
+	gotData := binary.LittleEndian.Uint64(raw[:])
+	if gotEvents != events || gotData != data {
+		t.Fatalf("epoll event at 0x%x = {events=0x%x,data=0x%x}, want {0x%x,0x%x}", addr, gotEvents, gotData, events, data)
+	}
+}
+
+func newEventfd(t *testing.T, cpu *CPU, init, flags uint64) uint64 {
+	t.Helper()
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysEventfd2, init, flags); d != NoteHandled {
+		t.Fatalf("eventfd2 disposition = %v, want NoteHandled", d)
+	}
+	fd := cpu.Reg(10)
+	if int64(fd) < 3 {
+		t.Fatalf("eventfd fd = %d, want >= 3", fd)
+	}
+	return fd
+}
+
+func newEpoll(t *testing.T, cpu *CPU) uint64 {
+	t.Helper()
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysEpollCreate, 0); d != NoteHandled {
+		t.Fatalf("epoll_create1 disposition = %v, want NoteHandled", d)
+	}
+	fd := cpu.Reg(10)
+	if int64(fd) < 3 {
+		t.Fatalf("epoll fd = %d, want >= 3", fd)
+	}
+	return fd
+}
+
+func TestJea9Linux_EventfdInitialValue(t *testing.T) {
+	j := NewJea9Linux(Jea9LinuxOptions{})
+	cpu, mem := newJea9LinuxSyscallCPU(t, j)
+	defer mem.Free()
+
+	fd := newEventfd(t, cpu, 7, 0)
+	buf := uint64(0x5000)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysRead, fd, buf, 8); d != NoteHandled {
+		t.Fatalf("eventfd read disposition = %v, want NoteHandled", d)
+	}
+	requireSyscallReturn(t, cpu, 8)
+	if got := readGuest64(t, mem, buf); got != 7 {
+		t.Fatalf("eventfd initial read = %d, want 7", got)
+	}
+}
+
+func TestJea9Linux_EventfdReadWrite(t *testing.T) {
+	j := NewJea9Linux(Jea9LinuxOptions{})
+	cpu, mem := newJea9LinuxSyscallCPU(t, j)
+	defer mem.Free()
+
+	fd := newEventfd(t, cpu, 0, 0)
+	buf := uint64(0x5000)
+	writeGuest64(t, mem, buf, 5)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysWrite, fd, buf, 8); d != NoteHandled {
+		t.Fatalf("eventfd write disposition = %v, want NoteHandled", d)
+	}
+	requireSyscallReturn(t, cpu, 8)
+	writeGuest64(t, mem, buf, 0)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysRead, fd, buf, 8); d != NoteHandled {
+		t.Fatalf("eventfd read disposition = %v, want NoteHandled", d)
+	}
+	requireSyscallReturn(t, cpu, 8)
+	if got := readGuest64(t, mem, buf); got != 5 {
+		t.Fatalf("eventfd read value = %d, want 5", got)
+	}
+}
+
+func TestJea9Linux_EventfdNonblockEmptyRead(t *testing.T) {
+	j := NewJea9Linux(Jea9LinuxOptions{})
+	cpu, mem := newJea9LinuxSyscallCPU(t, j)
+	defer mem.Free()
+
+	fd := newEventfd(t, cpu, 0, jea9TestEFDNonblock)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysRead, fd, 0x5000, 8); d != NoteHandled {
+		t.Fatalf("eventfd empty read disposition = %v, want NoteHandled", d)
+	}
+	requireSyscallReturn(t, cpu, jea9LinuxErrEAGAIN)
+}
+
+func TestJea9Linux_EventfdRejectsShortAndOverflowWrites(t *testing.T) {
+	j := NewJea9Linux(Jea9LinuxOptions{})
+	cpu, mem := newJea9LinuxSyscallCPU(t, j)
+	defer mem.Free()
+
+	fd := newEventfd(t, cpu, ^uint64(0)-2, 0)
+	buf := uint64(0x5000)
+	writeGuest64(t, mem, buf, 2)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysWrite, fd, buf, 8); d != NoteHandled {
+		t.Fatalf("eventfd overflow write disposition = %v, want NoteHandled", d)
+	}
+	requireSyscallReturn(t, cpu, jea9LinuxErrEAGAIN)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysRead, fd, buf, 4); d != NoteHandled {
+		t.Fatalf("eventfd short read disposition = %v, want NoteHandled", d)
+	}
+	requireSyscallReturn(t, cpu, jea9LinuxErrEINVAL)
+}
+
+func TestJea9Linux_EpollCreateClose(t *testing.T) {
+	j := NewJea9Linux(Jea9LinuxOptions{})
+	cpu, mem := newJea9LinuxSyscallCPU(t, j)
+	defer mem.Free()
+
+	epfd := newEpoll(t, cpu)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysClose, epfd); d != NoteHandled {
+		t.Fatalf("epoll close disposition = %v, want NoteHandled", d)
+	}
+	requireSyscallReturn(t, cpu, 0)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysEpollCtl, epfd, jea9TestEpollCtlAdd, 0, 0); d != NoteHandled {
+		t.Fatalf("epoll ctl closed disposition = %v, want NoteHandled", d)
+	}
+	requireSyscallReturn(t, cpu, jea9LinuxErrEBADF)
+}
+
+func TestJea9Linux_EpollCtlAddModDel(t *testing.T) {
+	j := NewJea9Linux(Jea9LinuxOptions{})
+	cpu, mem := newJea9LinuxSyscallCPU(t, j)
+	defer mem.Free()
+
+	eventfd := newEventfd(t, cpu, 0, 0)
+	epfd := newEpoll(t, cpu)
+	event := uint64(0x6000)
+	writeEpollEvent(t, mem, event, jea9TestEpollIn, 0xabc)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysEpollCtl, epfd, jea9TestEpollCtlAdd, eventfd, event); d != NoteHandled {
+		t.Fatalf("epoll add disposition = %v, want NoteHandled", d)
+	}
+	requireSyscallReturn(t, cpu, 0)
+	if got := len(j.fds[int(epfd)].epoll.registrations); got != 1 {
+		t.Fatalf("epoll registration count = %d, want 1", got)
+	}
+
+	writeEpollEvent(t, mem, event, jea9TestEpollIn|jea9TestEpollOut, 0xdef)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysEpollCtl, epfd, jea9TestEpollCtlMod, eventfd, event); d != NoteHandled {
+		t.Fatalf("epoll mod disposition = %v, want NoteHandled", d)
+	}
+	requireSyscallReturn(t, cpu, 0)
+	reg := j.fds[int(epfd)].epoll.registrations[int(eventfd)]
+	if reg.events != jea9TestEpollIn|jea9TestEpollOut || reg.data != 0xdef {
+		t.Fatalf("modified registration = {0x%x,0x%x}, want {0x%x,0xdef}", reg.events, reg.data, jea9TestEpollIn|jea9TestEpollOut)
+	}
+
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysEpollCtl, epfd, jea9TestEpollCtlDel, eventfd, 0); d != NoteHandled {
+		t.Fatalf("epoll del disposition = %v, want NoteHandled", d)
+	}
+	requireSyscallReturn(t, cpu, 0)
+	if got := len(j.fds[int(epfd)].epoll.registrations); got != 0 {
+		t.Fatalf("epoll registration count after del = %d, want 0", got)
+	}
+}
+
+func TestJea9Linux_EpollCtlErrors(t *testing.T) {
+	j := NewJea9Linux(Jea9LinuxOptions{})
+	cpu, mem := newJea9LinuxSyscallCPU(t, j)
+	defer mem.Free()
+
+	eventfd := newEventfd(t, cpu, 0, 0)
+	epfd := newEpoll(t, cpu)
+	event := uint64(0x6000)
+	writeEpollEvent(t, mem, event, jea9TestEpollIn, 1)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysEpollCtl, epfd, jea9TestEpollCtlAdd, eventfd, event); d != NoteHandled {
+		t.Fatalf("epoll add disposition = %v, want NoteHandled", d)
+	}
+	requireSyscallReturn(t, cpu, 0)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysEpollCtl, epfd, jea9TestEpollCtlAdd, eventfd, event); d != NoteHandled {
+		t.Fatalf("epoll duplicate add disposition = %v, want NoteHandled", d)
+	}
+	requireSyscallReturn(t, cpu, jea9LinuxErrEEXIST)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysEpollCtl, epfd, jea9TestEpollCtlMod, eventfd+100, event); d != NoteHandled {
+		t.Fatalf("epoll missing mod disposition = %v, want NoteHandled", d)
+	}
+	requireSyscallReturn(t, cpu, jea9LinuxErrEBADF)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysEpollCtl, 999, jea9TestEpollCtlAdd, eventfd, event); d != NoteHandled {
+		t.Fatalf("epoll bad epfd disposition = %v, want NoteHandled", d)
+	}
+	requireSyscallReturn(t, cpu, jea9LinuxErrEBADF)
+}
+
+func TestJea9Linux_EpollPwaitReadyImmediate(t *testing.T) {
+	j := NewJea9Linux(Jea9LinuxOptions{})
+	cpu, mem := newJea9LinuxSyscallCPU(t, j)
+	defer mem.Free()
+
+	eventfd := newEventfd(t, cpu, 2, 0)
+	epfd := newEpoll(t, cpu)
+	event := uint64(0x6000)
+	out := uint64(0x7000)
+	writeEpollEvent(t, mem, event, jea9TestEpollIn, 0x1234)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysEpollCtl, epfd, jea9TestEpollCtlAdd, eventfd, event); d != NoteHandled {
+		t.Fatalf("epoll add disposition = %v, want NoteHandled", d)
+	}
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysEpollPwait, epfd, out, 4, ^uint64(0), 0, 0); d != NoteHandled {
+		t.Fatalf("epoll wait disposition = %v, want NoteHandled", d)
+	}
+	requireSyscallReturn(t, cpu, 1)
+	requireEpollEvent(t, mem, out, jea9TestEpollIn, 0x1234)
+	if got := j.MonotonicNS(); got != 0 {
+		t.Fatalf("monotonic advanced to %d for immediate readiness", got)
+	}
+}
+
+func TestJea9Linux_EpollPwaitBlocksUntilEvent(t *testing.T) {
+	j := NewJea9Linux(Jea9LinuxOptions{})
+	cpu, mem := newJea9LinuxSyscallCPU(t, j)
+	defer mem.Free()
+
+	eventfd := newEventfd(t, cpu, 0, 0)
+	epfd := newEpoll(t, cpu)
+	event := uint64(0x6000)
+	out := uint64(0x7000)
+	writeEpollEvent(t, mem, event, jea9TestEpollIn, 0xbeef)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysEpollCtl, epfd, jea9TestEpollCtlAdd, eventfd, event); d != NoteHandled {
+		t.Fatalf("epoll add disposition = %v, want NoteHandled", d)
+	}
+	child := cloneJea9LinuxThread(t, cpu, j, 0x890000, 0, 0, 0, jea9TestCloneThreadFlags)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysEpollPwait, epfd, out, 1, ^uint64(0), 0, 0); d != NoteHandled {
+		t.Fatalf("blocking epoll disposition = %v, want NoteHandled after switch", d)
+	}
+	requireCurrentTID(t, j, child)
+	if got := j.contexts[j.pid].state; got != jea9LinuxContextWaiting {
+		t.Fatalf("parent state = %v, want waiting", got)
+	}
+
+	value := uint64(0x8000)
+	writeGuest64(t, mem, value, 1)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysWrite, eventfd, value, 8); d != NoteHandled {
+		t.Fatalf("child eventfd write disposition = %v, want NoteHandled", d)
+	}
+	requireSyscallReturn(t, cpu, 8)
+	if got := j.contexts[j.pid].state; got != jea9LinuxContextRunnable {
+		t.Fatalf("parent state after eventfd write = %v, want runnable", got)
+	}
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysSchedYield); d != NoteHandled {
+		t.Fatalf("yield to parent disposition = %v, want NoteHandled", d)
+	}
+	requireCurrentTID(t, j, j.pid)
+	requireSyscallReturn(t, cpu, 1)
+	requireEpollEvent(t, mem, out, jea9TestEpollIn, 0xbeef)
+}
+
+func TestJea9Linux_EpollPwaitTimeoutIdleJump(t *testing.T) {
+	j := NewJea9Linux(Jea9LinuxOptions{MonotonicStartNS: 10})
+	cpu, mem := newJea9LinuxSyscallCPU(t, j)
+	defer mem.Free()
+
+	epfd := newEpoll(t, cpu)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysEpollPwait, epfd, 0x7000, 1, 7, 0, 0); d != NoteHandled {
+		t.Fatalf("epoll timeout disposition = %v, want NoteHandled", d)
+	}
+	requireSyscallReturn(t, cpu, 0)
+	if got := j.MonotonicNS(); got != 7_000_010 {
+		t.Fatalf("monotonic ns = %d, want 7000010", got)
+	}
+}
+
+func TestJea9Linux_EpollPwaitReadyOrder(t *testing.T) {
+	j := NewJea9Linux(Jea9LinuxOptions{})
+	cpu, mem := newJea9LinuxSyscallCPU(t, j)
+	defer mem.Free()
+
+	firstFD := newEventfd(t, cpu, 1, 0)
+	secondFD := newEventfd(t, cpu, 1, 0)
+	epfd := newEpoll(t, cpu)
+	event := uint64(0x6000)
+	out := uint64(0x7000)
+	writeEpollEvent(t, mem, event, jea9TestEpollIn, 0x2222)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysEpollCtl, epfd, jea9TestEpollCtlAdd, secondFD, event); d != NoteHandled {
+		t.Fatalf("epoll add second disposition = %v, want NoteHandled", d)
+	}
+	writeEpollEvent(t, mem, event, jea9TestEpollIn, 0x1111)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysEpollCtl, epfd, jea9TestEpollCtlAdd, firstFD, event); d != NoteHandled {
+		t.Fatalf("epoll add first disposition = %v, want NoteHandled", d)
+	}
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysEpollPwait, epfd, out, 2, 0, 0, 0); d != NoteHandled {
+		t.Fatalf("epoll ready order disposition = %v, want NoteHandled", d)
+	}
+	requireSyscallReturn(t, cpu, 2)
+	requireEpollEvent(t, mem, out, jea9TestEpollIn, 0x2222)
+	requireEpollEvent(t, mem, out+12, jea9TestEpollIn, 0x1111)
+}
+
+func TestJea9Linux_PipeReadinessThroughEpoll(t *testing.T) {
+	j := NewJea9Linux(Jea9LinuxOptions{})
+	cpu, mem := newJea9LinuxSyscallCPU(t, j)
+	defer mem.Free()
+
+	pipefd := uint64(0x5000)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysPipe2, pipefd, 0); d != NoteHandled {
+		t.Fatalf("pipe2 disposition = %v, want NoteHandled", d)
+	}
+	readFD, f := mem.Load32(pipefd)
+	if f != nil {
+		t.Fatal(f)
+	}
+	writeFD, f := mem.Load32(pipefd + 4)
+	if f != nil {
+		t.Fatal(f)
+	}
+	epfd := newEpoll(t, cpu)
+	event := uint64(0x6000)
+	out := uint64(0x7000)
+	writeEpollEvent(t, mem, event, jea9TestEpollIn, 0xaaaa)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysEpollCtl, epfd, jea9TestEpollCtlAdd, uint64(readFD), event); d != NoteHandled {
+		t.Fatalf("epoll add pipe read disposition = %v, want NoteHandled", d)
+	}
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysEpollPwait, epfd, out, 1, 0, 0, 0); d != NoteHandled {
+		t.Fatalf("empty pipe epoll disposition = %v, want NoteHandled", d)
+	}
+	requireSyscallReturn(t, cpu, 0)
+
+	if f := mem.WriteBytes(0x8000, []byte("x")); f != nil {
+		t.Fatal(f)
+	}
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysWrite, uint64(writeFD), 0x8000, 1); d != NoteHandled {
+		t.Fatalf("pipe write disposition = %v, want NoteHandled", d)
+	}
+	requireSyscallReturn(t, cpu, 1)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysEpollPwait, epfd, out, 1, 0, 0, 0); d != NoteHandled {
+		t.Fatalf("ready pipe epoll disposition = %v, want NoteHandled", d)
+	}
+	requireSyscallReturn(t, cpu, 1)
+	requireEpollEvent(t, mem, out, jea9TestEpollIn, 0xaaaa)
+}
+
+func TestJea9Linux_Pipe2ReadWrite(t *testing.T) {
+	j := NewJea9Linux(Jea9LinuxOptions{})
+	cpu, mem := newJea9LinuxSyscallCPU(t, j)
+	defer mem.Free()
+
+	pipefd := uint64(0x5000)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysPipe2, pipefd, 0); d != NoteHandled {
+		t.Fatalf("pipe2 disposition = %v, want NoteHandled", d)
+	}
+	requireSyscallReturn(t, cpu, 0)
+	readFD, f := mem.Load32(pipefd)
+	if f != nil {
+		t.Fatal(f)
+	}
+	writeFD, f := mem.Load32(pipefd + 4)
+	if f != nil {
+		t.Fatal(f)
+	}
+	if f := mem.WriteBytes(0x6000, []byte("abc")); f != nil {
+		t.Fatal(f)
+	}
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysWrite, uint64(writeFD), 0x6000, 3); d != NoteHandled {
+		t.Fatalf("pipe write disposition = %v, want NoteHandled", d)
+	}
+	requireSyscallReturn(t, cpu, 3)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysRead, uint64(readFD), 0x7000, 3); d != NoteHandled {
+		t.Fatalf("pipe read disposition = %v, want NoteHandled", d)
+	}
+	requireSyscallReturn(t, cpu, 3)
+	if got := string(readGuestBytes(t, mem, 0x7000, 3)); got != "abc" {
+		t.Fatalf("pipe read bytes = %q, want abc", got)
+	}
+}
+
+func TestJea9Linux_Pipe2NonblockEmptyRead(t *testing.T) {
+	j := NewJea9Linux(Jea9LinuxOptions{})
+	cpu, mem := newJea9LinuxSyscallCPU(t, j)
+	defer mem.Free()
+
+	pipefd := uint64(0x5000)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysPipe2, pipefd, jea9TestEFDNonblock); d != NoteHandled {
+		t.Fatalf("pipe2 nonblock disposition = %v, want NoteHandled", d)
+	}
+	readFD, f := mem.Load32(pipefd)
+	if f != nil {
+		t.Fatal(f)
+	}
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysRead, uint64(readFD), 0x6000, 1); d != NoteHandled {
+		t.Fatalf("pipe empty read disposition = %v, want NoteHandled", d)
+	}
+	requireSyscallReturn(t, cpu, jea9LinuxErrEAGAIN)
+}
+
+func TestJea9Linux_Pselect6Timeout(t *testing.T) {
+	j := NewJea9Linux(Jea9LinuxOptions{MonotonicStartNS: 5})
+	cpu, mem := newJea9LinuxSyscallCPU(t, j)
+	defer mem.Free()
+
+	timeout := uint64(0x5000)
+	if f := mem.Store64(timeout, 0); f != nil {
+		t.Fatal(f)
+	}
+	if f := mem.Store64(timeout+8, 1234); f != nil {
+		t.Fatal(f)
+	}
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysPselect6, 0, 0, 0, 0, timeout, 0); d != NoteHandled {
+		t.Fatalf("pselect6 timeout disposition = %v, want NoteHandled", d)
+	}
+	requireSyscallReturn(t, cpu, 0)
+	if got := j.MonotonicNS(); got != 1239 {
+		t.Fatalf("monotonic ns = %d, want 1239", got)
+	}
+}
