@@ -10,8 +10,13 @@ import (
 var VIZJIT_DIR string
 
 func init() {
+	// Update: GOCPU_VIZJIT used to default to on. Now you
+	// must set it to 1,on,ON, or the path to write to in order
+	// to activate the vizjit system. In other words, it is
+	// off by default.
+
 	home := os.Getenv("HOME")
-	VIZJIT_DIR = home + "/go/src/github.com/glycerine/riscv-emu-golang/debug_vizjit_dir"
+	dir := home + "/go/src/github.com/glycerine/riscv-emu-golang/debug_vizjit_dir"
 
 	off := os.Getenv("GOCPU_VIZJIT_OFF")
 	if off != "" {
@@ -20,7 +25,11 @@ func init() {
 	}
 	viz := os.Getenv("GOCPU_VIZJIT")
 	if viz != "" {
-		VIZJIT_DIR = viz
+		if viz == "1" || viz == "on" || viz == "ON" {
+			VIZJIT_DIR = dir
+		} else {
+			VIZJIT_DIR = viz
+		}
 		fmt.Fprintf(os.Stderr, "env var GOCPU_VIZJIT was set: writing disassembly to dir: '%v'\n", viz)
 	}
 }
