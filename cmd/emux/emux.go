@@ -188,6 +188,12 @@ func runEmuxJIT(cpu *riscv.CPU, jlinux *riscv.Jea9Linux) (int, error) {
 	jit := riscv.NewJIT()
 	defer jit.Close()
 
+	// 9 sec true
+	// 8 sec false; on this very simple test:
+	// time emux -jit=true -run testvectors/jea9linux/go/elf/timenow.elf
+	// (and 3.3 sec if jit=false, so using the interpreter).
+	//jit.DisableAutoAOT = true
+
 	return riscv.RunWithJea9LinuxJIT(cpu, jit, jlinux)
 }
 
