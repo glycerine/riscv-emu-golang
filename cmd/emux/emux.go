@@ -187,7 +187,6 @@ func runEmux(cfg EmuxConfig) (int, error) {
 func runEmuxJIT(cpu *riscv.CPU, jlinux *riscv.Jea9Linux) (int, error) {
 	jit := riscv.NewJIT()
 	defer jit.Close()
-	jit.DisableAutoAOT = true
 
 	return riscv.RunWithJea9LinuxJIT(cpu, jit, jlinux)
 }
