@@ -48,14 +48,22 @@ func TestJIT_DispatchStats(t *testing.T) {
 }
 
 func BenchmarkCPU_FullExecution_JIT_Rv8(b *testing.B) {
-	benchJITBenchGuestPerf(b, riscv.PolicyRV8, "fixed")
+	benchJITWith(b, "fixed")
 }
 
 func BenchmarkCPU_FullExecution_JIT_ABJIT(b *testing.B) {
-	benchJITBenchGuestPerf(b, riscv.PolicyABJIT, "")
+	benchJITELFWithPolicy(b, loadCPUELF(b), riscv.PolicyABJIT)
 }
 
-func benchJITBenchGuestPerf(b *testing.B, policy riscv.RegPolicy, strategy string) {
+func BenchmarkCPU_FullExecution_JIT_Rv8_NoIC(b *testing.B) {
+	benchJITBenchGuestNoIC(b, riscv.PolicyRV8, "fixed")
+}
+
+func BenchmarkCPU_FullExecution_JIT_ABJIT_NoIC(b *testing.B) {
+	benchJITBenchGuestNoIC(b, riscv.PolicyABJIT, "")
+}
+
+func benchJITBenchGuestNoIC(b *testing.B, policy riscv.RegPolicy, strategy string) {
 	b.Helper()
 	elfData := loadCPUELF(b)
 	b.ReportAllocs()
