@@ -259,10 +259,12 @@ func TestLower_RV8_JalrIC_CacheHit_JumpsToEntry(t *testing.T) {
 	//
 	// The simplest stub: write a sentinel to Result.PC and RET.
 	//   MOV QWORD [RAX], 0xBEEF    ; Result.PC = 0xBEEF
-	//   MOV QWORD [RAX+16], 0      ; Result.Status = 0
+	//   MOV QWORD [RAX+8], 0       ; Result.Status = 0
+	//   MOV QWORD [RAX+16], 0      ; Result.FaultAddr = 0
 	//   RET
 	stub := []byte{
 		0x48, 0xC7, 0x00, 0xEF, 0xBE, 0x00, 0x00, // MOV QWORD [RAX], 0xBEEF
+		0x48, 0xC7, 0x40, 0x08, 0x00, 0x00, 0x00, 0x00, // MOV QWORD [RAX+8], 0
 		0x48, 0xC7, 0x40, 0x10, 0x00, 0x00, 0x00, 0x00, // MOV QWORD [RAX+16], 0
 		0xC3, // RET
 	}
