@@ -140,24 +140,27 @@ func (f *FixedStaticAllocator) Allocate(b *Block, pool RegPool, pinned map[VReg]
 		intPoolIdx++
 	}
 
-	// 3. Assign FP VRegs by priority.
+	// 3. Assign guest FP VRegs by priority unless the backend wants f0..f31
+	// to remain memory-authoritative. FP temporaries are still eligible below.
 	fpPoolIdx := 0
-	for _, vr := range fpPriority {
-		if int(vr) >= numVRegs || !used[vr] || !isFP[vr] {
-			continue
+	if !pool.NoArchFP {
+		for _, vr := range fpPriority {
+			if int(vr) >= numVRegs || !used[vr] || !isFP[vr] {
+				continue
+			}
+			if _, isPinned := pinned[vr]; isPinned {
+				continue
+			}
+			if fpPoolIdx >= len(pool.FPRegs) {
+				break
+			}
+			kind[vr] = AllocReg
+			intervalAllocs = append(intervalAllocs, IntervalAlloc{
+				Interval: Interval{VReg: vr, Start: 0, End: n - 1},
+				Host:     pool.FPRegs[fpPoolIdx],
+			})
+			fpPoolIdx++
 		}
-		if _, isPinned := pinned[vr]; isPinned {
-			continue
-		}
-		if fpPoolIdx >= len(pool.FPRegs) {
-			break
-		}
-		kind[vr] = AllocReg
-		intervalAllocs = append(intervalAllocs, IntervalAlloc{
-			Interval: Interval{VReg: vr, Start: 0, End: n - 1},
-			Host:     pool.FPRegs[fpPoolIdx],
-		})
-		fpPoolIdx++
 	}
 
 	// 4. Handle temps (VReg >= VRegTempStart) that aren't pinned.

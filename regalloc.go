@@ -51,8 +51,9 @@ type RegMove struct {
 
 // RegPool describes the available host registers, separated by class.
 type RegPool struct {
-	IntRegs []int16 // host register IDs for integer VRegs
-	FPRegs  []int16 // host register IDs for FP VRegs
+	IntRegs  []int16 // host register IDs for integer VRegs
+	FPRegs   []int16 // host register IDs for FP VRegs
+	NoArchFP bool    // leave guest f0..f31 memory-backed; FP temps may still use FPRegs
 }
 
 // ── Allocator interface ──

@@ -84,7 +84,7 @@ func init() {
 	}
 }
 
-func ARM64Pool(_ *Block) RegPool {
+func ARM64Pool(b *Block) RegPool {
 	// R6-R9 are fixed staging registers in this lowerer, R16/R17 are ARM64
 	// intra-procedure call temporaries, R20 carries the ABJIT State pointer,
 	// R27 is Go's linker scratch register, R28 is g, R29 is FP, and R30 is LR.
@@ -99,7 +99,23 @@ func ARM64Pool(_ *Block) RegPool {
 		goasm.REG_ARM64_R19, goasm.REG_ARM64_R21, goasm.REG_ARM64_R22, goasm.REG_ARM64_R23,
 		goasm.REG_ARM64_R24, goasm.REG_ARM64_R25, goasm.REG_ARM64_R26,
 	}
-	return RegPool{IntRegs: intRegs}
+	var fpRegs []int16
+	if !blockHasHostCall(b) {
+		// F0-F2 are fixed FP staging registers. Avoid F8-F15 so the generated
+		// code does not rely on C ABI callee-save SIMD registers being preserved
+		// by the Go assembly trampolines.
+		fpRegs = []int16{
+			goasm.REG_ARM64_F3, goasm.REG_ARM64_F4, goasm.REG_ARM64_F5,
+			goasm.REG_ARM64_F6, goasm.REG_ARM64_F7,
+			goasm.REG_ARM64_F16, goasm.REG_ARM64_F17, goasm.REG_ARM64_F18,
+			goasm.REG_ARM64_F19, goasm.REG_ARM64_F20, goasm.REG_ARM64_F21,
+			goasm.REG_ARM64_F22, goasm.REG_ARM64_F23, goasm.REG_ARM64_F24,
+			goasm.REG_ARM64_F25, goasm.REG_ARM64_F26, goasm.REG_ARM64_F27,
+			goasm.REG_ARM64_F28, goasm.REG_ARM64_F29, goasm.REG_ARM64_F30,
+			goasm.REG_ARM64_F31,
+		}
+	}
+	return RegPool{IntRegs: intRegs, FPRegs: fpRegs, NoArchFP: true}
 }
 
 func ARM64Pinned() map[VReg]int16 { return nil }
@@ -132,6 +148,8 @@ type lowerARM64Ctx struct {
 	idx            int
 	abi            arm64ABI
 	dirtyArch      [32]bool
+	entryLiveArch  [32]bool
+	entryLoadAll   bool
 	tempSlots      map[VReg]int64
 	frame          arm64FrameLayout
 	labelProg      map[Label]*obj.Prog
@@ -193,6 +211,7 @@ func lowerARM64(ctx *goasm.Ctx, b *Block, alloc *Allocation, abi arm64ABI) (*Low
 		lc.rIdx = buildRegIndex(alloc)
 	}
 	lc.collectDirtyArch()
+	lc.collectEntryLoads()
 	lc.collectTemps()
 	lc.frame = newARM64FrameLayout(len(lc.tempSlots), blockHasHostCall(b))
 
@@ -203,7 +222,7 @@ func lowerARM64(ctx *goasm.Ctx, b *Block, alloc *Allocation, abi arm64ABI) (*Low
 		lc.emitRRI(arm64.ASUB, lc.frame.frameSize, goasm.REG_ARM64_RSP, goasm.REG_ARM64_RSP)
 	}
 	lc.loadFixedABJITRegs()
-	lc.loadAllocatedRegs()
+	lc.loadEntryAllocatedRegs()
 
 	for i := range b.Instrs {
 		lc.idx = i
@@ -265,6 +284,88 @@ func (lc *lowerARM64Ctx) collectDirtyArch() {
 	}
 }
 
+func (lc *lowerARM64Ctx) collectEntryLoads() {
+	lc.entryLoadAll, lc.entryLiveArch = arm64EntryLoadAnalysis(lc.blk)
+}
+
+func arm64EntryLoadAnalysis(b *Block) (loadAll bool, liveIn [32]bool) {
+	if b == nil {
+		return false, liveIn
+	}
+	var written [32]bool
+	markRead := func(v VReg) {
+		if v > VRegZero && v < 32 && !written[v] {
+			liveIn[v] = true
+		}
+	}
+	for i := range b.Instrs {
+		ins := &b.Instrs[i]
+		if arm64EntryLoadNeedsConservativeBlock(ins.Op) {
+			loadAll = true
+		}
+		arm64VisitReadGPRs(ins, markRead)
+		if arm64OpWritesDst(ins.Op) && ins.Dst > VRegZero && ins.Dst < 32 {
+			written[ins.Dst] = true
+		}
+	}
+	return loadAll, liveIn
+}
+
+func arm64EntryLoadNeedsConservativeBlock(op IROp) bool {
+	switch op {
+	case IRLabel, IRBranch, IRBranchImm, IRJump,
+		IRJalrIC, IRCall, IRSyscall,
+		IRRegBudget, IRMemBudget:
+		return true
+	default:
+		return false
+	}
+}
+
+func arm64VisitReadGPRs(ins *IRInstr, visit func(VReg)) {
+	if ins == nil {
+		return
+	}
+	switch ins.Op {
+	case IRMov, IRNeg, IRNot, IRSext, IRZext,
+		IRAddImm, IRSubImm,
+		IRShlImm, IRShrImm, IRSarImm,
+		IRAndImm, IROrImm, IRXorImm,
+		IRClz, IRCtz, IRPopcount, IRBswap,
+		IRSetImm,
+		IRLoad, IRMisalignLoad,
+		IRFCvtToI, IRFCvtToU, IRFCvtFromI, IRFCvtFromU, IRFCvtFF,
+		IRFNeg, IRFAbs, IRFSqrt,
+		IRBranchImm, IRJalrIC,
+		IRRet, IRMarkLive, IRMarkDead:
+		visit(ins.A)
+	case IRAdd, IRSub,
+		IRMul, IRMulHS, IRMulHU, IRMulHSU, IRDivS, IRDivU, IRRem, IRRemU,
+		IRShl, IRShr, IRSar,
+		IRAnd, IROr, IRXor,
+		IRSet,
+		IRLoadX,
+		IRFAdd, IRFSub, IRFMul, IRFDiv, IRFCmp,
+		IRBranch:
+		visit(ins.A)
+		visit(ins.B)
+	case IRStore, IRMisalignStore:
+		visit(ins.A)
+		visit(ins.B)
+	case IRStoreX:
+		visit(ins.A)
+		visit(ins.B)
+		visit(ins.Dst)
+	case IRFma, IRFmsub, IRFnmadd, IRFnmsub:
+		visit(ins.A)
+		visit(ins.B)
+		visit(ins.C)
+	case IRRetDyn:
+		visit(ins.A)
+		visit(ins.B)
+	}
+}
+
 func arm64OpWritesDst(op IROp) bool {
 	switch op {
 	case IRMov, IRConst, IRSext, IRZext,
@@ -296,6 +397,17 @@ func (lc *lowerARM64Ctx) canUseHostReg(v VReg) bool {
 	return v < 32 || v >= VRegTempStart
 }
 
+func arm64IsFPReg(r int16) bool {
+	return r >= goasm.REG_ARM64_F0 && r <= goasm.REG_ARM64_F31
+}
+
+func arm64FPMoveOp(t Type) obj.As {
+	if t == F32 {
+		return arm64.AFMOVS
+	}
+	return arm64.AFMOVD
+}
+
 func (lc *lowerARM64Ctx) hostReg(v VReg) int16 {
 	if lc.alloc == nil || !lc.canUseHostReg(v) {
 		return -1
@@ -317,6 +429,18 @@ func (lc *lowerARM64Ctx) tempHasHostReg(v VReg) bool {
 		return false
 	}
 	return lc.alloc.Kind[v] == AllocReg && len(lc.rIdx) != 0
+}
+
+func (lc *lowerARM64Ctx) loadEntryAllocatedRegs() {
+	for vr := VReg(1); vr < 32; vr++ {
+		if !lc.entryLoadAll && !lc.entryLiveArch[vr] {
+			continue
+		}
+		host := lc.hostReg(vr)
+		if host >= 0 {
+			lc.emitLoad(arm64.AMOVD, lc.xBaseReg(), int64(vr)*8, host)
+		}
+	}
 }
 
 func (lc *lowerARM64Ctx) loadAllocatedRegs() {
@@ -341,6 +465,9 @@ func (lc *lowerARM64Ctx) storeRegsBack() {
 }
 
 func blockHasHostCall(b *Block) bool {
+	if b == nil {
+		return false
+	}
 	for i := range b.Instrs {
 		switch b.Instrs[i].Op {
 		case IRCall, IRSyscall:
@@ -450,11 +577,17 @@ func (lc *lowerARM64Ctx) loadImm(imm int64, dst int16) {
 }
 
 func (lc *lowerARM64Ctx) loadFP(v VReg, dst int16, t Type) error {
-	op := arm64.AFMOVD
-	if t == F32 {
-		op = arm64.AFMOVS
+	op := arm64FPMoveOp(t)
+	if host := lc.hostReg(v); host >= 0 {
+		if host != dst {
+			lc.emitRR(op, host, dst)
+		}
+		return nil
 	}
 	switch {
+	case v == VRegZero:
+		lc.loadImm(0, a64A)
+		lc.emitRR(op, a64A, dst)
 	case v >= 32 && v < 64:
 		base, off := lc.fpMem(v)
 		lc.emitFLoad(op, base, off, dst)
@@ -471,9 +604,12 @@ func (lc *lowerARM64Ctx) loadFP(v VReg, dst int16, t Type) error {
 }
 
 func (lc *lowerARM64Ctx) storeFP(v VReg, src int16, t Type) error {
-	op := arm64.AFMOVD
-	if t == F32 {
-		op = arm64.AFMOVS
+	op := arm64FPMoveOp(t)
+	if host := lc.hostReg(v); host >= 0 {
+		if host != src {
+			lc.emitRR(op, src, host)
+		}
+		return nil
 	}
 	switch {
 	case v >= 32 && v < 64:
@@ -501,7 +637,11 @@ func (lc *lowerARM64Ctx) storeFP(v VReg, src int16, t Type) error {
 
 func (lc *lowerARM64Ctx) loadV(v VReg, dst int16) error {
 	if host := lc.hostReg(v); host >= 0 {
-		lc.emitRR(arm64.AMOVD, host, dst)
+		op := arm64.AMOVD
+		if arm64IsFPReg(host) || arm64IsFPReg(dst) {
+			op = arm64.AFMOVD
+		}
+		lc.emitRR(op, host, dst)
 		return nil
 	}
 	switch {
@@ -535,7 +675,11 @@ func (lc *lowerARM64Ctx) loadV(v VReg, dst int16) error {
 func (lc *lowerARM64Ctx) storeV(v VReg, src int16) error {
 	if host := lc.hostReg(v); host >= 0 {
 		if src != host {
-			lc.emitRR(arm64.AMOVD, src, host)
+			op := arm64.AMOVD
+			if arm64IsFPReg(src) || arm64IsFPReg(host) {
+				op = arm64.AFMOVD
+			}
+			lc.emitRR(op, src, host)
 		}
 		return nil
 	}
@@ -564,6 +708,10 @@ func (lc *lowerARM64Ctx) valueReg(v VReg, scratch int16) (int16, error) {
 		return goasm.REG_ARM64_ZR, nil
 	}
 	if host := lc.hostReg(v); host >= 0 {
+		if arm64IsFPReg(host) {
+			lc.emitRR(arm64.AFMOVD, host, scratch)
+			return scratch, nil
+		}
 		return host, nil
 	}
 	if err := lc.loadV(v, scratch); err != nil {
@@ -574,6 +722,9 @@ func (lc *lowerARM64Ctx) valueReg(v VReg, scratch int16) (int16, error) {
 
 func (lc *lowerARM64Ctx) resultReg(v VReg, scratch int16) (reg int16, direct bool) {
 	if host := lc.hostReg(v); host >= 0 {
+		if arm64IsFPReg(host) {
+			return scratch, false
+		}
 		return host, true
 	}
 	return scratch, false
@@ -586,9 +737,18 @@ func (lc *lowerARM64Ctx) finishResult(v VReg, reg int16, direct bool) error {
 	return lc.storeV(v, reg)
 }
 
-func (lc *lowerARM64Ctx) moveV(dst, src VReg) error {
+func (lc *lowerARM64Ctx) moveV(dst, src VReg, t Type) error {
 	if dst == VRegZero {
 		return nil
+	}
+	if t == F32 || t == F64 {
+		if dstReg := lc.hostReg(dst); dstReg >= 0 && arm64IsFPReg(dstReg) {
+			return lc.loadFP(src, dstReg, t)
+		}
+		if err := lc.loadFP(src, a64FA, t); err != nil {
+			return err
+		}
+		return lc.storeFP(dst, a64FA, t)
 	}
 	if dstReg, direct := lc.resultReg(dst, a64A); direct {
 		srcReg, err := lc.valueReg(src, dstReg)
@@ -664,7 +824,7 @@ func (lc *lowerARM64Ctx) lowerInstr(ins *IRInstr) error {
 	case IROpInvalid:
 		return fmt.Errorf("arm64 lower: invalid op")
 	case IRMov:
-		return lc.moveV(ins.Dst, ins.A)
+		return lc.moveV(ins.Dst, ins.A, ins.T)
 	case IRConst:
 		if ins.Dst == VRegZero {
 			return nil
@@ -1129,7 +1289,7 @@ func (lc *lowerARM64Ctx) lowerSext(ins *IRInstr) error {
 	case I32:
 		op = arm64.ASXTW
 	default:
-		return lc.moveV(ins.Dst, ins.A)
+		return lc.moveV(ins.Dst, ins.A, I64)
 	}
 	dst, direct := lc.resultReg(ins.Dst, a64A)
 	lc.emitRR(op, a, dst)
@@ -1150,7 +1310,7 @@ func (lc *lowerARM64Ctx) lowerZext(ins *IRInstr) error {
 	case I32:
 		op = arm64.AUXTW
 	default:
-		return lc.moveV(ins.Dst, ins.A)
+		return lc.moveV(ins.Dst, ins.A, I64)
 	}
 	dst, direct := lc.resultReg(ins.Dst, a64A)
 	lc.emitRR(op, a, dst)
