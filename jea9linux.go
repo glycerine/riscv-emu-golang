@@ -1784,9 +1784,7 @@ func (j *Jea9Linux) signalTIDSyscall(cpu *CPU, tid, sig uint64) NoteDisposition 
 
 func (j *Jea9Linux) sysRtSigreturn(cpu *CPU) NoteDisposition {
 	ctx := j.ensureScheduler(cpu)
-	frameSP := cpu.Reg(2)
-	key := jea9LinuxSignalFrameKey{tid: ctx.tid, sp: frameSP}
-	frame, ok := j.signalFrames[key]
+	key, frame, ok := j.findSignalFrame(ctx.tid, cpu.Reg(2))
 	if !ok {
 		setJea9LinuxReturn(cpu, jea9LinuxErrEINVAL)
 		return NoteHandled
@@ -1796,6 +1794,27 @@ func (j *Jea9Linux) sysRtSigreturn(cpu *CPU) NoteDisposition {
 	restoreJea9LinuxCPU(cpu, frame.snapshot)
 	ctx.snapshot = snapshotJea9LinuxCPU(cpu)
 	return NoteHandled
+}
+
+func (j *Jea9Linux) findSignalFrame(tid, currentSP uint64) (jea9LinuxSignalFrameKey, jea9LinuxSignalFrame, bool) {
+	exact := jea9LinuxSignalFrameKey{tid: tid, sp: currentSP}
+	if frame, ok := j.signalFrames[exact]; ok {
+		return exact, frame, true
+	}
+	var bestKey jea9LinuxSignalFrameKey
+	var bestFrame jea9LinuxSignalFrame
+	var bestSet bool
+	for key, frame := range j.signalFrames {
+		if key.tid != tid || key.sp < currentSP {
+			continue
+		}
+		if !bestSet || key.sp < bestKey.sp {
+			bestKey = key
+			bestFrame = frame
+			bestSet = true
+		}
+	}
+	return bestKey, bestFrame, bestSet
 }
 
 func jea9LinuxSignalValid(sig uint64) bool {

@@ -14,7 +14,7 @@ void _start(void) {
 	if (install_signal(SIGSEGV, handler, 0) != 0) {
 		exit_code(150);
 	}
-	volatile unsigned long *p = (volatile unsigned long *)0;
-	(void)*p;
+	unsigned long value;
+	__asm__ volatile("ld %0, 0(zero)" : "=r"(value) :: "memory");
 	exit_code(152);
 }

@@ -339,6 +339,31 @@ func TestJea9Linux_RtSigreturnRestoresRegisters(t *testing.T) {
 	}
 }
 
+func TestJea9Linux_RtSigreturnFindsFrameAboveCurrentSP(t *testing.T) {
+	j := NewJea9Linux(Jea9LinuxOptions{})
+	cpu, mem := newJea9LinuxSyscallCPU(t, j)
+	defer mem.Free()
+
+	handler := uint64(0x4000)
+	installSignalHandler(t, cpu, mem, jea9TestSIGUSR1, handler, 0)
+	cpu.SetPC(0x2222)
+	cpu.SetReg(2, 0x30000)
+	cpu.SetReg(5, 0x1234)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysTgkill, j.pid, j.tid, jea9TestSIGUSR1); d != NoteHandled {
+		t.Fatalf("tgkill disposition = %v", d)
+	}
+	frame := cpu.Reg(2)
+	cpu.SetPC(0x9999)
+	cpu.SetReg(5, 0xabcd)
+	cpu.SetReg(2, frame-32)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysRtSigreturn); d != NoteHandled {
+		t.Fatalf("rt_sigreturn disposition = %v", d)
+	}
+	if cpu.PC() != 0x2222 || cpu.Reg(2) != 0x30000 || cpu.Reg(5) != 0x1234 {
+		t.Fatalf("restored pc=0x%x sp=0x%x x5=0x%x", cpu.PC(), cpu.Reg(2), cpu.Reg(5))
+	}
+}
+
 func TestJea9Linux_DefaultSignalIgnoredAndFaultForwarded(t *testing.T) {
 	j := NewJea9Linux(Jea9LinuxOptions{})
 	cpu, mem := newJea9LinuxSyscallCPU(t, j)

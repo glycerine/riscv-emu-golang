@@ -1096,6 +1096,37 @@ handler is installed; otherwise they remain fatal notes.
 
 18. ELF fixture `sigsegv_null.elf` handles a null access and exits cleanly.
 
+Phase 11 completion note: completed the Plan 9 note to Linux signal bridge with
+red tests first, a green implementation, and a refactor/coverage pass before
+moving on. `jea9linux.go` now defines signal syscall constants at lines 58-64,
+signal action/info/frame types at lines 224-253, shared signal/frame maps at
+lines 310-311, per-context masks, pending queues, and altstack state at lines
+382-386, and signal state initialization at lines 410 and 585-590. The ECALL
+router dispatches signal syscalls at lines 1133-1148, while the production
+signal implementation lives in `handleFaultSignal` at line 1545,
+`sysRtSigaction` at line 1565, `sysRtSigprocmask` at line 1626,
+`sysSigaltstack` at line 1666, `sysKill`/`sysTkill`/`sysTgkill` at lines
+1718/1730/1738, `signalTIDSyscall` at line 1750, `sysRtSigreturn` at line
+1785, compiled-restorer frame lookup in `findSignalFrame` at line 1799,
+delivery/pending helpers at lines 1824-1858, guest frame construction in
+`writeSignalFrame` at line 1891, `storeJea9LinuxSignalInfo` at line 1938, and
+wait cancellation at line 1960. `sysClone` now copies the parent signal mask at
+line 2015. The refactor pass also found and fixed an older VM-overlay hole in
+the cached interpreter: aligned LD/SD fast paths in `run_cached.go` now require
+`accessOverlay == nil` at lines 276, 443, 717, 738, 854, and 895, and the RVC
+slot helper mirrors that guard in `exec_slot.go` at lines 68, 85, 108, and
+125. Added `jea9linux_phase11_test.go`, with signal action helpers at lines
+28-68, unit coverage for actions/masks/pending signals/altstack/tgkill/siginfo
+and `rt_sigreturn` at lines 71-414, and checked-in ELF fixture execution at
+line 416. Added cached overlay regression tests in `jea9linux_phase8_test.go`
+at lines 186 and 205. Added fixture sources
+`testvectors/jea9linux/src/jea9linux_signal_common.h` with syscall/restorer
+helpers at lines 37, 84, 90, and 99, plus
+`sigaction_basic.c`, `sigmask_pending.c`, `sigaltstack_frame.c`,
+`tgkill_self.c`, and `sigsegv_null.c`; their generated ELFs live under
+`testvectors/jea9linux/elf/`. Verified with the Phase 11 focused suite, the
+cached VM-overlay regression suite, and the broader jea9linux gate.
+
 ## 12. RISC-V Linux Capability And Misc Runtime Syscalls
 
 Implement `riscv_hwprobe(258)` deterministically. The simplest acceptable

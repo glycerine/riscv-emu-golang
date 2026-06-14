@@ -7,7 +7,8 @@ static void handler(long sig, void *info, void *ucontext) {
 	(void)sig;
 	(void)info;
 	(void)ucontext;
-	register unsigned long sp __asm__("sp");
+	unsigned long sp;
+	__asm__ volatile("mv %0, sp" : "=r"(sp));
 	unsigned long begin = (unsigned long)alt_stack;
 	unsigned long end = begin + sizeof(alt_stack);
 	if (sp >= begin && sp < end) {

@@ -183,6 +183,45 @@ func TestJea9Linux_PageZeroFaults(t *testing.T) {
 	}
 }
 
+func TestJea9Linux_CachedLDPageZeroFaults(t *testing.T) {
+	j := NewJea9Linux(Jea9LinuxOptions{})
+	cpu, mem := newJea9LinuxSyscallCPU(t, j)
+	defer mem.Free()
+
+	const code = uint64(0x1000)
+	if f := mem.Store32(code, 0x00003503); f != nil { // ld a0, 0(zero)
+		t.Fatal(f)
+	}
+	cpu.SetPC(code)
+	_, err := RunDefaultBudget(cpu, &cpu.Notes, 4)
+	if err == nil {
+		t.Fatal("cached LD from page zero succeeded, want MemFault")
+	}
+	if fault, ok := err.(*MemFault); !ok || fault.Addr != 0 || fault.Kind != FaultLoad {
+		t.Fatalf("cached LD error = %#v, want page-zero load MemFault", err)
+	}
+}
+
+func TestJea9Linux_CachedSDPageZeroFaults(t *testing.T) {
+	j := NewJea9Linux(Jea9LinuxOptions{})
+	cpu, mem := newJea9LinuxSyscallCPU(t, j)
+	defer mem.Free()
+
+	const code = uint64(0x1000)
+	if f := mem.Store32(code, 0x00a03023); f != nil { // sd a0, 0(zero)
+		t.Fatal(f)
+	}
+	cpu.SetPC(code)
+	cpu.SetReg(10, 0x1234)
+	_, err := RunDefaultBudget(cpu, &cpu.Notes, 4)
+	if err == nil {
+		t.Fatal("cached SD to page zero succeeded, want MemFault")
+	}
+	if fault, ok := err.(*MemFault); !ok || fault.Addr != 0 || fault.Kind != FaultStore {
+		t.Fatalf("cached SD error = %#v, want page-zero store MemFault", err)
+	}
+}
+
 func TestJea9Linux_MincoreAndMadvise(t *testing.T) {
 	j := NewJea9Linux(Jea9LinuxOptions{})
 	cpu, mem := newJea9LinuxSyscallCPU(t, j)

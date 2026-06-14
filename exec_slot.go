@@ -65,7 +65,7 @@ func (c *CPU) execRVCSlot(slot *DecodedInsn, pc uint64) (uint64, error) {
 		// C.LD immediate is already a multiple of 8, so the base address
 		// is naturally aligned as long as rs1 is. Inline fast path.
 		addr := c.x[slot.rs1] + uint64(slot.imm)
-		if addr&7 == 0 && (addr|(addr+7))&^c.mem.mask == 0 {
+		if c.mem.accessOverlay == nil && addr&7 == 0 && (addr|(addr+7))&^c.mem.mask == 0 {
 			c.x[slot.rd] = *(*uint64)(unsafe.Add(c.mem.base, addr&c.mem.mask))
 		} else {
 			v, f := (&c.mem).Load64U(addr)
@@ -82,7 +82,7 @@ func (c *CPU) execRVCSlot(slot *DecodedInsn, pc uint64) (uint64, error) {
 
 	case opC_SD:
 		addr := c.x[slot.rs1] + uint64(slot.imm)
-		if addr&7 == 0 && (addr|(addr+7))&^c.mem.mask == 0 {
+		if c.mem.accessOverlay == nil && addr&7 == 0 && (addr|(addr+7))&^c.mem.mask == 0 {
 			*(*uint64)(unsafe.Add(c.mem.base, addr&c.mem.mask)) = c.x[slot.rs2]
 		} else {
 			if f := (&c.mem).Store64U(addr, c.x[slot.rs2]); f != nil {
@@ -105,7 +105,7 @@ func (c *CPU) execRVCSlot(slot *DecodedInsn, pc uint64) (uint64, error) {
 			return pc, ErrIllegalInstruction
 		}
 		addr := c.x[2] + uint64(slot.imm)
-		if addr&7 == 0 && (addr|(addr+7))&^c.mem.mask == 0 {
+		if c.mem.accessOverlay == nil && addr&7 == 0 && (addr|(addr+7))&^c.mem.mask == 0 {
 			c.x[slot.rd] = *(*uint64)(unsafe.Add(c.mem.base, addr&c.mem.mask))
 		} else {
 			v, f := (&c.mem).Load64U(addr)
@@ -122,7 +122,7 @@ func (c *CPU) execRVCSlot(slot *DecodedInsn, pc uint64) (uint64, error) {
 
 	case opC_SDSP:
 		addr := c.x[2] + uint64(slot.imm)
-		if addr&7 == 0 && (addr|(addr+7))&^c.mem.mask == 0 {
+		if c.mem.accessOverlay == nil && addr&7 == 0 && (addr|(addr+7))&^c.mem.mask == 0 {
 			*(*uint64)(unsafe.Add(c.mem.base, addr&c.mem.mask)) = c.x[slot.rs2]
 		} else {
 			if f := (&c.mem).Store64U(addr, c.x[slot.rs2]); f != nil {
