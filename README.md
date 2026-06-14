@@ -396,6 +396,16 @@ lockstep.
 ~~~
 
 with IC instruction counter back. We use R15 for this.
+
+Update: we shifted to R15 having a count-down (budget) of
+remaining guest RISCV64 instructions still available;
+so that we can adjust the budget without re-compiling the
+JIT-ed to native code. With count-up, the limit is
+baked into the JIT-ed code. With count-down, we know
+to stop at 0 (or slightly before for fused native instructions).
+A special return code handles fused instructions which
+can require fallback to interpreter single steps if a
+budget would split/land in the middle of a fused instruction.
 ~~~
 (goivy-venv) jaten@jbook ~/ris (master) $ make bench
 
