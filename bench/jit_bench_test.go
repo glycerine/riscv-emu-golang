@@ -7,6 +7,8 @@ import (
 	"github.com/glycerine/riscv-emu-golang"
 )
 
+const benchGuestRetired = uint64(2524935201)
+
 func runJITBenchGuest(cpu *riscv.CPU) (exitCode int, insns uint64) {
 	return runJITBenchGuestWith(cpu, riscv.NewJIT())
 }
@@ -46,11 +48,46 @@ func TestJIT_DispatchStats(t *testing.T) {
 }
 
 func BenchmarkCPU_FullExecution_JIT_Rv8(b *testing.B) {
-	benchJITWith(b, "fixed")
+	benchJITBenchGuestPerf(b, riscv.PolicyRV8, "fixed")
 }
 
 func BenchmarkCPU_FullExecution_JIT_ABJIT(b *testing.B) {
-	benchJITELFWithPolicy(b, loadCPUELF(b), riscv.PolicyABJIT)
+	benchJITBenchGuestPerf(b, riscv.PolicyABJIT, "")
+}
+
+func benchJITBenchGuestPerf(b *testing.B, policy riscv.RegPolicy, strategy string) {
+	b.Helper()
+	elfData := loadCPUELF(b)
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	var tms []time.Duration
+	totalInsns := uint64(0)
+	for i := 0; i < b.N; i++ {
+		cpu, mem := newBenchCPU(b, elfData)
+		jit := riscv.NewJIT()
+		jit.SetRegPolicy(policy)
+		if strategy != "" {
+			jit.SetAllocStrategy(strategy)
+		}
+		jit.SetInstructionCounterMode(riscv.JITICNone)
+		t0 := time.Now()
+		exitCode, _ := runJITBenchGuestWith(cpu, jit)
+		if exitCode != 0 {
+			b.Fatalf("guest exited with code %d, want 0", exitCode)
+		}
+		tms = append(tms, time.Since(t0))
+		totalInsns += benchGuestRetired
+		mem.Free()
+	}
+
+	b.StopTimer()
+	elapsed := b.Elapsed().Seconds()
+	vv("elapsed = %v; totalInsns = %v; tms= '%#v'", elapsed, totalInsns, tms)
+	if elapsed > 0 && totalInsns > 0 {
+		mips := float64(totalInsns) / elapsed / 1e6
+		b.ReportMetric(mips, "MIPS")
+	}
 }
 
 func benchJITELFWithPolicy(b *testing.B, elfData []byte, policy riscv.RegPolicy) {

@@ -44,21 +44,25 @@ const (
 const FAST = true
 
 type lowerOps struct {
-	blk            *Block
-	alloc          *Allocation
-	c              *goasm.Ctx
-	idx            int
-	rIdx           regIndex
-	fpSet          map[VReg]bool
-	cxLive         []regEntry
-	labelProg      map[Label]*obj.Prog
-	pending        map[Label][]*obj.Prog
-	stackSlots     int
-	frameSize      int64
-	sretOffset     int64 // offset of sret pointer within frame (= stackSlots*8)
-	chainEntryProg *obj.Prog
-	chainExits     []chainExitInfo
-	jalrICs        []jalrICInfo
+	blk             *Block
+	alloc           *Allocation
+	c               *goasm.Ctx
+	idx             int
+	rIdx            regIndex
+	fpSet           map[VReg]bool
+	cxLive          []regEntry
+	labelProg       map[Label]*obj.Prog
+	pending         map[Label][]*obj.Prog
+	stackSlots      int
+	frameSize       int64
+	sretOffset      int64 // offset of sret pointer within frame (= stackSlots*8)
+	chainEntryProg  *obj.Prog
+	chainExits      []chainExitInfo
+	jalrICs         []jalrICInfo
+	dirtyTimeline   [][32]bool
+	dirtyFPTimeline [][32]bool
+	dirtyArch       [32]bool
+	dirtyFP         [32]bool
 }
 
 // ── Emission helpers ──
@@ -418,7 +422,21 @@ func (lc *lowerOps) spilledMemOp(v VReg) (base int16, off int64, ok bool) {
 // the allocator must ensure they were already flushed via IRWriteback
 // instructions before any exit point that calls storeRegsBack.
 func (lc *lowerOps) storeRegsBack() {
+	var dirty [32]bool
+	var dirtyFP [32]bool
+	if lc.idx >= 0 && lc.idx < len(lc.dirtyTimeline) {
+		dirty = lc.dirtyTimeline[lc.idx]
+		dirtyFP = lc.dirtyFPTimeline[lc.idx]
+	} else {
+		for i := range dirty {
+			dirty[i] = true
+			dirtyFP[i] = true
+		}
+	}
 	for vr := VReg(1); vr < 32; vr++ {
+		if !dirty[vr] {
+			continue
+		}
 		if int(vr) < len(lc.alloc.Kind) && lc.alloc.Kind[vr] == AllocReg {
 			host := lc.rIdx.lookup(vr, lc.idx)
 			if host >= 0 {
@@ -427,6 +445,10 @@ func (lc *lowerOps) storeRegsBack() {
 		}
 	}
 	for vr := VReg(32); vr < 64; vr++ {
+		fp := vr - 32
+		if !dirtyFP[fp] {
+			continue
+		}
 		if int(vr) < len(lc.alloc.Kind) && lc.alloc.Kind[vr] == AllocReg {
 			host := lc.rIdx.lookup(vr, lc.idx)
 			if host >= 0 {
@@ -434,6 +456,86 @@ func (lc *lowerOps) storeRegsBack() {
 				lc.emitMR(x86.AMOVSD, host, goasm.REG_AMD64_BP, off)
 			}
 		}
+	}
+}
+
+func (lc *lowerOps) collectDirtyArch() {
+	if lc.blk == nil {
+		return
+	}
+	lc.dirtyTimeline = make([][32]bool, len(lc.blk.Instrs))
+	lc.dirtyFPTimeline = make([][32]bool, len(lc.blk.Instrs))
+	var dirty [32]bool
+	var dirtyFP [32]bool
+	for i := range lc.blk.Instrs {
+		lc.dirtyTimeline[i] = dirty
+		lc.dirtyFPTimeline[i] = dirtyFP
+		ins := &lc.blk.Instrs[i]
+		if amd64OpWritesDst(ins.Op) && !amd64IsRegfileLoad(ins, false) && ins.Dst > VRegZero && ins.Dst < 32 {
+			dirty[ins.Dst] = true
+			lc.dirtyArch[ins.Dst] = true
+		}
+		if amd64OpWritesFPDst(ins.Op) && ins.Dst >= 32 && ins.Dst < 64 && lc.hostRegAt(ins.Dst, i) >= 0 {
+			fp := ins.Dst - 32
+			dirtyFP[fp] = true
+			lc.dirtyFP[fp] = true
+		}
+	}
+}
+
+func (lc *lowerOps) hostRegAt(v VReg, idx int) int16 {
+	if v == VRegZero || int(v) >= len(lc.alloc.Kind) {
+		return -1
+	}
+	if lc.alloc.Kind[v] != AllocReg {
+		return -1
+	}
+	return lc.rIdx.lookup(v, idx)
+}
+
+func amd64OpWritesDst(op IROp) bool {
+	switch op {
+	case IRMov, IRConst, IRSext, IRZext,
+		IRAdd, IRAddImm, IRSub, IRSubImm,
+		IRMul, IRMulHS, IRMulHU, IRMulHSU, IRDivS, IRDivU, IRRem, IRRemU,
+		IRNeg,
+		IRShl, IRShlImm, IRShr, IRShrImm, IRSar, IRSarImm,
+		IRAnd, IRAndImm, IROr, IROrImm, IRXor, IRXorImm, IRNot,
+		IRClz, IRCtz, IRPopcount, IRBswap,
+		IRSet, IRSetImm,
+		IRFCmp, IRFCvtToI, IRFCvtToU,
+		IRLoad, IRLoadX, IRMisalignLoad:
+		return true
+	default:
+		return false
+	}
+}
+
+func amd64OpWritesFPDst(op IROp) bool {
+	switch op {
+	case IRMov,
+		IRFAdd, IRFSub, IRFMul, IRFDiv, IRFSqrt,
+		IRFma, IRFmsub, IRFnmadd, IRFnmsub,
+		IRFNeg, IRFAbs,
+		IRFCvtFromI, IRFCvtFromU, IRFCvtFF,
+		IRLoad, IRLoadX, IRMisalignLoad:
+		return true
+	default:
+		return false
+	}
+}
+
+func amd64IsRegfileLoad(ins *IRInstr, indexed bool) bool {
+	if indexed || ins == nil || ins.Op != IRLoad || ins.T != I64 {
+		return false
+	}
+	switch ins.A {
+	case VRXBase:
+		return ins.Dst > VRegZero && ins.Dst < 32 && ins.Imm == int64(ins.Dst)*8
+	case VRFBase:
+		return ins.Dst >= 32 && ins.Dst < 64 && ins.Imm == int64(ins.Dst-32)*8
+	default:
+		return false
 	}
 }
 

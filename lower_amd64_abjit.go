@@ -98,6 +98,7 @@ func LowerAMD64_ABJIT(ctx *goasm.Ctx, b *Block, alloc *Allocation) (*LowerResult
 	if lc.frameSize%16 == 0 {
 		lc.frameSize += 8
 	}
+	lc.collectDirtyArch()
 
 	// Pre-create exit thunk NOP so forward JMP references work.
 	lc.exitThunk = lc.c.NewProg()
@@ -346,7 +347,6 @@ func (lc *lowerCtxABJIT) abjitRetDyn(ins *IRInstr) {
 // ── Chain exit ──
 
 func (lc *lowerCtxABJIT) abjitChainExit(ins *IRInstr) {
-
 	lc.storeRegsBack()
 
 	lc.emitRI(x86.AADDQ, lc.frameSize, goasm.REG_AMD64_SP)

@@ -84,6 +84,7 @@ func LowerAMD64_RV8(ctx *goasm.Ctx, b *Block, alloc *Allocation) (*LowerResult, 
 	if lc.frameSize%16 == 0 {
 		lc.frameSize += 8
 	}
+	lc.collectDirtyArch()
 
 	lc.emitPrologue()
 
@@ -103,9 +104,7 @@ func LowerAMD64_RV8(ctx *goasm.Ctx, b *Block, alloc *Allocation) (*LowerResult, 
 		lc.chainExits[i].stubProg = lc.emitSlowExitStub(lc.chainExits[i].targetPC)
 	}
 
-	result := &LowerResult{
-		ChainEntryProg: lc.chainEntryProg,
-	}
+	result := &LowerResult{ChainEntryProg: lc.chainEntryProg}
 	for i := range lc.chainExits {
 		result.ChainExits = append(result.ChainExits, ChainExitDesc{
 			TargetPC: lc.chainExits[i].targetPC,
