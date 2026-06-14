@@ -1359,20 +1359,24 @@ and should be removed from final acceptance runs.
 Phase 14 completion note: completed the first Go runtime acceptance pass with
 checked-in `linux/riscv64` Go ELF fixtures under `testvectors/jea9linux/go/elf/`
 and source under `testvectors/jea9linux/go/src/`. The acceptance harness lives in
-`jea9linux_phase14_test.go`, with `TestJea9Linux_GoHello` at line 25,
-`TestJea9Linux_GoSchedAffinityOneP` at line 33,
-`TestJea9Linux_GoTimeNowDeterministic` at line 41,
-`TestJea9Linux_GoCryptoRandDeterministic` at line 61,
-`TestJea9Linux_GoGoroutineFutexWake` at line 85,
-`TestJea9Linux_GoTimerSelectIdleJump` at line 93,
-`TestJea9Linux_GoNilPointerPanic` at line 104, and the shared
-`runJea9LinuxGoFixture` helper at line 113. The red tests exposed three lower
-level Linux personality gaps that are now covered bottom-up: initial stack
-reservation is implemented by `reserveInitialStackMapping` in `jea9linux.go` at
-line 999 and tested by `TestJea9Linux_InitELFStackReservesStackMapping` in
-`jea9linux_phase8_test.go` at line 306; `PROT_NONE` reservations are represented
-separately from unmapped holes by `mapRange`, `unmapRange`, and `rangeUnmapped`
-in `jea9linux.go` at lines 782, 793, and 804 and tested by
+`jea9linux_phase14_test.go`, with `TestJea9Linux_GoHello` at line 35,
+`TestJea9Linux_GoSchedAffinityOneP` at line 43,
+`TestJea9Linux_GoTimeNowDeterministic` at line 51,
+`TestJea9Linux_GoCryptoRandDeterministic` at line 71,
+`TestJea9Linux_GoGoroutineFutexWake` at line 95,
+`TestJea9Linux_GoTimerSelectIdleJump` at line 103,
+`TestJea9Linux_GoNilPointerPanic` at line 114,
+`TestJea9Linux_GoMathRandStartupUnaffectedByHost` at line 123,
+`TestJea9Linux_GoManualClockTimerBlocksUntilAdvance` at line 137, and
+`TestJea9Linux_GoReplayIdentical` at line 184. Shared fixture setup is in
+`runJea9LinuxGoFixture` at line 199 and `newJea9LinuxGoMachine` at line 214.
+The red tests exposed three lower level Linux personality gaps that are now
+covered bottom-up: initial stack reservation is implemented by
+`reserveInitialStackMapping` in `jea9linux.go` at line 999 and tested by
+`TestJea9Linux_InitELFStackReservesStackMapping` in `jea9linux_phase8_test.go`
+at line 306; `PROT_NONE` reservations are represented separately from unmapped
+holes by `mapRange`, `unmapRange`, and `rangeUnmapped` in `jea9linux.go` at
+lines 782, 793, and 804 and tested by
 `TestJea9Linux_MmapProtNoneReserveCanBeMprotected` at line 134; Linux/riscv64
 signal action, `siginfo`, `ucontext`, modified-`rt_sigreturn`, and synthetic
 restorer behavior are implemented by `loadJea9LinuxSignalAction` at line 1663,
@@ -1382,7 +1386,9 @@ restorer behavior are implemented by `loadJea9LinuxSignalAction` at line 1663,
 `TestJea9Linux_RtSigactionAcceptsLinuxRiscv64Layout` at line 95,
 `TestJea9Linux_RtSigreturnRestoresModifiedLinuxUContext` at line 392,
 `TestJea9Linux_SignalWithoutRestorerUsesSyntheticRtSigreturn` at line 416, and
-`TestJea9Linux_SignalFrameHasLinuxRiscv64UContext` at line 505. Verified with
+`TestJea9Linux_SignalFrameHasLinuxRiscv64UContext` at line 505. Manual-clock Go
+timer acceptance remains present but skipped because Go needs resumable
+sleep/futex scheduling beyond the current blocked-deadline model. Verified with
 the Phase 8 VM suite, the Phase 11 signal suite, the full Phase 14 Go acceptance
 batch, and the broader jea9linux gate.
 
