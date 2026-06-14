@@ -423,6 +423,39 @@ func (j *JIT) stepInterpreted(cpu *CPU) error {
 	return err
 }
 
+// StepBlockBudget executes one JIT dispatch cycle with the production
+// instruction-budget gate enabled. It reuses the lockstep budget lowering path,
+// but reports the budget boundary as a scheduler result instead of continuing
+// dispatch internally.
+func (j *JIT) StepBlockBudget(cpu *CPU, budget uint64) (RunBudgetResult, error) {
+	if budget == 0 {
+		_, err := j.StepBlock(cpu)
+		return RunBudgetContinue, err
+	}
+	ibudget := int64(budget)
+	if !j.DebugOneBlockLockstepMode || j.LockstepModeBudget != ibudget {
+		j.DebugOneBlockLockstepMode = true
+		j.LockstepModeBudget = ibudget
+		j.resetCompiledCode()
+	}
+	before := cpu.RiscvInstrBegun()
+	_, err := j.StepBlock(cpu)
+	if err != nil {
+		return RunBudgetContinue, err
+	}
+	if cpu.RiscvInstrBegun()-before >= budget {
+		// The existing lockstep gate fires before executing the instruction
+		// that reaches the budget. For the scheduler-facing API, complete that
+		// boundary instruction so a budget of N means N retired instructions.
+		cpu.riscvInstrBegun--
+		if err := j.stepInterpreted(cpu); err != nil {
+			return RunBudgetContinue, err
+		}
+		return RunBudgetExpired, nil
+	}
+	return RunBudgetContinue, nil
+}
+
 // InstallAOT runs the whole-program AOT translator on the ELF bytes.
 // For every PT_LOAD segment with PF_X set, it registers an ExecRegion
 // on the guest memory, linearly scans the range to enumerate basic-

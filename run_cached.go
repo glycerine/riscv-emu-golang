@@ -19,6 +19,14 @@ import (
 // removing per-instruction polling from the hot loop.
 const pollBatch = 10240
 
+type RunBudgetResult uint8
+
+const (
+	RunBudgetContinue RunBudgetResult = iota
+	RunBudgetExpired
+	RunBudgetExit
+)
+
 // Flat dispatch opcodes for the runCached megaswitch. Each constant
 // uniquely identifies one instruction handler. Assigned at decode time
 // by flattenSlotOp so the megaswitch is a single-level jump table —
@@ -170,14 +178,39 @@ func RunDefault(cpu *CPU, nc *NoteChain) error {
 }
 
 func runCached(cpu *CPU, cache *DecoderCache, nc *NoteChain) error {
+	_, err := runCachedBudget(cpu, cache, nc, 0)
+	return err
+}
+
+func RunDefaultBudget(cpu *CPU, nc *NoteChain, budget uint64) (RunBudgetResult, error) {
+	base := cpu.pc &^ uint64(0xFFF)
+	if base > 0x1000 {
+		base -= 0x1000
+	}
+	cache := NewDecoderCache(base, 256<<10)
+	res, err := runCachedBudget(cpu, cache, nc, budget)
+	if _, ok := err.(*ExitError); ok {
+		return RunBudgetExit, nil
+	}
+	return res, err
+}
+
+func runCachedBudget(cpu *CPU, cache *DecoderCache, nc *NoteChain, budget uint64) (RunBudgetResult, error) {
 	// pc stays in a local across the inner loop; cpu.pc is only written when
 	// we exit the inner loop (watchAddr / note delivery) or when a delegate
 	// / slow-path callee needs it (they read/write c.pc for fault context).
 	pc := cpu.pc
+	var budgetUsed uint64
 	for {
 		var err error
 		var instrBegun uint64
 		countdown := pollBatch
+		if budget != 0 {
+			remaining := budget - budgetUsed
+			if remaining < uint64(countdown) {
+				countdown = int(remaining)
+			}
+		}
 		slot := cache.lookup(pc)
 	inner:
 		for {
@@ -877,6 +910,9 @@ func runCached(cpu *CPU, cache *DecoderCache, nc *NoteChain) error {
 			}
 
 			instrBegun++
+			if budget != 0 {
+				budgetUsed++
+			}
 			countdown--
 			if err != nil || countdown == 0 {
 				break inner
@@ -895,10 +931,13 @@ func runCached(cpu *CPU, cache *DecoderCache, nc *NoteChain) error {
 
 		if cpu.watchAddr != 0 {
 			if v, _ := (&cpu.mem).Load64(cpu.watchAddr); v != 0 {
-				return &ExitError{Code: tohostExitCode(v)}
+				return RunBudgetExit, &ExitError{Code: tohostExitCode(v)}
 			}
 		}
 		if err == nil {
+			if budget != 0 && budgetUsed >= budget {
+				return RunBudgetExpired, nil
+			}
 			continue
 		}
 		n := noteFromStepErr(err, cpu.PC())
@@ -908,9 +947,14 @@ func runCached(cpu *CPU, cache *DecoderCache, nc *NoteChain) error {
 			// the ecall). Reload so the inner loop resumes from the right
 			// PC.
 			pc = cpu.pc
+			if budget != 0 && budgetUsed >= budget {
+				return RunBudgetExpired, nil
+			}
 			continue
+		case NoteExit:
+			return RunBudgetExit, &ExitError{Code: cpu.ExitCode}
 		default:
-			return err
+			return RunBudgetContinue, err
 		}
 	}
 }
