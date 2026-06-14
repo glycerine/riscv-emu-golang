@@ -24,44 +24,53 @@ var (
 )
 
 const (
-	jea9LinuxErrEFAULT = int64(-14)
-	jea9LinuxErrEINVAL = int64(-22)
-	jea9LinuxErrEBADF  = int64(-9)
-	jea9LinuxErrENOENT = int64(-2)
-	jea9LinuxErrENOSYS = int64(-38)
-	jea9LinuxErrEPERM  = int64(-1)
-	jea9LinuxErrESRCH  = int64(-3)
-	jea9LinuxErrEIO    = int64(-5)
-	jea9LinuxErrEACCES = int64(-13)
-	jea9LinuxErrENOMEM = int64(-12)
-	jea9LinuxErrESPIPE = int64(-29)
+	jea9LinuxErrEFAULT    = int64(-14)
+	jea9LinuxErrEINVAL    = int64(-22)
+	jea9LinuxErrEBADF     = int64(-9)
+	jea9LinuxErrENOENT    = int64(-2)
+	jea9LinuxErrENOSYS    = int64(-38)
+	jea9LinuxErrEPERM     = int64(-1)
+	jea9LinuxErrESRCH     = int64(-3)
+	jea9LinuxErrEIO       = int64(-5)
+	jea9LinuxErrEACCES    = int64(-13)
+	jea9LinuxErrENOMEM    = int64(-12)
+	jea9LinuxErrEAGAIN    = int64(-11)
+	jea9LinuxErrESPIPE    = int64(-29)
+	jea9LinuxErrETIMEDOUT = int64(-110)
 
-	jea9LinuxSysFcntl        = uint64(25)
-	jea9LinuxSysOpenat       = uint64(56)
-	jea9LinuxSysClose        = uint64(57)
-	jea9LinuxSysLseek        = uint64(62)
-	jea9LinuxSysRead         = uint64(63)
-	jea9LinuxSysWrite        = uint64(64)
-	jea9LinuxSysPread64      = uint64(67)
-	jea9LinuxSysExit         = uint64(93)
-	jea9LinuxSysExitGroup    = uint64(94)
-	jea9LinuxSysNanosleep    = uint64(101)
-	jea9LinuxSysClockGettime = uint64(113)
-	jea9LinuxSysUname        = uint64(160)
-	jea9LinuxSysGetrlimit    = uint64(163)
-	jea9LinuxSysPrctl        = uint64(167)
-	jea9LinuxSysGettimeofday = uint64(169)
-	jea9LinuxSysGetpid       = uint64(172)
-	jea9LinuxSysGettid       = uint64(178)
-	jea9LinuxSysSysinfo      = uint64(179)
-	jea9LinuxSysMunmap       = uint64(215)
-	jea9LinuxSysBrk          = uint64(214)
-	jea9LinuxSysMmap         = uint64(222)
-	jea9LinuxSysMprotect     = uint64(226)
-	jea9LinuxSysMincore      = uint64(232)
-	jea9LinuxSysMadvise      = uint64(233)
-	jea9LinuxSysPrlimit64    = uint64(261)
-	jea9LinuxSysGetrandom    = uint64(278)
+	jea9LinuxSysFcntl            = uint64(25)
+	jea9LinuxSysOpenat           = uint64(56)
+	jea9LinuxSysClose            = uint64(57)
+	jea9LinuxSysLseek            = uint64(62)
+	jea9LinuxSysRead             = uint64(63)
+	jea9LinuxSysWrite            = uint64(64)
+	jea9LinuxSysPread64          = uint64(67)
+	jea9LinuxSysSetTidAddress    = uint64(96)
+	jea9LinuxSysFutex            = uint64(98)
+	jea9LinuxSysSetRobustList    = uint64(99)
+	jea9LinuxSysExit             = uint64(93)
+	jea9LinuxSysExitGroup        = uint64(94)
+	jea9LinuxSysNanosleep        = uint64(101)
+	jea9LinuxSysClockGettime     = uint64(113)
+	jea9LinuxSysSchedGetAffinity = uint64(123)
+	jea9LinuxSysSchedYield       = uint64(124)
+	jea9LinuxSysUname            = uint64(160)
+	jea9LinuxSysGetrlimit        = uint64(163)
+	jea9LinuxSysPrctl            = uint64(167)
+	jea9LinuxSysGettimeofday     = uint64(169)
+	jea9LinuxSysGetpid           = uint64(172)
+	jea9LinuxSysGettid           = uint64(178)
+	jea9LinuxSysSysinfo          = uint64(179)
+	jea9LinuxSysMunmap           = uint64(215)
+	jea9LinuxSysBrk              = uint64(214)
+	jea9LinuxSysClone            = uint64(220)
+	jea9LinuxSysMmap             = uint64(222)
+	jea9LinuxSysMprotect         = uint64(226)
+	jea9LinuxSysMincore          = uint64(232)
+	jea9LinuxSysMadvise          = uint64(233)
+	jea9LinuxSysPrlimit64        = uint64(261)
+	jea9LinuxSysGetrandom        = uint64(278)
+	jea9LinuxSysFutexTime64      = uint64(422)
 
 	jea9LinuxClockRealtime        = uint64(0)
 	jea9LinuxClockMonotonic       = uint64(1)
@@ -115,6 +124,22 @@ const (
 	jea9LinuxMapPrivate   = uint64(2)
 	jea9LinuxMapFixed     = uint64(0x10)
 	jea9LinuxMapAnonymous = uint64(0x20)
+
+	jea9LinuxFutexWait       = uint64(0)
+	jea9LinuxFutexWake       = uint64(1)
+	jea9LinuxFutexWaitBitset = uint64(9)
+	jea9LinuxFutexWakeBitset = uint64(10)
+
+	jea9LinuxCloneVM            = uint64(0x00000100)
+	jea9LinuxCloneFS            = uint64(0x00000200)
+	jea9LinuxCloneFiles         = uint64(0x00000400)
+	jea9LinuxCloneSighand       = uint64(0x00000800)
+	jea9LinuxCloneThread        = uint64(0x00010000)
+	jea9LinuxCloneSysvsem       = uint64(0x00040000)
+	jea9LinuxCloneSetTLS        = uint64(0x00080000)
+	jea9LinuxCloneParentSetTID  = uint64(0x00100000)
+	jea9LinuxCloneChildClearTID = uint64(0x00200000)
+	jea9LinuxCloneChildSetTID   = uint64(0x01000000)
 )
 
 type jea9LinuxFDKind uint8
@@ -177,11 +202,19 @@ type Jea9Linux struct {
 	randomBuf     [32]byte
 	randomOff     int
 
-	budgetYields uint64
-	blocked      bool
-	blockedUntil int64
-	threadName   string
-	vm           *jea9LinuxVM
+	budgetYields       uint64
+	blocked            bool
+	blockedUntil       int64
+	blockedHasDeadline bool
+	threadName         string
+	vm                 *jea9LinuxVM
+
+	contexts            map[uint64]*jea9LinuxContext
+	contextOrder        []uint64
+	currentTID          uint64
+	nextTID             uint64
+	loadedGuestContexts int
+	futexWaiters        map[uint64][]uint64
 }
 
 type jea9LinuxAuxEntry struct {
@@ -194,6 +227,53 @@ type jea9LinuxVM struct {
 	brk      uint64
 	minBrk   uint64
 	mmapNext uint64
+}
+
+type jea9LinuxContextState uint8
+
+const (
+	jea9LinuxContextRunnable jea9LinuxContextState = iota + 1
+	jea9LinuxContextWaiting
+	jea9LinuxContextExited
+)
+
+func (s jea9LinuxContextState) String() string {
+	switch s {
+	case jea9LinuxContextRunnable:
+		return "runnable"
+	case jea9LinuxContextWaiting:
+		return "waiting"
+	case jea9LinuxContextExited:
+		return "exited"
+	default:
+		return "unknown"
+	}
+}
+
+type jea9LinuxCPUSnapshot struct {
+	pc        uint64
+	x         [32]uint64
+	f         [32]uint64
+	fcsr      uint32
+	resvAddr  uint64
+	resvValid bool
+	mtvec     uint64
+	mepc      uint64
+	mcause    uint64
+	mstatus   uint64
+	mtval     uint64
+}
+
+type jea9LinuxContext struct {
+	tid             uint64
+	state           jea9LinuxContextState
+	snapshot        jea9LinuxCPUSnapshot
+	clearChildTID   uint64
+	robustList      uint64
+	robustListLen   uint64
+	waitAddr        uint64
+	waitDeadlineNS  int64
+	waitHasDeadline bool
 }
 
 type jea9LinuxStackBuilder struct {
@@ -346,6 +426,155 @@ func (j *Jea9Linux) ensureVM(cpu *CPU) *jea9LinuxVM {
 	}
 	(&cpu.mem).setAccessOverlay(j.vm)
 	return j.vm
+}
+
+func (j *Jea9Linux) ensureScheduler(cpu *CPU) *jea9LinuxContext {
+	if j.contexts == nil {
+		j.contexts = make(map[uint64]*jea9LinuxContext)
+		j.futexWaiters = make(map[uint64][]uint64)
+		j.currentTID = j.tid
+		if j.currentTID == 0 {
+			j.currentTID = j.pid
+		}
+		j.tid = j.currentTID
+		j.nextTID = j.currentTID + 1
+		ctx := &jea9LinuxContext{
+			tid:      j.currentTID,
+			state:    jea9LinuxContextRunnable,
+			snapshot: snapshotJea9LinuxCPU(cpu),
+		}
+		j.contexts[ctx.tid] = ctx
+		j.contextOrder = append(j.contextOrder, ctx.tid)
+		j.loadedGuestContexts = 1
+		return ctx
+	}
+	ctx := j.contexts[j.currentTID]
+	if ctx == nil {
+		ctx = &jea9LinuxContext{
+			tid:      j.currentTID,
+			state:    jea9LinuxContextRunnable,
+			snapshot: snapshotJea9LinuxCPU(cpu),
+		}
+		j.contexts[ctx.tid] = ctx
+		j.contextOrder = append(j.contextOrder, ctx.tid)
+	}
+	if j.futexWaiters == nil {
+		j.futexWaiters = make(map[uint64][]uint64)
+	}
+	if j.nextTID <= j.currentTID {
+		j.nextTID = j.currentTID + 1
+	}
+	j.loadedGuestContexts = 1
+	return ctx
+}
+
+func snapshotJea9LinuxCPU(cpu *CPU) jea9LinuxCPUSnapshot {
+	return jea9LinuxCPUSnapshot{
+		pc:        cpu.pc,
+		x:         cpu.x,
+		f:         cpu.f,
+		fcsr:      cpu.fcsr,
+		resvAddr:  cpu.resvAddr,
+		resvValid: cpu.resvValid,
+		mtvec:     cpu.mtvec,
+		mepc:      cpu.mepc,
+		mcause:    cpu.mcause,
+		mstatus:   cpu.mstatus,
+		mtval:     cpu.mtval,
+	}
+}
+
+func restoreJea9LinuxCPU(cpu *CPU, snap jea9LinuxCPUSnapshot) {
+	cpu.pc = snap.pc
+	cpu.x = snap.x
+	cpu.x[0] = 0
+	cpu.f = snap.f
+	cpu.fcsr = snap.fcsr
+	cpu.resvAddr = snap.resvAddr
+	cpu.resvValid = snap.resvValid
+	cpu.mtvec = snap.mtvec
+	cpu.mepc = snap.mepc
+	cpu.mcause = snap.mcause
+	cpu.mstatus = snap.mstatus
+	cpu.mtval = snap.mtval
+}
+
+func (j *Jea9Linux) saveCurrentContext(cpu *CPU) *jea9LinuxContext {
+	ctx := j.ensureScheduler(cpu)
+	ctx.snapshot = snapshotJea9LinuxCPU(cpu)
+	return ctx
+}
+
+func (j *Jea9Linux) loadContext(cpu *CPU, tid uint64) bool {
+	ctx := j.contexts[tid]
+	if ctx == nil || ctx.state != jea9LinuxContextRunnable {
+		return false
+	}
+	restoreJea9LinuxCPU(cpu, ctx.snapshot)
+	j.currentTID = tid
+	j.tid = tid
+	j.loadedGuestContexts = 1
+	return true
+}
+
+func (j *Jea9Linux) nextRunnableAfterCurrent() (uint64, bool) {
+	if len(j.contextOrder) == 0 {
+		return 0, false
+	}
+	start := 0
+	for i, tid := range j.contextOrder {
+		if tid == j.currentTID {
+			start = i
+			break
+		}
+	}
+	for step := 1; step <= len(j.contextOrder); step++ {
+		tid := j.contextOrder[(start+step)%len(j.contextOrder)]
+		if tid == j.currentTID {
+			continue
+		}
+		if ctx := j.contexts[tid]; ctx != nil && ctx.state == jea9LinuxContextRunnable {
+			return tid, true
+		}
+	}
+	return 0, false
+}
+
+func (j *Jea9Linux) hasRunnableContext() bool {
+	for _, ctx := range j.contexts {
+		if ctx.state == jea9LinuxContextRunnable {
+			return true
+		}
+	}
+	return false
+}
+
+func (j *Jea9Linux) markRunnable(tid uint64, retval int64) {
+	ctx := j.contexts[tid]
+	if ctx == nil || ctx.state == jea9LinuxContextExited {
+		return
+	}
+	ctx.state = jea9LinuxContextRunnable
+	ctx.snapshot.x[10] = uint64(retval)
+	ctx.waitAddr = 0
+	ctx.waitDeadlineNS = 0
+	ctx.waitHasDeadline = false
+}
+
+func (j *Jea9Linux) removeFutexWaiter(addr, tid uint64) {
+	waiters := j.futexWaiters[addr]
+	for i, waiter := range waiters {
+		if waiter == tid {
+			copy(waiters[i:], waiters[i+1:])
+			waiters = waiters[:len(waiters)-1]
+			break
+		}
+	}
+	if len(waiters) == 0 {
+		delete(j.futexWaiters, addr)
+		return
+	}
+	j.futexWaiters[addr] = waiters
 }
 
 func (vm *jea9LinuxVM) CheckGuestAccess(addr, width uint64, kind FaultKind, size uint64) *MemFault {
@@ -745,12 +974,24 @@ func (j *Jea9Linux) Handle(cpu *CPU, n Note) NoteDisposition {
 	case jea9LinuxSysPread64:
 		cpu.SetReg(10, uint64(j.sysPread64(cpu, args.A0, args.A1, args.A2, args.A3)))
 		return NoteHandled
+	case jea9LinuxSysSetTidAddress:
+		cpu.SetReg(10, uint64(j.sysSetTidAddress(cpu, args.A0)))
+		return NoteHandled
+	case jea9LinuxSysFutex, jea9LinuxSysFutexTime64:
+		return j.sysFutex(cpu, args.A0, args.A1, args.A2, args.A3, args.A5)
+	case jea9LinuxSysSetRobustList:
+		cpu.SetReg(10, uint64(j.sysSetRobustList(cpu, args.A0, args.A1)))
+		return NoteHandled
 	case jea9LinuxSysExit, jea9LinuxSysExitGroup:
-		cpu.ExitCode = int(int32(args.A0))
-		return NoteExit
+		return j.sysExit(cpu, args.A0, args.Num == jea9LinuxSysExitGroup)
 	case jea9LinuxSysClockGettime:
 		cpu.SetReg(10, uint64(j.sysClockGettime(cpu, args.A0, args.A1)))
 		return NoteHandled
+	case jea9LinuxSysSchedGetAffinity:
+		cpu.SetReg(10, uint64(j.sysSchedGetAffinity(cpu, args.A0, args.A1, args.A2)))
+		return NoteHandled
+	case jea9LinuxSysSchedYield:
+		return j.sysSchedYield(cpu)
 	case jea9LinuxSysUname:
 		cpu.SetReg(10, uint64(j.sysUname(cpu, args.A0)))
 		return NoteHandled
@@ -767,6 +1008,7 @@ func (j *Jea9Linux) Handle(cpu *CPU, n Note) NoteDisposition {
 		cpu.SetReg(10, j.pid)
 		return NoteHandled
 	case jea9LinuxSysGettid:
+		j.ensureScheduler(cpu)
 		cpu.SetReg(10, j.tid)
 		return NoteHandled
 	case jea9LinuxSysSysinfo:
@@ -774,6 +1016,9 @@ func (j *Jea9Linux) Handle(cpu *CPU, n Note) NoteDisposition {
 		return NoteHandled
 	case jea9LinuxSysBrk:
 		cpu.SetReg(10, j.sysBrk(cpu, args.A0))
+		return NoteHandled
+	case jea9LinuxSysClone:
+		cpu.SetReg(10, uint64(j.sysClone(cpu, args.A0, args.A1, args.A2, args.A3, args.A4)))
 		return NoteHandled
 	case jea9LinuxSysMunmap:
 		cpu.SetReg(10, uint64(j.sysMunmap(cpu, args.A0, args.A1)))
@@ -808,6 +1053,265 @@ func (j *Jea9Linux) Handle(cpu *CPU, n Note) NoteDisposition {
 		cpu.SetReg(10, uint64(ret))
 		return NoteHandled
 	}
+}
+
+func (j *Jea9Linux) sysClone(cpu *CPU, flags, childStack, parentTIDAddr, tls, childTIDAddr uint64) int64 {
+	parent := j.ensureScheduler(cpu)
+	if !jea9LinuxCloneFlagsSupported(flags) {
+		return jea9LinuxErrEINVAL
+	}
+	tid := j.nextTID
+	for tid == 0 || j.contexts[tid] != nil {
+		tid++
+	}
+	j.nextTID = tid + 1
+
+	if flags&jea9LinuxCloneParentSetTID != 0 {
+		if parentTIDAddr == 0 {
+			return jea9LinuxErrEFAULT
+		}
+		if f := cpu.mem.Store32(parentTIDAddr, uint32(tid)); f != nil {
+			return jea9LinuxErrEFAULT
+		}
+	}
+	if flags&jea9LinuxCloneChildSetTID != 0 {
+		if childTIDAddr == 0 {
+			return jea9LinuxErrEFAULT
+		}
+		if f := cpu.mem.Store32(childTIDAddr, uint32(tid)); f != nil {
+			return jea9LinuxErrEFAULT
+		}
+	}
+
+	childSnap := snapshotJea9LinuxCPU(cpu)
+	childSnap.x[10] = 0
+	if childStack != 0 {
+		childSnap.x[2] = childStack
+	}
+	if flags&jea9LinuxCloneSetTLS != 0 {
+		childSnap.x[4] = tls
+	}
+	childSnap.x[0] = 0
+
+	child := &jea9LinuxContext{
+		tid:      tid,
+		state:    jea9LinuxContextRunnable,
+		snapshot: childSnap,
+	}
+	if flags&jea9LinuxCloneChildClearTID != 0 {
+		child.clearChildTID = childTIDAddr
+	}
+	j.contexts[tid] = child
+	j.contextOrder = append(j.contextOrder, tid)
+
+	cpu.SetReg(10, tid)
+	parent.state = jea9LinuxContextRunnable
+	parent.snapshot = snapshotJea9LinuxCPU(cpu)
+	return int64(tid)
+}
+
+func jea9LinuxCloneFlagsSupported(flags uint64) bool {
+	const required = jea9LinuxCloneVM |
+		jea9LinuxCloneFS |
+		jea9LinuxCloneFiles |
+		jea9LinuxCloneSighand |
+		jea9LinuxCloneThread |
+		jea9LinuxCloneSysvsem
+	const supported = required |
+		jea9LinuxCloneSetTLS |
+		jea9LinuxCloneParentSetTID |
+		jea9LinuxCloneChildClearTID |
+		jea9LinuxCloneChildSetTID
+	if flags&^supported != 0 {
+		return false
+	}
+	return flags&required == required
+}
+
+func (j *Jea9Linux) sysSchedYield(cpu *CPU) NoteDisposition {
+	ctx := j.ensureScheduler(cpu)
+	cpu.SetReg(10, 0)
+	ctx.state = jea9LinuxContextRunnable
+	ctx.snapshot = snapshotJea9LinuxCPU(cpu)
+	if next, ok := j.nextRunnableAfterCurrent(); ok {
+		j.loadContext(cpu, next)
+	}
+	return NoteHandled
+}
+
+func (j *Jea9Linux) sysSchedGetAffinity(cpu *CPU, pid, cpuSetSize, maskAddr uint64) int64 {
+	_ = pid
+	if cpuSetSize == 0 {
+		return jea9LinuxErrEINVAL
+	}
+	for i := uint64(0); i < cpuSetSize; i++ {
+		v := uint8(0)
+		if i == 0 {
+			v = 1
+		}
+		if f := cpu.mem.Store8(maskAddr+i, v); f != nil {
+			return jea9LinuxErrEFAULT
+		}
+	}
+	return 0
+}
+
+func (j *Jea9Linux) sysSetTidAddress(cpu *CPU, addr uint64) int64 {
+	ctx := j.ensureScheduler(cpu)
+	ctx.clearChildTID = addr
+	ctx.snapshot = snapshotJea9LinuxCPU(cpu)
+	return int64(j.currentTID)
+}
+
+func (j *Jea9Linux) sysSetRobustList(cpu *CPU, addr, length uint64) int64 {
+	ctx := j.ensureScheduler(cpu)
+	ctx.robustList = addr
+	ctx.robustListLen = length
+	ctx.snapshot = snapshotJea9LinuxCPU(cpu)
+	return 0
+}
+
+func (j *Jea9Linux) sysExit(cpu *CPU, code uint64, exitGroup bool) NoteDisposition {
+	ctx := j.ensureScheduler(cpu)
+	if exitGroup || ctx.tid == j.pid {
+		cpu.ExitCode = int(int32(code))
+		return NoteExit
+	}
+	j.exitCurrentThread(cpu)
+	if next, ok := j.nextRunnableAfterCurrent(); ok {
+		j.loadContext(cpu, next)
+		return NoteHandled
+	}
+	cpu.ExitCode = int(int32(code))
+	return NoteExit
+}
+
+func (j *Jea9Linux) exitCurrentThread(cpu *CPU) {
+	ctx := j.ensureScheduler(cpu)
+	ctx.snapshot = snapshotJea9LinuxCPU(cpu)
+	ctx.state = jea9LinuxContextExited
+	if ctx.clearChildTID != 0 {
+		if f := cpu.mem.Store32(ctx.clearChildTID, 0); f == nil {
+			j.wakeFutex(ctx.clearChildTID, 1)
+		}
+	}
+}
+
+func (j *Jea9Linux) sysFutex(cpu *CPU, addr, op, val, timeoutAddr, val3 uint64) NoteDisposition {
+	_ = val3
+	ctx := j.ensureScheduler(cpu)
+	cmd := op & 0xf
+	switch cmd {
+	case jea9LinuxFutexWait, jea9LinuxFutexWaitBitset:
+		ret, blocked := j.futexWait(cpu, ctx, addr, uint32(val), timeoutAddr)
+		if blocked {
+			if next, ok := j.nextRunnableAfterCurrent(); ok {
+				j.loadContext(cpu, next)
+				j.blocked = false
+				j.blockedHasDeadline = false
+				return NoteHandled
+			}
+			j.blocked = true
+			return NoteExit
+		}
+		cpu.SetReg(10, uint64(ret))
+		ctx.snapshot = snapshotJea9LinuxCPU(cpu)
+		return NoteHandled
+	case jea9LinuxFutexWake, jea9LinuxFutexWakeBitset:
+		woken := j.wakeFutex(addr, int(val))
+		cpu.SetReg(10, uint64(woken))
+		ctx.snapshot = snapshotJea9LinuxCPU(cpu)
+		return NoteHandled
+	default:
+		ret := jea9LinuxErrEINVAL
+		cpu.SetReg(10, uint64(ret))
+		ctx.snapshot = snapshotJea9LinuxCPU(cpu)
+		return NoteHandled
+	}
+}
+
+func (j *Jea9Linux) futexWait(cpu *CPU, ctx *jea9LinuxContext, addr uint64, expected uint32, timeoutAddr uint64) (int64, bool) {
+	if addr%4 != 0 {
+		return jea9LinuxErrEINVAL, false
+	}
+	got, f := cpu.mem.Load32(addr)
+	if f != nil {
+		return jea9LinuxErrEFAULT, false
+	}
+	if got != expected {
+		return jea9LinuxErrEAGAIN, false
+	}
+	deadline, hasDeadline, errno := j.futexDeadline(cpu, timeoutAddr)
+	if errno != 0 {
+		return errno, false
+	}
+	if hasDeadline && deadline <= j.monotonicNS {
+		return jea9LinuxErrETIMEDOUT, false
+	}
+	if hasDeadline && j.clockMode != Jea9ClockManual {
+		if _, ok := j.nextRunnableAfterCurrent(); !ok {
+			j.monotonicNS = deadline
+			return jea9LinuxErrETIMEDOUT, false
+		}
+	}
+	ctx.snapshot = snapshotJea9LinuxCPU(cpu)
+	ctx.state = jea9LinuxContextWaiting
+	ctx.waitAddr = addr
+	ctx.waitDeadlineNS = deadline
+	ctx.waitHasDeadline = hasDeadline
+	j.futexWaiters[addr] = append(j.futexWaiters[addr], ctx.tid)
+	if hasDeadline {
+		j.blockedUntil = deadline
+		j.blockedHasDeadline = true
+	}
+	return 0, true
+}
+
+func (j *Jea9Linux) futexDeadline(cpu *CPU, timeoutAddr uint64) (int64, bool, int64) {
+	if timeoutAddr == 0 {
+		return 0, false, 0
+	}
+	secRaw, f := cpu.mem.Load64(timeoutAddr)
+	if f != nil {
+		return 0, false, jea9LinuxErrEFAULT
+	}
+	nsecRaw, f := cpu.mem.Load64(timeoutAddr + 8)
+	if f != nil {
+		return 0, false, jea9LinuxErrEFAULT
+	}
+	sec := int64(secRaw)
+	nsec := int64(nsecRaw)
+	if sec < 0 || nsec < 0 || nsec >= 1_000_000_000 {
+		return 0, false, jea9LinuxErrEINVAL
+	}
+	return j.monotonicNS + sec*1_000_000_000 + nsec, true, 0
+}
+
+func (j *Jea9Linux) wakeFutex(addr uint64, limit int) int {
+	if limit <= 0 {
+		return 0
+	}
+	waiters := j.futexWaiters[addr]
+	woken := 0
+	kept := waiters[:0]
+	for _, tid := range waiters {
+		if woken < limit {
+			j.markRunnable(tid, 0)
+			woken++
+			continue
+		}
+		kept = append(kept, tid)
+	}
+	if len(kept) == 0 {
+		delete(j.futexWaiters, addr)
+	} else {
+		j.futexWaiters[addr] = kept
+	}
+	if woken > 0 && j.hasRunnableContext() {
+		j.blocked = false
+		j.blockedHasDeadline = false
+	}
+	return woken
 }
 
 func (j *Jea9Linux) sysGetrandom(cpu *CPU, bufAddr, n, flags uint64) int64 {
@@ -1374,6 +1878,7 @@ func (j *Jea9Linux) sysNanosleep(cpu *CPU, reqAddr, remAddr uint64) (int64, bool
 	if j.clockMode == Jea9ClockManual && delta > 0 {
 		j.blocked = true
 		j.blockedUntil = j.monotonicNS + delta
+		j.blockedHasDeadline = true
 		return 0, true
 	}
 	j.monotonicNS += delta
@@ -1381,8 +1886,31 @@ func (j *Jea9Linux) sysNanosleep(cpu *CPU, reqAddr, remAddr uint64) (int64, bool
 }
 
 func (j *Jea9Linux) refreshBlocked() {
-	if j.blocked && j.monotonicNS >= j.blockedUntil {
+	j.refreshFutexTimeouts()
+	if j.blocked && j.blockedHasDeadline && j.monotonicNS >= j.blockedUntil {
 		j.blocked = false
+		j.blockedHasDeadline = false
+	}
+	if j.contexts != nil && j.hasRunnableContext() {
+		j.blocked = false
+		j.blockedHasDeadline = false
+	}
+}
+
+func (j *Jea9Linux) refreshFutexTimeouts() {
+	if len(j.contexts) == 0 {
+		return
+	}
+	for _, ctx := range j.contexts {
+		if ctx.state != jea9LinuxContextWaiting || !ctx.waitHasDeadline {
+			continue
+		}
+		if j.monotonicNS < ctx.waitDeadlineNS {
+			continue
+		}
+		addr := ctx.waitAddr
+		j.removeFutexWaiter(addr, ctx.tid)
+		j.markRunnable(ctx.tid, jea9LinuxErrETIMEDOUT)
 	}
 }
 
@@ -1420,6 +1948,7 @@ func splitLinuxNS(ns int64) (sec int64, nsec int64) {
 
 func InstallJea9Linux(cpu *CPU, j *Jea9Linux) func() {
 	vm := j.ensureVM(cpu)
+	j.ensureScheduler(cpu)
 	cpu.Notes.Push(j.Handle)
 	return func() {
 		cpu.Notes.Pop()
