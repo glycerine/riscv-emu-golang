@@ -39,12 +39,40 @@ type EmuxConfig struct {
 	Stderr            io.Writer
 }
 
+// FAQ: why is it either JIT or "cached" interpreter?
+//
+// A: because the non--jit path does not use CPU.Step()
+// instruction-by-instruction directly. It goes
+// through the repo’s fast interpreter path:
+//
+// emux -jit=false -> RunWithJea9Linux -> Jea9Linux.Run -> RunDefaultBudget -> runCachedBudget.
+//
+// What is cached is the decode, not execution results.
+// runCached uses a DecoderCache keyed by guest PC;
+// on first visit to an instruction, it fetches/decodes
+// it into a DecodedInsn slot, flattens the opcode
+// into slot.op, stores operands/immediates, and wires
+// slot.next for common fall-through paths. Later visits
+// dispatch straight from that predecoded slot through
+// the big switch, avoiding repeated fetch/decode work.
+//
+// Relevant spots:
+// run_cached.go (line 8): comment describing the decoder cache.
+// run_cached.go (line 185): RunDefaultBudget creates a 256KB DecoderCache.
+// run_cached.go (line 220): cold slots get populated once.
+// decoder_cache.go (line 3): DecodedInsn/DecoderCache.
+//
+// So: it is still an interpreter, not JIT/native code.
+// "Cached" just means "software decode cache". A completely
+// descriptive but awful moniker would be "budgeted decoder-cached
+// interpreter".
+
 func (c *EmuxConfig) DefineFlags(fs *flag.FlagSet) {
 	fs.StringVar(&c.RunPath, "run", "", "path to RISCV ELF binary to run")
 	fs.Uint64Var(&c.Seed, "seed", 0, "pseudo random number generator seed")
 	fs.Uint64Var(&c.MemorySize, "mem", defaultEmuxMemorySize, "guest memory size in bytes")
 	fs.Uint64Var(&c.InstructionBudget, "budget", defaultEmuxInstructionBudget, "jea9linux instruction budget per scheduler slice")
-	fs.BoolVar(&c.JIT, "jit", false, "run with the native JIT instead of the cached interpreter")
+	fs.BoolVar(&c.JIT, "jit", true, "run with the native JIT instead of the interpreter")
 	fs.StringVar(&c.ClockMode, "clock", defaultEmuxClockMode, "clock mode: idle-jump, ic-tick, or manual")
 	fs.Int64Var(&c.MonotonicStartNS, "monotonic-ns", defaultEmuxMonotonicStartNS, "initial monotonic clock value in nanoseconds")
 	fs.Int64Var(&c.RealtimeOffsetNS, "realtime-offset-ns", 0, "realtime clock offset from monotonic time in nanoseconds")

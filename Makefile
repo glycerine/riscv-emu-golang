@@ -152,6 +152,7 @@ BENCH_FLAGS := \
 # ── top-level ──────────────────────────────────────────────────────────────
 
 all: help
+	go install ./cmd/emux
 
 help:
 	@echo ""
