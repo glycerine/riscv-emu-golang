@@ -55,6 +55,10 @@ const (
 	jea9LinuxSysSetTidAddress    = uint64(96)
 	jea9LinuxSysFutex            = uint64(98)
 	jea9LinuxSysSetRobustList    = uint64(99)
+	jea9LinuxSysSetitimer        = uint64(103)
+	jea9LinuxSysTimerCreate      = uint64(107)
+	jea9LinuxSysTimerSettime     = uint64(110)
+	jea9LinuxSysTimerDelete      = uint64(111)
 	jea9LinuxSysKill             = uint64(129)
 	jea9LinuxSysTkill            = uint64(130)
 	jea9LinuxSysTgkill           = uint64(131)
@@ -82,6 +86,7 @@ const (
 	jea9LinuxSysMprotect         = uint64(226)
 	jea9LinuxSysMincore          = uint64(232)
 	jea9LinuxSysMadvise          = uint64(233)
+	jea9LinuxSysRiscvHwprobe     = uint64(258)
 	jea9LinuxSysPrlimit64        = uint64(261)
 	jea9LinuxSysGetrandom        = uint64(278)
 	jea9LinuxSysFutexTime64      = uint64(422)
@@ -1130,6 +1135,9 @@ func (j *Jea9Linux) Handle(cpu *CPU, n Note) NoteDisposition {
 	case jea9LinuxSysSetRobustList:
 		cpu.SetReg(10, uint64(j.sysSetRobustList(cpu, args.A0, args.A1)))
 		return NoteHandled
+	case jea9LinuxSysSetitimer, jea9LinuxSysTimerCreate, jea9LinuxSysTimerSettime, jea9LinuxSysTimerDelete:
+		cpu.SetReg(10, uint64(j.sysTimerCompatibility(args.Num)))
+		return NoteHandled
 	case jea9LinuxSysKill:
 		return j.sysKill(cpu, args.A0, args.A1)
 	case jea9LinuxSysTkill:
@@ -1198,6 +1206,9 @@ func (j *Jea9Linux) Handle(cpu *CPU, n Note) NoteDisposition {
 		return NoteHandled
 	case jea9LinuxSysMadvise:
 		cpu.SetReg(10, uint64(j.sysMadvise(cpu, args.A0, args.A1, args.A2)))
+		return NoteHandled
+	case jea9LinuxSysRiscvHwprobe:
+		cpu.SetReg(10, uint64(j.sysRiscvHwprobe(args.A0, args.A1, args.A2, args.A3, args.A4, args.A5)))
 		return NoteHandled
 	case jea9LinuxSysPrlimit64:
 		cpu.SetReg(10, uint64(j.sysPrlimit64(cpu, args.A0, args.A1, args.A2, args.A3)))
@@ -1517,6 +1528,16 @@ func (j *Jea9Linux) timespecDeadline(cpu *CPU, timeoutAddr uint64) (int64, bool,
 		return 0, false, jea9LinuxErrEINVAL
 	}
 	return j.monotonicNS + sec*1_000_000_000 + nsec, true, 0
+}
+
+func (j *Jea9Linux) sysTimerCompatibility(num uint64) int64 {
+	_ = num
+	return jea9LinuxErrENOSYS
+}
+
+func (j *Jea9Linux) sysRiscvHwprobe(pairs, pairCount, cpuCount, cpus, flags, reserved uint64) int64 {
+	_, _, _, _, _, _ = pairs, pairCount, cpuCount, cpus, flags, reserved
+	return jea9LinuxErrENOSYS
 }
 
 func setJea9LinuxReturn(cpu *CPU, ret int64) {
@@ -2953,10 +2974,13 @@ func splitLinuxNS(ns int64) (sec int64, nsec int64) {
 func InstallJea9Linux(cpu *CPU, j *Jea9Linux) func() {
 	vm := j.ensureVM(cpu)
 	j.ensureScheduler(cpu)
+	directSyscallWasDisabled := directSyscallDisabled
+	DisableDirectSyscall()
 	cpu.Notes.Push(j.Handle)
 	return func() {
 		cpu.Notes.Pop()
 		(&cpu.mem).clearAccessOverlay(vm)
+		directSyscallDisabled = directSyscallWasDisabled
 	}
 }
 

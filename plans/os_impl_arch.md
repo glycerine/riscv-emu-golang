@@ -1178,6 +1178,32 @@ proves the need.
 
 12. Timer ELF fixtures are added only when timer syscalls are implemented.
 
+Phase 12 completion note: completed the capability and miscellaneous runtime
+syscall pass with red tests first, a small green implementation, and a refactor
+survey before moving on. `jea9linux.go` now explicitly owns timer compatibility
+syscall numbers at lines 58-61 and `riscv_hwprobe(258)` at line 89. The ECALL
+router dispatches timer compatibility syscalls at lines 1138-1139 and
+`riscv_hwprobe` at lines 1210-1211. The narrow deterministic implementations
+are `sysTimerCompatibility` at line 1533 and `sysRiscvHwprobe` at line 1538;
+both return `-ENOSYS` deliberately so the guest observes stable Linux-compatible
+absence rather than host-dependent timer or CPU capability state. Existing
+resource-limit, `prctl`, and `sysinfo` helpers remain the implementation for
+that part of the phase, with additional error-edge coverage added in
+`jea9linux_phase12_test.go`.
+
+Added `jea9linux_phase12_test.go`, with `riscv_hwprobe` deterministic ENOSYS
+coverage at lines 16 and 27, timer compatibility ENOSYS coverage at line 51,
+resource-limit error edges at line 74, `prctl`/`sysinfo` deterministic edge
+coverage at line 93, and checked-in ELF fixture execution at line 120. Added
+fixture sources `testvectors/jea9linux/src/riscv_hwprobe.c` with the raw
+`riscv_hwprobe` call at line 30, `resource_limits.c` with getrlimit/prlimit
+checks starting at line 37, and `sysinfo_basic.c` with sysinfo validation
+starting at line 14. Generated fixture binaries
+`testvectors/jea9linux/elf/riscv_hwprobe.elf`,
+`testvectors/jea9linux/elf/resource_limits.elf`, and
+`testvectors/jea9linux/elf/sysinfo_basic.elf`. Verified with the Phase 12
+focused suite and the broader jea9linux gate.
+
 ## 13. JIT Integration And Direct Syscall Policy
 
 The desired `jea9linux` JIT behavior is still a direct ECALL path. The direct
@@ -1242,6 +1268,33 @@ budget.
 9. `TestJea9Linux_JITFreshAfterSyscallModeChange` verifies changing direct
    syscall policy cannot affect already-compiled blocks silently if any
    temporary process-global bridge remains.
+
+Phase 13 completion note: completed the initial JIT integration pass with red
+tests first, a green implementation, and a refactor/coverage pass. The key
+behavior is that jea9linux suppresses the native host-syscall shortcut for
+future JIT block emissions while it is installed, so JIT ECALLs trap through
+the existing `jitEcall`/NoteChain path at the post-ECALL PC and are handled by
+the jea9linux personality. This keeps ECALL handling direct in the JIT sense
+(no interpreter execution of the ECALL, no rewind, no re-entry at a compiled
+function top) while preventing guest syscalls from reaching host fd, tid,
+clock, random, or resource state through `internal/syscalls`.
+
+`jea9linux.go` now saves the prior host-direct-syscall flag in
+`InstallJea9Linux` at lines 2974-2978, disables only the host dispatcher while
+the personality is installed, and restores the exact previous flag value at
+line 2983. Added `jea9linux_phase13_test.go`, with direct/inline ECALL test
+setup at line 8, a JIT-with-jea9linux helper at line 25,
+`TestJea9Linux_JITDoesNotUseHostWrite` at line 36 proving guest `write(1, ...)`
+goes to configured jea9linux stdout rather than host fd 1,
+`TestJea9Linux_JITGettidUsesVirtualTid` at line 79,
+`TestJea9Linux_JITClockUsesDeterministicClock` at line 102,
+`TestJea9Linux_JITRandomMatchesInterpreter` at line 132,
+`TestJea9Linux_JITDirectEcallDoesNotRewind` at line 176, and
+`TestJea9Linux_InstallRestoresDirectSyscallPolicy` at line 215. Verified with
+the Phase 13 focused suite and the broader jea9linux gate. The remaining
+Phase 13 budget/AOT/direct-callout refinements should build on this guarded
+policy, especially if the temporary process-global bridge is replaced with a
+per-JIT or per-run dispatcher selection.
 
 ## 14. Go Runtime Acceptance Tests
 
