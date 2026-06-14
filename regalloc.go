@@ -72,11 +72,11 @@ func MaxVReg(b *Block) VReg {
 	var mx VReg
 	for i := range b.Instrs {
 		ins := &b.Instrs[i]
-		for _, vr := range []VReg{ins.Dst, ins.A, ins.B, ins.C} {
+		ins.forEachVReg(func(vr VReg) {
 			if vr > mx {
 				mx = vr
 			}
-		}
+		})
 	}
 	b.maxVreg = mx
 	return mx

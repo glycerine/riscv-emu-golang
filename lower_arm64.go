@@ -277,10 +277,7 @@ func (lc *lowerARM64Ctx) collectTemps() {
 	}
 	for i := range lc.blk.Instrs {
 		ins := &lc.blk.Instrs[i]
-		add(ins.Dst)
-		add(ins.A)
-		add(ins.B)
-		add(ins.C)
+		ins.forEachVReg(add)
 	}
 }
 

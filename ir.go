@@ -405,6 +405,89 @@ type IRInstr struct {
 	Imm2  int64 // for IRBranchImm (compare value), IRRet (status)
 }
 
+// forEachVReg visits only operands that are semantically VRegs. Several IR
+// ops reuse VReg-typed fields for compact label storage; those must stay out
+// of max-vreg and allocation accounting.
+func (ins *IRInstr) forEachVReg(fn func(VReg)) {
+	add := func(v VReg) {
+		if v != VRegZero {
+			fn(v)
+		}
+	}
+
+	switch ins.Op {
+	case IRConst:
+		add(ins.Dst)
+
+	case IRLoad, IRMisalignLoad:
+		add(ins.Dst)
+		add(ins.A)
+
+	case IRStore, IRMisalignStore:
+		add(ins.A)
+		add(ins.B)
+
+	case IRLoadX:
+		add(ins.Dst)
+		add(ins.A)
+		add(ins.B)
+
+	case IRStoreX:
+		add(ins.A)
+		add(ins.B)
+		add(ins.Dst)
+
+	case IRAdd, IRSub,
+		IRMul, IRDivS, IRDivU, IRRem, IRRemU, IRMulHS, IRMulHU, IRMulHSU,
+		IRShl, IRShr, IRSar,
+		IRAnd, IROr, IRXor,
+		IRSet,
+		IRFAdd, IRFSub, IRFMul, IRFDiv, IRFCmp:
+		add(ins.Dst)
+		add(ins.A)
+		add(ins.B)
+
+	case IRAddImm, IRSubImm,
+		IRNeg,
+		IRShlImm, IRShrImm, IRSarImm,
+		IRAndImm, IROrImm, IRXorImm,
+		IRNot,
+		IRClz, IRCtz, IRPopcount, IRBswap,
+		IRSetImm,
+		IRMov, IRSext, IRZext,
+		IRFSqrt, IRFNeg, IRFAbs,
+		IRFCvtToI, IRFCvtToU, IRFCvtFromI, IRFCvtFromU, IRFCvtFF:
+		add(ins.Dst)
+		add(ins.A)
+
+	case IRRet:
+		add(ins.A)
+
+	case IRRetDyn:
+		add(ins.A)
+		add(ins.B)
+
+	case IRJalrIC:
+		add(ins.A)
+
+	case IRBranch:
+		add(ins.A)
+		add(ins.B)
+
+	case IRBranchImm:
+		add(ins.A)
+
+	case IRFma, IRFmsub, IRFnmadd, IRFnmsub:
+		add(ins.Dst)
+		add(ins.A)
+		add(ins.B)
+		add(ins.C)
+
+	case IRMarkLive, IRMarkDead:
+		add(ins.A)
+	}
+}
+
 // String returns a human-readable disassembly of the instruction.
 func (ins IRInstr) String() string {
 	switch ins.Op {
@@ -494,15 +577,11 @@ type Block struct {
 
 func (b *Block) appendIns(ins IRInstr) {
 	b.Instrs = append(b.Instrs, ins)
-	if ins.Dst > b.maxVreg {
-		b.maxVreg = ins.Dst
-	}
-	if ins.A > b.maxVreg {
-		b.maxVreg = ins.A
-	}
-	if ins.B > b.maxVreg {
-		b.maxVreg = ins.B
-	}
+	ins.forEachVReg(func(vr VReg) {
+		if vr > b.maxVreg {
+			b.maxVreg = vr
+		}
+	})
 }
 
 // NewBlock allocates a Block with an initialized Labels map.

@@ -149,6 +149,32 @@ func TestMaxVReg_HighTemp(t *testing.T) {
 	}
 }
 
+func TestMaxVReg_IgnoresBudgetLabels(t *testing.T) {
+	const hugeLabel = 500000
+
+	incremental := NewBlock()
+	incremental.appendIns(IRInstr{Op: IRConst, T: I64, Dst: VReg(64), Imm: 1})
+	incremental.appendIns(IRInstr{Op: IRBudgetReserve, Imm: 1, Dst: VReg(hugeLabel)})
+	if got := incremental.maxVreg; got != 64 {
+		t.Fatalf("incremental maxVReg with budget label = %d, want 64", got)
+	}
+
+	b := makeBlock(
+		IRInstr{Op: IRConst, T: I64, Dst: VReg(64), Imm: 1},
+		IRInstr{Op: IRBudgetReserve, Imm: 1, Dst: VReg(hugeLabel)},
+		IRInstr{Op: IRBudgetZero, Dst: VReg(hugeLabel + 1)},
+		IRInstr{Op: IRRegBudget, Imm2: 8, Dst: VReg(hugeLabel + 2)},
+	)
+	if got := b.maxVreg; got != 64 {
+		t.Fatalf("maxVReg with budget labels = %d, want 64", got)
+	}
+
+	alloc := helperTestAllocate(b, testPool(4, 0), nil, nil)
+	if len(alloc.Kind) != 65 {
+		t.Fatalf("allocation table len = %d, want 65", len(alloc.Kind))
+	}
+}
+
 // ════════════════════════════════════════════════════════════════════════
 // Basic allocation (fixed static mapping)
 // ════════════════════════════════════════════════════════════════════════

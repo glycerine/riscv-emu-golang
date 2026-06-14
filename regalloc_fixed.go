@@ -73,18 +73,11 @@ func (f *FixedStaticAllocator) Allocate(b *Block, pool RegPool, pinned map[VReg]
 	isFP := make([]bool, numVRegs)
 	for i := range b.Instrs {
 		ins := &b.Instrs[i]
-		if ins.Dst != VRegZero && int(ins.Dst) < numVRegs {
-			used[ins.Dst] = true
-		}
-		if ins.A != VRegZero && int(ins.A) < numVRegs {
-			used[ins.A] = true
-		}
-		if ins.B != VRegZero && int(ins.B) < numVRegs {
-			used[ins.B] = true
-		}
-		if ins.C != VRegZero && int(ins.C) < numVRegs {
-			used[ins.C] = true
-		}
+		ins.forEachVReg(func(vr VReg) {
+			if int(vr) < numVRegs {
+				used[vr] = true
+			}
+		})
 	}
 	// Classify FP VRegs.
 	for vr := VReg(32); vr < 64 && int(vr) < numVRegs; vr++ {
@@ -275,16 +268,16 @@ func fixedFirstLast(b *Block, numVRegs int) ([]int, []int) {
 	}
 	for i := range b.Instrs {
 		ins := &b.Instrs[i]
-		for _, vr := range []VReg{ins.Dst, ins.A, ins.B, ins.C} {
-			if vr == VRegZero || int(vr) >= numVRegs {
-				continue
+		ins.forEachVReg(func(vr VReg) {
+			if int(vr) >= numVRegs {
+				return
 			}
 			vi := int(vr)
 			if first[vi] < 0 {
 				first[vi] = i
 			}
 			last[vi] = i
-		}
+		})
 	}
 	return first, last
 }
