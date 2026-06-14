@@ -245,6 +245,92 @@ func TestScanUsedRegs_MixedBlock2(t *testing.T) {
 	}
 }
 
+func countIROp(b *Block, op IROp) int {
+	if b == nil {
+		return 0
+	}
+	n := 0
+	for i := range b.Instrs {
+		if b.Instrs[i].Op == op {
+			n++
+		}
+	}
+	return n
+}
+
+func newICModeTestMem(t *testing.T) *GuestMemory {
+	t.Helper()
+	mem, err := NewGuestMemory(Size1MB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mem.Store32(0x1000, ienc(opOPIMM, 0, 1, 0, 1)) // ADDI x1, x0, 1
+	mem.Store32(0x1004, ienc(opOPIMM, 0, 2, 1, 2)) // ADDI x2, x1, 2
+	mem.Store32(0x1008, instrEBREAK)
+	return mem
+}
+
+func TestJITInstructionCounterMode_Emission(t *testing.T) {
+	mem := newICModeTestMem(t)
+	defer mem.Free()
+
+	j := NewJIT()
+	if got := j.InstructionCounterMode(); got != JITICPrecise {
+		t.Fatalf("new JIT IC mode = %s, want %s", got, JITICPrecise)
+	}
+	precise := j.emitBlock(mem, 0x1000)
+	if precise == nil {
+		t.Fatal("precise emitBlock returned nil")
+	}
+	if got := countIROp(precise.block, IRIncIC); got == 0 {
+		t.Fatal("precise IC mode emitted no IRIncIC ops")
+	}
+
+	j.SetInstructionCounterMode(JITICNone)
+	if got := j.InstructionCounterMode(); got != JITICNone {
+		t.Fatalf("off JIT IC mode = %s, want %s", got, JITICNone)
+	}
+	off := j.emitBlock(mem, 0x1000)
+	if off == nil {
+		t.Fatal("off emitBlock returned nil")
+	}
+	if got := countIROp(off.block, IRIncIC); got != 0 {
+		t.Fatalf("no-counter IC mode emitted %d IRIncIC ops, want 0", got)
+	}
+
+	j.DebugOneBlockLockstepMode = true
+	lockstep := j.emitBlock(mem, 0x1000)
+	if lockstep == nil {
+		t.Fatal("lockstep emitBlock returned nil")
+	}
+	if got := countIROp(lockstep.block, IRIncIC); got == 0 {
+		t.Fatal("lockstep should force precise IC increments")
+	}
+	if got := countIROp(lockstep.block, IRRegBudget); got == 0 {
+		t.Fatal("lockstep should emit budget checks")
+	}
+}
+
+func TestJITInstructionCounterMode_ReservePredicate(t *testing.T) {
+	mem := newICModeTestMem(t)
+	defer mem.Free()
+
+	j := NewJIT()
+	j.SetInstructionCounterMode(JITICNone)
+	res := j.emitBlock(mem, 0x1000)
+	if res == nil {
+		t.Fatal("emitBlock returned nil")
+	}
+	if j.reserveInstructionCounterReg(res.block) {
+		t.Fatal("straight-line no-counter block should not reserve IC register")
+	}
+
+	res.block.Instrs = append(res.block.Instrs, IRInstr{Op: IRJalrIC, A: VReg(1)})
+	if !j.reserveInstructionCounterReg(res.block) {
+		t.Fatal("JALR IC block should reserve IC register even in no-counter mode")
+	}
+}
+
 // TestMixedExecution_Block2_Compile tests that the second block from
 // TestJIT_MixedExecution compiles and runs without crashing.
 func TestMixedExecution_Block2_Compile(t *testing.T) {

@@ -13,8 +13,36 @@ TEXT jit_dispatch<>(SB), NOSPLIT|NOFRAME, $0-0
 
 	CMP	$64, R10            // Linux RV SYS_write
 	BEQ	jit_write
+	CMP	$63, R10            // Linux RV SYS_read
+	BEQ	jit_read
+	CMP	$57, R10            // Linux RV SYS_close
+	BEQ	jit_close
+	CMP	$62, R10            // Linux RV SYS_lseek
+	BEQ	jit_lseek
+	CMP	$96, R10            // Linux RV SYS_set_tid_address
+	BEQ	jit_set_tid_address
+	CMP	$172, R10           // Linux RV SYS_getpid
+	BEQ	jit_getpid
+	CMP	$178, R10           // Linux RV SYS_gettid
+	BEQ	jit_gettid
+	CMP	$214, R10           // Linux RV SYS_brk
+	BEQ	jit_brk
 
 	MOVD	$1, R0
+	RET
+
+jit_read:
+	MOVD	88(R9), R10         // guest buf VA
+	AND	R2, R10, R10        // bounds-mask
+	ADD	R1, R10, R10        // + memBase = host ptr
+	MOVD	80(R9), R0          // fd
+	MOVD	R10, R1             // host buf
+	MOVD	96(R9), R2          // count
+	MOVD	$63, R8             // Linux arm64 SYS_read
+	SVC
+
+	MOVD	R0, 80(R9)
+	MOVD	$0, R0
 	RET
 
 jit_write:
@@ -33,6 +61,54 @@ jit_write:
 	SVC
 
 	MOVD	R0, 80(R9)
+	MOVD	$0, R0
+	RET
+
+jit_close:
+	MOVD	80(R9), R0          // fd
+	MOVD	$57, R8             // Linux arm64 SYS_close
+	SVC
+
+	MOVD	R0, 80(R9)
+	MOVD	$0, R0
+	RET
+
+jit_lseek:
+	MOVD	80(R9), R0          // fd
+	MOVD	88(R9), R1          // offset
+	MOVD	96(R9), R2          // whence
+	MOVD	$62, R8             // Linux arm64 SYS_lseek
+	SVC
+
+	MOVD	R0, 80(R9)
+	MOVD	$0, R0
+	RET
+
+jit_set_tid_address:
+	MOVD	$1, R10             // lightweight benchmark/libc stub
+	MOVD	R10, 80(R9)
+	MOVD	$0, R0
+	RET
+
+jit_getpid:
+	MOVD	$172, R8            // Linux arm64 SYS_getpid
+	SVC
+
+	MOVD	R0, 80(R9)
+	MOVD	$0, R0
+	RET
+
+jit_gettid:
+	MOVD	$178, R8            // Linux arm64 SYS_gettid
+	SVC
+
+	MOVD	R0, 80(R9)
+	MOVD	$0, R0
+	RET
+
+jit_brk:
+	MOVD	$0, R10             // match the repo's minimal brk handler
+	MOVD	R10, 80(R9)
 	MOVD	$0, R0
 	RET
 

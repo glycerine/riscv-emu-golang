@@ -58,7 +58,7 @@ func (j *JIT) jitCompileAOTSegment(
 		}
 		pool := j.regPolicy.Pool(res.block)
 		pinned := j.regPolicy.Pinned()
-		if (j.UseR15InstructionCounter || j.DebugOneBlockLockstepMode) && j.regPolicy.InstructionCounterReg != 0 {
+		if j.reserveInstructionCounterReg(res.block) {
 			pool.IntRegs = removeReg(pool.IntRegs, j.regPolicy.InstructionCounterReg)
 		}
 		alloc := j.irAlloc.Allocate(res.block, pool, pinned, nil)
@@ -124,6 +124,10 @@ func (j *JIT) jitCompileAOTSegment(
 				continue
 			}
 			bc.blk.chainEntry = blockBase + uintptr(bc.lowerResult.ChainEntryProg.Pc)
+			if bc.lowerResult.LiveChainEntryProg != nil {
+				bc.blk.liveChainEntry = blockBase + uintptr(bc.lowerResult.LiveChainEntryProg.Pc)
+				bc.blk.liveChain = bc.lowerResult.LiveChain
+			}
 
 			// Backpatch chain-exit sentinels → slow-exit stub addresses.
 			//
@@ -147,9 +151,20 @@ func (j *JIT) jitCompileAOTSegment(
 					writeErr = fmt.Errorf("jitCompileAOTSegment: patch chain exit: %w", patchErr)
 					return
 				}
+				livePatchOff := -1
+				if ce.LiveMovProg != nil {
+					liveOff, patchErr := j.regPolicy.PatchImm64(execMem[bc.baseOffset:], ce.LiveMovProg, 0)
+					if patchErr != nil {
+						writeErr = fmt.Errorf("jitCompileAOTSegment: patch live chain exit: %w", patchErr)
+						return
+					}
+					livePatchOff = liveOff
+				}
 				bc.blk.chainExits = append(bc.blk.chainExits, chainPatchInfo{
-					targetPC:    ce.TargetPC,
-					patchOffset: patchOff,
+					targetPC:        ce.TargetPC,
+					patchOffset:     patchOff,
+					livePatchOffset: livePatchOff,
+					liveChain:       ce.LiveChain,
 				})
 			}
 
@@ -182,9 +197,16 @@ func (j *JIT) jitCompileAOTSegment(
 					writeErr = fmt.Errorf("jitCompileAOTSegment: chain exit metadata mismatch at block 0x%x exit %d", bc.startPC, i)
 					return
 				}
-				if _, patchErr := j.regPolicy.PatchImm64(execMem[bc.baseOffset:], bc.lowerResult.ChainExits[i].MovProg, uint64(target.chainEntry)); patchErr != nil {
-					writeErr = fmt.Errorf("jitCompileAOTSegment: pre-patch chain exit: %w", patchErr)
-					return
+				if ce.livePatchOffset >= 0 && liveChainCompatible(ce.liveChain, target) {
+					if _, patchErr := j.regPolicy.PatchImm64(execMem[bc.baseOffset:], bc.lowerResult.ChainExits[i].LiveMovProg, uint64(target.liveChainEntry)); patchErr != nil {
+						writeErr = fmt.Errorf("jitCompileAOTSegment: pre-patch live chain exit: %w", patchErr)
+						return
+					}
+				} else {
+					if _, patchErr := j.regPolicy.PatchImm64(execMem[bc.baseOffset:], bc.lowerResult.ChainExits[i].MovProg, uint64(target.chainEntry)); patchErr != nil {
+						writeErr = fmt.Errorf("jitCompileAOTSegment: pre-patch chain exit: %w", patchErr)
+						return
+					}
 				}
 				prePatches++
 			}

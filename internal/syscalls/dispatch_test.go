@@ -3,6 +3,7 @@ package syscalls
 import (
 	"bytes"
 	"os"
+	"runtime"
 	"testing"
 	"unsafe"
 )
@@ -22,10 +23,10 @@ func TestDispatchWrite(t *testing.T) {
 	guestMem := make([]byte, 4096)
 	copy(guestMem[0x100:], msg)
 
-	regs[17] = 64                          // a7 = SYS_write (RV ABI)
-	regs[10] = uint64(pw.Fd())             // a0 = fd
-	regs[11] = 0x100                       // a1 = guest buf VA
-	regs[12] = uint64(len(msg))            // a2 = count
+	regs[17] = 64               // a7 = SYS_write (RV ABI)
+	regs[10] = uint64(pw.Fd())  // a0 = fd
+	regs[11] = 0x100            // a1 = guest buf VA
+	regs[12] = uint64(len(msg)) // a2 = count
 
 	memBase := uintptr(unsafe.Pointer(&guestMem[0]))
 	memMask := uint64(len(guestMem) - 1)
@@ -45,6 +46,135 @@ func TestDispatchWrite(t *testing.T) {
 	}
 	if n != len(msg) || !bytes.Equal(got[:n], msg) {
 		t.Fatalf("pipe got %q, want %q", got[:n], msg)
+	}
+}
+
+func TestDispatchLinuxRead(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("Linux syscall fast paths only")
+	}
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pr.Close()
+	defer pw.Close()
+
+	msg := []byte("read via guest memory\n")
+	if _, err := pw.Write(msg); err != nil {
+		t.Fatal(err)
+	}
+
+	var regs [32]uint64
+	guestMem := make([]byte, 4096)
+	regs[17] = 63               // a7 = SYS_read (RV ABI)
+	regs[10] = uint64(pr.Fd())  // a0 = fd
+	regs[11] = 0x180            // a1 = guest buf VA
+	regs[12] = uint64(len(msg)) // a2 = count
+
+	memBase := uintptr(unsafe.Pointer(&guestMem[0]))
+	memMask := uint64(len(guestMem) - 1)
+
+	ret := CallDispatch(unsafe.Pointer(&regs[0]), memBase, memMask)
+	if ret != 0 {
+		t.Fatalf("CallDispatch returned %d, want 0 (handled)", ret)
+	}
+	if int(int64(regs[10])) != len(msg) {
+		t.Fatalf("x[10] after read = %d, want %d", int64(regs[10]), len(msg))
+	}
+	if got := guestMem[0x180 : 0x180+len(msg)]; !bytes.Equal(got, msg) {
+		t.Fatalf("guest memory read got %q, want %q", got, msg)
+	}
+}
+
+func TestDispatchLinuxSimpleFastPaths(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("Linux syscall fast paths only")
+	}
+	tests := []struct {
+		name  string
+		num   uint64
+		a0    uint64
+		a1    uint64
+		a2    uint64
+		check func(*testing.T, uint64)
+	}{
+		{
+			name: "close-invalid-fd",
+			num:  57,
+			a0:   ^uint64(0),
+			check: func(t *testing.T, got uint64) {
+				if int64(got) >= 0 {
+					t.Fatalf("close(-1) result = %d, want negative errno", int64(got))
+				}
+			},
+		},
+		{
+			name: "lseek-invalid-fd",
+			num:  62,
+			a0:   ^uint64(0),
+			check: func(t *testing.T, got uint64) {
+				if int64(got) >= 0 {
+					t.Fatalf("lseek(-1) result = %d, want negative errno", int64(got))
+				}
+			},
+		},
+		{
+			name: "set-tid-address-stub",
+			num:  96,
+			check: func(t *testing.T, got uint64) {
+				if got != 1 {
+					t.Fatalf("set_tid_address stub result = %d, want 1", got)
+				}
+			},
+		},
+		{
+			name: "getpid",
+			num:  172,
+			check: func(t *testing.T, got uint64) {
+				if got == 0 {
+					t.Fatal("getpid result = 0, want non-zero pid")
+				}
+			},
+		},
+		{
+			name: "gettid",
+			num:  178,
+			check: func(t *testing.T, got uint64) {
+				if got == 0 {
+					t.Fatal("gettid result = 0, want non-zero tid")
+				}
+			},
+		},
+		{
+			name: "brk-stub",
+			num:  214,
+			a0:   0x12345000,
+			check: func(t *testing.T, got uint64) {
+				if got != 0 {
+					t.Fatalf("brk stub result = %#x, want 0", got)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var regs [32]uint64
+			guestMem := make([]byte, 4096)
+			regs[17] = tt.num
+			regs[10] = tt.a0
+			regs[11] = tt.a1
+			regs[12] = tt.a2
+
+			memBase := uintptr(unsafe.Pointer(&guestMem[0]))
+			memMask := uint64(len(guestMem) - 1)
+			ret := CallDispatch(unsafe.Pointer(&regs[0]), memBase, memMask)
+			if ret != 0 {
+				t.Fatalf("CallDispatch returned %d, want 0 (handled)", ret)
+			}
+			tt.check(t, regs[10])
+		})
 	}
 }
 

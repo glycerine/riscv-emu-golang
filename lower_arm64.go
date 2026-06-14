@@ -115,7 +115,7 @@ func ARM64Pool(b *Block) RegPool {
 			goasm.REG_ARM64_F31,
 		}
 	}
-	return RegPool{IntRegs: intRegs, FPRegs: fpRegs, NoArchFP: true}
+	return RegPool{IntRegs: intRegs, FPRegs: fpRegs, NoArchFP: blockUsesF32(b), TempIntervals: true}
 }
 
 func ARM64Pinned() map[VReg]int16 { return nil }
@@ -141,22 +141,26 @@ func LowerARM64_ABJIT(ctx *goasm.Ctx, b *Block, alloc *Allocation) (*LowerResult
 }
 
 type lowerARM64Ctx struct {
-	c              *goasm.Ctx
-	blk            *Block
-	alloc          *Allocation
-	rIdx           regIndex
-	idx            int
-	abi            arm64ABI
-	dirtyArch      [32]bool
-	entryLiveArch  [32]bool
-	entryLoadAll   bool
-	tempSlots      map[VReg]int64
-	frame          arm64FrameLayout
-	labelProg      map[Label]*obj.Prog
-	pending        map[Label][]*obj.Prog
-	chainEntryProg *obj.Prog
-	chainExits     []chainExitInfo
-	jalrICs        []jalrICInfo
+	c               *goasm.Ctx
+	blk             *Block
+	alloc           *Allocation
+	rIdx            regIndex
+	idx             int
+	abi             arm64ABI
+	dirtyArch       [32]bool
+	dirtyTimeline   [][32]bool
+	dirtyFP         [32]bool
+	dirtyFPTimeline [][32]bool
+	entryLiveArch   [32]bool
+	entryLoadAll    bool
+	tempSlots       map[VReg]int64
+	frame           arm64FrameLayout
+	labelProg       map[Label]*obj.Prog
+	pending         map[Label][]*obj.Prog
+	chainEntryProg  *obj.Prog
+	liveEntryProg   *obj.Prog
+	chainExits      []chainExitInfo
+	jalrICs         []jalrICInfo
 }
 
 type arm64FrameLayout struct {
@@ -222,6 +226,9 @@ func lowerARM64(ctx *goasm.Ctx, b *Block, alloc *Allocation, abi arm64ABI) (*Low
 		lc.emitRRI(arm64.ASUB, lc.frame.frameSize, goasm.REG_ARM64_RSP, goasm.REG_ARM64_RSP)
 	}
 	lc.loadFixedABJITRegs()
+	lc.liveEntryProg = lc.c.NewProg()
+	lc.liveEntryProg.As = obj.ANOP
+	lc.c.Append(lc.liveEntryProg)
 	lc.loadEntryAllocatedRegs()
 
 	for i := range b.Instrs {
@@ -236,12 +243,18 @@ func lowerARM64(ctx *goasm.Ctx, b *Block, alloc *Allocation, abi arm64ABI) (*Low
 	for i := range lc.chainExits {
 		lc.chainExits[i].stubProg = lc.emitSlowExitStub(lc.chainExits[i].targetPC)
 	}
-	result := &LowerResult{ChainEntryProg: lc.chainEntryProg}
+	result := &LowerResult{
+		ChainEntryProg:     lc.chainEntryProg,
+		LiveChainEntryProg: lc.liveEntryProg,
+		LiveChain:          lc.buildLiveChainMeta(),
+	}
 	for i := range lc.chainExits {
 		result.ChainExits = append(result.ChainExits, ChainExitDesc{
-			TargetPC: lc.chainExits[i].targetPC,
-			MovProg:  lc.chainExits[i].movProg,
-			StubProg: lc.chainExits[i].stubProg,
+			TargetPC:    lc.chainExits[i].targetPC,
+			MovProg:     lc.chainExits[i].movProg,
+			LiveMovProg: lc.chainExits[i].liveMovProg,
+			LiveChain:   lc.chainExits[i].liveChain,
+			StubProg:    lc.chainExits[i].stubProg,
 		})
 	}
 	for i := range lc.jalrICs {
@@ -273,19 +286,70 @@ func (lc *lowerARM64Ctx) collectTemps() {
 }
 
 func (lc *lowerARM64Ctx) collectDirtyArch() {
+	if lc.blk == nil {
+		return
+	}
+	lc.dirtyTimeline = make([][32]bool, len(lc.blk.Instrs))
+	lc.dirtyFPTimeline = make([][32]bool, len(lc.blk.Instrs))
+	var dirty [32]bool
+	var dirtyFP [32]bool
 	for i := range lc.blk.Instrs {
+		lc.dirtyTimeline[i] = dirty
+		lc.dirtyFPTimeline[i] = dirtyFP
 		ins := &lc.blk.Instrs[i]
-		if !arm64OpWritesDst(ins.Op) {
-			continue
-		}
-		if ins.Dst > VRegZero && ins.Dst < 32 {
+		if arm64OpWritesDst(ins.Op) && !arm64IsRegfileLoad(ins, false) && ins.Dst > VRegZero && ins.Dst < 32 {
+			dirty[ins.Dst] = true
 			lc.dirtyArch[ins.Dst] = true
+		}
+		if arm64OpWritesFPDst(ins.Op) && ins.Dst >= 32 && ins.Dst < 64 && lc.hostRegAt(ins.Dst, i) >= 0 {
+			fp := ins.Dst - 32
+			dirtyFP[fp] = true
+			lc.dirtyFP[fp] = true
 		}
 	}
 }
 
 func (lc *lowerARM64Ctx) collectEntryLoads() {
 	lc.entryLoadAll, lc.entryLiveArch = arm64EntryLoadAnalysis(lc.blk)
+}
+
+func (lc *lowerARM64Ctx) buildLiveChainMeta() liveChainMeta {
+	return lc.buildLiveChainMetaWithDirty(lc.dirtyArch, lc.dirtyFP)
+}
+
+func (lc *lowerARM64Ctx) buildCurrentExitLiveChainMeta() liveChainMeta {
+	if lc.idx >= 0 && lc.idx < len(lc.dirtyTimeline) {
+		return lc.buildLiveChainMetaWithDirty(lc.dirtyTimeline[lc.idx], lc.dirtyFPTimeline[lc.idx])
+	}
+	return lc.buildLiveChainMeta()
+}
+
+func (lc *lowerARM64Ctx) buildLiveChainMetaWithDirty(dirty [32]bool, dirtyFP [32]bool) liveChainMeta {
+	var meta liveChainMeta
+	if lc.alloc == nil || len(lc.rIdx) == 0 || lc.entryLoadAll || blockHasHostCall(lc.blk) {
+		return meta
+	}
+	meta.Enabled = true
+	for i := range dirtyFP {
+		if dirtyFP[i] {
+			meta.HasDirtyArch = true
+			break
+		}
+	}
+	for vr := VReg(1); vr < 32; vr++ {
+		if dirty[vr] {
+			meta.HasDirtyArch = true
+		}
+		host := lc.rIdx.lookup(vr, 0)
+		if host < 0 || arm64IsFPReg(host) {
+			continue
+		}
+		meta.ArchHost[vr] = host
+		meta.ArchHostValid[vr] = true
+		meta.EntryLiveArch[vr] = lc.entryLiveArch[vr]
+		meta.ValidExitArch[vr] = lc.entryLiveArch[vr] || dirty[vr]
+	}
+	return meta
 }
 
 func arm64EntryLoadAnalysis(b *Block) (loadAll bool, liveIn [32]bool) {
@@ -384,17 +448,28 @@ func arm64OpWritesDst(op IROp) bool {
 	}
 }
 
-func (lc *lowerARM64Ctx) canUseHostReg(v VReg) bool {
-	if v == VRegZero {
+func arm64OpWritesFPDst(op IROp) bool {
+	switch op {
+	case IRMov,
+		IRFAdd, IRFSub, IRFMul, IRFDiv, IRFSqrt,
+		IRFma, IRFmsub, IRFnmadd, IRFnmsub,
+		IRFNeg, IRFAbs,
+		IRFCvtFromI, IRFCvtFromU, IRFCvtFF,
+		IRLoad, IRLoadX, IRMisalignLoad:
+		return true
+	default:
 		return false
 	}
-	if v >= 32 && v < 64 {
+}
+
+func (lc *lowerARM64Ctx) canUseHostReg(v VReg) bool {
+	if v == VRegZero {
 		return false
 	}
 	if v >= VRegTempStart && v <= VRRegFile {
 		return false
 	}
-	return v < 32 || v >= VRegTempStart
+	return v < 64 || v >= VRegTempStart
 }
 
 func arm64IsFPReg(r int16) bool {
@@ -409,6 +484,10 @@ func arm64FPMoveOp(t Type) obj.As {
 }
 
 func (lc *lowerARM64Ctx) hostReg(v VReg) int16 {
+	return lc.hostRegAt(v, lc.idx)
+}
+
+func (lc *lowerARM64Ctx) hostRegAt(v VReg, idx int) int16 {
 	if lc.alloc == nil || !lc.canUseHostReg(v) {
 		return -1
 	}
@@ -418,7 +497,7 @@ func (lc *lowerARM64Ctx) hostReg(v VReg) int16 {
 	if len(lc.rIdx) == 0 {
 		return -1
 	}
-	return lc.rIdx.lookup(v, lc.idx)
+	return lc.rIdx.lookup(v, idx)
 }
 
 func (lc *lowerARM64Ctx) tempHasHostReg(v VReg) bool {
@@ -438,7 +517,30 @@ func (lc *lowerARM64Ctx) loadEntryAllocatedRegs() {
 		}
 		host := lc.hostReg(vr)
 		if host >= 0 {
+			if next := vr + 1; next < 32 && (lc.entryLoadAll || lc.entryLiveArch[next]) {
+				nextHost := lc.hostReg(next)
+				if nextHost >= 0 && !arm64IsFPReg(host) && !arm64IsFPReg(nextHost) && host != nextHost {
+					lc.emitLoadPair(lc.xBaseReg(), int64(vr)*8, host, nextHost)
+					vr = next
+					continue
+				}
+			}
 			lc.emitLoad(arm64.AMOVD, lc.xBaseReg(), int64(vr)*8, host)
+		}
+	}
+	for vr := VReg(32); vr < 64; vr++ {
+		host := lc.hostReg(vr)
+		if host >= 0 && arm64IsFPReg(host) {
+			base, off := lc.fpMem(vr)
+			if next := vr + 1; next < 64 {
+				nextHost := lc.hostReg(next)
+				if nextHost >= 0 && arm64IsFPReg(nextHost) && host != nextHost {
+					lc.emitFLoadPair(base, off, host, nextHost)
+					vr = next
+					continue
+				}
+			}
+			lc.emitFLoad(arm64.AFMOVD, base, off, host)
 		}
 	}
 }
@@ -453,13 +555,46 @@ func (lc *lowerARM64Ctx) loadAllocatedRegs() {
 }
 
 func (lc *lowerARM64Ctx) storeRegsBack() {
+	dirty := lc.dirtyArch
+	dirtyFP := lc.dirtyFP
+	if lc.idx >= 0 && lc.idx < len(lc.dirtyTimeline) {
+		dirty = lc.dirtyTimeline[lc.idx]
+		dirtyFP = lc.dirtyFPTimeline[lc.idx]
+	}
 	for vr := VReg(1); vr < 32; vr++ {
-		if !lc.dirtyArch[vr] {
+		if !dirty[vr] {
 			continue
 		}
 		host := lc.hostReg(vr)
 		if host >= 0 {
+			if next := vr + 1; next < 32 && dirty[next] {
+				nextHost := lc.hostReg(next)
+				if nextHost >= 0 && !arm64IsFPReg(host) && !arm64IsFPReg(nextHost) && host != nextHost {
+					lc.emitStorePair(host, nextHost, lc.xBaseReg(), int64(vr)*8)
+					vr = next
+					continue
+				}
+			}
 			lc.emitStore(arm64.AMOVD, host, lc.xBaseReg(), int64(vr)*8)
+		}
+	}
+	for fp := 0; fp < 32; fp++ {
+		if !dirtyFP[fp] {
+			continue
+		}
+		vr := VReg(32 + fp)
+		host := lc.hostReg(vr)
+		if host >= 0 && arm64IsFPReg(host) {
+			base, off := lc.fpMem(vr)
+			if nextFP := fp + 1; nextFP < 32 && dirtyFP[nextFP] {
+				nextHost := lc.hostReg(VReg(32 + nextFP))
+				if nextHost >= 0 && arm64IsFPReg(nextHost) && host != nextHost {
+					lc.emitFStorePair(host, nextHost, base, off)
+					fp = nextFP
+					continue
+				}
+			}
+			lc.emitFStore(arm64.AFMOVD, host, base, off)
 		}
 	}
 }
@@ -471,6 +606,19 @@ func blockHasHostCall(b *Block) bool {
 	for i := range b.Instrs {
 		switch b.Instrs[i].Op {
 		case IRCall, IRSyscall:
+			return true
+		}
+	}
+	return false
+}
+
+func blockUsesF32(b *Block) bool {
+	if b == nil {
+		return false
+	}
+	for i := range b.Instrs {
+		ins := &b.Instrs[i]
+		if ins.T == F32 || ins.U == F32 {
 			return true
 		}
 	}
@@ -541,6 +689,30 @@ func (lc *lowerARM64Ctx) emitStore(op obj.As, src, base int16, off int64) {
 	lc.c.Append(p)
 }
 
+func (lc *lowerARM64Ctx) emitLoadPair(base int16, off int64, dst1, dst2 int16) {
+	p := lc.c.NewProg()
+	p.As = arm64.ALDP
+	p.From.Type = obj.TYPE_MEM
+	p.From.Reg = base
+	p.From.Offset = off
+	p.To.Type = obj.TYPE_REGREG
+	p.To.Reg = dst1
+	p.To.Offset = int64(dst2)
+	lc.c.Append(p)
+}
+
+func (lc *lowerARM64Ctx) emitStorePair(src1, src2, base int16, off int64) {
+	p := lc.c.NewProg()
+	p.As = arm64.ASTP
+	p.From.Type = obj.TYPE_REGREG
+	p.From.Reg = src1
+	p.From.Offset = int64(src2)
+	p.To.Type = obj.TYPE_MEM
+	p.To.Reg = base
+	p.To.Offset = off
+	lc.c.Append(p)
+}
+
 func (lc *lowerARM64Ctx) emitFLoad(op obj.As, base int16, off int64, dst int16) {
 	p := lc.c.NewProg()
 	p.As = op
@@ -557,6 +729,30 @@ func (lc *lowerARM64Ctx) emitFStore(op obj.As, src, base int16, off int64) {
 	p.As = op
 	p.From.Type = obj.TYPE_REG
 	p.From.Reg = src
+	p.To.Type = obj.TYPE_MEM
+	p.To.Reg = base
+	p.To.Offset = off
+	lc.c.Append(p)
+}
+
+func (lc *lowerARM64Ctx) emitFLoadPair(base int16, off int64, dst1, dst2 int16) {
+	p := lc.c.NewProg()
+	p.As = arm64.AFLDPD
+	p.From.Type = obj.TYPE_MEM
+	p.From.Reg = base
+	p.From.Offset = off
+	p.To.Type = obj.TYPE_REGREG
+	p.To.Reg = dst1
+	p.To.Offset = int64(dst2)
+	lc.c.Append(p)
+}
+
+func (lc *lowerARM64Ctx) emitFStorePair(src1, src2, base int16, off int64) {
+	p := lc.c.NewProg()
+	p.As = arm64.AFSTPD
+	p.From.Type = obj.TYPE_REGREG
+	p.From.Reg = src1
+	p.From.Offset = int64(src2)
 	p.To.Type = obj.TYPE_MEM
 	p.To.Reg = base
 	p.To.Offset = off
@@ -615,7 +811,7 @@ func (lc *lowerARM64Ctx) storeFP(v VReg, src int16, t Type) error {
 	case v >= 32 && v < 64:
 		base, off := lc.fpMem(v)
 		if t == F32 {
-			lc.loadImm(0, a64A)
+			lc.loadImm(-1, a64A)
 			lc.emitStore(arm64.AMOVD, a64A, base, off)
 		}
 		lc.emitFStore(op, src, base, off)
@@ -625,7 +821,7 @@ func (lc *lowerARM64Ctx) storeFP(v VReg, src int16, t Type) error {
 			return fmt.Errorf("arm64 lower: temp %s has no slot", v)
 		}
 		if t == F32 {
-			lc.loadImm(0, a64A)
+			lc.loadImm(-1, a64A)
 			lc.emitStore(arm64.AMOVD, a64A, goasm.REG_ARM64_RSP, off)
 		}
 		lc.emitFStore(op, src, goasm.REG_ARM64_RSP, off)
@@ -1340,6 +1536,9 @@ func (lc *lowerARM64Ctx) lowerLoad(ins *IRInstr, indexed bool) error {
 }
 
 func (lc *lowerARM64Ctx) lowerStore(ins *IRInstr, indexed bool) error {
+	if arm64IsRegfileWritebackStore(ins, indexed) {
+		return nil
+	}
 	if err := lc.hostAddr(ins, indexed, a64A); err != nil {
 		return err
 	}
@@ -1366,6 +1565,34 @@ func (lc *lowerARM64Ctx) lowerStore(ins *IRInstr, indexed bool) error {
 	}
 	lc.emitStore(op, valReg, a64A, 0)
 	return nil
+}
+
+func arm64IsRegfileLoad(ins *IRInstr, indexed bool) bool {
+	if indexed || ins == nil || ins.Op != IRLoad || ins.T != I64 {
+		return false
+	}
+	switch ins.A {
+	case VRXBase:
+		return ins.Dst > VRegZero && ins.Dst < 32 && ins.Imm == int64(ins.Dst)*8
+	case VRFBase:
+		return ins.Dst >= 32 && ins.Dst < 64 && ins.Imm == int64(ins.Dst-32)*8
+	default:
+		return false
+	}
+}
+
+func arm64IsRegfileWritebackStore(ins *IRInstr, indexed bool) bool {
+	if indexed || ins == nil || ins.Op != IRStore || ins.T != I64 {
+		return false
+	}
+	switch ins.A {
+	case VRXBase:
+		return ins.B > VRegZero && ins.B < 32 && ins.Imm == int64(ins.B)*8
+	case VRFBase:
+		return ins.B >= 32 && ins.B < 64 && ins.Imm == int64(ins.B-32)*8
+	default:
+		return false
+	}
 }
 
 func (lc *lowerARM64Ctx) hostAddr(ins *IRInstr, indexed bool, dst int16) error {
@@ -2269,12 +2496,25 @@ func (lc *lowerARM64Ctx) emitDeallocFrame() {
 }
 
 func (lc *lowerARM64Ctx) emitChainExit(targetPC uint64) {
+	liveLoad := lc.emitPatchableLiteralLoad(a64D, 0)
+	lc.cmpImm(a64D, 0)
+	safeExit := lc.branchTo(arm64.ABEQ)
+	lc.emitDeallocFrame()
+	lc.emitIndirectJump(a64D)
+
+	safeProg := lc.c.NewProg()
+	safeProg.As = obj.ANOP
+	lc.c.Append(safeProg)
+	safeExit.To.SetTarget(safeProg)
+
 	lc.storeRegsBack()
 	lc.emitDeallocFrame()
 	load := lc.emitPatchableAddrLoad(a64D, nativePatchSentinel)
 	lc.chainExits = append(lc.chainExits, chainExitInfo{
-		targetPC: targetPC,
-		movProg:  load,
+		targetPC:    targetPC,
+		movProg:     load,
+		liveMovProg: liveLoad,
+		liveChain:   lc.buildCurrentExitLiveChainMeta(),
 	})
 }
 

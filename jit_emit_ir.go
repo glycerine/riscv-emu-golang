@@ -1001,7 +1001,7 @@ func (j *JIT) emitBlockRange(mem *GuestMemory, pc, endPC uint64) *emitResult {
 		pcLabels:       newU64labelmap(),
 		stopperAddr:    int64(j.stopperPage),
 		watchAddr:      j.watchAddr,
-		useICR15:       j.UseR15InstructionCounter || j.DebugOneBlockLockstepMode,
+		useICR15:       j.preciseInstructionCounterEnabled(),
 		lockstepMode:   j.DebugOneBlockLockstepMode,
 		lockstepBudget: j.LockstepModeBudget,
 	}

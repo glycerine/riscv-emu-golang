@@ -16,6 +16,11 @@
 //	  0 → syscall handled natively; JIT continues at pc+4
 //	  1 → fallback; JIT emits jitEcall and existing Go OS layer handles it
 //
+// The Linux dispatchers handle a small native subset: read, write, close,
+// lseek, getpid, gettid, plus lightweight brk and set_tid_address stubs used
+// by the repo's benchmark Linux personality. Exit still falls back so the
+// emulator can stop through the normal OS/note path.
+//
 // The JIT obtains the code address with DispatchAddr() and emits a
 // MOVABS+CALL sequence at each ECALL site.
 package syscalls

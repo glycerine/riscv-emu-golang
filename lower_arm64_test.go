@@ -3,6 +3,7 @@
 package riscv
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/glycerine/riscv-emu-golang/goasm"
@@ -16,8 +17,8 @@ func TestARM64Pool(t *testing.T) {
 	if len(pool.FPRegs) != 21 {
 		t.Fatalf("ARM64Pool FPRegs len = %d, want 21", len(pool.FPRegs))
 	}
-	if !pool.NoArchFP {
-		t.Fatal("ARM64Pool should keep guest f0..f31 memory-backed")
+	if pool.NoArchFP {
+		t.Fatal("ARM64Pool(nil) should permit guest FP caching for F64-only blocks")
 	}
 	reserved := map[int16]string{
 		goasm.REG_ARM64_R16: "R16/IP0",
@@ -65,7 +66,7 @@ func TestARM64Pool_HostCallDisablesFPTemps(t *testing.T) {
 	}
 }
 
-func TestARM64Allocator_FPTempsOnly(t *testing.T) {
+func TestARM64Allocator_F64GuestFPCached(t *testing.T) {
 	e := NewEmitter(nil)
 	a := e.Tmp()
 	b := e.Tmp()
@@ -89,8 +90,30 @@ func TestARM64Allocator_FPTempsOnly(t *testing.T) {
 		}
 	}
 	for _, vr := range []VReg{e.FRegV(10), e.FRegV(11), e.FRegV(12)} {
+		host, ok := arm64TestAllocHost(alloc, vr)
+		if !ok {
+			t.Fatalf("guest %s was not allocated to a host FP register", vr)
+		}
+		if !arm64IsFPReg(host) {
+			t.Fatalf("guest %s host = %d, want ARM64 FP register", vr, host)
+		}
+	}
+}
+
+func TestARM64Allocator_F32GuestFPMemoryBacked(t *testing.T) {
+	e := NewEmitter(nil)
+	e.FAdd(e.FRegV(10), e.FRegV(11), e.FRegV(12), F32)
+	e.Ret(0x1004, 0, VRegZero)
+	MaxVReg(e.Block)
+
+	pool := ARM64Pool(e.Block)
+	if !pool.NoArchFP {
+		t.Fatal("F32 block should keep guest f0..f31 memory-backed until host-register boxing is modeled")
+	}
+	alloc := helperTestAllocate(e.Block, pool, ARM64Pinned(), nil)
+	for _, vr := range []VReg{e.FRegV(10), e.FRegV(11), e.FRegV(12)} {
 		if int(vr) < len(alloc.Kind) && alloc.Kind[vr] == AllocReg {
-			t.Fatalf("guest %s should remain memory-backed on ARM64", vr)
+			t.Fatalf("guest %s should remain memory-backed for F32 blocks", vr)
 		}
 	}
 }
@@ -176,6 +199,148 @@ func TestARM64EntryLoadAnalysis_HostCallConservative(t *testing.T) {
 	loadAll, _ := arm64EntryLoadAnalysis(e.Block)
 	if !loadAll {
 		t.Fatal("block with host call should keep conservative entry loads")
+	}
+}
+
+func TestARM64RegfileWritebackStoreClassifier(t *testing.T) {
+	tests := []struct {
+		name    string
+		ins     IRInstr
+		indexed bool
+		want    bool
+	}{
+		{
+			name: "x writeback",
+			ins:  IRInstr{Op: IRStore, T: I64, A: VRXBase, B: VReg(10), Imm: 80},
+			want: true,
+		},
+		{
+			name: "f writeback",
+			ins:  IRInstr{Op: IRStore, T: I64, A: VRFBase, B: VReg(32 + 10), Imm: 80},
+			want: true,
+		},
+		{
+			name: "wrong offset",
+			ins:  IRInstr{Op: IRStore, T: I64, A: VRXBase, B: VReg(10), Imm: 88},
+		},
+		{
+			name: "wrong base",
+			ins:  IRInstr{Op: IRStore, T: I64, A: VRMemBase, B: VReg(10), Imm: 80},
+		},
+		{
+			name: "wrong type",
+			ins:  IRInstr{Op: IRStore, T: I32, A: VRXBase, B: VReg(10), Imm: 80},
+		},
+		{
+			name:    "indexed store",
+			ins:     IRInstr{Op: IRStoreX, T: I64, A: VRXBase, B: VReg(10), Dst: VReg(10), Imm: 80},
+			indexed: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := arm64IsRegfileWritebackStore(&tt.ins, tt.indexed); got != tt.want {
+				t.Fatalf("arm64IsRegfileWritebackStore = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestARM64RegfileLoadClassifier(t *testing.T) {
+	tests := []struct {
+		name    string
+		ins     IRInstr
+		indexed bool
+		want    bool
+	}{
+		{
+			name: "x load",
+			ins:  IRInstr{Op: IRLoad, T: I64, Dst: VReg(10), A: VRXBase, Imm: 80},
+			want: true,
+		},
+		{
+			name: "f load",
+			ins:  IRInstr{Op: IRLoad, T: I64, Dst: VReg(32 + 10), A: VRFBase, Imm: 80},
+			want: true,
+		},
+		{
+			name: "wrong offset",
+			ins:  IRInstr{Op: IRLoad, T: I64, Dst: VReg(10), A: VRXBase, Imm: 88},
+		},
+		{
+			name: "wrong base",
+			ins:  IRInstr{Op: IRLoad, T: I64, Dst: VReg(10), A: VRMemBase, Imm: 80},
+		},
+		{
+			name: "wrong type",
+			ins:  IRInstr{Op: IRLoad, T: I32, Dst: VReg(10), A: VRXBase, Imm: 80},
+		},
+		{
+			name:    "indexed load",
+			ins:     IRInstr{Op: IRLoadX, T: I64, Dst: VReg(10), A: VRXBase, B: VReg(10), Imm: 80},
+			indexed: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := arm64IsRegfileLoad(&tt.ins, tt.indexed); got != tt.want {
+				t.Fatalf("arm64IsRegfileLoad = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestARM64DirtyTimelineIsExitSpecific(t *testing.T) {
+	b := NewBlock()
+	b.Instrs = []IRInstr{
+		{Op: IRLoad, T: I64, Dst: VReg(10), A: VRXBase, Imm: 80},
+		{Op: IRChainExit, Imm: 0x2000},
+		{Op: IRConst, T: I64, Dst: VReg(11), Imm: 7},
+		{Op: IRChainExit, Imm: 0x3000},
+	}
+	MaxVReg(b)
+
+	lc := &lowerARM64Ctx{blk: b}
+	lc.collectDirtyArch()
+
+	if lc.dirtyTimeline[1][10] {
+		t.Fatal("entry regfile load marked x10 dirty at first exit")
+	}
+	if lc.dirtyTimeline[1][11] {
+		t.Fatal("write after first exit polluted first exit dirty set")
+	}
+	if !lc.dirtyTimeline[3][11] {
+		t.Fatal("x11 write missing from second exit dirty set")
+	}
+	if lc.dirtyArch[10] {
+		t.Fatal("entry regfile load marked x10 dirty in block union")
+	}
+	if !lc.dirtyArch[11] {
+		t.Fatal("x11 write missing from block dirty union")
+	}
+}
+
+func TestLowerARM64_PairLoadStoreHelpers_Assemble(t *testing.T) {
+	ctx := goasm.New(goasm.ARM64)
+	ctx.Append(ctx.NewATEXT())
+	lc := &lowerARM64Ctx{c: ctx}
+	lc.emitLoadPair(a64ABJITBase, 8, goasm.REG_ARM64_R10, goasm.REG_ARM64_R11)
+	lc.emitStorePair(goasm.REG_ARM64_R10, goasm.REG_ARM64_R11, a64ABJITBase, 8)
+	lc.emitFLoadPair(a64ABJITBase, int64(fpRegOffset)+8, goasm.REG_ARM64_F3, goasm.REG_ARM64_F4)
+	lc.emitFStorePair(goasm.REG_ARM64_F3, goasm.REG_ARM64_F4, a64ABJITBase, int64(fpRegOffset)+8)
+
+	code, err := ctx.Assemble()
+	if err != nil {
+		t.Fatalf("Assemble: %v", err)
+	}
+	if len(code) == 0 {
+		t.Fatal("expected non-empty code")
+	}
+	dump := ctx.DumpProgs()
+	for _, want := range []string{"LDP", "STP", "FLDPD", "FSTPD"} {
+		if !strings.Contains(dump, want) {
+			t.Fatalf("DumpProgs missing %s:\n%s", want, dump)
+		}
 	}
 }
 
@@ -312,6 +477,36 @@ func TestLowerARM64_FPTempRegs_Assemble(t *testing.T) {
 				t.Fatal("expected non-empty code")
 			}
 		})
+	}
+}
+
+func TestLowerARM64_LiveChainSlot_Assemble(t *testing.T) {
+	e := NewEmitter(nil)
+	e.ChainExit(0x2000, 0)
+	MaxVReg(e.Block)
+
+	alloc := helperTestAllocate(e.Block, ARM64Pool(e.Block), ARM64Pinned(), nil)
+	ctx := goasm.New(goasm.ARM64)
+	ctx.Append(ctx.NewATEXT())
+	res, err := LowerARM64_ABJIT(ctx, e.Block, alloc)
+	if err != nil {
+		t.Fatalf("lower: %v", err)
+	}
+	if res.LiveChainEntryProg == nil {
+		t.Fatal("expected ARM64 live-chain entry marker")
+	}
+	if len(res.ChainExits) != 1 {
+		t.Fatalf("ChainExits len = %d, want 1", len(res.ChainExits))
+	}
+	if res.ChainExits[0].LiveMovProg == nil {
+		t.Fatal("expected ARM64 live-chain patch slot")
+	}
+	code, err := ctx.Assemble()
+	if err != nil {
+		t.Fatalf("Assemble: %v", err)
+	}
+	if len(code) == 0 {
+		t.Fatal("expected non-empty code")
 	}
 }
 

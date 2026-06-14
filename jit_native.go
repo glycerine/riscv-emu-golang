@@ -49,7 +49,7 @@ func (j *JIT) jitCompile(res *emitResult, mem ...*GuestMemory) (*compiledBlock, 
 
 	pool := j.regPolicy.Pool(res.block)
 	pinned := j.regPolicy.Pinned()
-	if (j.UseR15InstructionCounter || j.DebugOneBlockLockstepMode) && j.regPolicy.InstructionCounterReg != 0 {
+	if j.reserveInstructionCounterReg(res.block) {
 		pool.IntRegs = removeReg(pool.IntRegs, j.regPolicy.InstructionCounterReg)
 	}
 	alloc := j.irAlloc.Allocate(res.block, pool, pinned, nil)
@@ -91,6 +91,10 @@ func (j *JIT) jitCompile(res *emitResult, mem ...*GuestMemory) (*compiledBlock, 
 		// Step 6: Block chaining setup — backpatch MOVABS sentinels and record metadata.
 		if lowerResult != nil && lowerResult.ChainEntryProg != nil {
 			blk.chainEntry = codeBase + uintptr(lowerResult.ChainEntryProg.Pc)
+			if lowerResult.LiveChainEntryProg != nil {
+				blk.liveChainEntry = codeBase + uintptr(lowerResult.LiveChainEntryProg.Pc)
+				blk.liveChain = lowerResult.LiveChain
+			}
 			for _, ce := range lowerResult.ChainExits {
 				// If a slow exit stub exists, backpatch the sentinel to
 				// point to it. Otherwise the sentinel remains until chain
@@ -105,10 +109,21 @@ func (j *JIT) jitCompile(res *emitResult, mem ...*GuestMemory) (*compiledBlock, 
 					writeErr = fmt.Errorf("jit patch chain exit: %w", patchErr)
 					return
 				}
+				livePatchOff := -1
+				if ce.LiveMovProg != nil {
+					liveOff, patchErr := j.regPolicy.PatchImm64(execMem, ce.LiveMovProg, 0)
+					if patchErr != nil {
+						writeErr = fmt.Errorf("jit patch live chain exit: %w", patchErr)
+						return
+					}
+					livePatchOff = liveOff
+				}
 
 				blk.chainExits = append(blk.chainExits, chainPatchInfo{
-					targetPC:    ce.TargetPC,
-					patchOffset: patchOff,
+					targetPC:        ce.TargetPC,
+					patchOffset:     patchOff,
+					livePatchOffset: livePatchOff,
+					liveChain:       ce.LiveChain,
 				})
 			}
 			if err := backpatchJalrICs(execMem, codeBase, lowerResult, blk, j.regPolicy.PatchImm64); err != nil {
@@ -214,7 +229,7 @@ func (j *JIT) jitCompileDebug(res *emitResult) (*compiledBlock, *compileDebugInf
 
 	pool := j.regPolicy.Pool(res.block)
 	pinned := j.regPolicy.Pinned()
-	if (j.UseR15InstructionCounter || j.DebugOneBlockLockstepMode) && j.regPolicy.InstructionCounterReg != 0 {
+	if j.reserveInstructionCounterReg(res.block) {
 		pool.IntRegs = removeReg(pool.IntRegs, j.regPolicy.InstructionCounterReg)
 	}
 	alloc := j.irAlloc.Allocate(res.block, pool, pinned, nil)
@@ -254,6 +269,10 @@ func (j *JIT) jitCompileDebug(res *emitResult) (*compiledBlock, *compileDebugInf
 		copy(execMem, code)
 		if lowerResult != nil && lowerResult.ChainEntryProg != nil {
 			blk.chainEntry = codeBase + uintptr(lowerResult.ChainEntryProg.Pc)
+			if lowerResult.LiveChainEntryProg != nil {
+				blk.liveChainEntry = codeBase + uintptr(lowerResult.LiveChainEntryProg.Pc)
+				blk.liveChain = lowerResult.LiveChain
+			}
 			for _, ce := range lowerResult.ChainExits {
 				patchValue := nativePatchSentinel
 				if ce.StubProg != nil {
@@ -265,9 +284,20 @@ func (j *JIT) jitCompileDebug(res *emitResult) (*compiledBlock, *compileDebugInf
 					writeErr = fmt.Errorf("jit patch chain exit: %w", patchErr)
 					return
 				}
+				livePatchOff := -1
+				if ce.LiveMovProg != nil {
+					liveOff, patchErr := j.regPolicy.PatchImm64(execMem, ce.LiveMovProg, 0)
+					if patchErr != nil {
+						writeErr = fmt.Errorf("jit patch live chain exit: %w", patchErr)
+						return
+					}
+					livePatchOff = liveOff
+				}
 				blk.chainExits = append(blk.chainExits, chainPatchInfo{
-					targetPC:    ce.TargetPC,
-					patchOffset: patchOff,
+					targetPC:        ce.TargetPC,
+					patchOffset:     patchOff,
+					livePatchOffset: livePatchOff,
+					liveChain:       ce.LiveChain,
 				})
 			}
 			if err := backpatchJalrICs(execMem, codeBase, lowerResult, blk, j.regPolicy.PatchImm64); err != nil {

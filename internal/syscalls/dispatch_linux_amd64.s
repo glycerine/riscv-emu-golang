@@ -25,8 +25,37 @@ TEXT jit_dispatch<>(SB), NOSPLIT|NOFRAME, $0-0
 
 	CMPQ	R11, $64             // Linux RV SYS_write
 	JE	jit_write
+	CMPQ	R11, $63             // Linux RV SYS_read
+	JE	jit_read
+	CMPQ	R11, $57             // Linux RV SYS_close
+	JE	jit_close
+	CMPQ	R11, $62             // Linux RV SYS_lseek
+	JE	jit_lseek
+	CMPQ	R11, $96             // Linux RV SYS_set_tid_address
+	JE	jit_set_tid_address
+	CMPQ	R11, $172            // Linux RV SYS_getpid
+	JE	jit_getpid
+	CMPQ	R11, $178            // Linux RV SYS_gettid
+	JE	jit_gettid
+	CMPQ	R11, $214            // Linux RV SYS_brk
+	JE	jit_brk
 
 	MOVQ	$1, AX
+	RET
+
+jit_read:
+	MOVQ	88(R10), R11         // guest buf VA
+	ANDQ	DX, R11              // bounds-mask
+	ADDQ	SI, R11              // + memBase = host ptr
+
+	MOVQ	96(R10), DX          // count
+	MOVQ	R11, SI              // host buf
+	MOVQ	80(R10), DI          // fd
+	XORQ	AX, AX               // Linux amd64 SYS_read
+	SYSCALL
+
+	MOVQ	AX, 80(R10)
+	XORQ	AX, AX
 	RET
 
 jit_write:
@@ -48,6 +77,54 @@ jit_write:
 	SYSCALL
 
 	MOVQ	AX, 80(R10)
+	XORQ	AX, AX
+	RET
+
+jit_close:
+	MOVQ	80(R10), DI          // fd
+	MOVQ	$3, AX               // Linux amd64 SYS_close
+	SYSCALL
+
+	MOVQ	AX, 80(R10)
+	XORQ	AX, AX
+	RET
+
+jit_lseek:
+	MOVQ	96(R10), DX          // whence
+	MOVQ	88(R10), SI          // offset
+	MOVQ	80(R10), DI          // fd
+	MOVQ	$8, AX               // Linux amd64 SYS_lseek
+	SYSCALL
+
+	MOVQ	AX, 80(R10)
+	XORQ	AX, AX
+	RET
+
+jit_set_tid_address:
+	MOVQ	$1, R11              // lightweight benchmark/libc stub
+	MOVQ	R11, 80(R10)
+	XORQ	AX, AX
+	RET
+
+jit_getpid:
+	MOVQ	$39, AX              // Linux amd64 SYS_getpid
+	SYSCALL
+
+	MOVQ	AX, 80(R10)
+	XORQ	AX, AX
+	RET
+
+jit_gettid:
+	MOVQ	$186, AX             // Linux amd64 SYS_gettid
+	SYSCALL
+
+	MOVQ	AX, 80(R10)
+	XORQ	AX, AX
+	RET
+
+jit_brk:
+	XORQ	R11, R11             // match the repo's minimal brk handler
+	MOVQ	R11, 80(R10)
 	XORQ	AX, AX
 	RET
 

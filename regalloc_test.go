@@ -365,6 +365,33 @@ func TestAllocate_GuestRegEvictsTemp(t *testing.T) {
 	}
 }
 
+func TestAllocate_TempIntervalsReuseHostReg(t *testing.T) {
+	b := makeBlock(
+		IRInstr{Op: IRConst, Dst: VReg(64), Imm: 1},
+		IRInstr{Op: IRConst, Dst: VReg(65), Imm: 9},
+		IRInstr{Op: IRConst, Dst: VReg(66), Imm: 2},
+		IRInstr{Op: IRConst, Dst: VReg(67), Imm: 10},
+	)
+	pool := testPool(1, 0)
+	pool.TempIntervals = true
+	alloc := helperTestAllocate(b, pool, nil, nil)
+	assertNoConflicts(t, alloc)
+	if alloc.StackSlots != 0 {
+		t.Errorf("StackSlots = %d, want 0 because the temp lifetimes do not overlap", alloc.StackSlots)
+	}
+	r64, ok := regAt(alloc, VReg(64), 0)
+	if !ok {
+		t.Fatal("x64 missing host register")
+	}
+	r66, ok := regAt(alloc, VReg(66), 2)
+	if !ok {
+		t.Fatal("x66 missing host register")
+	}
+	if r64 != r66 {
+		t.Fatalf("non-overlapping temps used host regs %d and %d, want reuse", r64, r66)
+	}
+}
+
 // ════════════════════════════════════════════════════════════════════════
 // Pinned parameter VRegs
 // ════════════════════════════════════════════════════════════════════════

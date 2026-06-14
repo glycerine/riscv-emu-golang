@@ -25,8 +25,10 @@ func SetDebugJIT(on bool) {
 
 // chainPatchInfo describes a chain exit that can be patched by Go.
 type chainPatchInfo struct {
-	targetPC    uint64 // guest PC this exit targets
-	patchOffset int    // byte offset of backend patch data within the code page
+	targetPC        uint64 // guest PC this exit targets
+	patchOffset     int    // byte offset of backend safe-chain patch data
+	livePatchOffset int    // optional byte offset of backend live-chain patch data
+	liveChain       liveChainMeta
 }
 
 // jalrICPatchInfo describes a 2-way JALR inline-cache site. Slot [k]
@@ -136,12 +138,14 @@ func (seg *DecodedExecuteSegment) Release() {
 // compiledBlock holds a compiled function pointer produced by the native
 // IR pipeline.
 type compiledBlock struct {
-	fn         uintptr           // native function pointer
-	chainEntry uintptr           // entry point for chaining
-	chainExits []chainPatchInfo  // chain exits for patching
-	jalrICs    []jalrICPatchInfo // JALR IC sites for patching
-	hasFP      bool              // block uses FP registers (skip f[] copy when false)
-	numInsns   int               // static instruction count from emission
+	fn             uintptr           // native function pointer
+	chainEntry     uintptr           // entry point for chaining
+	liveChainEntry uintptr           // entry after prologue/fixed ABI setup, before register-file loads
+	liveChain      liveChainMeta     // conservative metadata for no-store ARM64 chaining
+	chainExits     []chainPatchInfo  // chain exits for patching
+	jalrICs        []jalrICPatchInfo // JALR IC sites for patching
+	hasFP          bool              // block uses FP registers (skip f[] copy when false)
+	numInsns       int               // static instruction count from emission
 
 	// segment is the DecodedExecuteSegment that owns this block's native
 	// code, or nil for lazy-compiled blocks. Set at AOT install time;
@@ -185,6 +189,30 @@ const (
 type blockCacheEntry struct {
 	pc  uint64
 	blk *compiledBlock
+}
+
+type JITInstructionCounterMode uint8
+
+const (
+	// JITICNone emits no per-instruction counter updates in JIT code. This is
+	// intended for throughput measurements; cpu.RiscvInstrBegun remains exact
+	// only for interpreter fallback instructions.
+	JITICNone JITInstructionCounterMode = iota
+
+	// JITICPrecise emits one native counter update per guest instruction and
+	// is the default for parity, lockstep, and instruction-count tests.
+	JITICPrecise
+)
+
+func (m JITInstructionCounterMode) String() string {
+	switch m {
+	case JITICNone:
+		return "none"
+	case JITICPrecise:
+		return "precise"
+	default:
+		return fmt.Sprintf("unknown(%d)", uint8(m))
+	}
 }
 
 // JIT holds the cache of compiled basic blocks.
@@ -233,6 +261,15 @@ type JIT struct {
 	// the lazy compile path — used by benchmarks that measure the
 	// lazy-vs-AOT gap and by tests that want to drive the fallback path.
 	DisableAutoAOT bool
+
+	// HotRegionThreshold promotes a registered executable region from
+	// lazy block compilation to a full AOT segment after this many lazy
+	// compiles inside the region. Zero disables promotion. This is an
+	// explicit opt-in and still works when DisableAutoAOT is true, so
+	// callers can measure a lazy warm-up followed by segment execution.
+	HotRegionThreshold uint32
+	HotRegionsCompiled uint64
+	hotRegionCounts    map[uint64]uint32
 
 	irAlloc    RegAllocator
 	regPolicy  RegPolicy
@@ -295,6 +332,87 @@ func (j *JIT) SetRegPolicy(p RegPolicy) {
 
 // NoJITSize returns the number of PCs in the noJIT set (translation failures).
 func (j *JIT) NoJITSize() int { return len(j.noJIT) }
+
+// SetInstructionCounterMode selects how future JIT emissions account for
+// retired guest instructions. Switching modes invalidates compiled code so
+// subsequent dispatches cannot mix precise and no-counter blocks.
+func (j *JIT) SetInstructionCounterMode(mode JITInstructionCounterMode) {
+	switch mode {
+	case JITICNone:
+		j.UseR15InstructionCounter = false
+	case JITICPrecise:
+		j.UseR15InstructionCounter = true
+	default:
+		panic(fmt.Sprintf("unknown JIT instruction counter mode: %d", uint8(mode)))
+	}
+	j.resetCompiledCode()
+}
+
+// InstructionCounterMode reports the effective non-debug IC mode. Lockstep
+// still forces precise counting at emission time because its budget checks
+// depend on the same native counter register.
+func (j *JIT) InstructionCounterMode() JITInstructionCounterMode {
+	if j.UseR15InstructionCounter {
+		return JITICPrecise
+	}
+	return JITICNone
+}
+
+func (j *JIT) preciseInstructionCounterEnabled() bool {
+	return j.UseR15InstructionCounter || j.DebugOneBlockLockstepMode
+}
+
+func blockTouchesInstructionCounterReg(b *Block) bool {
+	if b == nil {
+		return false
+	}
+	for i := range b.Instrs {
+		switch b.Instrs[i].Op {
+		case IRZeroIC, IRLoadIC, IRIncIC, IRDecIC, IRSpillIC, IRRegBudget,
+			IRCall, IRSyscall, IRJalrIC:
+			return true
+		}
+	}
+	return false
+}
+
+func (j *JIT) reserveInstructionCounterReg(b *Block) bool {
+	if j.regPolicy.InstructionCounterReg == 0 {
+		return false
+	}
+	return j.preciseInstructionCounterEnabled() || blockTouchesInstructionCounterReg(b)
+}
+
+func (j *JIT) resetCompiledCode() {
+	for _, s := range j.aotSegments {
+		s.Release()
+	}
+	j.aotSegments = nil
+	j.hotSegment = nil
+	j.soleSegment = nil
+
+	for _, blk := range j.lazyBlocks {
+		if len(blk.nativeMmap) > 0 {
+			_ = syscall.Munmap(blk.nativeMmap)
+			blk.nativeMmap = nil
+			blk.fn = 0
+		}
+	}
+	j.lazyBlocks = nil
+	j.cache = [blockCacheSize]blockCacheEntry{}
+	j.noJIT = make(map[uint64]bool)
+	j.hotRegionCounts = nil
+	j.abjitState = nil
+}
+
+// SetHotRegionThreshold enables lazy-to-AOT promotion for executable
+// regions. A value of zero disables promotion.
+func (j *JIT) SetHotRegionThreshold(n uint32) {
+	j.HotRegionThreshold = n
+	if n == 0 {
+		j.hotRegionCounts = nil
+	}
+}
 
 // stepInterpreted executes exactly one guest instruction through the
 // interpreter while the JIT dispatcher is active.
@@ -380,9 +498,10 @@ func (j *JIT) compileAOTRegion(mem *GuestMemory, begin, end, size uint64, writab
 // install (blocks map read-only, decoder_cache mprotect RO, native
 // code already patched).
 //
-// The clone's debug flags (InterpOnly, UseV2, DebugV1V2, trace) start
-// at zero values; set them on the returned JIT if desired. Counters
-// also start at zero so the clone gets its own measurement baseline.
+// The clone preserves the register policy, allocator, AOT segments, and
+// instruction-counter mode. Debug dispatch flags such as InterpOnly and trace
+// start at zero values; set them on the returned JIT if desired. Counters also
+// start at zero so the clone gets its own measurement baseline.
 //
 // The noJIT failure set starts empty in the clone; it may re-discover
 // untranslatable PCs the parent already found, at tiny cost. The
@@ -390,11 +509,14 @@ func (j *JIT) compileAOTRegion(mem *GuestMemory, begin, end, size uint64, writab
 // and stay with the JIT that owns them until its Close.
 func (j *JIT) CloneShared() *JIT {
 	child := &JIT{
-		aotSegments: append([]*DecodedExecuteSegment(nil), j.aotSegments...),
-		noJIT:       make(map[uint64]bool),
-		irAlloc:     j.irAlloc,   // stateless; sharing is safe
-		regPolicy:   j.regPolicy, // struct copy; function pointers are safe to share
-		useABJIT:    j.useABJIT,
+		aotSegments:               append([]*DecodedExecuteSegment(nil), j.aotSegments...),
+		noJIT:                     make(map[uint64]bool),
+		irAlloc:                   j.irAlloc,   // stateless; sharing is safe
+		regPolicy:                 j.regPolicy, // struct copy; function pointers are safe to share
+		useABJIT:                  j.useABJIT,
+		UseR15InstructionCounter:  j.UseR15InstructionCounter,
+		DebugOneBlockLockstepMode: j.DebugOneBlockLockstepMode,
+		LockstepModeBudget:        j.LockstepModeBudget,
 	}
 	for _, s := range child.aotSegments {
 		s.Retain()
@@ -578,6 +700,36 @@ func (j *JIT) insertBlock(pc uint64, blk *compiledBlock) {
 	}
 }
 
+func (j *JIT) maybeCompileHotRegion(mem *GuestMemory, pc uint64) bool {
+	threshold := j.HotRegionThreshold
+	if threshold == 0 || j.InterpOnly || mem == nil {
+		return false
+	}
+	if j.findSegment(pc) != nil {
+		return false
+	}
+	region := mem.FindExecRegion(pc)
+	if region == nil {
+		return false
+	}
+	begin := region.VAddrBegin
+	if j.hotRegionCounts == nil {
+		j.hotRegionCounts = make(map[uint64]uint32)
+	}
+	count := j.hotRegionCounts[begin] + 1
+	j.hotRegionCounts[begin] = count
+	if count < threshold {
+		return false
+	}
+	if seg := j.nextExecuteSegment(mem, pc); seg != nil {
+		j.HotRegionsCompiled++
+		delete(j.hotRegionCounts, begin)
+		_, hasPC := seg.blocks[pc]
+		return hasPC
+	}
+	return false
+}
+
 // StepBlock executes one dispatch cycle and returns.
 func (j *JIT) StepBlock(cpu *CPU) (ic uint64, err error) {
 	if j.watchAddr == 0 && cpu.watchAddr != 0 {
@@ -643,6 +795,7 @@ func (j *JIT) StepBlock(cpu *CPU) (ic uint64, err error) {
 			compiled, cerr := j.jitCompile(res, &cpu.mem)
 			if cerr == nil {
 				j.insertBlock(pc, compiled)
+				j.maybeCompileHotRegion(&cpu.mem, pc)
 				return j.StepBlock(cpu) // retry — returns cpu.riscvInstrBegun
 			}
 		}
@@ -906,6 +1059,7 @@ func (j *JIT) RunJIT(cpu *CPU) (err0 error) {
 				if err == nil {
 					j.DispatchCompile++
 					j.insertBlock(pc, blk)
+					j.maybeCompileHotRegion(&cpu.mem, pc)
 					continue
 				}
 				if debugJIT {
@@ -949,6 +1103,33 @@ func patchChainTarget(codeBase uintptr, patchOffset int, targetAddr uintptr) {
 	flushIcache(patchAddr, 8)
 }
 
+func liveChainCompatible(src liveChainMeta, target *compiledBlock) bool {
+	if target == nil || !src.Enabled || !target.liveChain.Enabled {
+		return false
+	}
+	if target.liveChainEntry == 0 {
+		return false
+	}
+	if src.HasDirtyArch {
+		return false
+	}
+	for vr := 1; vr < 32; vr++ {
+		if !target.liveChain.EntryLiveArch[vr] {
+			continue
+		}
+		if !src.ValidExitArch[vr] {
+			return false
+		}
+		if !src.ArchHostValid[vr] || !target.liveChain.ArchHostValid[vr] {
+			return false
+		}
+		if src.ArchHost[vr] != target.liveChain.ArchHost[vr] {
+			return false
+		}
+	}
+	return true
+}
+
 // tryPatchChain patches a previous block's chain exit to jump directly
 // to the target block, bypassing the Go dispatch loop on future executions.
 func (j *JIT) tryPatchChain(blk *compiledBlock, targetPC uint64) {
@@ -958,7 +1139,11 @@ func (j *JIT) tryPatchChain(blk *compiledBlock, targetPC uint64) {
 	}
 	for _, ce := range blk.chainExits {
 		if ce.targetPC == targetPC {
-			patchChainTarget(blk.fn, ce.patchOffset, target.chainEntry)
+			if ce.livePatchOffset >= 0 && liveChainCompatible(ce.liveChain, target) {
+				patchChainTarget(blk.fn, ce.livePatchOffset, target.liveChainEntry)
+			} else {
+				patchChainTarget(blk.fn, ce.patchOffset, target.chainEntry)
+			}
 			j.ChainPatched++
 			break
 		}

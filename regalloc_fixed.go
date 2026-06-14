@@ -1,5 +1,7 @@
 package riscv
 
+import "sort"
+
 // FixedStaticAllocator maps a fixed set of high-priority RISC-V registers
 // to native host registers, spilling the rest to stack slots. No liveness
 // analysis or interference graphs — just a hardcoded priority table.
@@ -11,6 +13,14 @@ type FixedStaticAllocator struct{}
 
 func NewFixedStaticAllocator() *FixedStaticAllocator {
 	return &FixedStaticAllocator{}
+}
+
+type fixedLiveInterval struct {
+	vr       VReg
+	start    int
+	end      int
+	isFP     bool
+	spillKey int
 }
 
 // intPriority is the RISC-V integer register priority order.
@@ -164,41 +174,74 @@ func (f *FixedStaticAllocator) Allocate(b *Block, pool RegPool, pinned map[VReg]
 	}
 
 	// 4. Handle temps (VReg >= VRegTempStart) that aren't pinned.
-	//    These are JIT-internal temporaries. Assign from remaining pool registers.
+	//    These are JIT-internal temporaries. Unlike guest registers, temps
+	//    use their actual first/last reference, so non-overlapping temps can
+	//    reuse the same host register inside one block.
 	stackSlots := int16(0)
-	//vv("FixedStaticAllocator.Allocate() begin: for vr := VRegTempStart loop")
-	for vr := VRegTempStart; int(vr) < numVRegs; vr++ {
-		if !used[vr] {
-			continue
-		}
-		if _, isPinned := pinned[vr]; isPinned {
-			continue
-		}
-		if isFP[vr] {
-			if fpPoolIdx < len(pool.FPRegs) {
-				kind[vr] = AllocReg
-				intervalAllocs = append(intervalAllocs, IntervalAlloc{
-					Interval: Interval{VReg: vr, Start: 0, End: n - 1},
-					Host:     pool.FPRegs[fpPoolIdx],
-				})
-				fpPoolIdx++
+	if pool.TempIntervals {
+		var intTemps, fpTemps []fixedLiveInterval
+		first, last := fixedFirstLast(b, numVRegs)
+		for vr := VRegTempStart; int(vr) < numVRegs; vr++ {
+			vi := int(vr)
+			if !used[vi] {
 				continue
 			}
-		} else {
-			if intPoolIdx < len(pool.IntRegs) {
-				kind[vr] = AllocReg
-				intervalAllocs = append(intervalAllocs, IntervalAlloc{
-					Interval: Interval{VReg: vr, Start: 0, End: n - 1},
-					Host:     pool.IntRegs[intPoolIdx],
-				})
-				intPoolIdx++
+			if _, isPinned := pinned[vr]; isPinned {
 				continue
 			}
+			iv := fixedLiveInterval{
+				vr:    vr,
+				start: first[vi],
+				end:   last[vi],
+				isFP:  isFP[vi],
+			}
+			if iv.start < 0 {
+				iv.start = 0
+				iv.end = n - 1
+			}
+			if iv.isFP {
+				fpTemps = append(fpTemps, iv)
+			} else {
+				intTemps = append(intTemps, iv)
+			}
 		}
-		// Spill if no registers left.
-		kind[vr] = AllocStack
-		spillSlot[vr] = stackSlots
-		stackSlots++
+		intRegsForTemps := append([]int16(nil), pool.IntRegs[intPoolIdx:]...)
+		fpRegsForTemps := append([]int16(nil), pool.FPRegs[fpPoolIdx:]...)
+		stackSlots = fixedAssignIntervals(intTemps, intRegsForTemps, kind, spillSlot, &intervalAllocs, stackSlots)
+		stackSlots = fixedAssignIntervals(fpTemps, fpRegsForTemps, kind, spillSlot, &intervalAllocs, stackSlots)
+	} else {
+		for vr := VRegTempStart; int(vr) < numVRegs; vr++ {
+			if !used[vr] {
+				continue
+			}
+			if _, isPinned := pinned[vr]; isPinned {
+				continue
+			}
+			if isFP[vr] {
+				if fpPoolIdx < len(pool.FPRegs) {
+					kind[vr] = AllocReg
+					intervalAllocs = append(intervalAllocs, IntervalAlloc{
+						Interval: Interval{VReg: vr, Start: 0, End: n - 1},
+						Host:     pool.FPRegs[fpPoolIdx],
+					})
+					fpPoolIdx++
+					continue
+				}
+			} else {
+				if intPoolIdx < len(pool.IntRegs) {
+					kind[vr] = AllocReg
+					intervalAllocs = append(intervalAllocs, IntervalAlloc{
+						Interval: Interval{VReg: vr, Start: 0, End: n - 1},
+						Host:     pool.IntRegs[intPoolIdx],
+					})
+					intPoolIdx++
+					continue
+				}
+			}
+			kind[vr] = AllocStack
+			spillSlot[vr] = stackSlots
+			stackSlots++
+		}
 	}
 	//vv("finsihed, on to 5.")
 
@@ -221,4 +264,86 @@ func (f *FixedStaticAllocator) Allocate(b *Block, pool RegPool, pinned map[VReg]
 		IntervalMap: intervalAllocs,
 		StackSlots:  int(stackSlots),
 	}
+}
+
+func fixedFirstLast(b *Block, numVRegs int) ([]int, []int) {
+	first := make([]int, numVRegs)
+	last := make([]int, numVRegs)
+	for i := range first {
+		first[i] = -1
+		last[i] = -1
+	}
+	for i := range b.Instrs {
+		ins := &b.Instrs[i]
+		for _, vr := range []VReg{ins.Dst, ins.A, ins.B, ins.C} {
+			if vr == VRegZero || int(vr) >= numVRegs {
+				continue
+			}
+			vi := int(vr)
+			if first[vi] < 0 {
+				first[vi] = i
+			}
+			last[vi] = i
+		}
+	}
+	return first, last
+}
+
+func fixedAssignIntervals(
+	intervals []fixedLiveInterval,
+	regs []int16,
+	kind []AllocKind,
+	spillSlot []int16,
+	intervalAllocs *[]IntervalAlloc,
+	stackSlots int16,
+) int16 {
+	sort.Slice(intervals, func(i, j int) bool {
+		if intervals[i].start != intervals[j].start {
+			return intervals[i].start < intervals[j].start
+		}
+		if intervals[i].end != intervals[j].end {
+			return intervals[i].end < intervals[j].end
+		}
+		return intervals[i].vr < intervals[j].vr
+	})
+	for _, iv := range intervals {
+		host, ok := fixedPickHostForInterval(iv, regs, *intervalAllocs)
+		vi := int(iv.vr)
+		if ok {
+			kind[vi] = AllocReg
+			*intervalAllocs = append(*intervalAllocs, IntervalAlloc{
+				Interval: Interval{VReg: iv.vr, Start: iv.start, End: iv.end},
+				Host:     host,
+			})
+			continue
+		}
+		kind[vi] = AllocStack
+		spillSlot[vi] = stackSlots
+		stackSlots++
+	}
+	return stackSlots
+}
+
+func fixedPickHostForInterval(iv fixedLiveInterval, regs []int16, assigned []IntervalAlloc) (int16, bool) {
+	for _, candidate := range regs {
+		conflict := false
+		for i := range assigned {
+			a := assigned[i]
+			if a.Host != candidate {
+				continue
+			}
+			if fixedIntervalsOverlap(iv.start, iv.end, a.Interval.Start, a.Interval.End) {
+				conflict = true
+				break
+			}
+		}
+		if !conflict {
+			return candidate, true
+		}
+	}
+	return 0, false
+}
+
+func fixedIntervalsOverlap(aStart, aEnd, bStart, bEnd int) bool {
+	return aStart <= bEnd && bStart <= aEnd
 }

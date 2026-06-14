@@ -95,15 +95,19 @@ func (ri regIndex) lookup(v VReg, idx int) int16 {
 // ── Chain exit / JALR IC types ──
 
 type chainExitInfo struct {
-	targetPC uint64
-	movProg  *obj.Prog
-	stubProg *obj.Prog
+	targetPC    uint64
+	movProg     *obj.Prog
+	liveMovProg *obj.Prog
+	liveChain   liveChainMeta
+	stubProg    *obj.Prog
 }
 
 type ChainExitDesc struct {
-	TargetPC uint64
-	MovProg  *obj.Prog
-	StubProg *obj.Prog
+	TargetPC    uint64
+	MovProg     *obj.Prog
+	LiveMovProg *obj.Prog
+	LiveChain   liveChainMeta
+	StubProg    *obj.Prog
 }
 
 type jalrICInfo struct {
@@ -129,10 +133,21 @@ type GocallResumeDesc struct {
 }
 
 type LowerResult struct {
-	ChainEntryProg *obj.Prog
-	ChainExits     []ChainExitDesc
-	JalrICs        []JalrICDesc
-	GocallResumes  []GocallResumeDesc
+	ChainEntryProg     *obj.Prog
+	LiveChainEntryProg *obj.Prog
+	LiveChain          liveChainMeta
+	ChainExits         []ChainExitDesc
+	JalrICs            []JalrICDesc
+	GocallResumes      []GocallResumeDesc
+}
+
+type liveChainMeta struct {
+	Enabled       bool
+	HasDirtyArch  bool
+	EntryLiveArch [32]bool
+	ValidExitArch [32]bool
+	ArchHost      [32]int16
+	ArchHostValid [32]bool
 }
 
 // ── Shared helpers ──

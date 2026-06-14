@@ -13,23 +13,69 @@ import (
 // codegen will use the regular Go ecall path on unsupported native backends.
 func CallDispatch(xptr unsafe.Pointer, memBase uintptr, memMask uint64) uint64 {
 	regs := unsafe.Slice((*uint64)(xptr), 32)
-	if regs[17] != 64 {
+	switch regs[17] {
+	case 63:
+		bufVA := uintptr(regs[11])
+		count := int(regs[12])
+		if count < 0 {
+			return 1
+		}
+		hostBuf := unsafe.Slice((*byte)(unsafe.Pointer(memBase+(bufVA&uintptr(memMask)))), count)
+		n, err := syscall.Read(int(regs[10]), hostBuf)
+		regs[10] = syscallResult(n, err)
+		return 0
+	case 64:
+		fd := int(regs[10])
+		bufVA := uintptr(regs[11])
+		count := int(regs[12])
+		if count < 0 {
+			return 1
+		}
+		hostBuf := unsafe.Slice((*byte)(unsafe.Pointer(memBase+(bufVA&uintptr(memMask)))), count)
+		n, err := syscall.Write(fd, hostBuf)
+		regs[10] = syscallResult(n, err)
+		return 0
+	case 57:
+		err := syscall.Close(int(regs[10]))
+		regs[10] = syscallResult(0, err)
+		return 0
+	case 62:
+		off, err := syscall.Seek(int(regs[10]), int64(regs[11]), int(regs[12]))
+		if err != nil {
+			regs[10] = syscallErrno(err)
+		} else {
+			regs[10] = uint64(off)
+		}
+		return 0
+	case 96:
+		regs[10] = 1
+		return 0
+	case 172:
+		regs[10] = uint64(syscall.Getpid())
+		return 0
+	case 178:
+		regs[10] = 1
+		return 0
+	case 214:
+		regs[10] = 0
+		return 0
+	default:
 		return 1
 	}
-	fd := int(regs[10])
-	bufVA := uintptr(regs[11])
-	count := int(regs[12])
-	if count < 0 {
-		return 1
-	}
-	hostBuf := unsafe.Slice((*byte)(unsafe.Pointer(memBase+(bufVA&uintptr(memMask)))), count)
-	n, err := syscall.Write(fd, hostBuf)
+}
+
+func syscallResult(n int, err error) uint64 {
 	if err != nil {
-		regs[10] = uint64(-int64(err.(syscall.Errno)))
-	} else {
-		regs[10] = uint64(n)
+		return syscallErrno(err)
 	}
-	return 0
+	return uint64(n)
+}
+
+func syscallErrno(err error) uint64 {
+	if errno, ok := err.(syscall.Errno); ok {
+		return uint64(-int64(errno))
+	}
+	return ^uint64(0)
 }
 
 // DispatchAddr returns zero on non-amd64 until a native dispatcher exists.

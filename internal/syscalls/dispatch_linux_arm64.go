@@ -6,7 +6,8 @@ import "unsafe"
 
 // CallDispatch is a Go-ABI convenience wrapper around the native ARM64
 // dispatcher. Return value semantics match the JIT contract: 0=handled,
-// 1=fallback to the Go ecall path.
+// 1=fallback to the Go ecall path. The Linux ARM64 dispatcher handles the
+// same syscall subset as linux/amd64.
 //
 //go:noescape
 func CallDispatch(xptr unsafe.Pointer, memBase uintptr, memMask uint64) uint64
