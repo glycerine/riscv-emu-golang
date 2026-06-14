@@ -16,7 +16,10 @@ const (
 	Jea9ClockManual
 )
 
-const defaultJea9LinuxInstructionBudget = uint64(65536)
+const (
+	defaultJea9LinuxInstructionBudget = uint64(65536)
+	defaultJea9LinuxStackReserve      = uint64(8 * Size1MB)
+)
 
 var (
 	ErrJea9LinuxBudget  = errors.New("jea9linux instruction budget expired")
@@ -139,6 +142,9 @@ const (
 	jea9LinuxProtRead  = uint64(1)
 	jea9LinuxProtWrite = uint64(2)
 	jea9LinuxProtExec  = uint64(4)
+	jea9LinuxProtMask  = jea9LinuxProtRead | jea9LinuxProtWrite | jea9LinuxProtExec
+
+	jea9LinuxPageMapped = uint64(1 << 63)
 
 	jea9LinuxMapPrivate   = uint64(2)
 	jea9LinuxMapFixed     = uint64(0x10)
@@ -168,11 +174,18 @@ const (
 
 	jea9LinuxSignalDefault = uint64(0)
 	jea9LinuxSignalIgnore  = uint64(1)
+	jea9LinuxSASiginfo     = uint64(0x00000004)
 	jea9LinuxSAOnstack     = uint64(0x08000000)
 	jea9LinuxSSDisable     = uint64(2)
 
 	jea9LinuxSignalCodeUser       = int32(0)
 	jea9LinuxSignalCodeSEGVMapErr = int32(1)
+
+	jea9LinuxSignalFrameSize       = uint64(2048)
+	jea9LinuxSignalFrameSiginfoOff = uint64(128)
+	jea9LinuxSignalFrameUctxOff    = uint64(256)
+	jea9LinuxUContextSigmaskOff    = uint64(40)
+	jea9LinuxUContextMContextOff   = uint64(176)
 
 	jea9LinuxCloneVM            = uint64(0x00000100)
 	jea9LinuxCloneFS            = uint64(0x00000200)
@@ -314,6 +327,7 @@ type Jea9Linux struct {
 	futexWaiters        map[uint64][]uint64
 	signalActions       map[uint64]jea9LinuxSignalAction
 	signalFrames        map[jea9LinuxSignalFrameKey]jea9LinuxSignalFrame
+	signalRestorer      uint64
 }
 
 type jea9LinuxAuxEntry struct {
@@ -717,7 +731,11 @@ func (vm *jea9LinuxVM) CheckGuestAccess(addr, width uint64, kind FaultKind, size
 		if page == 0 {
 			prot = 0
 		} else if p, ok := vm.pages[page]; ok {
-			prot = p
+			if p&jea9LinuxPageMapped == 0 {
+				prot = 0
+			} else {
+				prot = p & jea9LinuxProtMask
+			}
 		}
 		if !jea9LinuxProtAllows(prot, kind) {
 			return &MemFault{Addr: addr, Width: width, Kind: kind}
@@ -761,18 +779,29 @@ func jea9LinuxPageRange(addr, length, memSize uint64) (begin, end uint64, ok boo
 	return begin, end, true
 }
 
-func (vm *jea9LinuxVM) setRange(addr, length, prot uint64) {
+func (vm *jea9LinuxVM) mapRange(addr, length, prot uint64) {
 	if length == 0 {
 		return
 	}
 	begin := jea9LinuxAlignDown(addr)
 	end := jea9LinuxAlignUp(addr + length)
 	for page := begin / GuestPageSize; page < end/GuestPageSize; page++ {
-		vm.pages[page] = prot
+		vm.pages[page] = jea9LinuxPageMapped | (prot & jea9LinuxProtMask)
 	}
 }
 
-func (vm *jea9LinuxVM) rangeHasNoAccess(addr, length uint64) bool {
+func (vm *jea9LinuxVM) unmapRange(addr, length uint64) {
+	if length == 0 {
+		return
+	}
+	begin := jea9LinuxAlignDown(addr)
+	end := jea9LinuxAlignUp(addr + length)
+	for page := begin / GuestPageSize; page < end/GuestPageSize; page++ {
+		vm.pages[page] = 0
+	}
+}
+
+func (vm *jea9LinuxVM) rangeUnmapped(addr, length uint64) bool {
 	if length == 0 {
 		return false
 	}
@@ -782,7 +811,7 @@ func (vm *jea9LinuxVM) rangeHasNoAccess(addr, length uint64) bool {
 		if page == 0 {
 			return true
 		}
-		if prot, ok := vm.pages[page]; ok && prot == 0 {
+		if state, ok := vm.pages[page]; ok && state&jea9LinuxPageMapped == 0 {
 			return true
 		}
 	}
@@ -793,7 +822,7 @@ func (vm *jea9LinuxVM) rangeFree(addr, length uint64) bool {
 	begin := jea9LinuxAlignDown(addr)
 	end := jea9LinuxAlignUp(addr + length)
 	for page := begin / GuestPageSize; page < end/GuestPageSize; page++ {
-		if prot, ok := vm.pages[page]; ok && prot != 0 {
+		if state, ok := vm.pages[page]; ok && state&jea9LinuxPageMapped != 0 {
 			return false
 		}
 	}
@@ -927,7 +956,12 @@ func (j *Jea9Linux) InitELFStack(cpu *CPU, ef *ELF, opts Jea9LinuxStartOptions) 
 		execPath = args[0]
 	}
 
-	stack := newJea9LinuxStackBuilder(cpu, opts.StackTop)
+	stackTop := opts.StackTop
+	if stackTop == 0 {
+		stackTop = cpu.mem.Size() - Size1MB
+	}
+	stackTop &^= 15
+	stack := newJea9LinuxStackBuilder(cpu, stackTop)
 	argPtrs, err := stack.pushStrings(args)
 	if err != nil {
 		return err
@@ -958,7 +992,30 @@ func (j *Jea9Linux) InitELFStack(cpu *CPU, ef *ELF, opts Jea9LinuxStartOptions) 
 
 	cpu.SetReg(2, vector)
 	cpu.SetPC(ef.Entry)
+	j.reserveInitialStackMapping(cpu, vm, stackTop, vector)
 	return nil
+}
+
+func (j *Jea9Linux) reserveInitialStackMapping(cpu *CPU, vm *jea9LinuxVM, stackTop, vector uint64) {
+	top := jea9LinuxAlignUp(stackTop)
+	if top > cpu.mem.Size() {
+		top = cpu.mem.Size()
+	}
+	bottom := uint64(GuestPageSize)
+	if stackTop > defaultJea9LinuxStackReserve {
+		bottom = stackTop - defaultJea9LinuxStackReserve
+	}
+	if vector < bottom {
+		bottom = vector
+	}
+	bottom = jea9LinuxAlignDown(bottom)
+	if bottom < GuestPageSize {
+		bottom = GuestPageSize
+	}
+	if top <= bottom {
+		return
+	}
+	vm.mapRange(bottom, top-bottom, jea9LinuxProtRead|jea9LinuxProtWrite)
 }
 
 func buildJea9LinuxAuxv(ef *ELF, randomPtr, platformPtr, execfnPtr uint64) []jea9LinuxAuxEntry {
@@ -1612,13 +1669,19 @@ func loadJea9LinuxSignalAction(cpu *CPU, addr uint64) (jea9LinuxSignalAction, in
 	if f != nil {
 		return jea9LinuxSignalAction{}, jea9LinuxErrEFAULT
 	}
-	restorer, f := cpu.mem.Load64(addr + 16)
+	third, f := cpu.mem.Load64(addr + 16)
 	if f != nil {
 		return jea9LinuxSignalAction{}, jea9LinuxErrEFAULT
 	}
-	mask, f := cpu.mem.Load64(addr + 24)
+	fourth, f := cpu.mem.Load64(addr + 24)
 	if f != nil {
 		return jea9LinuxSignalAction{}, jea9LinuxErrEFAULT
+	}
+	restorer := third
+	mask := fourth
+	if flags&jea9LinuxSASiginfo != 0 && third != 0 && fourth == 0 {
+		mask = third
+		restorer = fourth
 	}
 	return jea9LinuxSignalAction{
 		handler:  handler,
@@ -1810,9 +1873,14 @@ func (j *Jea9Linux) sysRtSigreturn(cpu *CPU) NoteDisposition {
 		setJea9LinuxReturn(cpu, jea9LinuxErrEINVAL)
 		return NoteHandled
 	}
+	snap, mask, errno := loadJea9LinuxSignalUContext(cpu, key.sp+jea9LinuxSignalFrameUctxOff, frame.snapshot, frame.signalMask)
+	if errno != 0 {
+		setJea9LinuxReturn(cpu, errno)
+		return NoteHandled
+	}
 	delete(j.signalFrames, key)
-	ctx.signalMask = frame.signalMask
-	restoreJea9LinuxCPU(cpu, frame.snapshot)
+	ctx.signalMask = mask
+	restoreJea9LinuxCPU(cpu, snap)
 	ctx.snapshot = snapshotJea9LinuxCPU(cpu)
 	return NoteHandled
 }
@@ -1892,8 +1960,16 @@ func (j *Jea9Linux) deliverSignal(cpu *CPU, ctx *jea9LinuxContext, sig uint64, i
 		signalMask: ctx.signalMask,
 	}
 
+	restorer := action.restorer
+	if restorer == 0 {
+		var errno int64
+		restorer, errno = j.ensureSignalRestorer(cpu)
+		if errno != 0 {
+			return false, errno
+		}
+	}
 	snap.pc = action.handler
-	snap.x[1] = action.restorer
+	snap.x[1] = restorer
 	snap.x[2] = frameSP
 	snap.x[10] = sig
 	snap.x[11] = siginfoAddr
@@ -1909,42 +1985,62 @@ func (j *Jea9Linux) deliverSignal(cpu *CPU, ctx *jea9LinuxContext, sig uint64, i
 	return true, 0
 }
 
+func (j *Jea9Linux) ensureSignalRestorer(cpu *CPU) (uint64, int64) {
+	if j.signalRestorer != 0 {
+		return j.signalRestorer, 0
+	}
+	vm := j.ensureVM(cpu)
+	addr, ok := vm.allocRange(cpu.mem.Size(), GuestPageSize)
+	if !ok {
+		return 0, jea9LinuxErrENOMEM
+	}
+	if f := cpu.mem.Zero(addr, GuestPageSize); f != nil {
+		return 0, jea9LinuxErrENOMEM
+	}
+	if f := cpu.mem.Store32(addr, encodeJea9LinuxADDI(17, 0, int32(jea9LinuxSysRtSigreturn))); f != nil {
+		return 0, jea9LinuxErrENOMEM
+	}
+	if f := cpu.mem.Store32(addr+4, 0x00000073); f != nil {
+		return 0, jea9LinuxErrENOMEM
+	}
+	vm.mapRange(addr, GuestPageSize, jea9LinuxProtRead|jea9LinuxProtExec)
+	vm.updateExecMetadata(&cpu.mem, addr, GuestPageSize, jea9LinuxProtRead|jea9LinuxProtExec)
+	j.signalRestorer = addr
+	return addr, 0
+}
+
+func encodeJea9LinuxADDI(rd, rs1 uint32, imm int32) uint32 {
+	return ((uint32(imm) & 0xfff) << 20) |
+		(rs1 << 15) |
+		(rd << 7) |
+		0x13
+}
+
 func (j *Jea9Linux) writeSignalFrame(cpu *CPU, ctx *jea9LinuxContext, snap jea9LinuxCPUSnapshot, info jea9LinuxSignalInfo) (frameSP, siginfoAddr, ucontextAddr uint64, errno int64) {
-	const (
-		signalFrameSize       = uint64(512)
-		signalFrameSiginfoOff = uint64(128)
-		signalFrameUctxOff    = uint64(256)
-	)
 	stackTop := snap.x[2]
 	if ctx.sigaltFlags&jea9LinuxSSDisable == 0 &&
 		ctx.sigaltSP != 0 &&
-		ctx.sigaltSize >= signalFrameSize &&
+		ctx.sigaltSize >= jea9LinuxSignalFrameSize &&
 		j.signalActions[info.signo].flags&jea9LinuxSAOnstack != 0 {
 		stackTop = ctx.sigaltSP + ctx.sigaltSize
 	}
-	if stackTop < signalFrameSize {
+	if stackTop < jea9LinuxSignalFrameSize {
 		stackTop = defaultJea9LinuxSignalStackTop(cpu)
 	}
-	if stackTop < signalFrameSize {
+	if stackTop < jea9LinuxSignalFrameSize {
 		return 0, 0, 0, jea9LinuxErrEFAULT
 	}
-	frameSP = (stackTop - signalFrameSize) &^ uint64(15)
-	siginfoAddr = frameSP + signalFrameSiginfoOff
-	ucontextAddr = frameSP + signalFrameUctxOff
-	if f := cpu.mem.Zero(frameSP, signalFrameSize); f != nil {
+	frameSP = (stackTop - jea9LinuxSignalFrameSize) &^ uint64(15)
+	siginfoAddr = frameSP + jea9LinuxSignalFrameSiginfoOff
+	ucontextAddr = frameSP + jea9LinuxSignalFrameUctxOff
+	if f := cpu.mem.Zero(frameSP, jea9LinuxSignalFrameSize); f != nil {
 		return 0, 0, 0, jea9LinuxErrEFAULT
 	}
 	if errno := storeJea9LinuxSignalInfo(cpu, siginfoAddr, info); errno != 0 {
 		return 0, 0, 0, errno
 	}
-	if f := cpu.mem.Store64(ucontextAddr, snap.pc); f != nil {
-		return 0, 0, 0, jea9LinuxErrEFAULT
-	}
-	if f := cpu.mem.Store64(ucontextAddr+8, snap.x[2]); f != nil {
-		return 0, 0, 0, jea9LinuxErrEFAULT
-	}
-	if f := cpu.mem.Store64(ucontextAddr+16, ctx.signalMask); f != nil {
-		return 0, 0, 0, jea9LinuxErrEFAULT
+	if errno := storeJea9LinuxSignalUContext(cpu, ucontextAddr, snap, ctx.signalMask); errno != 0 {
+		return 0, 0, 0, errno
 	}
 	return frameSP, siginfoAddr, ucontextAddr, 0
 }
@@ -1954,6 +2050,80 @@ func defaultJea9LinuxSignalStackTop(cpu *CPU) uint64 {
 		return cpu.mem.Size()
 	}
 	return cpu.mem.Size() - Size1MB
+}
+
+func storeJea9LinuxSignalUContext(cpu *CPU, addr uint64, snap jea9LinuxCPUSnapshot, mask uint64) int64 {
+	if f := cpu.mem.Store64(addr+jea9LinuxUContextSigmaskOff, mask); f != nil {
+		return jea9LinuxErrEFAULT
+	}
+	regs := jea9LinuxSignalRegs(snap)
+	base := addr + jea9LinuxUContextMContextOff
+	for i, reg := range regs {
+		if f := cpu.mem.Store64(base+uint64(i)*8, reg); f != nil {
+			return jea9LinuxErrEFAULT
+		}
+	}
+	return 0
+}
+
+func loadJea9LinuxSignalUContext(cpu *CPU, addr uint64, fallback jea9LinuxCPUSnapshot, fallbackMask uint64) (jea9LinuxCPUSnapshot, uint64, int64) {
+	snap := fallback
+	mask := fallbackMask
+	if v, f := cpu.mem.Load64(addr + jea9LinuxUContextSigmaskOff); f == nil {
+		mask = v
+	} else {
+		return snap, mask, jea9LinuxErrEFAULT
+	}
+	base := addr + jea9LinuxUContextMContextOff
+	var regs [32]uint64
+	for i := range regs {
+		v, f := cpu.mem.Load64(base + uint64(i)*8)
+		if f != nil {
+			return snap, mask, jea9LinuxErrEFAULT
+		}
+		regs[i] = v
+	}
+	snap.pc = regs[0]
+	copy(snap.x[1:], regs[1:])
+	snap.x[0] = 0
+	return snap, mask, 0
+}
+
+func jea9LinuxSignalRegs(snap jea9LinuxCPUSnapshot) [32]uint64 {
+	return [32]uint64{
+		snap.pc,
+		snap.x[1],
+		snap.x[2],
+		snap.x[3],
+		snap.x[4],
+		snap.x[5],
+		snap.x[6],
+		snap.x[7],
+		snap.x[8],
+		snap.x[9],
+		snap.x[10],
+		snap.x[11],
+		snap.x[12],
+		snap.x[13],
+		snap.x[14],
+		snap.x[15],
+		snap.x[16],
+		snap.x[17],
+		snap.x[18],
+		snap.x[19],
+		snap.x[20],
+		snap.x[21],
+		snap.x[22],
+		snap.x[23],
+		snap.x[24],
+		snap.x[25],
+		snap.x[26],
+		snap.x[27],
+		snap.x[28],
+		snap.x[29],
+		snap.x[30],
+		snap.x[31],
+	}
 }
 
 func storeJea9LinuxSignalInfo(cpu *CPU, addr uint64, info jea9LinuxSignalInfo) int64 {
@@ -1966,11 +2136,17 @@ func storeJea9LinuxSignalInfo(cpu *CPU, addr uint64, info jea9LinuxSignalInfo) i
 	if f := cpu.mem.Store32(addr+8, uint32(info.code)); f != nil {
 		return jea9LinuxErrEFAULT
 	}
-	if f := cpu.mem.Store32(addr+16, uint32(info.pid)); f != nil {
-		return jea9LinuxErrEFAULT
-	}
-	if f := cpu.mem.Store32(addr+20, uint32(info.uid)); f != nil {
-		return jea9LinuxErrEFAULT
+	if info.addr != 0 {
+		if f := cpu.mem.Store64(addr+16, info.addr); f != nil {
+			return jea9LinuxErrEFAULT
+		}
+	} else {
+		if f := cpu.mem.Store32(addr+16, uint32(info.pid)); f != nil {
+			return jea9LinuxErrEFAULT
+		}
+		if f := cpu.mem.Store32(addr+20, uint32(info.uid)); f != nil {
+			return jea9LinuxErrEFAULT
+		}
 	}
 	if f := cpu.mem.Store64(addr+24, info.addr); f != nil {
 		return jea9LinuxErrEFAULT
@@ -2729,13 +2905,13 @@ func (j *Jea9Linux) sysBrk(cpu *CPU, addr uint64) uint64 {
 			if f := cpu.mem.Zero(begin, end-begin); f != nil {
 				return vm.brk
 			}
-			vm.setRange(begin, end-begin, jea9LinuxProtRead|jea9LinuxProtWrite)
+			vm.mapRange(begin, end-begin, jea9LinuxProtRead|jea9LinuxProtWrite)
 		}
 	} else if addr < old {
 		begin := jea9LinuxAlignUp(addr)
 		end := jea9LinuxAlignUp(old)
 		if end > begin {
-			vm.setRange(begin, end-begin, 0)
+			vm.unmapRange(begin, end-begin)
 			cpu.mem.RemoveExecRegion(begin, end)
 		}
 	}
@@ -2772,7 +2948,7 @@ func (j *Jea9Linux) sysMmap(cpu *CPU, addr, length, prot, flags, fd, off uint64)
 	if f := cpu.mem.Zero(chosen, length); f != nil {
 		return jea9LinuxErrENOMEM
 	}
-	vm.setRange(chosen, length, prot)
+	vm.mapRange(chosen, length, prot)
 	vm.updateExecMetadata(&cpu.mem, chosen, length, prot)
 	return int64(chosen)
 }
@@ -2786,7 +2962,7 @@ func (j *Jea9Linux) sysMunmap(cpu *CPU, addr, length uint64) int64 {
 	if !ok {
 		return jea9LinuxErrEINVAL
 	}
-	vm.setRange(begin, end-begin, 0)
+	vm.unmapRange(begin, end-begin)
 	cpu.mem.RemoveExecRegion(begin, end)
 	return 0
 }
@@ -2800,10 +2976,10 @@ func (j *Jea9Linux) sysMprotect(cpu *CPU, addr, length, prot uint64) int64 {
 	if !ok {
 		return jea9LinuxErrEINVAL
 	}
-	if vm.rangeHasNoAccess(begin, end-begin) {
+	if vm.rangeUnmapped(begin, end-begin) {
 		return jea9LinuxErrENOMEM
 	}
-	vm.setRange(begin, end-begin, prot)
+	vm.mapRange(begin, end-begin, prot)
 	vm.updateExecMetadata(&cpu.mem, begin, end-begin, prot)
 	return 0
 }
@@ -2817,7 +2993,7 @@ func (j *Jea9Linux) sysMincore(cpu *CPU, addr, length, vecAddr uint64) int64 {
 	if !ok {
 		return jea9LinuxErrEINVAL
 	}
-	if vm.rangeHasNoAccess(begin, end-begin) {
+	if vm.rangeUnmapped(begin, end-begin) {
 		return jea9LinuxErrENOMEM
 	}
 	pages := int((end - begin) / GuestPageSize)

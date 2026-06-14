@@ -92,6 +92,31 @@ func TestJea9Linux_RtSigactionInstallAndReadBack(t *testing.T) {
 	requireSignalAction(t, mem, old, 0x123456, jea9TestSAOnstack, 0x7777, signalBit(jea9TestSIGURG))
 }
 
+func TestJea9Linux_RtSigactionAcceptsLinuxRiscv64Layout(t *testing.T) {
+	j := NewJea9Linux(Jea9LinuxOptions{})
+	cpu, mem := newJea9LinuxSyscallCPU(t, j)
+	defer mem.Free()
+
+	const (
+		action  = uint64(0x5000)
+		handler = uint64(0x12345678)
+		flags   = uint64(0x4) | jea9TestSAOnstack
+		mask    = uint64(0xfffffffffffffff7)
+	)
+	writeGuest64(t, mem, action, handler)
+	writeGuest64(t, mem, action+8, flags)
+	writeGuest64(t, mem, action+16, mask)
+	writeGuest64(t, mem, action+24, 0)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysRtSigaction, jea9TestSIGUSR1, action, 0, 8); d != NoteHandled {
+		t.Fatalf("rt_sigaction linux layout disposition = %v, want NoteHandled", d)
+	}
+	requireSyscallReturn(t, cpu, 0)
+	got := j.signalActions[jea9TestSIGUSR1]
+	if got.handler != handler || got.flags != flags || got.mask != mask || got.restorer != 0 {
+		t.Fatalf("linux layout action = %+v, want handler=0x%x flags=0x%x mask=0x%x restorer=0", got, handler, flags, mask)
+	}
+}
+
 func TestJea9Linux_RtSigactionErrorsAndDefaultReadback(t *testing.T) {
 	j := NewJea9Linux(Jea9LinuxOptions{})
 	cpu, mem := newJea9LinuxSyscallCPU(t, j)
@@ -364,6 +389,70 @@ func TestJea9Linux_RtSigreturnFindsFrameAboveCurrentSP(t *testing.T) {
 	}
 }
 
+func TestJea9Linux_RtSigreturnRestoresModifiedLinuxUContext(t *testing.T) {
+	j := NewJea9Linux(Jea9LinuxOptions{})
+	cpu, mem := newJea9LinuxSyscallCPU(t, j)
+	defer mem.Free()
+
+	handler := uint64(0x4000)
+	installSignalHandler(t, cpu, mem, jea9TestSIGUSR1, handler, 0)
+	cpu.SetPC(0x2222)
+	cpu.SetReg(2, 0x30000)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysTgkill, j.pid, j.tid, jea9TestSIGUSR1); d != NoteHandled {
+		t.Fatalf("tgkill disposition = %v", d)
+	}
+	ucontext := cpu.Reg(12)
+	const regsOff = jea9LinuxUContextMContextOff
+	writeGuest64(t, mem, ucontext+regsOff, 0x7777)
+	writeGuest64(t, mem, ucontext+regsOff+16, 0x8888)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysRtSigreturn); d != NoteHandled {
+		t.Fatalf("rt_sigreturn disposition = %v", d)
+	}
+	if cpu.PC() != 0x7777 || cpu.Reg(2) != 0x8888 {
+		t.Fatalf("rt_sigreturn restored pc=0x%x sp=0x%x, want modified ucontext", cpu.PC(), cpu.Reg(2))
+	}
+}
+
+func TestJea9Linux_SignalWithoutRestorerUsesSyntheticRtSigreturn(t *testing.T) {
+	j := NewJea9Linux(Jea9LinuxOptions{})
+	cpu, mem := newJea9LinuxSyscallCPU(t, j)
+	defer mem.Free()
+
+	action := uint64(0x5000)
+	handler := uint64(0x4000)
+	writeGuest64(t, mem, action, handler)
+	writeGuest64(t, mem, action+8, jea9LinuxSASiginfo)
+	writeGuest64(t, mem, action+16, signalBit(jea9TestSIGURG))
+	writeGuest64(t, mem, action+24, 0)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysRtSigaction, jea9TestSIGUSR1, action, 0, 8); d != NoteHandled {
+		t.Fatalf("rt_sigaction disposition = %v", d)
+	}
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysTgkill, j.pid, j.tid, jea9TestSIGUSR1); d != NoteHandled {
+		t.Fatalf("tgkill disposition = %v", d)
+	}
+	restorer := cpu.Reg(1)
+	if restorer == 0 || restorer != j.signalRestorer {
+		t.Fatalf("restorer ra=0x%x cached=0x%x, want synthetic restorer", restorer, j.signalRestorer)
+	}
+	insn, f := mem.Fetch32(restorer)
+	if f != nil {
+		t.Fatalf("fetch restorer addi: %v", f)
+	}
+	if want := encodeJea9LinuxADDI(17, 0, int32(jea9LinuxSysRtSigreturn)); insn != want {
+		t.Fatalf("restorer first insn = 0x%x, want 0x%x", insn, want)
+	}
+	ecall, f := mem.Fetch32(restorer + 4)
+	if f != nil {
+		t.Fatalf("fetch restorer ecall: %v", f)
+	}
+	if ecall != 0x00000073 {
+		t.Fatalf("restorer second insn = 0x%x, want ecall", ecall)
+	}
+	if r := (&cpu.mem).FindExecRegion(restorer); r == nil || !r.Contains(restorer) {
+		t.Fatalf("synthetic restorer 0x%x is not executable metadata", restorer)
+	}
+}
+
 func TestJea9Linux_DefaultSignalIgnoredAndFaultForwarded(t *testing.T) {
 	j := NewJea9Linux(Jea9LinuxOptions{})
 	cpu, mem := newJea9LinuxSyscallCPU(t, j)
@@ -410,6 +499,48 @@ func TestJea9Linux_SiginfoForUserSignalAndSegv(t *testing.T) {
 	requireGuest32(t, mem, segvInfo, uint32(jea9TestSIGSEGV))
 	if got := readGuest64(t, mem, segvInfo+24); got != 0xdeadbeef {
 		t.Fatalf("segv fault addr = 0x%x, want 0xdeadbeef", got)
+	}
+}
+
+func TestJea9Linux_SignalFrameHasLinuxRiscv64UContext(t *testing.T) {
+	j := NewJea9Linux(Jea9LinuxOptions{})
+	cpu, mem := newJea9LinuxSyscallCPU(t, j)
+	defer mem.Free()
+
+	handler := uint64(0x4000)
+	installSignalHandler(t, cpu, mem, jea9TestSIGSEGV, handler, 0)
+	cpu.SetPC(0x5555)
+	cpu.SetReg(1, 0x1111)
+	cpu.SetReg(2, 0x30000)
+	cpu.SetReg(5, 0x5550)
+	cpu.SetReg(6, 0x6660)
+	cpu.SetReg(10, 0xaaaa)
+	if d := j.Handle(cpu, Note{Cause: CauseLoadFault, Tval: 0xdeadbeef, PC: 0x5555}); d != NoteHandled {
+		t.Fatalf("fault signal disposition = %v, want NoteHandled", d)
+	}
+
+	siginfo := cpu.Reg(11)
+	if got := readGuest64(t, mem, siginfo+16); got != 0xdeadbeef {
+		t.Fatalf("linux siginfo si_addr = 0x%x, want 0xdeadbeef", got)
+	}
+
+	const linuxRiscv64UContextMContextOff = uint64(176)
+	regs := cpu.Reg(12) + linuxRiscv64UContextMContextOff
+	for _, tc := range []struct {
+		name string
+		off  uint64
+		want uint64
+	}{
+		{name: "pc", off: 0, want: 0x5555},
+		{name: "ra", off: 8, want: 0x1111},
+		{name: "sp", off: 16, want: 0x30000},
+		{name: "t0", off: 40, want: 0x5550},
+		{name: "t1", off: 48, want: 0x6660},
+		{name: "a0", off: 80, want: 0xaaaa},
+	} {
+		if got := readGuest64(t, mem, regs+tc.off); got != tc.want {
+			t.Fatalf("ucontext %s = 0x%x, want 0x%x", tc.name, got, tc.want)
+		}
 	}
 }
 

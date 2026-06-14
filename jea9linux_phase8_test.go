@@ -131,6 +131,34 @@ func TestJea9Linux_MunmapFaultsAfterUnmap(t *testing.T) {
 	}
 }
 
+func TestJea9Linux_MmapProtNoneReserveCanBeMprotected(t *testing.T) {
+	j := NewJea9Linux(Jea9LinuxOptions{})
+	cpu, mem := newJea9LinuxSyscallCPU(t, j)
+	defer mem.Free()
+
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysMmap, 0, GuestPageSize, 0, jea9TestMapPrivate|jea9TestMapAnonymous, ^uint64(0), 0); d != NoteHandled {
+		t.Fatalf("mmap PROT_NONE disposition = %v", d)
+	}
+	addr := cpu.Reg(10)
+	requirePageAligned(t, addr)
+	if j.vm.rangeFree(addr, GuestPageSize) {
+		t.Fatalf("PROT_NONE mapping 0x%x is free to mmap allocator, want reserved", addr)
+	}
+	if _, f := (&cpu.mem).Load8(addr); f == nil {
+		t.Fatal("load from PROT_NONE mapping succeeded, want VM fault")
+	}
+	if f := (&cpu.mem).Store8(addr, 0x77); f == nil {
+		t.Fatal("store to PROT_NONE mapping succeeded, want VM fault")
+	}
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysMprotect, addr, GuestPageSize, jea9TestProtRead|jea9TestProtWrite); d != NoteHandled {
+		t.Fatalf("mprotect PROT_NONE to RW disposition = %v", d)
+	}
+	requireSyscallReturn(t, cpu, 0)
+	if f := (&cpu.mem).Store8(addr, 0x88); f != nil {
+		t.Fatalf("store after PROT_NONE mprotect to RW: %v", f)
+	}
+}
+
 func TestJea9Linux_MprotectReadOnlyRejectsStoreAndExecMetadata(t *testing.T) {
 	j := NewJea9Linux(Jea9LinuxOptions{})
 	cpu, mem := newJea9LinuxSyscallCPU(t, j)
@@ -272,6 +300,31 @@ func TestJea9Linux_VMOverlayScopedToInstall(t *testing.T) {
 	cleanup()
 	if _, f := (&cpu.mem).Load8(0); f != nil {
 		t.Fatalf("post-cleanup null load faulted: %v", f)
+	}
+}
+
+func TestJea9Linux_InitELFStackReservesStackMapping(t *testing.T) {
+	cpu, mem, elf := loadTinyELFForStack(t)
+	defer mem.Free()
+
+	j := NewJea9Linux(Jea9LinuxOptions{})
+	const stackTop = uint64(0x03F00000)
+	if err := j.InitELFStack(cpu, elf, Jea9LinuxStartOptions{
+		Args:     []string{"/tiny"},
+		ExecPath: "/tiny",
+		StackTop: stackTop,
+	}); err != nil {
+		t.Fatalf("InitELFStack: %v", err)
+	}
+
+	vm := j.ensureVM(cpu)
+	vectorPage := jea9LinuxAlignDown(cpu.Reg(2))
+	if vm.rangeFree(vectorPage, GuestPageSize) {
+		t.Fatalf("initial vector page 0x%x is free to mmap allocator, want reserved stack mapping", vectorPage)
+	}
+	lowerStackPage := jea9LinuxAlignDown(stackTop - Size1MB/2)
+	if vm.rangeFree(lowerStackPage, GuestPageSize) {
+		t.Fatalf("lower stack page 0x%x is free to mmap allocator, want reserved stack mapping", lowerStackPage)
 	}
 }
 
