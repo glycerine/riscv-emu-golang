@@ -2,6 +2,7 @@ package riscv
 
 import (
 	"encoding/binary"
+	"os"
 	"testing"
 )
 
@@ -455,5 +456,45 @@ func TestJea9Linux_Pselect6Timeout(t *testing.T) {
 	requireSyscallReturn(t, cpu, 0)
 	if got := j.MonotonicNS(); got != 1239 {
 		t.Fatalf("monotonic ns = %d, want 1239", got)
+	}
+}
+
+func TestJea9Linux_Phase10EventPollingELFFixtures(t *testing.T) {
+	for _, path := range []string{
+		"testvectors/jea9linux/elf/eventfd_basic.elf",
+		"testvectors/jea9linux/elf/epoll_eventfd.elf",
+		"testvectors/jea9linux/elf/epoll_timeout.elf",
+		"testvectors/jea9linux/elf/pipe2_basic.elf",
+		"testvectors/jea9linux/elf/pselect_timeout.elf",
+	} {
+		t.Run(path, func(t *testing.T) {
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("read fixture: %v", err)
+			}
+			mem, err := NewGuestMemory(Size64MB)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer mem.Free()
+			elf, err := LoadELFBytes(mem, data)
+			if err != nil {
+				t.Fatalf("LoadELFBytes: %v", err)
+			}
+			cpu := NewCPU(*mem)
+			cpu.SetPC(elf.Entry)
+			cpu.SetReg(2, 0x03F00000)
+			j := NewJea9Linux(Jea9LinuxOptions{})
+			if err := j.InitELFStack(cpu, elf, Jea9LinuxStartOptions{StackTop: 0x03F00000}); err != nil {
+				t.Fatalf("InitELFStack: %v", err)
+			}
+			code, err := RunWithJea9Linux(cpu, j)
+			if err != nil {
+				t.Fatalf("RunWithJea9Linux: %v", err)
+			}
+			if code != 0 {
+				t.Fatalf("exit code = %d, want 0", code)
+			}
+		})
 	}
 }

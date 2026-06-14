@@ -974,6 +974,51 @@ depending on flags.
 
 18. ELF fixture `pselect_timeout.elf` verifies timeout behavior.
 
+Implementation status, 2026-06-14: this phase is complete for the first
+virtual eventfd, epoll, pipe, and pselect surface. Red syscall-level tests were
+added first in `jea9linux_phase10_test.go`; implementation then made them
+green; the refactor pass shared timespec deadline parsing and added additional
+coverage for eventfd overflow/short reads, epoll duplicate/error paths, and
+pipe readiness through epoll. Checked-in tiny C fixtures were added and rebuilt
+under `testvectors/jea9linux/elf/`. The Phase 10 focused suite and the broader
+jea9linux gate both pass.
+
+`jea9linux.go` defines the Phase 10 syscall numbers at lines 42-54 and eventfd,
+epoll, and fd flag constants at lines 140-149. The fd kinds now include
+eventfd, epoll, and pipe endpoints at lines 171-174. `jea9LinuxFD` carries
+eventfd counters, epoll state, and pipe pointers at lines 176-184.
+`jea9LinuxEpollRegistration`, `jea9LinuxEpoll`, and `jea9LinuxPipe` live at
+lines 187-201. Epoll wait state is represented through `jea9LinuxWaitEpoll` at
+line 285 and the per-context wait fields at lines 313-318.
+
+`Jea9Linux.Handle` routes `eventfd2`, `epoll_create1`, `epoll_ctl`,
+`epoll_pwait`, `pipe2`, and `pselect6` at lines 1014-1050. FD allocation is
+centralized in `allocFD` at line 1133. The new syscall bodies and helpers are
+`sysEventfd2` at line 1140, `sysEpollCreate1` at line 1153, `sysEpollCtl` at
+line 1167, packed `epoll_event` loaders/storers at lines 1217 and 1230,
+`sysEpollPwait` at line 1242, `epollDeadline` at line 1292,
+`epollCollectReady` at line 1300, `fdReadyEvents` at line 1329,
+`wakeEpollWaitersForFD` at line 1355, `sysPipe2` at line 1378,
+`sysPselect6` at line 1401, and shared `timespecDeadline` at line 1416.
+Existing `sysRead` and `sysWrite` dispatch to eventfd and pipe handlers at
+lines 1777-1786 and 1801-1810. The fd bodies are `sysEventfdRead` at line
+1826, `sysEventfdWrite` at line 1847, `sysPipeRead` at line 1864, and
+`sysPipeWrite` at line 1884. `refreshBlocked` invokes epoll timeout refresh at
+line 2341 using `refreshEpollTimeouts` at line 2365.
+
+`jea9linux_phase10_test.go` covers eventfd initial/read/write/nonblocking and
+overflow paths at lines 95, 111, 133, and 145; epoll create/close,
+add/modify/delete, error handling, immediate readiness, blocking wake, timeout,
+and deterministic order at lines 163, 179, 215, 242, 265, 304, and 319; pipe
+readiness through epoll and pipe read/write/nonblocking empty reads at lines
+345, 388, and 422; pselect timeout at line 441; and checked-in ELF fixtures at
+line 462. Added fixture sources `testvectors/jea9linux/src/eventfd_basic.c`,
+`testvectors/jea9linux/src/epoll_eventfd.c`,
+`testvectors/jea9linux/src/epoll_timeout.c`,
+`testvectors/jea9linux/src/pipe2_basic.c`, and
+`testvectors/jea9linux/src/pselect_timeout.c`, with generated binaries under
+`testvectors/jea9linux/elf/` for the same basenames.
+
 ## 11. Signals Over Plan 9 Notes
 
 The emulator's internal exception mechanism remains the Plan 9-style note
@@ -1104,18 +1149,29 @@ proves the need.
 
 ## 13. JIT Integration And Direct Syscall Policy
 
-The current direct JIT syscall path can bypass the Go personality handler and
-issue host syscalls for a small set of guest syscall numbers. That is
-incompatible with `jea9linux` because fd state, tid state, brk, time, and
-randomness must be virtual and deterministic. For `jea9linux`, all ECALLs must
-route through the personality until the direct dispatcher becomes
-personality-aware.
+The desired `jea9linux` JIT behavior is still a direct ECALL path. The direct
+path must trap directly into the active `jea9linux` OS personality rather than
+falling back to the interpreter, rewinding, restarting at the top of a compiled
+function, or issuing host syscalls. The incompatible behavior is the current
+direct-host-syscall shortcut for a small set of guest syscall numbers, not
+direct ECALL dispatch itself.
 
-Add a per-run or per-JIT switch that disables direct syscall emission for a
-`jea9linux` run. Avoid relying on process-global toggles except as a temporary
-bridge. If a global toggle is used temporarily, tests must create a fresh JIT
-after changing it because already-compiled blocks retain the syscall path they
-were emitted with.
+Implement a personality-aware direct ECALL target for JIT-emitted ECALLs. A
+compiled block should be able to leave native guest code, call the installed
+`jea9linux` syscall/note handler with the current CPU state, receive the handler
+disposition/result, and continue or exit according to the same rules as the
+cached interpreter. This callout must preserve the existing compiled-frame
+assumptions: no "restart" or "rewind" path that requires re-entering at a
+compiled function's top, and no new requirement that arbitrary guest state be
+reconstructed outside the normal JIT spill/return convention.
+
+The direct ECALL policy should be per-run or per-JIT where possible. Avoid
+process-global toggles except as a temporary bridge. If a global toggle is used
+temporarily, tests must create a fresh JIT after changing it because
+already-compiled blocks retain the syscall path they were emitted with. The
+end-state should make the active OS personality, not the host process, the
+authority for fd state, tid state, brk, time, randomness, futex scheduling,
+signals, and all other guest-visible kernel behavior.
 
 JIT instruction-budget support must be production-ready for `jea9linux`. Budget
 returns should preserve CPU state, spill all guest-visible changes, update
@@ -1127,7 +1183,7 @@ budget.
 ### JIT integration tests
 
 1. `TestJea9Linux_JITDoesNotUseHostWrite` verifies guest `write(1, ...)` goes
-   to configured `Stdout`, not host fd 1.
+   directly to the configured `jea9linux` `Stdout`, not host fd 1.
 
 2. `TestJea9Linux_JITGettidUsesVirtualTid` verifies `gettid` returns the
    personality's tid, not a host thread id.
@@ -1148,8 +1204,13 @@ budget.
    under both engines and compares syscall/schedule trace after normalizing
    expected engine labels.
 
-8. `TestJea9Linux_JITFreshAfterSyscallModeChange` verifies changing direct
-   syscall policy cannot affect already-compiled blocks silently.
+8. `TestJea9Linux_JITDirectEcallDoesNotRewind` verifies a JIT ECALL callout
+   resumes at the post-ECALL PC and does not re-enter the top of the compiled
+   function or fall back through the interpreter to complete the syscall.
+
+9. `TestJea9Linux_JITFreshAfterSyscallModeChange` verifies changing direct
+   syscall policy cannot affect already-compiled blocks silently if any
+   temporary process-global bridge remains.
 
 ## 14. Go Runtime Acceptance Tests
 
@@ -1250,7 +1311,8 @@ tests where applicable, and interpreter/JIT expectations documented.
 
 12. Add riscv_hwprobe and any red-test-discovered runtime misc syscalls.
 
-13. Disable or virtualize JIT direct syscalls for `jea9linux`, then require
+13. Make JIT direct ECALLs personality-aware for `jea9linux`, with no host
+    syscall bypass and no interpreter restart/rewind fallback, then require
     interpreter/JIT parity tests for every fixture.
 
 14. Add Go runtime acceptance fixtures and remove any temporary
@@ -1265,8 +1327,9 @@ The first complete `jea9linux` milestone is accepted when:
 2. All checked-in tiny C ELF fixtures under `testvectors/jea9linux/elf/` pass
    under the cached interpreter.
 
-3. The same fixtures pass under JIT with direct host syscall bypass disabled or
-   personality-aware.
+3. The same fixtures pass under JIT with direct ECALLs going to the
+   personality-aware `jea9linux` callout, not host syscalls and not an
+   interpreter restart/rewind path.
 
 4. Re-running the same fixture with the same seed, clock mode, instruction
    budget, argv, env, and stdin produces byte-identical stdout, stderr, exit
