@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+## too quiet, but after a minute
+# make bench-arm64-qemu
+# ── linux/arm64 qemu-system JIT comparison ─────
+#  Go JIT — rv8 Fixed Static Mapping (arm64/qemu):  1571 MIPS
+#  Go JIT — abjit (arm64/qemu):                     1727 MIPS
+#  Go interpreter (no JIT, arm64/qemu):               26 MIPS
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 GO="${GO:-go}"
 ARM64_QEMU_COMPARE_BENCHTIME="${ARM64_QEMU_COMPARE_BENCHTIME:-1x}"
