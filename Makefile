@@ -30,7 +30,8 @@
         bench-jit-coremark bench-jit-dhrystone bench-chain-ref \
         darwin-perf bench-wasm build-luajit-riscv \
         hello hello-elfs quad standard test-arm64-qemu \
-        test-arm64-qemu-main test-arm64-qemu-lockstep bench-arm64-qemu
+        test-arm64-qemu-main test-arm64-qemu-lockstep \
+        bench-arm64-qemu bench-arm64-qemu-full
 
 # ── platform detection ─────────────────────────────────────────────────────
 
@@ -78,6 +79,7 @@ GUEST_CFLAGS := -O2 -target $(ZIG_TARGET) -static -mcpu=generic_rv64+m+a+f+d+c \
 
 ARM64_QEMU_BENCH ?= ^BenchmarkRVTests_UI_(Interp2|LazyJIT2|LazyJIT2_RV8|LazyJIT2_Hot|LazyJIT2_Hot_RV8|RunOnlyInterp2|RunOnlyLazyJIT2_Hot|RunOnlyLazyJIT2_Hot_RV8)$$
 ARM64_QEMU_BENCHTIME ?= 3x
+ARM64_QEMU_COMPARE_BENCHTIME ?= 1x
 
 # ── paths ──────────────────────────────────────────────────────────────────
 
@@ -195,7 +197,8 @@ endif
 	@echo "    make test-arm64-qemu           cross-build root/riscv-tests/lockstep under qemu-system-aarch64"
 	@echo "    make test-arm64-qemu-main      same, but skip sharded lockstep"
 	@echo "    make test-arm64-qemu-lockstep  sharded non-FP lockstep only"
-	@echo "    make bench-arm64-qemu          qemu-system arm64 benchmark smoke lane"
+	@echo "    make bench-arm64-qemu          qemu-system arm64 JIT vs interpreter comparison"
+	@echo "    make bench-arm64-qemu-full     qemu-system arm64 benchmark smoke lane"
 	@echo "      ARM64_QEMU_CPU=cortex-a72 by default; override if your QEMU needs another model"
 	@echo "    make clean            remove xendor/build_capi and generated ELF"
 	@echo ""
@@ -706,12 +709,18 @@ test-arm64-qemu-lockstep:
 	@echo "── linux/arm64 qemu-system lockstep lane ───────────────────────"
 	ARM64_QEMU_MAIN=0 ARM64_QEMU_LOCKSTEP=1 GO=$(GO) $(ROOT)scripts/test-arm64-qemu.sh
 
-bench-arm64-qemu:
+bench-arm64-qemu: guest-elf
+	@echo "── linux/arm64 qemu-system JIT comparison ──────────────────────"
+	GO=$(GO) ARM64_QEMU_COMPARE_BENCHTIME=$(ARM64_QEMU_COMPARE_BENCHTIME) \
+	    $(ROOT)scripts/bench-arm64-qemu.sh
+
+bench-arm64-qemu-full:
 	@echo "── linux/arm64 qemu-system benchmark smoke lane ────────────────"
 	ARM64_QEMU_PACKAGE=./bench \
 	ARM64_QEMU_REQUIRE_RISCV_TESTS=0 \
 	ARM64_QEMU_MAIN=0 \
 	ARM64_QEMU_LOCKSTEP=0 \
+	ARM64_QEMU_STAGE_BENCH_ELFS=1 \
 	GO=$(GO) $(ROOT)scripts/test-arm64-qemu.sh \
 	    -test.run '^$$' \
 	    -test.bench '$(ARM64_QEMU_BENCH)' \

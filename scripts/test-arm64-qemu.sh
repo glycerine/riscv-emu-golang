@@ -126,8 +126,15 @@ fi
 
 write_test_env() {
 	rm -f "${rootfs}/test-env"
-	if [[ "${ARM64_QEMU_VIZJIT:-}" != "" || "${ARM64_QEMU_DEBUG_JIT:-}" != "" ]]; then
+	if [[ "${ARM64_QEMU_STAGE_BENCH_ELFS:-0}" != "0" || "${ARM64_QEMU_VIZJIT:-}" != "" || "${ARM64_QEMU_DEBUG_JIT:-}" != "" ]]; then
 		: > "${rootfs}/test-env"
+	fi
+	if [[ "${ARM64_QEMU_STAGE_BENCH_ELFS:-0}" != "0" ]]; then
+		cat >> "${rootfs}/test-env" <<EOF
+BENCH_ELF=/libriscv_guest/bench_guest.elf
+CM_ELF=/coremark.elf
+DHRY_ELF=/dhrystone.elf
+EOF
 	fi
 	if [[ "${ARM64_QEMU_VIZJIT:-}" != "" ]]; then
 		cat >> "${rootfs}/test-env" <<EOF
