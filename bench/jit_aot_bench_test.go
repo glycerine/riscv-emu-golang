@@ -62,7 +62,6 @@ func benchLazyJITELF(b *testing.B, elfData []byte) {
 	for i := 0; i < b.N; i++ {
 		cpu, mem := newBenchCPU(b, elfData)
 		jit := riscv.NewJIT()
-		jit.DisableAutoAOT = true
 		b.StartTimer()
 		_, insns := runJITBenchGuestWith(cpu, jit)
 		b.StopTimer()
@@ -227,7 +226,6 @@ func benchRVTestUILazyJITPolicy(b *testing.B, name string, policy riscv.RegPolic
 		cpu, mem := newRVTestCPU(b, e.data)
 		jit := riscv.NewJIT()
 		jit.SetRegPolicy(policy)
-		jit.DisableAutoAOT = true
 		code, insns := runJITBenchGuestWith(cpu, jit)
 		mem.Free()
 		if code != 0 {
@@ -244,7 +242,6 @@ func benchRVTestUILazyJITHotPolicy(b *testing.B, name string, policy riscv.RegPo
 	e := loadRVTestELF(b, name)
 	jit := riscv.NewJIT()
 	jit.SetRegPolicy(policy)
-	jit.DisableAutoAOT = true
 
 	warmCPU, warmMem := newRVTestCPU(b, e.data)
 	code, _ := runJITBenchGuestWith(warmCPU, jit)
@@ -303,7 +300,6 @@ func benchRVTestUIRunOnlyHotJITPolicy(b *testing.B, name string, policy riscv.Re
 
 	jit := riscv.NewJIT()
 	jit.SetRegPolicy(policy)
-	jit.DisableAutoAOT = true
 
 	resetRVTestTohost(b, mem, tohost)
 	warmCPU := newRVTestCPUFromLoaded(mem, entry, tohost)
@@ -390,7 +386,6 @@ func BenchmarkRVTests_UI_LazyJIT(b *testing.B) {
 			t0 := time.Now()
 			cpu, mem := newRVTestCPU(b, e.data)
 			jit := riscv.NewJIT()
-			jit.DisableAutoAOT = true
 			runJITBenchGuestWith(cpu, jit)
 			mem.Free()
 			fmt.Fprintf(os.Stderr, "  LazyJIT [%2d/%d] %-12s %v\n", j+1, len(elfs), e.name, time.Since(t0))

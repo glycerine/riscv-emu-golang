@@ -192,12 +192,12 @@ func runEmuxJIT(cpu *riscv.CPU, mem *riscv.GuestMemory, jlinux *riscv.Jea9Linux,
 	jit := riscv.NewJIT()
 	defer jit.Close()
 
+	jit.AutoAOT = aot
 	if aot {
 		if err := jit.InstallAOTFromMem(mem); err != nil {
+			panicf("jit.InstallAOTFromMem gave error: '%v'", err)
 			return 0, err
 		}
-	} else {
-		jit.DisableAutoAOT = true
 	}
 
 	return riscv.RunWithJea9LinuxJIT(cpu, jit, jlinux)

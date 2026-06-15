@@ -369,12 +369,10 @@ func runDhrystoneCollectCounters(t *testing.T, data []byte, aot bool) (dispatchO
 		if err := j.InstallAOT(mem, data); err != nil {
 			t.Fatal(err)
 		}
+		j.AutoAOT = true
 	} else {
-		// LoadELFBytes now registers ExecRegions on mem, and RunJIT
-		// auto-installs AOT from them by default. Opt out so this
-		// branch truly exercises the lazy compile path the test is
-		// comparing against.
-		j.DisableAutoAOT = true
+		// LoadELFBytes registers ExecRegions on mem. Leave AutoAOT false so this
+		// branch truly exercises the lazy compile path the test compares against.
 	}
 	_ = j.RunJIT(cpu)
 	return j.DispatchOK, j.JalrICMisses
@@ -812,6 +810,7 @@ func TestAOT_DynamicSegmentCreate(t *testing.T) {
 
 	j := NewJIT()
 	defer j.Close()
+	j.AutoAOT = true
 	if err := j.InstallAOT(mem, data); err != nil {
 		t.Fatalf("InstallAOT: %v", err)
 	}
@@ -852,7 +851,7 @@ func TestAOT_DynamicSegmentCreate(t *testing.T) {
 // TestAOT_InvalidateSegment_Roundtrip verifies the full install →
 // invalidate → re-create flow. After InvalidateSegment, the region is
 // no longer in j.aotSegments, but the ExecRegion is still registered,
-// so nextExecuteSegment recompiles it on the next dispatch.
+// so AutoAOT recreates it on the next run.
 func TestAOT_InvalidateSegment_Roundtrip(t *testing.T) {
 	const stubVA = uint64(0x10000)
 	stubCode := []uint32{
@@ -872,6 +871,7 @@ func TestAOT_InvalidateSegment_Roundtrip(t *testing.T) {
 
 	j := NewJIT()
 	defer j.Close()
+	j.AutoAOT = true
 	if err := j.InstallAOT(mem, data); err != nil {
 		t.Fatalf("InstallAOT: %v", err)
 	}
@@ -896,7 +896,7 @@ func TestAOT_InvalidateSegment_Roundtrip(t *testing.T) {
 	}
 
 	// The ExecRegion is still registered (InstallAOT added it); running
-	// the CPU will exercise nextExecuteSegment to re-create.
+	// the CPU will exercise AutoAOT re-creation.
 	if regs := mem.ExecRegions(); len(regs) != 1 {
 		t.Fatalf("ExecRegions after invalidate: %d entries, want 1 (region preserved)", len(regs))
 	}

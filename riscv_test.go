@@ -362,7 +362,7 @@ func TestRISCVTests_UC_JIT_AOT(t *testing.T) {
 }
 
 // ══════════════════════════════════════════════════════════════════════════
-// Lazy JIT: run riscv-tests through RunJIT with DisableAutoAOT=true
+// Lazy JIT: run riscv-tests through RunJIT with AutoAOT=false
 // (no decoder cache, exercises 2-slot JALR IC and lazy block compilation)
 // ══════════════════════════════════════════════════════════════════════════
 
@@ -397,7 +397,7 @@ func runRISCVTestJITLazy(t *testing.T, elfPath string) {
 	defer cpu.Notes.Pop()
 
 	jit := NewJIT()
-	jit.DisableAutoAOT = true
+
 	err = jit.RunJIT(cpu)
 	if ex, ok := err.(*ExitError); ok {
 		if ex.Code != 0 {
@@ -509,7 +509,7 @@ func TestJITIC_MatchesInterpreter(t *testing.T) {
 	jitCPU.Notes.Push(o.Handle)
 
 	jit := NewJIT()
-	jit.DisableAutoAOT = true
+
 	_ = jit.RunJIT(jitCPU)
 	jitIC := jitCPU.RiscvInstrBegun()
 
@@ -593,7 +593,7 @@ func runLockstep(t *testing.T, elfPath string) {
 	// not optional. the whole point of runLockstep():
 	jit.DebugOneBlockLockstepMode = true
 
-	//jit.DisableAutoAOT = true
+	jit.AutoAOT = true
 
 	// timings done with maxBlockIRInsns = 2048;
 	// and               PerBlockCapTimeToSplit = 5000

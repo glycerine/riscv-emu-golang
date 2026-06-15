@@ -282,7 +282,7 @@ func TestJea9Linux_JITBudgetReturnPreservesState(t *testing.T) {
 
 	jit := NewJIT()
 	defer jit.Close()
-	jit.DisableAutoAOT = true
+
 	res, err := jit.StepBlockBudget(cpu, 5)
 	if err != nil {
 		t.Fatalf("StepBlockBudget: %v", err)
@@ -385,7 +385,7 @@ func TestJea9Linux_JITFreshAfterSyscallModeChange(t *testing.T) {
 
 	jit := NewJIT()
 	defer jit.Close()
-	jit.DisableAutoAOT = true
+
 	hostWarmup := captureStdout(t, func() {
 		if _, err := jit.StepBlock(cpu); err != nil {
 			t.Fatalf("initial host-policy StepBlock: %v", err)

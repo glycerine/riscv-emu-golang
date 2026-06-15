@@ -146,7 +146,6 @@ func TestJITStepBlockBudget_ExpiresAtExactInstructionCount(t *testing.T) {
 
 	j := NewJIT()
 	defer j.Close()
-	j.DisableAutoAOT = true
 
 	res, err := j.StepBlockBudget(cpu, 5)
 	if err != nil {
@@ -172,7 +171,6 @@ func TestJITStepBlockBudget_UsesCumulativeInstructionCounter(t *testing.T) {
 
 	j := NewJIT()
 	defer j.Close()
-	j.DisableAutoAOT = true
 
 	for slice := 1; slice <= 2; slice++ {
 		sliceStart := cpu.RiscvInstrBegun()
@@ -211,7 +209,6 @@ func TestJITStepBlockBudget_ChangingBudgetDoesNotRecompile(t *testing.T) {
 
 	j := NewJIT()
 	defer j.Close()
-	j.DisableAutoAOT = true
 
 	res, err := j.StepBlockBudget(cpu, 4)
 	if err != nil {
@@ -256,7 +253,6 @@ func TestJITStepBlockBudget_FusedPairTooSmallFallsBackOneInstruction(t *testing.
 
 	j := NewJIT()
 	defer j.Close()
-	j.DisableAutoAOT = true
 
 	res, err := j.StepBlockBudget(cpu, 1)
 	if err != nil {
@@ -286,7 +282,6 @@ func TestJITStepBlockBudget_FusedPairRunsWhenBudgetFits(t *testing.T) {
 
 	j := NewJIT()
 	defer j.Close()
-	j.DisableAutoAOT = true
 
 	res, err := j.StepBlockBudget(cpu, 2)
 	if err != nil {
@@ -319,7 +314,6 @@ func TestJITStepBlockBudget_FusedTripleTooSmallFallsBackOneInstruction(t *testin
 
 	j := NewJIT()
 	defer j.Close()
-	j.DisableAutoAOT = true
 
 	res, err := j.StepBlockBudget(cpu, 2)
 	if err != nil {
@@ -352,7 +346,6 @@ func TestJITStepBlockBudget_FusedTripleRunsWhenBudgetFits(t *testing.T) {
 
 	j := NewJIT()
 	defer j.Close()
-	j.DisableAutoAOT = true
 
 	res, err := j.StepBlockBudget(cpu, 3)
 	if err != nil {

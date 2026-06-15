@@ -260,16 +260,16 @@ type JIT struct {
 	InterpOnly bool            // debug: force all-interpreter mode
 	trace      bool            // debug: log block executions to stderr
 
-	// DisableAutoAOT opts out of RunJIT's first-entry auto-install of
-	// AOT segments based on cpu.mem.ExecRegions(). Set to true to force
-	// the lazy compile path — used by benchmarks that measure the
+	// AutoAOT opts into RunJIT's first-entry auto-install of
+	// AOT segments based on cpu.mem.ExecRegions(). Leave false
+	// use the lazy compile path — used by benchmarks that measure the
 	// lazy-vs-AOT gap and by tests that want to drive the fallback path.
-	DisableAutoAOT bool
+	AutoAOT bool
 
 	// HotRegionThreshold promotes a registered executable region from
 	// lazy block compilation to a full AOT segment after this many lazy
 	// compiles inside the region. Zero disables promotion. This is an
-	// explicit opt-in and still works when DisableAutoAOT is true, so
+	// explicit opt-in and still works when AutoAOT is false, so
 	// callers can measure a lazy warm-up followed by segment execution.
 	HotRegionThreshold uint32
 	HotRegionsCompiled uint64
@@ -318,12 +318,12 @@ func NewJIT() *JIT {
 		// faster to disable AOT? massively.
 		// at: 18fcb35 (origin/oslayer, oslayer) atg on linux and darwin
 		// GOCPU_VIZJIT_OFF=1 make bench-jit-coremark
-		// DisableAutoAOT: true =>
+		// AutoAOT: false =>
 		// BenchmarkJIT_CoreMark_ABJIT-8 1  575_636_119 ns/op 676.8 MIPS  27835656 B/op     42_213 allocs/op (10x fewer allocations!)
-		//  with AutoAOT: false =>
+		//  with AutoAOT: true =>
 		// BenchmarkJIT_CoreMark_ABJIT-8 1 1_092_111_163 ns/op 356.8 MIPS  817350016 B/op    579_873 allocs/op
 
-		DisableAutoAOT: true,
+		AutoAOT: false,
 	}
 	j.SetRegPolicy(PolicyABJIT)
 	if err := j.initStopperPage(); err != nil {
@@ -954,15 +954,16 @@ func (j *JIT) RunJIT(cpu *CPU) (err0 error) {
 		panic("JIT: ELF has tohost symbol but cpu.SetWatchAddr was never called — JIT blocks with tohost writes will hang")
 	}
 
-	//vv("RunJIT(): j.DisableAutoAOT = %v", j.DisableAutoAOT)
+	//vv("RunJIT(): j.AutoAOT = %v", j.AutoAOT)
 
-	// AOT is the default: on the first RunJIT call for a JIT that has
+	// lazy JIT is the default now.
+	// AOT JIT means that on the first RunJIT call for a JIT that has
 	// no segments yet, transparently translate every executable region
 	// the loader already registered on cpu.mem. Only PCs outside those
 	// regions (self-modifying code, guest-generated blocks, tests that
 	// built a raw mem) fall back to the lazy compile path below.
-	// Set DisableAutoAOT on the JIT to force the lazy path end-to-end.
-	if !j.DisableAutoAOT && len(j.aotSegments) == 0 && len(cpu.mem.ExecRegions()) > 0 {
+	// Leave AutoAOT false on the JIT to get the lazy path end-to-end.
+	if j.AutoAOT && len(j.aotSegments) == 0 && len(cpu.mem.ExecRegions()) > 0 {
 		err := j.InstallAOTFromMem(&cpu.mem)
 		//vv("j.InstallAOTFromMem err = '%v'", err)
 		panicOn(err)
@@ -1145,9 +1146,9 @@ func (j *JIT) RunJIT(cpu *CPU) (err0 error) {
 		// that isn't yet covered by any AOT segment (e.g., the guest
 		// mmapped a new R-X region and jumped to it — LuaJIT pattern),
 		// build a segment for it now. Re-try dispatch on success.
-		// DisableAutoAOT opts out — benchmarks and tests that measure
+		// AutoAOT=false opts out — benchmarks and tests that measure
 		// the lazy path need to prevent on-demand AOT too.
-		if !j.InterpOnly && !j.DisableAutoAOT && len(cpu.mem.execRegions) > 0 {
+		if !j.InterpOnly && j.AutoAOT && len(cpu.mem.execRegions) > 0 {
 			if seg := j.nextExecuteSegment(&cpu.mem, pc); seg != nil {
 				if _, ok := seg.blocks[pc]; ok {
 					continue // retry — next lookupBlock hits the new AOT block

@@ -20,7 +20,7 @@ func TestHotRegionThresholdPromotesLazyRegion(t *testing.T) {
 
 	j := NewJIT()
 	defer j.Close()
-	j.DisableAutoAOT = true
+
 	j.SetHotRegionThreshold(2)
 
 	if j.maybeCompileHotRegion(mem, va) {
