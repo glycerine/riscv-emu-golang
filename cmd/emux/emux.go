@@ -6,10 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
-	"runtime"
 	"strings"
-	"sync"
 
 	riscv "github.com/glycerine/riscv-emu-golang"
 )
@@ -147,6 +144,7 @@ func main() {
 		os.Exit(1)
 	}
 	cfg.Args = append([]string{cfg.RunPath}, myflags.Args()...)
+	vv("cfg.Args = '%#v'", cfg.Args)
 	cfg.Env = []string{}
 
 	code, err := runEmux(*cfg)
@@ -190,7 +188,6 @@ func runEmux(cfg EmuxConfig) (int, error) {
 		Stdin:             cfg.Stdin,
 		Stdout:            cfg.Stdout,
 		Stderr:            cfg.Stderr,
-		Files:             emuxTimeZoneFiles(),
 		AllowAllHostFiles: cfg.AllowAllHostFiles,
 	})
 
@@ -290,105 +287,6 @@ func seedBytes(seed uint64) []byte {
 	var b [8]byte
 	binary.LittleEndian.PutUint64(b[:], seed)
 	return b[:]
-}
-
-type emuxZoneInfoSource struct {
-	guestPath string
-	hostPath  string
-}
-
-var (
-	emuxTimeZoneFilesOnce sync.Once
-	emuxTimeZoneFilesMemo map[string][]byte
-)
-
-func emuxTimeZoneFiles() map[string][]byte {
-	emuxTimeZoneFilesOnce.Do(func() {
-		emuxTimeZoneFilesMemo = loadEmuxTimeZoneFiles(defaultEmuxTimeZoneSources())
-	})
-	return emuxTimeZoneFilesMemo
-}
-
-func defaultEmuxTimeZoneSources() []emuxZoneInfoSource {
-	sources := []emuxZoneInfoSource{
-		{guestPath: "/usr/share/zoneinfo/", hostPath: "/usr/share/zoneinfo/"},
-		{guestPath: "/usr/share/lib/zoneinfo/", hostPath: "/usr/share/lib/zoneinfo/"},
-		{guestPath: "/usr/lib/locale/TZ/", hostPath: "/usr/lib/locale/TZ/"},
-		{guestPath: "/etc/zoneinfo", hostPath: "/etc/zoneinfo"},
-	}
-	for _, goroot := range uniqueStrings([]string{runtime.GOROOT(), "/usr/local/go"}) {
-		if goroot == "" {
-			continue
-		}
-		zip := filepath.ToSlash(filepath.Join(goroot, "lib", "time", "zoneinfo.zip"))
-		sources = append(sources, emuxZoneInfoSource{guestPath: zip, hostPath: zip})
-	}
-	return sources
-}
-
-func uniqueStrings(in []string) []string {
-	var out []string
-	seen := make(map[string]bool, len(in))
-	for _, s := range in {
-		if seen[s] {
-			continue
-		}
-		seen[s] = true
-		out = append(out, s)
-	}
-	return out
-}
-
-func loadEmuxTimeZoneFiles(sources []emuxZoneInfoSource) map[string][]byte {
-	files := make(map[string][]byte)
-	for _, src := range sources {
-		if strings.HasSuffix(src.guestPath, ".zip") {
-			addEmuxTimeZoneFile(files, src.guestPath, src.hostPath)
-			continue
-		}
-		addEmuxTimeZoneDir(files, src.guestPath, src.hostPath)
-	}
-	if len(files) == 0 {
-		return nil
-	}
-	return files
-}
-
-func addEmuxTimeZoneFile(files map[string][]byte, guestPath, hostPath string) {
-	data, err := os.ReadFile(hostPath)
-	if err != nil {
-		return
-	}
-	files[guestPath] = data
-}
-
-func addEmuxTimeZoneDir(files map[string][]byte, guestRoot, hostRoot string) {
-	walkRoot, err := filepath.EvalSymlinks(hostRoot)
-	if err != nil {
-		walkRoot = hostRoot
-	}
-	info, err := os.Stat(walkRoot)
-	if err != nil || !info.IsDir() {
-		return
-	}
-	_ = filepath.WalkDir(walkRoot, func(path string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
-			return nil
-		}
-		if d.Type()&os.ModeType != 0 && d.Type()&os.ModeSymlink == 0 {
-			return nil
-		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return nil
-		}
-		rel, err := filepath.Rel(walkRoot, path)
-		if err != nil || rel == "." {
-			return nil
-		}
-		files[guestRoot+"/"+filepath.ToSlash(rel)] = data
-		return nil
-	})
 }
 
 func fileExists(name string) bool {

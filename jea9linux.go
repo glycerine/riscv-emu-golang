@@ -6,6 +6,10 @@ import (
 	"errors"
 	"io"
 	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -486,6 +490,16 @@ type jea9LinuxStackBuilder struct {
 	sp  uint64
 }
 
+type jea9LinuxZoneInfoSource struct {
+	guestPath string
+	hostPath  string
+}
+
+var (
+	jea9LinuxTimeZoneFilesOnce sync.Once
+	jea9LinuxTimeZoneFilesMemo map[string][]byte
+)
+
 func NewJea9Linux(opts Jea9LinuxOptions) *Jea9Linux {
 	jos := &Jea9Linux{
 		clockMode:         opts.ClockMode,
@@ -527,12 +541,104 @@ func NewJea9Linux(opts Jea9LinuxOptions) *Jea9Linux {
 	jos.fds[0] = jea9LinuxFD{kind: jea9LinuxFDStdin}
 	jos.fds[1] = jea9LinuxFD{kind: jea9LinuxFDStdout}
 	jos.fds[2] = jea9LinuxFD{kind: jea9LinuxFDStderr}
+	for path, data := range jea9LinuxTimeZoneFiles() {
+		jos.files[path] = data
+	}
 	for path, data := range opts.Files {
 		jos.files[path] = append([]byte(nil), data...)
 	}
 	jos.rootSeed = deriveJea9LinuxRootSeed(opts.EntropySeed)
 	jos.randomOff = len(jos.randomBuf)
 	return jos
+}
+
+func jea9LinuxTimeZoneFiles() map[string][]byte {
+	jea9LinuxTimeZoneFilesOnce.Do(func() {
+		jea9LinuxTimeZoneFilesMemo = loadJea9LinuxTimeZoneFiles(defaultJea9LinuxTimeZoneSources())
+	})
+	return jea9LinuxTimeZoneFilesMemo
+}
+
+func defaultJea9LinuxTimeZoneSources() []jea9LinuxZoneInfoSource {
+	sources := []jea9LinuxZoneInfoSource{
+		{guestPath: "/usr/share/zoneinfo/", hostPath: "/usr/share/zoneinfo/"},
+		{guestPath: "/usr/share/lib/zoneinfo/", hostPath: "/usr/share/lib/zoneinfo/"},
+		{guestPath: "/usr/lib/locale/TZ/", hostPath: "/usr/lib/locale/TZ/"},
+		{guestPath: "/etc/zoneinfo", hostPath: "/etc/zoneinfo"},
+	}
+	for _, goroot := range uniqueJea9LinuxStrings([]string{runtime.GOROOT(), "/usr/local/go"}) {
+		if goroot == "" {
+			continue
+		}
+		zip := filepath.ToSlash(filepath.Join(goroot, "lib", "time", "zoneinfo.zip"))
+		sources = append(sources, jea9LinuxZoneInfoSource{guestPath: zip, hostPath: zip})
+	}
+	return sources
+}
+
+func uniqueJea9LinuxStrings(in []string) []string {
+	var out []string
+	seen := make(map[string]bool, len(in))
+	for _, s := range in {
+		if seen[s] {
+			continue
+		}
+		seen[s] = true
+		out = append(out, s)
+	}
+	return out
+}
+
+func loadJea9LinuxTimeZoneFiles(sources []jea9LinuxZoneInfoSource) map[string][]byte {
+	files := make(map[string][]byte)
+	for _, src := range sources {
+		if strings.HasSuffix(src.guestPath, ".zip") {
+			addJea9LinuxTimeZoneFile(files, src.guestPath, src.hostPath)
+			continue
+		}
+		addJea9LinuxTimeZoneDir(files, src.guestPath, src.hostPath)
+	}
+	if len(files) == 0 {
+		return nil
+	}
+	return files
+}
+
+func addJea9LinuxTimeZoneFile(files map[string][]byte, guestPath, hostPath string) {
+	data, err := os.ReadFile(hostPath)
+	if err != nil {
+		return
+	}
+	files[guestPath] = data
+}
+
+func addJea9LinuxTimeZoneDir(files map[string][]byte, guestRoot, hostRoot string) {
+	walkRoot, err := filepath.EvalSymlinks(hostRoot)
+	if err != nil {
+		walkRoot = hostRoot
+	}
+	info, err := os.Stat(walkRoot)
+	if err != nil || !info.IsDir() {
+		return
+	}
+	_ = filepath.WalkDir(walkRoot, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		if d.Type()&os.ModeType != 0 && d.Type()&os.ModeSymlink == 0 {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil
+		}
+		rel, err := filepath.Rel(walkRoot, path)
+		if err != nil || rel == "." {
+			return nil
+		}
+		files[guestRoot+"/"+filepath.ToSlash(rel)] = data
+		return nil
+	})
 }
 
 func deriveJea9LinuxRootSeed(seed []byte) [32]byte {
