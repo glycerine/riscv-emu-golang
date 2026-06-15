@@ -314,6 +314,15 @@ func NewJIT() *JIT {
 		irAlloc:                  NewFixedStaticAllocator(),
 		UseR15InstructionCounter: true,
 		LockstepModeBudget:       65536,
+
+		// faster to disable AOT? massively.
+		// GOCPU_VIZJIT_OFF=1 make bench-jit-coremark
+		// DisableAutoAOT: true =>
+		// BenchmarkJIT_CoreMark_ABJIT-8 1  575_636_119 ns/op 676.8 MIPS  27835656 B/op     42_213 allocs/op (10x fewer allocations!)
+		//  with AutoAOT: false =>
+		// BenchmarkJIT_CoreMark_ABJIT-8 1 1_092_111_163 ns/op 356.8 MIPS  817350016 B/op    579_873 allocs/op
+
+		DisableAutoAOT: true,
 	}
 	j.SetRegPolicy(PolicyABJIT)
 	if err := j.initStopperPage(); err != nil {
