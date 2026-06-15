@@ -89,9 +89,8 @@ func classifyFlow(mem *GuestMemory, pc uint64) (flowClass, uint64, uint64) {
 	case 0x67: // JALR
 		return flowTerm, 0, 4
 	case 0x73: // SYSTEM (ECALL, EBREAK, CSR) — all terminate the block.
-		// ECALL always terminates: the AOT enumerator registers pc+4 as a
-		// new block start via termFT in aot.go, which lowerSyscall targets
-		// with a chain exit when InlineEcallEnabled is on.
+		// ECALL returns to Go for OS/personality handling, so execution
+		// resumes at pc+4 only after the handler completes.
 		return flowTerm, 0, 4
 	default:
 		return flowSeq, 0, 4

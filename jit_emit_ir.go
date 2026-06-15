@@ -1299,9 +1299,8 @@ func (e *emitter) emit32(insn uint32) {
 	case 0x73: // SYSTEM
 		switch insn {
 		case 0x00000073: // ECALL — always terminates the block.
-			// Under Option D the post-ECALL PC is a separate AOT block
-			// entry (registered by aot.go's termFT), and lowerSyscall
-			// chain-exits into it on the hot path when the flag is on.
+			// ECALL always returns to Go so an installed OS/personality
+			// can handle it. Native code must not issue host syscalls.
 			e.advancePC(4)
 			e.emitSyscall(e.pc)
 			e.terminated = true

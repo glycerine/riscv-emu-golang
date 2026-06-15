@@ -7,13 +7,10 @@ import (
 	"testing"
 )
 
-// TestClassifyFlow_EcallNotGated confirms ECALL classification is
-// independent of InlineEcallEnabled — all three SYSTEM-opcode
-// instructions (ECALL, EBREAK, CSR*) must always return flowTerm.
-// Under Option D the AOT enumerator relies on flowTerm to register
-// pc+4 as a new block entry, which lowerSyscall then targets with a
-// chain exit when the flag is on.
-func TestClassifyFlow_EcallNotGated(t *testing.T) {
+// TestClassifyFlow_EcallTerminatesBlock confirms all three SYSTEM-opcode
+// instructions (ECALL, EBREAK, CSR*) return flowTerm. ECALL resumes at
+// pc+4 only after the installed OS/personality handler completes.
+func TestClassifyFlow_EcallTerminatesBlock(t *testing.T) {
 	mem, err := NewGuestMemory(Size1MB)
 	if err != nil {
 		t.Fatalf("NewGuestMemory: %v", err)
