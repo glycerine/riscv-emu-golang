@@ -64,26 +64,14 @@ func abjitDispatch(
 	s.SegSize = segSize
 	initialBudget := budget
 	s.IC = initialBudget
-	s.EcallAction = abjitEcallContinue
 
-	abjitEcallMu.Lock()
-	ecallCtx := &abjitEcallContext{
-		cpu:           cpu,
-		state:         s,
-		initialBudget: initialBudget,
-	}
-	abjitEcallActive = ecallCtx
 	abjit.CallJIT(blk.fn, s.RegFileBase())
-	abjitEcallActive = nil
-	abjitEcallMu.Unlock()
 
 	var icDelta uint64
 	if s.IC <= initialBudget {
 		icDelta = initialBudget - s.IC
 	}
-	if icDelta > ecallCtx.accountedIC {
-		cpu.riscvInstrBegun += icDelta - ecallCtx.accountedIC
-	}
+	cpu.riscvInstrBegun += icDelta
 
 	res := jitcall.Result{
 		PC:        s.PC,

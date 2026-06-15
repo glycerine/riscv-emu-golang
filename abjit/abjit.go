@@ -15,22 +15,21 @@ import "unsafe"
 //	Offset 520: memBase   — 8 bytes
 //	Offset 528: memMask   — 8 bytes
 type State struct {
-	X           [32]uint64
-	F           [32]uint64
-	FCSR        uint32
-	_           uint32
-	MemBase     uintptr
-	MemMask     uint64
-	PC          uint64
-	Status      uint64
-	FaultAddr   uint64
-	DCBase      uintptr
-	DCMask      uint64
-	VAddrBegin  uint64
-	SegSize     uint64
-	Cycles      uint64 // Reserved for future per-block instruction count (not currently populated)
-	IC          uint64 // remaining guest-instruction budget at native entry/exit
-	EcallAction uint64 // non-zero tells native code to leave after an inline ECALL
+	X          [32]uint64
+	F          [32]uint64
+	FCSR       uint32
+	_          uint32
+	MemBase    uintptr
+	MemMask    uint64
+	PC         uint64
+	Status     uint64
+	FaultAddr  uint64
+	DCBase     uintptr
+	DCMask     uint64
+	VAddrBegin uint64
+	SegSize    uint64
+	Cycles     uint64 // Reserved for future per-block instruction count (not currently populated)
+	IC         uint64 // remaining guest-instruction budget at native entry/exit
 }
 
 //go:noinline

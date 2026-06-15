@@ -160,8 +160,7 @@ const (
 	jitMisalign = JitMisalign
 	// jitBudget: native countdown budget gate fired. sret.PC is the
 	// unexecuted guest PC and State.IC/result IC holds the remaining budget.
-	jitBudget    = 8
-	jitEcallExit = 9
+	jitBudget = 8
 )
 
 // Block cache: direct-mapped array replaces map[uint64]*compiledBlock.
@@ -978,8 +977,6 @@ func (j *JIT) stepBlockWithBudget(cpu *CPU, budget uint64) (ic uint64, err error
 				return cpu.riscvInstrBegun, nil
 			}
 			return cpu.riscvInstrBegun, ErrEcall
-		case jitEcallExit:
-			return cpu.riscvInstrBegun, &ExitError{Code: cpu.ExitCode}
 		case jitEbreak:
 			return cpu.riscvInstrBegun, ErrEbreak
 		case jitLoadFault:
@@ -1022,8 +1019,6 @@ func (j *JIT) stepBlockResult(cpu *CPU, res jitcall.Result) (uint64, error) {
 		return 0, nil
 	case jitEcall:
 		return 0, ErrEcall
-	case jitEcallExit:
-		return 0, &ExitError{Code: cpu.ExitCode}
 	case jitEbreak:
 		return 0, ErrEbreak
 	case jitLoadFault:
@@ -1166,9 +1161,6 @@ func (j *JIT) RunJIT(cpu *CPU) (err0 error) {
 				default:
 					return ErrEcall
 				}
-
-			case jitEcallExit:
-				return &ExitError{Code: cpu.ExitCode}
 
 			case jitEbreak:
 				n := noteFromStepErr(ErrEbreak, cpu.pc)
