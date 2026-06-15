@@ -5,6 +5,8 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
+	"os"
+	"syscall"
 	"time"
 )
 
@@ -27,21 +29,24 @@ var (
 )
 
 const (
-	jea9LinuxErrEFAULT    = int64(-14)
-	jea9LinuxErrEINVAL    = int64(-22)
-	jea9LinuxErrEBADF     = int64(-9)
-	jea9LinuxErrENOENT    = int64(-2)
-	jea9LinuxErrENOSYS    = int64(-38)
-	jea9LinuxErrEPERM     = int64(-1)
-	jea9LinuxErrESRCH     = int64(-3)
-	jea9LinuxErrEIO       = int64(-5)
-	jea9LinuxErrEACCES    = int64(-13)
-	jea9LinuxErrENOMEM    = int64(-12)
-	jea9LinuxErrEAGAIN    = int64(-11)
-	jea9LinuxErrEEXIST    = int64(-17)
-	jea9LinuxErrESPIPE    = int64(-29)
-	jea9LinuxErrENOTTY    = int64(-25)
-	jea9LinuxErrETIMEDOUT = int64(-110)
+	jea9LinuxErrEFAULT       = int64(-14)
+	jea9LinuxErrEINVAL       = int64(-22)
+	jea9LinuxErrEBADF        = int64(-9)
+	jea9LinuxErrENOENT       = int64(-2)
+	jea9LinuxErrENOSYS       = int64(-38)
+	jea9LinuxErrEPERM        = int64(-1)
+	jea9LinuxErrESRCH        = int64(-3)
+	jea9LinuxErrEIO          = int64(-5)
+	jea9LinuxErrEACCES       = int64(-13)
+	jea9LinuxErrENOMEM       = int64(-12)
+	jea9LinuxErrEAGAIN       = int64(-11)
+	jea9LinuxErrEEXIST       = int64(-17)
+	jea9LinuxErrENOTDIR      = int64(-20)
+	jea9LinuxErrEISDIR       = int64(-21)
+	jea9LinuxErrESPIPE       = int64(-29)
+	jea9LinuxErrENAMETOOLONG = int64(-36)
+	jea9LinuxErrENOTTY       = int64(-25)
+	jea9LinuxErrETIMEDOUT    = int64(-110)
 
 	jea9LinuxSysEventfd2         = uint64(19)
 	jea9LinuxSysEpollCreate1     = uint64(20)
@@ -171,6 +176,14 @@ const (
 	jea9LinuxFDNonblock = uint64(0x800)
 	jea9LinuxFDCloexec  = uint64(0x80000)
 
+	jea9LinuxOAccmode = uint64(0x3)
+	jea9LinuxOWronly  = uint64(0x1)
+	jea9LinuxORdwr    = uint64(0x2)
+	jea9LinuxOCreat   = uint64(0x40)
+	jea9LinuxOExcl    = uint64(0x80)
+	jea9LinuxOTrunc   = uint64(0x200)
+	jea9LinuxOAppend  = uint64(0x400)
+
 	jea9LinuxEFDSemaphore = uint64(1)
 
 	jea9LinuxEpollCtlAdd = uint64(1)
@@ -224,11 +237,13 @@ const (
 	jea9LinuxFDEpoll
 	jea9LinuxFDPipeRead
 	jea9LinuxFDPipeWrite
+	jea9LinuxFDHostFile
 )
 
 type jea9LinuxFD struct {
 	kind           jea9LinuxFDKind
 	data           []byte
+	hostFile       *os.File
 	off            int64
 	flags          uint64
 	eventfdCounter uint64
@@ -297,6 +312,7 @@ type Jea9LinuxOptions struct {
 	Stdout            io.Writer
 	Stderr            io.Writer
 	Files             map[string][]byte
+	AllowAllHostFiles bool
 	PID               uint64
 	TID               uint64
 }
@@ -354,14 +370,15 @@ type Jea9Linux struct {
 	nsPerInstruction  int64
 	instructionBudget uint64
 
-	stdin  io.Reader
-	stdout io.Writer
-	stderr io.Writer
-	fds    map[int]jea9LinuxFD
-	nextFD int
-	files  map[string][]byte
-	pid    uint64
-	tid    uint64
+	stdin             io.Reader
+	stdout            io.Writer
+	stderr            io.Writer
+	fds               map[int]jea9LinuxFD
+	nextFD            int
+	files             map[string][]byte
+	allowAllHostFiles bool
+	pid               uint64
+	tid               uint64
 
 	rootSeed      [32]byte
 	randomCounter uint64
@@ -480,6 +497,7 @@ func NewJea9Linux(opts Jea9LinuxOptions) *Jea9Linux {
 		fds:               make(map[int]jea9LinuxFD),
 		nextFD:            3,
 		files:             make(map[string][]byte),
+		allowAllHostFiles: opts.AllowAllHostFiles,
 		pid:               opts.PID,
 		tid:               opts.TID,
 		threadName:        "jea9linux",
@@ -2698,28 +2716,106 @@ func (jos *Jea9Linux) sysGetrandom(cpu *CPU, bufAddr, n, flags uint64) int64 {
 }
 
 func (jos *Jea9Linux) sysOpenat(cpu *CPU, dirfd, pathAddr, flags, mode uint64) int64 {
-	_, _, _ = dirfd, flags, mode
+	_ = dirfd
 	path, errno := readLinuxCString(cpu, pathAddr, 4096)
 	if errno != 0 {
 		return errno
 	}
-	if flags&3 != 0 {
-		return jea9LinuxErrEACCES
-	}
 	switch path {
 	case "/dev/urandom", "/dev/random":
-		fd := jos.nextFD
-		jos.nextFD++
-		jos.fds[fd] = jea9LinuxFD{kind: jea9LinuxFDRandom}
+		if flags&jea9LinuxOAccmode != 0 {
+			return jea9LinuxErrEACCES
+		}
+		fd := jos.allocFD(jea9LinuxFD{kind: jea9LinuxFDRandom})
 		return int64(fd)
 	default:
 		if data, ok := jos.files[path]; ok {
-			fd := jos.nextFD
-			jos.nextFD++
-			jos.fds[fd] = jea9LinuxFD{kind: jea9LinuxFDFile, data: data}
+			if flags&jea9LinuxOAccmode != 0 {
+				return jea9LinuxErrEACCES
+			}
+			fd := jos.allocFD(jea9LinuxFD{kind: jea9LinuxFDFile, data: data, flags: flags})
 			return int64(fd)
 		}
+		if jos.allowAllHostFiles {
+			return jos.sysOpenHostFile(path, flags, mode)
+		}
 		return jea9LinuxErrENOENT
+	}
+}
+
+func (jos *Jea9Linux) sysOpenHostFile(path string, flags, mode uint64) int64 {
+	hostFlags, errno := jea9LinuxHostOpenFlags(flags)
+	if errno != 0 {
+		return errno
+	}
+	perm := os.FileMode(mode & 0o777)
+	file, err := os.OpenFile(path, hostFlags, perm)
+	if err != nil {
+		return jea9LinuxErrnoFromHost(err)
+	}
+	fd := jos.allocFD(jea9LinuxFD{
+		kind:     jea9LinuxFDHostFile,
+		hostFile: file,
+		flags:    flags,
+	})
+	return int64(fd)
+}
+
+func jea9LinuxHostOpenFlags(flags uint64) (int, int64) {
+	var hostFlags int
+	switch flags & jea9LinuxOAccmode {
+	case 0:
+		hostFlags = os.O_RDONLY
+	case jea9LinuxOWronly:
+		hostFlags = os.O_WRONLY
+	case jea9LinuxORdwr:
+		hostFlags = os.O_RDWR
+	default:
+		return 0, jea9LinuxErrEINVAL
+	}
+	if flags&jea9LinuxOCreat != 0 {
+		hostFlags |= os.O_CREATE
+	}
+	if flags&jea9LinuxOExcl != 0 {
+		hostFlags |= os.O_EXCL
+	}
+	if flags&jea9LinuxOTrunc != 0 {
+		hostFlags |= os.O_TRUNC
+	}
+	if flags&jea9LinuxOAppend != 0 {
+		hostFlags |= os.O_APPEND
+	}
+	return hostFlags, 0
+}
+
+func jea9LinuxErrnoFromHost(err error) int64 {
+	switch {
+	case err == nil:
+		return 0
+	case errors.Is(err, syscall.EBADF), errors.Is(err, os.ErrClosed):
+		return jea9LinuxErrEBADF
+	case errors.Is(err, syscall.EFAULT):
+		return jea9LinuxErrEFAULT
+	case errors.Is(err, syscall.EINVAL), errors.Is(err, os.ErrInvalid):
+		return jea9LinuxErrEINVAL
+	case errors.Is(err, syscall.ENOENT), errors.Is(err, os.ErrNotExist):
+		return jea9LinuxErrENOENT
+	case errors.Is(err, syscall.EACCES), errors.Is(err, syscall.EPERM), errors.Is(err, os.ErrPermission):
+		return jea9LinuxErrEACCES
+	case errors.Is(err, syscall.EEXIST), errors.Is(err, os.ErrExist):
+		return jea9LinuxErrEEXIST
+	case errors.Is(err, syscall.ENOTDIR):
+		return jea9LinuxErrENOTDIR
+	case errors.Is(err, syscall.EISDIR):
+		return jea9LinuxErrEISDIR
+	case errors.Is(err, syscall.ENAMETOOLONG):
+		return jea9LinuxErrENAMETOOLONG
+	case errors.Is(err, syscall.ESPIPE):
+		return jea9LinuxErrESPIPE
+	case errors.Is(err, syscall.EAGAIN):
+		return jea9LinuxErrEAGAIN
+	default:
+		return jea9LinuxErrEIO
 	}
 }
 
@@ -2774,6 +2870,8 @@ func (jos *Jea9Linux) sysRead(cpu *CPU, fdRaw, bufAddr, n uint64) int64 {
 		f.off += count
 		jos.fds[fd] = f
 		return count
+	case jea9LinuxFDHostFile:
+		return readJea9LinuxHostFile(cpu, f, bufAddr, n)
 	case jea9LinuxFDEventfd:
 		return jos.sysEventfdRead(cpu, fd, f, bufAddr, n)
 	case jea9LinuxFDPipeRead:
@@ -2805,6 +2903,21 @@ func (jos *Jea9Linux) sysWrite(cpu *CPU, fdRaw, bufAddr, n uint64) int64 {
 		w = jos.stdout
 	case jea9LinuxFDStderr:
 		w = jos.stderr
+	case jea9LinuxFDHostFile:
+		if f.hostFile == nil {
+			return jea9LinuxErrEBADF
+		}
+		written, err := f.hostFile.Write(buf)
+		if written < 0 {
+			return jea9LinuxErrEIO
+		}
+		if written > len(buf) {
+			written = len(buf)
+		}
+		if written == 0 && err != nil {
+			return jea9LinuxErrnoFromHost(err)
+		}
+		return int64(written)
 	case jea9LinuxFDEventfd:
 		return jos.sysEventfdWrite(cpu, fd, f, bufAddr, n)
 	case jea9LinuxFDPipeWrite:
@@ -2907,10 +3020,16 @@ func (jos *Jea9Linux) sysPipeWrite(cpu *CPU, fd int, f jea9LinuxFD, bufAddr, n u
 
 func (jos *Jea9Linux) sysClose(fdRaw uint64) int64 {
 	fd := int(int64(fdRaw))
-	if _, ok := jos.fds[fd]; !ok {
+	f, ok := jos.fds[fd]
+	if !ok {
 		return jea9LinuxErrEBADF
 	}
 	delete(jos.fds, fd)
+	if f.kind == jea9LinuxFDHostFile && f.hostFile != nil {
+		if err := f.hostFile.Close(); err != nil {
+			return jea9LinuxErrnoFromHost(err)
+		}
+	}
 	return 0
 }
 
@@ -3035,10 +3154,26 @@ func (jos *Jea9Linux) sysLseek(fdRaw, offRaw, whence uint64) int64 {
 	if !ok {
 		return jea9LinuxErrEBADF
 	}
-	if f.kind != jea9LinuxFDFile {
+	if f.kind != jea9LinuxFDFile && f.kind != jea9LinuxFDHostFile {
 		return jea9LinuxErrESPIPE
 	}
 	off := int64(offRaw)
+	if f.kind == jea9LinuxFDHostFile {
+		if f.hostFile == nil {
+			return jea9LinuxErrEBADF
+		}
+		if whence != jea9LinuxSeekSet && whence != jea9LinuxSeekCur && whence != jea9LinuxSeekEnd {
+			return jea9LinuxErrEINVAL
+		}
+		next, err := f.hostFile.Seek(off, int(whence))
+		if err != nil {
+			return jea9LinuxErrnoFromHost(err)
+		}
+		if next < 0 {
+			return jea9LinuxErrEINVAL
+		}
+		return next
+	}
 	var next int64
 	switch whence {
 	case jea9LinuxSeekSet:
@@ -3064,7 +3199,7 @@ func (jos *Jea9Linux) sysPread64(cpu *CPU, fdRaw, bufAddr, n, offRaw uint64) int
 	if !ok {
 		return jea9LinuxErrEBADF
 	}
-	if f.kind != jea9LinuxFDFile {
+	if f.kind != jea9LinuxFDFile && f.kind != jea9LinuxFDHostFile {
 		return jea9LinuxErrESPIPE
 	}
 	if n == 0 {
@@ -3077,7 +3212,58 @@ func (jos *Jea9Linux) sysPread64(cpu *CPU, fdRaw, bufAddr, n, offRaw uint64) int
 	if off < 0 {
 		return jea9LinuxErrEINVAL
 	}
+	if f.kind == jea9LinuxFDHostFile {
+		return preadJea9LinuxHostFile(cpu, f, bufAddr, n, off)
+	}
 	return readJea9LinuxFileRange(cpu, f, bufAddr, n, off)
+}
+
+func readJea9LinuxHostFile(cpu *CPU, f jea9LinuxFD, bufAddr, n uint64) int64 {
+	if f.hostFile == nil {
+		return jea9LinuxErrEBADF
+	}
+	buf := make([]byte, int(n))
+	nread, err := f.hostFile.Read(buf)
+	if nread < 0 {
+		return jea9LinuxErrEIO
+	}
+	if nread > len(buf) {
+		nread = len(buf)
+	}
+	if nread > 0 {
+		if fault := cpu.mem.WriteBytes(bufAddr, buf[:nread]); fault != nil {
+			return jea9LinuxErrEFAULT
+		}
+		return int64(nread)
+	}
+	if err != nil && !errors.Is(err, io.EOF) {
+		return jea9LinuxErrnoFromHost(err)
+	}
+	return 0
+}
+
+func preadJea9LinuxHostFile(cpu *CPU, f jea9LinuxFD, bufAddr, n uint64, off int64) int64 {
+	if f.hostFile == nil {
+		return jea9LinuxErrEBADF
+	}
+	buf := make([]byte, int(n))
+	nread, err := f.hostFile.ReadAt(buf, off)
+	if nread < 0 {
+		return jea9LinuxErrEIO
+	}
+	if nread > len(buf) {
+		nread = len(buf)
+	}
+	if nread > 0 {
+		if fault := cpu.mem.WriteBytes(bufAddr, buf[:nread]); fault != nil {
+			return jea9LinuxErrEFAULT
+		}
+		return int64(nread)
+	}
+	if err != nil && !errors.Is(err, io.EOF) {
+		return jea9LinuxErrnoFromHost(err)
+	}
+	return 0
 }
 
 func readJea9LinuxFileRange(cpu *CPU, f jea9LinuxFD, bufAddr, n uint64, off int64) int64 {

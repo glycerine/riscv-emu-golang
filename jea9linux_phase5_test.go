@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -22,6 +23,10 @@ const (
 	jea9TestSysPrlimit64 = uint64(261)
 
 	jea9TestFGetFL = uint64(3)
+
+	jea9TestOWronly = uint64(0x1)
+	jea9TestOCreate = uint64(0x40)
+	jea9TestOTrunc  = uint64(0x200)
 
 	jea9TestTCGETS     = uint64(0x5401)
 	jea9TestTCSETS     = uint64(0x5402)
@@ -287,6 +292,115 @@ func TestJea9Linux_OpenAtUnsupportedPath(t *testing.T) {
 		t.Fatalf("open unsupported disposition = %v", d)
 	}
 	requireSyscallReturn(t, cpu, -2)
+}
+
+func TestJea9Linux_HostFilePassthroughDisabledByDefault(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "host.txt")
+	if err := os.WriteFile(path, []byte("host data"), 0o644); err != nil {
+		t.Fatalf("WriteFile(%q): %v", path, err)
+	}
+	j := NewJea9Linux(Jea9LinuxOptions{})
+	cpu, mem := newJea9LinuxSyscallCPU(t, j)
+	defer mem.Free()
+
+	writeGuestCString(t, mem, 0x5000, path)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysOpenat, jea9TestATFDCWD, 0x5000, 0, 0); d != NoteHandled {
+		t.Fatalf("open host path disposition = %v", d)
+	}
+	requireSyscallReturn(t, cpu, jea9LinuxErrENOENT)
+}
+
+func TestJea9Linux_HostFilePassthroughReadSeekPreadAndClose(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "host.txt")
+	if err := os.WriteFile(path, []byte("abcdef"), 0o644); err != nil {
+		t.Fatalf("WriteFile(%q): %v", path, err)
+	}
+	j := NewJea9Linux(Jea9LinuxOptions{AllowAllHostFiles: true})
+	cpu, mem := newJea9LinuxSyscallCPU(t, j)
+	defer mem.Free()
+
+	writeGuestCString(t, mem, 0x5000, path)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysOpenat, jea9TestATFDCWD, 0x5000, 0, 0); d != NoteHandled {
+		t.Fatalf("open host fixture disposition = %v", d)
+	}
+	fd := cpu.Reg(10)
+	if int64(fd) < 3 {
+		t.Fatalf("host fixture fd = %d, want >= 3", fd)
+	}
+
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysRead, fd, 0x6000, 2); d != NoteHandled {
+		t.Fatalf("read host fixture disposition = %v", d)
+	}
+	requireSyscallReturn(t, cpu, 2)
+	if got := string(readGuestBytes(t, mem, 0x6000, 2)); got != "ab" {
+		t.Fatalf("host first read = %q", got)
+	}
+
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysLseek, fd, 4, jea9TestSeekSet); d != NoteHandled {
+		t.Fatalf("lseek host disposition = %v", d)
+	}
+	requireSyscallReturn(t, cpu, 4)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysRead, fd, 0x7000, 8); d != NoteHandled {
+		t.Fatalf("read after host seek disposition = %v", d)
+	}
+	requireSyscallReturn(t, cpu, 2)
+	if got := string(readGuestBytes(t, mem, 0x7000, 2)); got != "ef" {
+		t.Fatalf("host read after seek = %q", got)
+	}
+
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysPread64, fd, 0x8000, 3, 1); d != NoteHandled {
+		t.Fatalf("pread host disposition = %v", d)
+	}
+	requireSyscallReturn(t, cpu, 3)
+	if got := string(readGuestBytes(t, mem, 0x8000, 3)); got != "bcd" {
+		t.Fatalf("host pread = %q", got)
+	}
+
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysClose, fd); d != NoteHandled {
+		t.Fatalf("close host disposition = %v", d)
+	}
+	requireSyscallReturn(t, cpu, 0)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysRead, fd, 0x9000, 1); d != NoteHandled {
+		t.Fatalf("read closed host disposition = %v", d)
+	}
+	requireSyscallReturn(t, cpu, jea9LinuxErrEBADF)
+}
+
+func TestJea9Linux_HostFilePassthroughWriteCreateTruncate(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "created.txt")
+	j := NewJea9Linux(Jea9LinuxOptions{AllowAllHostFiles: true})
+	cpu, mem := newJea9LinuxSyscallCPU(t, j)
+	defer mem.Free()
+
+	writeGuestCString(t, mem, 0x5000, path)
+	flags := jea9TestOWronly | jea9TestOCreate | jea9TestOTrunc
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysOpenat, jea9TestATFDCWD, 0x5000, flags, 0o644); d != NoteHandled {
+		t.Fatalf("open host output disposition = %v", d)
+	}
+	fd := cpu.Reg(10)
+	if int64(fd) < 3 {
+		t.Fatalf("host output fd = %d, want >= 3", fd)
+	}
+
+	if f := mem.WriteBytes(0x6000, []byte("guest wrote host file")); f != nil {
+		t.Fatal(f)
+	}
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysWrite, fd, 0x6000, 21); d != NoteHandled {
+		t.Fatalf("write host output disposition = %v", d)
+	}
+	requireSyscallReturn(t, cpu, 21)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysClose, fd); d != NoteHandled {
+		t.Fatalf("close host output disposition = %v", d)
+	}
+	requireSyscallReturn(t, cpu, 0)
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile(%q): %v", path, err)
+	}
+	if string(got) != "guest wrote host file" {
+		t.Fatalf("host output = %q", string(got))
+	}
 }
 
 func TestJea9Linux_ConfiguredReadOnlyFileReadSeekPreadAndFcntl(t *testing.T) {

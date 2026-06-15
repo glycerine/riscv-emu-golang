@@ -31,6 +31,7 @@ type EmuxConfig struct {
 	InstructionBudget uint64
 	JITLazy           bool
 	JITAOT            bool
+	AllowAllHostFiles bool
 	ClockMode         string
 	MonotonicStartNS  int64
 	MonotonicStartSet bool
@@ -95,6 +96,7 @@ func (c *EmuxConfig) DefineFlags(fs *flag.FlagSet) {
 	fs.Uint64Var(&c.InstructionBudget, "budget", defaultEmuxInstructionBudget, "jea9linux instruction budget per scheduler slice")
 	fs.BoolVar(&c.JITLazy, "jitlazy", false, "run with the native lazy JIT instead of the interpreter")
 	fs.BoolVar(&c.JITAOT, "jitaot", false, "run with explicit AOT JIT instead of the interpreter")
+	fs.BoolVar(&c.AllowAllHostFiles, "allhost", false, "allow guest file syscalls to pass through to the host filesystem")
 	fs.StringVar(&c.ClockMode, "clock", defaultEmuxClockMode, "clock mode: idle-jump, ic-tick, or manual")
 	fs.Int64Var(&c.MonotonicStartNS, "monotonic-ns", defaultEmuxMonotonicStartNS, "initial monotonic clock value in nanoseconds")
 	fs.Int64Var(&c.RealtimeOffsetNS, "realtime-offset-ns", 0, "realtime clock offset from monotonic time in nanoseconds")
@@ -189,6 +191,7 @@ func runEmux(cfg EmuxConfig) (int, error) {
 		Stdout:            cfg.Stdout,
 		Stderr:            cfg.Stderr,
 		Files:             emuxTimeZoneFiles(),
+		AllowAllHostFiles: cfg.AllowAllHostFiles,
 	})
 
 	args := append([]string(nil), cfg.Args...)

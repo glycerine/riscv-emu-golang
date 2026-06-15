@@ -189,6 +189,17 @@ func TestParseEmuxJITModeFlags(t *testing.T) {
 	if interp.JITLazy || interp.JITAOT {
 		t.Fatalf("default parsed as JITLazy=%v JITAOT=%v", interp.JITLazy, interp.JITAOT)
 	}
+	if interp.AllowAllHostFiles {
+		t.Fatal("default parsed with AllowAllHostFiles enabled")
+	}
+
+	allhost, _, _ := parseEmuxConfigForTest(t,
+		"-run", "../../testvectors/jea9linux/elf/write_stdout.elf",
+		"-allhost",
+	)
+	if !allhost.AllowAllHostFiles {
+		t.Fatal("-allhost did not enable AllowAllHostFiles")
+	}
 }
 
 func BenchmarkRunEmuxGoHelloInterpreter(b *testing.B) {
