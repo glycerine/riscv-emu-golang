@@ -50,9 +50,10 @@ func TestBloat_BenchGuest_0x10de(t *testing.T) {
 		//    fixture produced by a different Zig version. The net increase
 		//    is deterministic-IC bookkeeping plus the extra guest insn.
 		//  - After lazy ECALL inlining and executable-region scanning
-		//    (2026-06-15): current Linux fixture is 15 guest insns,
-		//    ir=227, host=3212.
-		maxGuestInsns = 15
+		//    (2026-06-15): observed fixtures are 15 guest insns
+		//    (ir=227, host=3212) and 16 guest insns
+		//    (ir=240, host=3329) depending on the bench_guest.elf build.
+		maxGuestInsns = 16
 		maxIRInstrs   = 240
 		maxBudgetRets = 1
 		maxHostBytes  = 3400
