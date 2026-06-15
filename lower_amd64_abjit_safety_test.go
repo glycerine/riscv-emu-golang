@@ -60,8 +60,8 @@ func TestABJIT_NoJITtoJIT_CALL(t *testing.T) {
 }
 
 // TestABJIT_SyscallCALL_CountsCorrect verifies that a block with one
-// IRSyscall produces zero CALL/RET (syscall uses gocall JMP, exit
-// thunk uses JMP to retStub).
+// IRSyscall produces zero CALL/RET. ECALL returns to Go through the
+// regular exit thunk so an installed OS personality can handle it.
 func TestABJIT_SyscallCALL_CountsCorrect(t *testing.T) {
 	b := NewBlock()
 	b.Instrs = []IRInstr{

@@ -451,7 +451,7 @@ type jea9LinuxStackBuilder struct {
 }
 
 func NewJea9Linux(opts Jea9LinuxOptions) *Jea9Linux {
-	j := &Jea9Linux{
+	jos := &Jea9Linux{
 		clockMode:         opts.ClockMode,
 		monotonicNS:       opts.MonotonicStartNS,
 		realtimeOffsetNS:  opts.RealtimeOffsetNS,
@@ -469,33 +469,33 @@ func NewJea9Linux(opts Jea9LinuxOptions) *Jea9Linux {
 		signalActions:     make(map[uint64]jea9LinuxSignalAction),
 		signalFrames:      make(map[jea9LinuxSignalFrameKey]jea9LinuxSignalFrame),
 	}
-	if j.instructionBudget == 0 {
-		j.instructionBudget = defaultJea9LinuxInstructionBudget
+	if jos.instructionBudget == 0 {
+		jos.instructionBudget = defaultJea9LinuxInstructionBudget
 	}
-	if j.nsPerInstruction == 0 {
-		j.nsPerInstruction = 1
+	if jos.nsPerInstruction == 0 {
+		jos.nsPerInstruction = 1
 	}
-	if j.stdout == nil {
-		j.stdout = io.Discard
+	if jos.stdout == nil {
+		jos.stdout = io.Discard
 	}
-	if j.stderr == nil {
-		j.stderr = io.Discard
+	if jos.stderr == nil {
+		jos.stderr = io.Discard
 	}
-	if j.pid == 0 {
-		j.pid = 1
+	if jos.pid == 0 {
+		jos.pid = 1
 	}
-	if j.tid == 0 {
-		j.tid = j.pid
+	if jos.tid == 0 {
+		jos.tid = jos.pid
 	}
-	j.fds[0] = jea9LinuxFD{kind: jea9LinuxFDStdin}
-	j.fds[1] = jea9LinuxFD{kind: jea9LinuxFDStdout}
-	j.fds[2] = jea9LinuxFD{kind: jea9LinuxFDStderr}
+	jos.fds[0] = jea9LinuxFD{kind: jea9LinuxFDStdin}
+	jos.fds[1] = jea9LinuxFD{kind: jea9LinuxFDStdout}
+	jos.fds[2] = jea9LinuxFD{kind: jea9LinuxFDStderr}
 	for path, data := range opts.Files {
-		j.files[path] = append([]byte(nil), data...)
+		jos.files[path] = append([]byte(nil), data...)
 	}
-	j.rootSeed = deriveJea9LinuxRootSeed(opts.EntropySeed)
-	j.randomOff = len(j.randomBuf)
-	return j
+	jos.rootSeed = deriveJea9LinuxRootSeed(opts.EntropySeed)
+	jos.randomOff = len(jos.randomBuf)
+	return jos
 }
 
 func deriveJea9LinuxRootSeed(seed []byte) [32]byte {
@@ -510,63 +510,63 @@ func deriveJea9LinuxRootSeed(seed []byte) [32]byte {
 	return out
 }
 
-func (j *Jea9Linux) ClockMode() Jea9LinuxClockMode { return j.clockMode }
+func (jos *Jea9Linux) ClockMode() Jea9LinuxClockMode { return jos.clockMode }
 
-func (j *Jea9Linux) SetClockMode(mode Jea9LinuxClockMode) { j.clockMode = mode }
+func (jos *Jea9Linux) SetClockMode(mode Jea9LinuxClockMode) { jos.clockMode = mode }
 
-func (j *Jea9Linux) InstructionBudget() uint64 { return j.instructionBudget }
+func (jos *Jea9Linux) InstructionBudget() uint64 { return jos.instructionBudget }
 
-func (j *Jea9Linux) SetNSPerInstruction(ns int64) {
+func (jos *Jea9Linux) SetNSPerInstruction(ns int64) {
 	if ns == 0 {
 		ns = 1
 	}
-	j.nsPerInstruction = ns
+	jos.nsPerInstruction = ns
 }
 
-func (j *Jea9Linux) AdvanceTime(d time.Duration) {
-	j.monotonicNS += int64(d)
-	j.refreshBlocked()
+func (jos *Jea9Linux) AdvanceTime(d time.Duration) {
+	jos.monotonicNS += int64(d)
+	jos.refreshBlocked()
 }
 
-func (j *Jea9Linux) SetMonotonicNS(ns int64) {
-	j.monotonicNS = ns
-	j.refreshBlocked()
+func (jos *Jea9Linux) SetMonotonicNS(ns int64) {
+	jos.monotonicNS = ns
+	jos.refreshBlocked()
 }
 
-func (j *Jea9Linux) MonotonicNS() int64 { return j.monotonicNS }
+func (jos *Jea9Linux) MonotonicNS() int64 { return jos.monotonicNS }
 
-func (j *Jea9Linux) BudgetYields() uint64 { return j.budgetYields }
+func (jos *Jea9Linux) BudgetYields() uint64 { return jos.budgetYields }
 
-func (j *Jea9Linux) TraceSnapshot() Jea9LinuxTraceSnapshot {
+func (jos *Jea9Linux) TraceSnapshot() Jea9LinuxTraceSnapshot {
 	out := Jea9LinuxTraceSnapshot{
-		Syscalls: append([]Jea9LinuxSyscallTraceEntry(nil), j.trace.Syscalls...),
+		Syscalls: append([]Jea9LinuxSyscallTraceEntry(nil), jos.trace.Syscalls...),
 		Schedule: append([]Jea9LinuxScheduleTraceEntry(nil),
-			j.trace.Schedule...),
-		Clock: append([]Jea9LinuxClockTraceEntry(nil), j.trace.Clock...),
+			jos.trace.Schedule...),
+		Clock: append([]Jea9LinuxClockTraceEntry(nil), jos.trace.Clock...),
 	}
-	if len(j.trace.Random) > 0 {
-		out.Random = make([]Jea9LinuxRandomTraceEntry, len(j.trace.Random))
-		for i := range j.trace.Random {
-			out.Random[i] = j.trace.Random[i]
-			out.Random[i].Bytes = append([]byte(nil), j.trace.Random[i].Bytes...)
+	if len(jos.trace.Random) > 0 {
+		out.Random = make([]Jea9LinuxRandomTraceEntry, len(jos.trace.Random))
+		for i := range jos.trace.Random {
+			out.Random[i] = jos.trace.Random[i]
+			out.Random[i].Bytes = append([]byte(nil), jos.trace.Random[i].Bytes...)
 		}
 	}
 	return out
 }
 
-func (j *Jea9Linux) traceTID() uint64 {
-	if j.currentTID != 0 {
-		return j.currentTID
+func (jos *Jea9Linux) traceTID() uint64 {
+	if jos.currentTID != 0 {
+		return jos.currentTID
 	}
-	if j.tid != 0 {
-		return j.tid
+	if jos.tid != 0 {
+		return jos.tid
 	}
-	return j.pid
+	return jos.pid
 }
 
-func (j *Jea9Linux) recordSyscallTrace(cpu *CPU, n Note, args SyscallArgs, d NoteDisposition) {
-	j.trace.Syscalls = append(j.trace.Syscalls, Jea9LinuxSyscallTraceEntry{
-		TID: j.traceTID(),
+func (jos *Jea9Linux) recordSyscallTrace(cpu *CPU, n Note, args SyscallArgs, d NoteDisposition) {
+	jos.trace.Syscalls = append(jos.trace.Syscalls, Jea9LinuxSyscallTraceEntry{
+		TID: jos.traceTID(),
 		PC:  n.PC,
 		Num: args.Num,
 		Args: [6]uint64{
@@ -582,56 +582,56 @@ func (j *Jea9Linux) recordSyscallTrace(cpu *CPU, n Note, args SyscallArgs, d Not
 	})
 }
 
-func (j *Jea9Linux) recordScheduleTrace(cpu *CPU, event string, tid, nextTID uint64) {
-	j.trace.Schedule = append(j.trace.Schedule, Jea9LinuxScheduleTraceEntry{
+func (jos *Jea9Linux) recordScheduleTrace(cpu *CPU, event string, tid, nextTID uint64) {
+	jos.trace.Schedule = append(jos.trace.Schedule, Jea9LinuxScheduleTraceEntry{
 		Event:           event,
 		TID:             tid,
 		NextTID:         nextTID,
-		MonotonicNS:     j.monotonicNS,
+		MonotonicNS:     jos.monotonicNS,
 		RiscvInstrBegun: cpu.RiscvInstrBegun(),
 	})
 }
 
-func (j *Jea9Linux) recordRandomTrace(source string, n, flags uint64, b []byte) {
-	j.trace.Random = append(j.trace.Random, Jea9LinuxRandomTraceEntry{
+func (jos *Jea9Linux) recordRandomTrace(source string, n, flags uint64, b []byte) {
+	jos.trace.Random = append(jos.trace.Random, Jea9LinuxRandomTraceEntry{
 		Source: source,
-		TID:    j.traceTID(),
+		TID:    jos.traceTID(),
 		N:      n,
 		Flags:  flags,
 		Bytes:  append([]byte(nil), b...),
 	})
 }
 
-func (j *Jea9Linux) recordClockTrace(source string, clockID uint64, ns int64) {
-	j.trace.Clock = append(j.trace.Clock, Jea9LinuxClockTraceEntry{
+func (jos *Jea9Linux) recordClockTrace(source string, clockID uint64, ns int64) {
+	jos.trace.Clock = append(jos.trace.Clock, Jea9LinuxClockTraceEntry{
 		Source:  source,
-		TID:     j.traceTID(),
+		TID:     jos.traceTID(),
 		ClockID: clockID,
 		NS:      ns,
 	})
 }
 
-func (j *Jea9Linux) Blocked() bool {
-	j.refreshBlocked()
-	return j.blocked
+func (jos *Jea9Linux) Blocked() bool {
+	jos.refreshBlocked()
+	return jos.blocked
 }
 
-func (j *Jea9Linux) fillRandom(dst []byte) {
+func (jos *Jea9Linux) fillRandom(dst []byte) {
 	for len(dst) > 0 {
-		if j.randomOff >= len(j.randomBuf) {
-			j.randomBuf = j.randomBlock("sys-random-v1", j.randomCounter)
-			j.randomCounter++
-			j.randomOff = 0
+		if jos.randomOff >= len(jos.randomBuf) {
+			jos.randomBuf = jos.randomBlock("sys-random-v1", jos.randomCounter)
+			jos.randomCounter++
+			jos.randomOff = 0
 		}
-		n := copy(dst, j.randomBuf[j.randomOff:])
-		j.randomOff += n
+		n := copy(dst, jos.randomBuf[jos.randomOff:])
+		jos.randomOff += n
 		dst = dst[n:]
 	}
 }
 
-func (j *Jea9Linux) randomBlock(label string, counter uint64) [32]byte {
+func (jos *Jea9Linux) randomBlock(label string, counter uint64) [32]byte {
 	h := sha256.New()
-	_, _ = h.Write(j.rootSeed[:])
+	_, _ = h.Write(jos.rootSeed[:])
 	_, _ = h.Write([]byte(label))
 	var ctr [8]byte
 	binary.LittleEndian.PutUint64(ctr[:], counter)
@@ -665,61 +665,61 @@ func jea9LinuxDefaultMmapBase(memSize uint64) uint64 {
 	return base
 }
 
-func (j *Jea9Linux) ensureVM(cpu *CPU) *jea9LinuxVM {
-	if j.vm == nil {
-		j.vm = newJea9LinuxVM(cpu.mem.Size())
+func (jos *Jea9Linux) ensureVM(cpu *CPU) *jea9LinuxVM {
+	if jos.vm == nil {
+		jos.vm = newJea9LinuxVM(cpu.mem.Size())
 	}
-	(&cpu.mem).setAccessOverlay(j.vm)
-	return j.vm
+	(&cpu.mem).setAccessOverlay(jos.vm)
+	return jos.vm
 }
 
-func (j *Jea9Linux) ensureScheduler(cpu *CPU) *jea9LinuxContext {
-	j.ensureSignalState()
-	if j.contexts == nil {
-		j.contexts = make(map[uint64]*jea9LinuxContext)
-		j.futexWaiters = make(map[uint64][]uint64)
-		j.currentTID = j.tid
-		if j.currentTID == 0 {
-			j.currentTID = j.pid
+func (jos *Jea9Linux) ensureScheduler(cpu *CPU) *jea9LinuxContext {
+	jos.ensureSignalState()
+	if jos.contexts == nil {
+		jos.contexts = make(map[uint64]*jea9LinuxContext)
+		jos.futexWaiters = make(map[uint64][]uint64)
+		jos.currentTID = jos.tid
+		if jos.currentTID == 0 {
+			jos.currentTID = jos.pid
 		}
-		j.tid = j.currentTID
-		j.nextTID = j.currentTID + 1
+		jos.tid = jos.currentTID
+		jos.nextTID = jos.currentTID + 1
 		ctx := &jea9LinuxContext{
-			tid:      j.currentTID,
+			tid:      jos.currentTID,
 			state:    jea9LinuxContextRunnable,
 			snapshot: snapshotJea9LinuxCPU(cpu),
 		}
-		j.contexts[ctx.tid] = ctx
-		j.contextOrder = append(j.contextOrder, ctx.tid)
-		j.loadedGuestContexts = 1
+		jos.contexts[ctx.tid] = ctx
+		jos.contextOrder = append(jos.contextOrder, ctx.tid)
+		jos.loadedGuestContexts = 1
 		return ctx
 	}
-	ctx := j.contexts[j.currentTID]
+	ctx := jos.contexts[jos.currentTID]
 	if ctx == nil {
 		ctx = &jea9LinuxContext{
-			tid:      j.currentTID,
+			tid:      jos.currentTID,
 			state:    jea9LinuxContextRunnable,
 			snapshot: snapshotJea9LinuxCPU(cpu),
 		}
-		j.contexts[ctx.tid] = ctx
-		j.contextOrder = append(j.contextOrder, ctx.tid)
+		jos.contexts[ctx.tid] = ctx
+		jos.contextOrder = append(jos.contextOrder, ctx.tid)
 	}
-	if j.futexWaiters == nil {
-		j.futexWaiters = make(map[uint64][]uint64)
+	if jos.futexWaiters == nil {
+		jos.futexWaiters = make(map[uint64][]uint64)
 	}
-	if j.nextTID <= j.currentTID {
-		j.nextTID = j.currentTID + 1
+	if jos.nextTID <= jos.currentTID {
+		jos.nextTID = jos.currentTID + 1
 	}
-	j.loadedGuestContexts = 1
+	jos.loadedGuestContexts = 1
 	return ctx
 }
 
-func (j *Jea9Linux) ensureSignalState() {
-	if j.signalActions == nil {
-		j.signalActions = make(map[uint64]jea9LinuxSignalAction)
+func (jos *Jea9Linux) ensureSignalState() {
+	if jos.signalActions == nil {
+		jos.signalActions = make(map[uint64]jea9LinuxSignalAction)
 	}
-	if j.signalFrames == nil {
-		j.signalFrames = make(map[jea9LinuxSignalFrameKey]jea9LinuxSignalFrame)
+	if jos.signalFrames == nil {
+		jos.signalFrames = make(map[jea9LinuxSignalFrameKey]jea9LinuxSignalFrame)
 	}
 }
 
@@ -754,43 +754,43 @@ func restoreJea9LinuxCPU(cpu *CPU, snap jea9LinuxCPUSnapshot) {
 	cpu.mtval = snap.mtval
 }
 
-func (j *Jea9Linux) loadContext(cpu *CPU, tid uint64) bool {
-	ctx := j.contexts[tid]
+func (jos *Jea9Linux) loadContext(cpu *CPU, tid uint64) bool {
+	ctx := jos.contexts[tid]
 	if ctx == nil || ctx.state != jea9LinuxContextRunnable {
 		return false
 	}
 	restoreJea9LinuxCPU(cpu, ctx.snapshot)
-	j.currentTID = tid
-	j.tid = tid
-	j.loadedGuestContexts = 1
+	jos.currentTID = tid
+	jos.tid = tid
+	jos.loadedGuestContexts = 1
 	return true
 }
 
-func (j *Jea9Linux) nextRunnableAfterCurrent() (uint64, bool) {
-	if len(j.contextOrder) == 0 {
+func (jos *Jea9Linux) nextRunnableAfterCurrent() (uint64, bool) {
+	if len(jos.contextOrder) == 0 {
 		return 0, false
 	}
 	start := 0
-	for i, tid := range j.contextOrder {
-		if tid == j.currentTID {
+	for i, tid := range jos.contextOrder {
+		if tid == jos.currentTID {
 			start = i
 			break
 		}
 	}
-	for step := 1; step <= len(j.contextOrder); step++ {
-		tid := j.contextOrder[(start+step)%len(j.contextOrder)]
-		if tid == j.currentTID {
+	for step := 1; step <= len(jos.contextOrder); step++ {
+		tid := jos.contextOrder[(start+step)%len(jos.contextOrder)]
+		if tid == jos.currentTID {
 			continue
 		}
-		if ctx := j.contexts[tid]; ctx != nil && ctx.state == jea9LinuxContextRunnable {
+		if ctx := jos.contexts[tid]; ctx != nil && ctx.state == jea9LinuxContextRunnable {
 			return tid, true
 		}
 	}
 	return 0, false
 }
 
-func (j *Jea9Linux) hasRunnableContext() bool {
-	for _, ctx := range j.contexts {
+func (jos *Jea9Linux) hasRunnableContext() bool {
+	for _, ctx := range jos.contexts {
 		if ctx.state == jea9LinuxContextRunnable {
 			return true
 		}
@@ -798,8 +798,8 @@ func (j *Jea9Linux) hasRunnableContext() bool {
 	return false
 }
 
-func (j *Jea9Linux) markRunnable(tid uint64, retval int64) {
-	ctx := j.contexts[tid]
+func (jos *Jea9Linux) markRunnable(tid uint64, retval int64) {
+	ctx := jos.contexts[tid]
 	if ctx == nil || ctx.state == jea9LinuxContextExited {
 		return
 	}
@@ -814,8 +814,8 @@ func (j *Jea9Linux) markRunnable(tid uint64, retval int64) {
 	ctx.waitMaxEvents = 0
 }
 
-func (j *Jea9Linux) removeFutexWaiter(addr, tid uint64) {
-	waiters := j.futexWaiters[addr]
+func (jos *Jea9Linux) removeFutexWaiter(addr, tid uint64) {
+	waiters := jos.futexWaiters[addr]
 	for i, waiter := range waiters {
 		if waiter == tid {
 			copy(waiters[i:], waiters[i+1:])
@@ -824,10 +824,10 @@ func (j *Jea9Linux) removeFutexWaiter(addr, tid uint64) {
 		}
 	}
 	if len(waiters) == 0 {
-		delete(j.futexWaiters, addr)
+		delete(jos.futexWaiters, addr)
 		return
 	}
-	j.futexWaiters[addr] = waiters
+	jos.futexWaiters[addr] = waiters
 }
 
 func (vm *jea9LinuxVM) CheckGuestAccess(addr, width uint64, kind FaultKind, size uint64) *MemFault {
@@ -1051,11 +1051,11 @@ func (b *jea9LinuxStackBuilder) writeInitialVector(argPtrs, envPtrs []uint64, au
 	return vector, nil
 }
 
-func (j *Jea9Linux) InitELFStack(cpu *CPU, ef *ELF, opts Jea9LinuxStartOptions) error {
+func (jos *Jea9Linux) InitELFStack(cpu *CPU, ef *ELF, opts Jea9LinuxStartOptions) error {
 	if ef == nil || ef.Header == nil {
 		return errors.New("jea9linux: InitELFStack requires a loaded ELF with header")
 	}
-	vm := j.ensureVM(cpu)
+	vm := jos.ensureVM(cpu)
 	if brk := elfProgramBreak(ef); brk > vm.brk {
 		vm.brk = brk
 		vm.minBrk = brk
@@ -1092,7 +1092,7 @@ func (j *Jea9Linux) InitELFStack(cpu *CPU, ef *ELF, opts Jea9LinuxStartOptions) 
 	if err != nil {
 		return err
 	}
-	auxRandom := j.randomBlock("auxv-random-v1", 0)
+	auxRandom := jos.randomBlock("auxv-random-v1", 0)
 	randomPtr, err := stack.pushBytes(auxRandom[:16])
 	if err != nil {
 		return err
@@ -1106,11 +1106,11 @@ func (j *Jea9Linux) InitELFStack(cpu *CPU, ef *ELF, opts Jea9LinuxStartOptions) 
 
 	cpu.SetReg(2, vector)
 	cpu.SetPC(ef.Entry)
-	j.reserveInitialStackMapping(cpu, vm, stackTop, vector)
+	jos.reserveInitialStackMapping(cpu, vm, stackTop, vector)
 	return nil
 }
 
-func (j *Jea9Linux) reserveInitialStackMapping(cpu *CPU, vm *jea9LinuxVM, stackTop, vector uint64) {
+func (jos *Jea9Linux) reserveInitialStackMapping(cpu *CPU, vm *jea9LinuxVM, stackTop, vector uint64) {
 	top := jea9LinuxAlignUp(stackTop)
 	if top > cpu.mem.Size() {
 		top = cpu.mem.Size()
@@ -1206,12 +1206,12 @@ func elfProgramBreak(ef *ELF) uint64 {
 	return jea9LinuxAlignUp(maxEnd)
 }
 
-func (j *Jea9Linux) Run(cpu *CPU) error {
+func (jos *Jea9Linux) Run(cpu *CPU) error {
 	before := cpu.RiscvInstrBegun()
-	res, err := RunDefaultBudget(cpu, &cpu.Notes, j.instructionBudget)
+	res, err := RunDefaultBudget(cpu, &cpu.Notes, jos.instructionBudget)
 	delta := cpu.RiscvInstrBegun() - before
-	j.accountRetired(delta)
-	if j.Blocked() {
+	jos.accountRetired(delta)
+	if jos.Blocked() {
 		return ErrJea9LinuxBlocked
 	}
 	if err != nil {
@@ -1219,7 +1219,7 @@ func (j *Jea9Linux) Run(cpu *CPU) error {
 	}
 	switch res {
 	case RunBudgetExpired:
-		return j.expireBudget(cpu)
+		return jos.expireBudget(cpu)
 	case RunBudgetExit:
 		return nil
 	default:
@@ -1227,17 +1227,17 @@ func (j *Jea9Linux) Run(cpu *CPU) error {
 	}
 }
 
-func (j *Jea9Linux) RunJIT(cpu *CPU, jit *JIT) error {
+func (jos *Jea9Linux) RunJIT(cpu *CPU, jit *JIT) error {
 	if jit == nil {
 		return errors.New("jea9linux: RunJIT requires a JIT")
 	}
-	budget := j.instructionBudget
+	budget := jos.instructionBudget
 	var used uint64
 	for {
 		remaining := budget
 		if budget != 0 {
 			if used >= budget {
-				return j.expireBudget(cpu)
+				return jos.expireBudget(cpu)
 			}
 			remaining = budget - used
 		}
@@ -1246,8 +1246,8 @@ func (j *Jea9Linux) RunJIT(cpu *CPU, jit *JIT) error {
 		res, err := jit.StepBlockBudget(cpu, remaining)
 		delta := cpu.RiscvInstrBegun() - before
 		used += delta
-		j.accountRetired(delta)
-		if j.Blocked() {
+		jos.accountRetired(delta)
+		if jos.Blocked() {
 			return ErrJea9LinuxBlocked
 		}
 		if cpu.watchAddr != 0 {
@@ -1269,7 +1269,7 @@ func (j *Jea9Linux) RunJIT(cpu *CPU, jit *JIT) error {
 			}
 			switch disp {
 			case NoteHandled:
-				if j.Blocked() {
+				if jos.Blocked() {
 					return ErrJea9LinuxBlocked
 				}
 				continue
@@ -1282,41 +1282,41 @@ func (j *Jea9Linux) RunJIT(cpu *CPU, jit *JIT) error {
 
 		switch res {
 		case RunBudgetExpired:
-			return j.expireBudget(cpu)
+			return jos.expireBudget(cpu)
 		case RunBudgetExit:
 			return nil
 		}
 	}
 }
 
-func (j *Jea9Linux) expireBudget(cpu *CPU) error {
-	j.budgetYields++
-	if j.contexts != nil {
-		from := j.traceTID()
+func (jos *Jea9Linux) expireBudget(cpu *CPU) error {
+	jos.budgetYields++
+	if jos.contexts != nil {
+		from := jos.traceTID()
 		to := from
-		ctx := j.ensureScheduler(cpu)
+		ctx := jos.ensureScheduler(cpu)
 		ctx.state = jea9LinuxContextRunnable
 		ctx.snapshot = snapshotJea9LinuxCPU(cpu)
-		if next, ok := j.nextRunnableAfterCurrent(); ok {
-			j.loadContext(cpu, next)
+		if next, ok := jos.nextRunnableAfterCurrent(); ok {
+			jos.loadContext(cpu, next)
 			to = next
 		}
-		j.recordScheduleTrace(cpu, "budget", from, to)
+		jos.recordScheduleTrace(cpu, "budget", from, to)
 	}
 	return ErrJea9LinuxBudget
 }
 
-func (j *Jea9Linux) accountRetired(delta uint64) {
-	if j.clockMode != Jea9ClockICTick || delta == 0 {
+func (jos *Jea9Linux) accountRetired(delta uint64) {
+	if jos.clockMode != Jea9ClockICTick || delta == 0 {
 		return
 	}
-	j.monotonicNS += int64(delta) * j.nsPerInstruction
+	jos.monotonicNS += int64(delta) * jos.nsPerInstruction
 }
 
-func (j *Jea9Linux) Handle(cpu *CPU, n Note) (disp NoteDisposition) {
+func (jos *Jea9Linux) Handle(cpu *CPU, n Note) (disp NoteDisposition) {
 	if !IsEcall(n) {
 		if jea9LinuxNoteIsFault(n) {
-			return j.handleFaultSignal(cpu, n)
+			return jos.handleFaultSignal(cpu, n)
 		}
 		return NoteForward
 	}
@@ -1330,142 +1330,142 @@ func (j *Jea9Linux) Handle(cpu *CPU, n Note) (disp NoteDisposition) {
 		A5:  cpu.Reg(15),
 	}
 	defer func() {
-		j.recordSyscallTrace(cpu, n, args, disp)
+		jos.recordSyscallTrace(cpu, n, args, disp)
 	}()
 	switch args.Num {
 	case jea9LinuxSysEventfd2:
-		cpu.SetReg(10, uint64(j.sysEventfd2(args.A0, args.A1)))
+		cpu.SetReg(10, uint64(jos.sysEventfd2(args.A0, args.A1)))
 		return NoteHandled
 	case jea9LinuxSysEpollCreate1:
-		cpu.SetReg(10, uint64(j.sysEpollCreate1(args.A0)))
+		cpu.SetReg(10, uint64(jos.sysEpollCreate1(args.A0)))
 		return NoteHandled
 	case jea9LinuxSysEpollCtl:
-		cpu.SetReg(10, uint64(j.sysEpollCtl(cpu, args.A0, args.A1, args.A2, args.A3)))
+		cpu.SetReg(10, uint64(jos.sysEpollCtl(cpu, args.A0, args.A1, args.A2, args.A3)))
 		return NoteHandled
 	case jea9LinuxSysEpollPwait:
-		return j.sysEpollPwait(cpu, args.A0, args.A1, args.A2, args.A3, args.A4, args.A5)
+		return jos.sysEpollPwait(cpu, args.A0, args.A1, args.A2, args.A3, args.A4, args.A5)
 	case jea9LinuxSysFcntl:
-		cpu.SetReg(10, uint64(j.sysFcntl(args.A0, args.A1, args.A2)))
+		cpu.SetReg(10, uint64(jos.sysFcntl(args.A0, args.A1, args.A2)))
 		return NoteHandled
 	case jea9LinuxSysOpenat:
-		cpu.SetReg(10, uint64(j.sysOpenat(cpu, args.A0, args.A1, args.A2, args.A3)))
+		cpu.SetReg(10, uint64(jos.sysOpenat(cpu, args.A0, args.A1, args.A2, args.A3)))
 		return NoteHandled
 	case jea9LinuxSysClose:
-		cpu.SetReg(10, uint64(j.sysClose(args.A0)))
+		cpu.SetReg(10, uint64(jos.sysClose(args.A0)))
 		return NoteHandled
 	case jea9LinuxSysPipe2:
-		cpu.SetReg(10, uint64(j.sysPipe2(cpu, args.A0, args.A1)))
+		cpu.SetReg(10, uint64(jos.sysPipe2(cpu, args.A0, args.A1)))
 		return NoteHandled
 	case jea9LinuxSysLseek:
-		cpu.SetReg(10, uint64(j.sysLseek(args.A0, args.A1, args.A2)))
+		cpu.SetReg(10, uint64(jos.sysLseek(args.A0, args.A1, args.A2)))
 		return NoteHandled
 	case jea9LinuxSysRead:
-		cpu.SetReg(10, uint64(j.sysRead(cpu, args.A0, args.A1, args.A2)))
+		cpu.SetReg(10, uint64(jos.sysRead(cpu, args.A0, args.A1, args.A2)))
 		return NoteHandled
 	case jea9LinuxSysWrite:
-		cpu.SetReg(10, uint64(j.sysWrite(cpu, args.A0, args.A1, args.A2)))
+		cpu.SetReg(10, uint64(jos.sysWrite(cpu, args.A0, args.A1, args.A2)))
 		return NoteHandled
 	case jea9LinuxSysPread64:
-		cpu.SetReg(10, uint64(j.sysPread64(cpu, args.A0, args.A1, args.A2, args.A3)))
+		cpu.SetReg(10, uint64(jos.sysPread64(cpu, args.A0, args.A1, args.A2, args.A3)))
 		return NoteHandled
 	case jea9LinuxSysPselect6:
-		cpu.SetReg(10, uint64(j.sysPselect6(cpu, args.A0, args.A1, args.A2, args.A3, args.A4, args.A5)))
+		cpu.SetReg(10, uint64(jos.sysPselect6(cpu, args.A0, args.A1, args.A2, args.A3, args.A4, args.A5)))
 		return NoteHandled
 	case jea9LinuxSysSetTidAddress:
-		cpu.SetReg(10, uint64(j.sysSetTidAddress(cpu, args.A0)))
+		cpu.SetReg(10, uint64(jos.sysSetTidAddress(cpu, args.A0)))
 		return NoteHandled
 	case jea9LinuxSysFutex, jea9LinuxSysFutexTime64:
-		return j.sysFutex(cpu, args.A0, args.A1, args.A2, args.A3, args.A5)
+		return jos.sysFutex(cpu, args.A0, args.A1, args.A2, args.A3, args.A5)
 	case jea9LinuxSysSetRobustList:
-		cpu.SetReg(10, uint64(j.sysSetRobustList(cpu, args.A0, args.A1)))
+		cpu.SetReg(10, uint64(jos.sysSetRobustList(cpu, args.A0, args.A1)))
 		return NoteHandled
 	case jea9LinuxSysSetitimer, jea9LinuxSysTimerCreate, jea9LinuxSysTimerSettime, jea9LinuxSysTimerDelete:
-		cpu.SetReg(10, uint64(j.sysTimerCompatibility(args.Num)))
+		cpu.SetReg(10, uint64(jos.sysTimerCompatibility(args.Num)))
 		return NoteHandled
 	case jea9LinuxSysKill:
-		return j.sysKill(cpu, args.A0, args.A1)
+		return jos.sysKill(cpu, args.A0, args.A1)
 	case jea9LinuxSysTkill:
-		return j.sysTkill(cpu, args.A0, args.A1)
+		return jos.sysTkill(cpu, args.A0, args.A1)
 	case jea9LinuxSysTgkill:
-		return j.sysTgkill(cpu, args.A0, args.A1, args.A2)
+		return jos.sysTgkill(cpu, args.A0, args.A1, args.A2)
 	case jea9LinuxSysSigaltstack:
-		cpu.SetReg(10, uint64(j.sysSigaltstack(cpu, args.A0, args.A1)))
+		cpu.SetReg(10, uint64(jos.sysSigaltstack(cpu, args.A0, args.A1)))
 		return NoteHandled
 	case jea9LinuxSysRtSigaction:
-		cpu.SetReg(10, uint64(j.sysRtSigaction(cpu, args.A0, args.A1, args.A2, args.A3)))
+		cpu.SetReg(10, uint64(jos.sysRtSigaction(cpu, args.A0, args.A1, args.A2, args.A3)))
 		return NoteHandled
 	case jea9LinuxSysRtSigprocmask:
-		return j.sysRtSigprocmask(cpu, args.A0, args.A1, args.A2, args.A3)
+		return jos.sysRtSigprocmask(cpu, args.A0, args.A1, args.A2, args.A3)
 	case jea9LinuxSysRtSigreturn:
-		return j.sysRtSigreturn(cpu)
+		return jos.sysRtSigreturn(cpu)
 	case jea9LinuxSysExit, jea9LinuxSysExitGroup:
-		return j.sysExit(cpu, args.A0, args.Num == jea9LinuxSysExitGroup)
+		return jos.sysExit(cpu, args.A0, args.Num == jea9LinuxSysExitGroup)
 	case jea9LinuxSysClockGettime:
-		cpu.SetReg(10, uint64(j.sysClockGettime(cpu, args.A0, args.A1)))
+		cpu.SetReg(10, uint64(jos.sysClockGettime(cpu, args.A0, args.A1)))
 		return NoteHandled
 	case jea9LinuxSysSchedGetAffinity:
-		cpu.SetReg(10, uint64(j.sysSchedGetAffinity(cpu, args.A0, args.A1, args.A2)))
+		cpu.SetReg(10, uint64(jos.sysSchedGetAffinity(cpu, args.A0, args.A1, args.A2)))
 		return NoteHandled
 	case jea9LinuxSysSchedYield:
-		return j.sysSchedYield(cpu)
+		return jos.sysSchedYield(cpu)
 	case jea9LinuxSysUname:
-		cpu.SetReg(10, uint64(j.sysUname(cpu, args.A0)))
+		cpu.SetReg(10, uint64(jos.sysUname(cpu, args.A0)))
 		return NoteHandled
 	case jea9LinuxSysGetrlimit:
-		cpu.SetReg(10, uint64(j.sysGetrlimit(cpu, args.A0, args.A1)))
+		cpu.SetReg(10, uint64(jos.sysGetrlimit(cpu, args.A0, args.A1)))
 		return NoteHandled
 	case jea9LinuxSysPrctl:
-		cpu.SetReg(10, uint64(j.sysPrctl(cpu, args.A0, args.A1, args.A2, args.A3, args.A4)))
+		cpu.SetReg(10, uint64(jos.sysPrctl(cpu, args.A0, args.A1, args.A2, args.A3, args.A4)))
 		return NoteHandled
 	case jea9LinuxSysGettimeofday:
-		cpu.SetReg(10, uint64(j.sysGettimeofday(cpu, args.A0, args.A1)))
+		cpu.SetReg(10, uint64(jos.sysGettimeofday(cpu, args.A0, args.A1)))
 		return NoteHandled
 	case jea9LinuxSysGetpid:
-		cpu.SetReg(10, j.pid)
+		cpu.SetReg(10, jos.pid)
 		return NoteHandled
 	case jea9LinuxSysGettid:
-		j.ensureScheduler(cpu)
-		cpu.SetReg(10, j.tid)
+		jos.ensureScheduler(cpu)
+		cpu.SetReg(10, jos.tid)
 		return NoteHandled
 	case jea9LinuxSysSysinfo:
-		cpu.SetReg(10, uint64(j.sysSysinfo(cpu, args.A0)))
+		cpu.SetReg(10, uint64(jos.sysSysinfo(cpu, args.A0)))
 		return NoteHandled
 	case jea9LinuxSysBrk:
-		cpu.SetReg(10, j.sysBrk(cpu, args.A0))
+		cpu.SetReg(10, jos.sysBrk(cpu, args.A0))
 		return NoteHandled
 	case jea9LinuxSysClone:
-		cpu.SetReg(10, uint64(j.sysClone(cpu, args.A0, args.A1, args.A2, args.A3, args.A4)))
+		cpu.SetReg(10, uint64(jos.sysClone(cpu, args.A0, args.A1, args.A2, args.A3, args.A4)))
 		return NoteHandled
 	case jea9LinuxSysMunmap:
-		cpu.SetReg(10, uint64(j.sysMunmap(cpu, args.A0, args.A1)))
+		cpu.SetReg(10, uint64(jos.sysMunmap(cpu, args.A0, args.A1)))
 		return NoteHandled
 	case jea9LinuxSysMmap:
-		cpu.SetReg(10, uint64(j.sysMmap(cpu, args.A0, args.A1, args.A2, args.A3, args.A4, args.A5)))
+		cpu.SetReg(10, uint64(jos.sysMmap(cpu, args.A0, args.A1, args.A2, args.A3, args.A4, args.A5)))
 		return NoteHandled
 	case jea9LinuxSysMprotect:
-		cpu.SetReg(10, uint64(j.sysMprotect(cpu, args.A0, args.A1, args.A2)))
+		cpu.SetReg(10, uint64(jos.sysMprotect(cpu, args.A0, args.A1, args.A2)))
 		return NoteHandled
 	case jea9LinuxSysMincore:
-		cpu.SetReg(10, uint64(j.sysMincore(cpu, args.A0, args.A1, args.A2)))
+		cpu.SetReg(10, uint64(jos.sysMincore(cpu, args.A0, args.A1, args.A2)))
 		return NoteHandled
 	case jea9LinuxSysMadvise:
-		cpu.SetReg(10, uint64(j.sysMadvise(cpu, args.A0, args.A1, args.A2)))
+		cpu.SetReg(10, uint64(jos.sysMadvise(cpu, args.A0, args.A1, args.A2)))
 		return NoteHandled
 	case jea9LinuxSysRiscvHwprobe:
-		cpu.SetReg(10, uint64(j.sysRiscvHwprobe(args.A0, args.A1, args.A2, args.A3, args.A4, args.A5)))
+		cpu.SetReg(10, uint64(jos.sysRiscvHwprobe(args.A0, args.A1, args.A2, args.A3, args.A4, args.A5)))
 		return NoteHandled
 	case jea9LinuxSysPrlimit64:
-		cpu.SetReg(10, uint64(j.sysPrlimit64(cpu, args.A0, args.A1, args.A2, args.A3)))
+		cpu.SetReg(10, uint64(jos.sysPrlimit64(cpu, args.A0, args.A1, args.A2, args.A3)))
 		return NoteHandled
 	case jea9LinuxSysNanosleep:
-		ret, blocked := j.sysNanosleep(cpu, args.A0, args.A1)
+		ret, blocked := jos.sysNanosleep(cpu, args.A0, args.A1)
 		if blocked {
 			return NoteExit
 		}
 		cpu.SetReg(10, uint64(ret))
 		return NoteHandled
 	case jea9LinuxSysGetrandom:
-		cpu.SetReg(10, uint64(j.sysGetrandom(cpu, args.A0, args.A1, args.A2)))
+		cpu.SetReg(10, uint64(jos.sysGetrandom(cpu, args.A0, args.A1, args.A2)))
 		return NoteHandled
 	default:
 		ret := jea9LinuxErrENOSYS
@@ -1474,19 +1474,19 @@ func (j *Jea9Linux) Handle(cpu *CPU, n Note) (disp NoteDisposition) {
 	}
 }
 
-func (j *Jea9Linux) allocFD(fd jea9LinuxFD) int {
-	n := j.nextFD
-	j.nextFD++
-	j.fds[n] = fd
+func (jos *Jea9Linux) allocFD(fd jea9LinuxFD) int {
+	n := jos.nextFD
+	jos.nextFD++
+	jos.fds[n] = fd
 	return n
 }
 
-func (j *Jea9Linux) sysEventfd2(init, flags uint64) int64 {
+func (jos *Jea9Linux) sysEventfd2(init, flags uint64) int64 {
 	const supported = jea9LinuxEFDSemaphore | jea9LinuxFDNonblock | jea9LinuxFDCloexec
 	if flags&^supported != 0 || init == ^uint64(0) {
 		return jea9LinuxErrEINVAL
 	}
-	fd := j.allocFD(jea9LinuxFD{
+	fd := jos.allocFD(jea9LinuxFD{
 		kind:           jea9LinuxFDEventfd,
 		flags:          flags,
 		eventfdCounter: init,
@@ -1494,11 +1494,11 @@ func (j *Jea9Linux) sysEventfd2(init, flags uint64) int64 {
 	return int64(fd)
 }
 
-func (j *Jea9Linux) sysEpollCreate1(flags uint64) int64 {
+func (jos *Jea9Linux) sysEpollCreate1(flags uint64) int64 {
 	if flags&^jea9LinuxFDCloexec != 0 {
 		return jea9LinuxErrEINVAL
 	}
-	fd := j.allocFD(jea9LinuxFD{
+	fd := jos.allocFD(jea9LinuxFD{
 		kind:  jea9LinuxFDEpoll,
 		flags: flags,
 		epoll: &jea9LinuxEpoll{
@@ -1508,14 +1508,14 @@ func (j *Jea9Linux) sysEpollCreate1(flags uint64) int64 {
 	return int64(fd)
 }
 
-func (j *Jea9Linux) sysEpollCtl(cpu *CPU, epfdRaw, op, fdRaw, eventAddr uint64) int64 {
+func (jos *Jea9Linux) sysEpollCtl(cpu *CPU, epfdRaw, op, fdRaw, eventAddr uint64) int64 {
 	epfd := int(int64(epfdRaw))
 	fd := int(int64(fdRaw))
-	ep, ok := j.fds[epfd]
+	ep, ok := jos.fds[epfd]
 	if !ok || ep.kind != jea9LinuxFDEpoll || ep.epoll == nil {
 		return jea9LinuxErrEBADF
 	}
-	if _, ok := j.fds[fd]; !ok {
+	if _, ok := jos.fds[fd]; !ok {
 		return jea9LinuxErrEBADF
 	}
 	switch op {
@@ -1583,10 +1583,10 @@ func storeJea9LinuxEpollEvent(cpu *CPU, addr uint64, events uint32, data uint64)
 	return 0
 }
 
-func (j *Jea9Linux) sysEpollPwait(cpu *CPU, epfdRaw, eventsAddr, maxEvents, timeoutRaw, sigmask, sigsetSize uint64) NoteDisposition {
+func (jos *Jea9Linux) sysEpollPwait(cpu *CPU, epfdRaw, eventsAddr, maxEvents, timeoutRaw, sigmask, sigsetSize uint64) NoteDisposition {
 	_, _ = sigmask, sigsetSize
-	ctx := j.ensureScheduler(cpu)
-	n, errno := j.epollCollectReady(cpu, int(int64(epfdRaw)), eventsAddr, maxEvents)
+	ctx := jos.ensureScheduler(cpu)
+	n, errno := jos.epollCollectReady(cpu, int(int64(epfdRaw)), eventsAddr, maxEvents)
 	if errno != 0 {
 		cpu.SetReg(10, uint64(errno))
 		ctx.snapshot = snapshotJea9LinuxCPU(cpu)
@@ -1597,15 +1597,15 @@ func (j *Jea9Linux) sysEpollPwait(cpu *CPU, epfdRaw, eventsAddr, maxEvents, time
 		ctx.snapshot = snapshotJea9LinuxCPU(cpu)
 		return NoteHandled
 	}
-	deadline, hasDeadline, timeoutErr := j.epollDeadline(timeoutRaw)
+	deadline, hasDeadline, timeoutErr := jos.epollDeadline(timeoutRaw)
 	if timeoutErr != 0 {
 		cpu.SetReg(10, uint64(timeoutErr))
 		ctx.snapshot = snapshotJea9LinuxCPU(cpu)
 		return NoteHandled
 	}
-	if hasDeadline && j.clockMode != Jea9ClockManual {
-		if _, ok := j.nextRunnableAfterCurrent(); !ok {
-			j.monotonicNS = deadline
+	if hasDeadline && jos.clockMode != Jea9ClockManual {
+		if _, ok := jos.nextRunnableAfterCurrent(); !ok {
+			jos.monotonicNS = deadline
 			cpu.SetReg(10, 0)
 			ctx.snapshot = snapshotJea9LinuxCPU(cpu)
 			return NoteHandled
@@ -1620,32 +1620,32 @@ func (j *Jea9Linux) sysEpollPwait(cpu *CPU, epfdRaw, eventsAddr, maxEvents, time
 	ctx.waitDeadlineNS = deadline
 	ctx.waitHasDeadline = hasDeadline
 	if hasDeadline {
-		j.blockedUntil = deadline
-		j.blockedHasDeadline = true
+		jos.blockedUntil = deadline
+		jos.blockedHasDeadline = true
 	}
-	if next, ok := j.nextRunnableAfterCurrent(); ok {
-		j.loadContext(cpu, next)
-		j.blocked = false
-		j.blockedHasDeadline = false
+	if next, ok := jos.nextRunnableAfterCurrent(); ok {
+		jos.loadContext(cpu, next)
+		jos.blocked = false
+		jos.blockedHasDeadline = false
 		return NoteHandled
 	}
-	j.blocked = true
+	jos.blocked = true
 	return NoteExit
 }
 
-func (j *Jea9Linux) epollDeadline(timeoutRaw uint64) (int64, bool, int64) {
+func (jos *Jea9Linux) epollDeadline(timeoutRaw uint64) (int64, bool, int64) {
 	timeout := int64(timeoutRaw)
 	if timeout < 0 {
 		return 0, false, 0
 	}
-	return j.monotonicNS + timeout*1_000_000, true, 0
+	return jos.monotonicNS + timeout*1_000_000, true, 0
 }
 
-func (j *Jea9Linux) epollCollectReady(cpu *CPU, epfd int, eventsAddr, maxEvents uint64) (int64, int64) {
+func (jos *Jea9Linux) epollCollectReady(cpu *CPU, epfd int, eventsAddr, maxEvents uint64) (int64, int64) {
 	if maxEvents == 0 {
 		return 0, jea9LinuxErrEINVAL
 	}
-	ep, ok := j.fds[epfd]
+	ep, ok := jos.fds[epfd]
 	if !ok || ep.kind != jea9LinuxFDEpoll || ep.epoll == nil {
 		return 0, jea9LinuxErrEBADF
 	}
@@ -1658,7 +1658,7 @@ func (j *Jea9Linux) epollCollectReady(cpu *CPU, epfd int, eventsAddr, maxEvents 
 		if !ok {
 			continue
 		}
-		ready := j.fdReadyEvents(fd) & reg.events
+		ready := jos.fdReadyEvents(fd) & reg.events
 		if ready == 0 {
 			continue
 		}
@@ -1670,8 +1670,8 @@ func (j *Jea9Linux) epollCollectReady(cpu *CPU, epfd int, eventsAddr, maxEvents 
 	return count, 0
 }
 
-func (j *Jea9Linux) fdReadyEvents(fd int) uint32 {
-	f, ok := j.fds[fd]
+func (jos *Jea9Linux) fdReadyEvents(fd int) uint32 {
+	f, ok := jos.fds[fd]
 	if !ok {
 		return 0
 	}
@@ -1696,68 +1696,68 @@ func (j *Jea9Linux) fdReadyEvents(fd int) uint32 {
 	return 0
 }
 
-func (j *Jea9Linux) wakeEpollWaitersForFD(cpu *CPU, fd int) {
-	for _, ctx := range j.contexts {
+func (jos *Jea9Linux) wakeEpollWaitersForFD(cpu *CPU, fd int) {
+	for _, ctx := range jos.contexts {
 		if ctx.state != jea9LinuxContextWaiting || ctx.waitKind != jea9LinuxWaitEpoll {
 			continue
 		}
-		ep := j.fds[ctx.waitFD]
+		ep := jos.fds[ctx.waitFD]
 		if ep.epoll == nil {
 			continue
 		}
 		if _, ok := ep.epoll.registrations[fd]; !ok {
 			continue
 		}
-		n, errno := j.epollCollectReady(cpu, ctx.waitFD, ctx.waitEventAddr, ctx.waitMaxEvents)
+		n, errno := jos.epollCollectReady(cpu, ctx.waitFD, ctx.waitEventAddr, ctx.waitMaxEvents)
 		if errno != 0 {
-			j.markRunnable(ctx.tid, errno)
+			jos.markRunnable(ctx.tid, errno)
 			continue
 		}
 		if n > 0 {
-			j.markRunnable(ctx.tid, n)
+			jos.markRunnable(ctx.tid, n)
 		}
 	}
 }
 
-func (j *Jea9Linux) sysPipe2(cpu *CPU, pipefdAddr, flags uint64) int64 {
+func (jos *Jea9Linux) sysPipe2(cpu *CPU, pipefdAddr, flags uint64) int64 {
 	const supported = jea9LinuxFDNonblock | jea9LinuxFDCloexec
 	if flags&^supported != 0 {
 		return jea9LinuxErrEINVAL
 	}
 	pipe := &jea9LinuxPipe{buf: make([]byte, 0, 65536)}
-	readFD := j.allocFD(jea9LinuxFD{kind: jea9LinuxFDPipeRead, flags: flags, pipe: pipe})
-	writeFD := j.allocFD(jea9LinuxFD{kind: jea9LinuxFDPipeWrite, flags: flags, pipe: pipe})
+	readFD := jos.allocFD(jea9LinuxFD{kind: jea9LinuxFDPipeRead, flags: flags, pipe: pipe})
+	writeFD := jos.allocFD(jea9LinuxFD{kind: jea9LinuxFDPipeWrite, flags: flags, pipe: pipe})
 	pipe.readFD = readFD
 	pipe.writeFD = writeFD
 	if f := cpu.mem.Store32(pipefdAddr, uint32(readFD)); f != nil {
-		delete(j.fds, readFD)
-		delete(j.fds, writeFD)
+		delete(jos.fds, readFD)
+		delete(jos.fds, writeFD)
 		return jea9LinuxErrEFAULT
 	}
 	if f := cpu.mem.Store32(pipefdAddr+4, uint32(writeFD)); f != nil {
-		delete(j.fds, readFD)
-		delete(j.fds, writeFD)
+		delete(jos.fds, readFD)
+		delete(jos.fds, writeFD)
 		return jea9LinuxErrEFAULT
 	}
 	return 0
 }
 
-func (j *Jea9Linux) sysPselect6(cpu *CPU, nfds, readfds, writefds, exceptfds, timeoutAddr, sigmask uint64) int64 {
+func (jos *Jea9Linux) sysPselect6(cpu *CPU, nfds, readfds, writefds, exceptfds, timeoutAddr, sigmask uint64) int64 {
 	_, _, _, _, _ = nfds, readfds, writefds, exceptfds, sigmask
 	if timeoutAddr == 0 {
 		return 0
 	}
-	deadline, hasDeadline, errno := j.timespecDeadline(cpu, timeoutAddr)
+	deadline, hasDeadline, errno := jos.timespecDeadline(cpu, timeoutAddr)
 	if errno != 0 {
 		return errno
 	}
-	if hasDeadline && deadline > j.monotonicNS {
-		j.monotonicNS = deadline
+	if hasDeadline && deadline > jos.monotonicNS {
+		jos.monotonicNS = deadline
 	}
 	return 0
 }
 
-func (j *Jea9Linux) timespecDeadline(cpu *CPU, timeoutAddr uint64) (int64, bool, int64) {
+func (jos *Jea9Linux) timespecDeadline(cpu *CPU, timeoutAddr uint64) (int64, bool, int64) {
 	secRaw, f := cpu.mem.Load64(timeoutAddr)
 	if f != nil {
 		return 0, false, jea9LinuxErrEFAULT
@@ -1771,15 +1771,15 @@ func (j *Jea9Linux) timespecDeadline(cpu *CPU, timeoutAddr uint64) (int64, bool,
 	if sec < 0 || nsec < 0 || nsec >= 1_000_000_000 {
 		return 0, false, jea9LinuxErrEINVAL
 	}
-	return j.monotonicNS + sec*1_000_000_000 + nsec, true, 0
+	return jos.monotonicNS + sec*1_000_000_000 + nsec, true, 0
 }
 
-func (j *Jea9Linux) sysTimerCompatibility(num uint64) int64 {
+func (jos *Jea9Linux) sysTimerCompatibility(num uint64) int64 {
 	_ = num
 	return jea9LinuxErrENOSYS
 }
 
-func (j *Jea9Linux) sysRiscvHwprobe(pairs, pairCount, cpuCount, cpus, flags, reserved uint64) int64 {
+func (jos *Jea9Linux) sysRiscvHwprobe(pairs, pairCount, cpuCount, cpus, flags, reserved uint64) int64 {
 	_, _, _, _, _, _ = pairs, pairCount, cpuCount, cpus, flags, reserved
 	return jea9LinuxErrENOSYS
 }
@@ -1807,33 +1807,33 @@ func jea9LinuxSignalBit(sig uint64) uint64 {
 	return uint64(1) << (sig - 1)
 }
 
-func (j *Jea9Linux) handleFaultSignal(cpu *CPU, n Note) NoteDisposition {
-	j.ensureSignalState()
-	action := j.signalActions[jea9LinuxSIGSEGV]
+func (jos *Jea9Linux) handleFaultSignal(cpu *CPU, n Note) NoteDisposition {
+	jos.ensureSignalState()
+	action := jos.signalActions[jea9LinuxSIGSEGV]
 	if action.handler == jea9LinuxSignalDefault || action.handler == jea9LinuxSignalIgnore {
 		return NoteForward
 	}
-	ctx := j.ensureScheduler(cpu)
+	ctx := jos.ensureScheduler(cpu)
 	info := jea9LinuxSignalInfo{
 		signo: jea9LinuxSIGSEGV,
 		code:  jea9LinuxSignalCodeSEGVMapErr,
-		pid:   j.pid,
+		pid:   jos.pid,
 		addr:  n.Tval,
 	}
-	delivered, errno := j.signalContext(cpu, ctx, jea9LinuxSIGSEGV, info)
+	delivered, errno := jos.signalContext(cpu, ctx, jea9LinuxSIGSEGV, info)
 	if errno != 0 || !delivered {
 		return NoteForward
 	}
 	return NoteHandled
 }
 
-func (j *Jea9Linux) sysRtSigaction(cpu *CPU, sig, actAddr, oldAddr, sigsetSize uint64) int64 {
-	j.ensureSignalState()
+func (jos *Jea9Linux) sysRtSigaction(cpu *CPU, sig, actAddr, oldAddr, sigsetSize uint64) int64 {
+	jos.ensureSignalState()
 	if !jea9LinuxSignalValid(sig) || sigsetSize != 8 {
 		return jea9LinuxErrEINVAL
 	}
 	if oldAddr != 0 {
-		if errno := storeJea9LinuxSignalAction(cpu, oldAddr, j.signalActions[sig]); errno != 0 {
+		if errno := storeJea9LinuxSignalAction(cpu, oldAddr, jos.signalActions[sig]); errno != 0 {
 			return errno
 		}
 	}
@@ -1842,7 +1842,7 @@ func (j *Jea9Linux) sysRtSigaction(cpu *CPU, sig, actAddr, oldAddr, sigsetSize u
 		if errno != 0 {
 			return errno
 		}
-		j.signalActions[sig] = action
+		jos.signalActions[sig] = action
 	}
 	return 0
 }
@@ -1894,8 +1894,8 @@ func storeJea9LinuxSignalAction(cpu *CPU, addr uint64, action jea9LinuxSignalAct
 	return 0
 }
 
-func (j *Jea9Linux) sysRtSigprocmask(cpu *CPU, how, setAddr, oldAddr, sigsetSize uint64) NoteDisposition {
-	ctx := j.ensureScheduler(cpu)
+func (jos *Jea9Linux) sysRtSigprocmask(cpu *CPU, how, setAddr, oldAddr, sigsetSize uint64) NoteDisposition {
+	ctx := jos.ensureScheduler(cpu)
 	if sigsetSize != 8 {
 		setJea9LinuxReturn(cpu, jea9LinuxErrEINVAL)
 		return NoteHandled
@@ -1925,7 +1925,7 @@ func (j *Jea9Linux) sysRtSigprocmask(cpu *CPU, how, setAddr, oldAddr, sigsetSize
 		}
 	}
 	cpu.SetReg(10, 0)
-	if delivered, errno := j.deliverPendingSignals(cpu, ctx); errno != 0 {
+	if delivered, errno := jos.deliverPendingSignals(cpu, ctx); errno != 0 {
 		cpu.SetReg(10, uint64(errno))
 	} else if delivered {
 		return NoteHandled
@@ -1934,8 +1934,8 @@ func (j *Jea9Linux) sysRtSigprocmask(cpu *CPU, how, setAddr, oldAddr, sigsetSize
 	return NoteHandled
 }
 
-func (j *Jea9Linux) sysSigaltstack(cpu *CPU, newAddr, oldAddr uint64) int64 {
-	ctx := j.ensureScheduler(cpu)
+func (jos *Jea9Linux) sysSigaltstack(cpu *CPU, newAddr, oldAddr uint64) int64 {
+	ctx := jos.ensureScheduler(cpu)
 	if oldAddr != 0 {
 		if errno := storeJea9LinuxSigaltstack(cpu, oldAddr, ctx.sigaltSP, ctx.sigaltFlags, ctx.sigaltSize); errno != 0 {
 			return errno
@@ -1986,46 +1986,46 @@ func storeJea9LinuxSigaltstack(cpu *CPU, addr, sp, flags, size uint64) int64 {
 	return 0
 }
 
-func (j *Jea9Linux) sysKill(cpu *CPU, pidRaw, sig uint64) NoteDisposition {
+func (jos *Jea9Linux) sysKill(cpu *CPU, pidRaw, sig uint64) NoteDisposition {
 	if sig == 0 {
 		cpu.SetReg(10, 0)
 		return NoteHandled
 	}
-	if pidRaw != j.pid {
+	if pidRaw != jos.pid {
 		setJea9LinuxReturn(cpu, jea9LinuxErrESRCH)
 		return NoteHandled
 	}
-	return j.signalTIDSyscall(cpu, j.currentTID, sig)
+	return jos.signalTIDSyscall(cpu, jos.currentTID, sig)
 }
 
-func (j *Jea9Linux) sysTkill(cpu *CPU, tid, sig uint64) NoteDisposition {
+func (jos *Jea9Linux) sysTkill(cpu *CPU, tid, sig uint64) NoteDisposition {
 	if sig == 0 {
 		cpu.SetReg(10, 0)
 		return NoteHandled
 	}
-	return j.signalTIDSyscall(cpu, tid, sig)
+	return jos.signalTIDSyscall(cpu, tid, sig)
 }
 
-func (j *Jea9Linux) sysTgkill(cpu *CPU, pidRaw, tid, sig uint64) NoteDisposition {
+func (jos *Jea9Linux) sysTgkill(cpu *CPU, pidRaw, tid, sig uint64) NoteDisposition {
 	if sig == 0 {
 		cpu.SetReg(10, 0)
 		return NoteHandled
 	}
-	if pidRaw != j.pid {
+	if pidRaw != jos.pid {
 		setJea9LinuxReturn(cpu, jea9LinuxErrESRCH)
 		return NoteHandled
 	}
-	return j.signalTIDSyscall(cpu, tid, sig)
+	return jos.signalTIDSyscall(cpu, tid, sig)
 }
 
-func (j *Jea9Linux) signalTIDSyscall(cpu *CPU, tid, sig uint64) NoteDisposition {
+func (jos *Jea9Linux) signalTIDSyscall(cpu *CPU, tid, sig uint64) NoteDisposition {
 	if !jea9LinuxSignalValid(sig) {
 		setJea9LinuxReturn(cpu, jea9LinuxErrEINVAL)
 		return NoteHandled
 	}
-	ctx := j.ensureScheduler(cpu)
+	ctx := jos.ensureScheduler(cpu)
 	if tid != ctx.tid {
-		ctx = j.contexts[tid]
+		ctx = jos.contexts[tid]
 	}
 	if ctx == nil || ctx.state == jea9LinuxContextExited {
 		setJea9LinuxReturn(cpu, jea9LinuxErrESRCH)
@@ -2034,28 +2034,28 @@ func (j *Jea9Linux) signalTIDSyscall(cpu *CPU, tid, sig uint64) NoteDisposition 
 	info := jea9LinuxSignalInfo{
 		signo: sig,
 		code:  jea9LinuxSignalCodeUser,
-		pid:   j.pid,
+		pid:   jos.pid,
 		uid:   0,
 	}
-	delivered, errno := j.signalContext(cpu, ctx, sig, info)
+	delivered, errno := jos.signalContext(cpu, ctx, sig, info)
 	if errno != 0 {
 		cpu.SetReg(10, uint64(errno))
 		return NoteHandled
 	}
-	if delivered && ctx.tid == j.currentTID {
+	if delivered && ctx.tid == jos.currentTID {
 		return NoteHandled
 	}
 	cpu.SetReg(10, 0)
-	current := j.contexts[j.currentTID]
+	current := jos.contexts[jos.currentTID]
 	if current != nil {
 		current.snapshot = snapshotJea9LinuxCPU(cpu)
 	}
 	return NoteHandled
 }
 
-func (j *Jea9Linux) sysRtSigreturn(cpu *CPU) NoteDisposition {
-	ctx := j.ensureScheduler(cpu)
-	key, frame, ok := j.findSignalFrame(ctx.tid, cpu.Reg(2))
+func (jos *Jea9Linux) sysRtSigreturn(cpu *CPU) NoteDisposition {
+	ctx := jos.ensureScheduler(cpu)
+	key, frame, ok := jos.findSignalFrame(ctx.tid, cpu.Reg(2))
 	if !ok {
 		setJea9LinuxReturn(cpu, jea9LinuxErrEINVAL)
 		return NoteHandled
@@ -2065,22 +2065,22 @@ func (j *Jea9Linux) sysRtSigreturn(cpu *CPU) NoteDisposition {
 		setJea9LinuxReturn(cpu, errno)
 		return NoteHandled
 	}
-	delete(j.signalFrames, key)
+	delete(jos.signalFrames, key)
 	ctx.signalMask = mask
 	restoreJea9LinuxCPU(cpu, snap)
 	ctx.snapshot = snapshotJea9LinuxCPU(cpu)
 	return NoteHandled
 }
 
-func (j *Jea9Linux) findSignalFrame(tid, currentSP uint64) (jea9LinuxSignalFrameKey, jea9LinuxSignalFrame, bool) {
+func (jos *Jea9Linux) findSignalFrame(tid, currentSP uint64) (jea9LinuxSignalFrameKey, jea9LinuxSignalFrame, bool) {
 	exact := jea9LinuxSignalFrameKey{tid: tid, sp: currentSP}
-	if frame, ok := j.signalFrames[exact]; ok {
+	if frame, ok := jos.signalFrames[exact]; ok {
 		return exact, frame, true
 	}
 	var bestKey jea9LinuxSignalFrameKey
 	var bestFrame jea9LinuxSignalFrame
 	var bestSet bool
-	for key, frame := range j.signalFrames {
+	for key, frame := range jos.signalFrames {
 		if key.tid != tid || key.sp < currentSP {
 			continue
 		}
@@ -2097,7 +2097,7 @@ func jea9LinuxSignalValid(sig uint64) bool {
 	return sig > 0 && sig <= 64
 }
 
-func (j *Jea9Linux) signalContext(cpu *CPU, ctx *jea9LinuxContext, sig uint64, info jea9LinuxSignalInfo) (bool, int64) {
+func (jos *Jea9Linux) signalContext(cpu *CPU, ctx *jea9LinuxContext, sig uint64, info jea9LinuxSignalInfo) (bool, int64) {
 	bit := jea9LinuxSignalBit(sig)
 	if bit == 0 {
 		return false, jea9LinuxErrEINVAL
@@ -2106,14 +2106,14 @@ func (j *Jea9Linux) signalContext(cpu *CPU, ctx *jea9LinuxContext, sig uint64, i
 		ctx.pendingSignals = append(ctx.pendingSignals, jea9LinuxPendingSignal{sig: sig, info: info})
 		return false, 0
 	}
-	action := j.signalActions[sig]
+	action := jos.signalActions[sig]
 	if action.handler == jea9LinuxSignalDefault || action.handler == jea9LinuxSignalIgnore {
 		return false, 0
 	}
-	return j.deliverSignal(cpu, ctx, sig, info, action)
+	return jos.deliverSignal(cpu, ctx, sig, info, action)
 }
 
-func (j *Jea9Linux) deliverPendingSignals(cpu *CPU, ctx *jea9LinuxContext) (bool, int64) {
+func (jos *Jea9Linux) deliverPendingSignals(cpu *CPU, ctx *jea9LinuxContext) (bool, int64) {
 	for i := 0; i < len(ctx.pendingSignals); i++ {
 		pending := ctx.pendingSignals[i]
 		if ctx.signalMask&jea9LinuxSignalBit(pending.sig) != 0 {
@@ -2121,28 +2121,28 @@ func (j *Jea9Linux) deliverPendingSignals(cpu *CPU, ctx *jea9LinuxContext) (bool
 		}
 		copy(ctx.pendingSignals[i:], ctx.pendingSignals[i+1:])
 		ctx.pendingSignals = ctx.pendingSignals[:len(ctx.pendingSignals)-1]
-		action := j.signalActions[pending.sig]
+		action := jos.signalActions[pending.sig]
 		if action.handler == jea9LinuxSignalDefault || action.handler == jea9LinuxSignalIgnore {
 			i--
 			continue
 		}
-		return j.deliverSignal(cpu, ctx, pending.sig, pending.info, action)
+		return jos.deliverSignal(cpu, ctx, pending.sig, pending.info, action)
 	}
 	return false, 0
 }
 
-func (j *Jea9Linux) deliverSignal(cpu *CPU, ctx *jea9LinuxContext, sig uint64, info jea9LinuxSignalInfo, action jea9LinuxSignalAction) (bool, int64) {
-	j.ensureSignalState()
-	current := ctx.tid == j.currentTID
+func (jos *Jea9Linux) deliverSignal(cpu *CPU, ctx *jea9LinuxContext, sig uint64, info jea9LinuxSignalInfo, action jea9LinuxSignalAction) (bool, int64) {
+	jos.ensureSignalState()
+	current := ctx.tid == jos.currentTID
 	snap := ctx.snapshot
 	if current {
 		snap = snapshotJea9LinuxCPU(cpu)
 	}
-	frameSP, siginfoAddr, ucontextAddr, errno := j.writeSignalFrame(cpu, ctx, snap, info)
+	frameSP, siginfoAddr, ucontextAddr, errno := jos.writeSignalFrame(cpu, ctx, snap, info)
 	if errno != 0 {
 		return false, errno
 	}
-	j.signalFrames[jea9LinuxSignalFrameKey{tid: ctx.tid, sp: frameSP}] = jea9LinuxSignalFrame{
+	jos.signalFrames[jea9LinuxSignalFrameKey{tid: ctx.tid, sp: frameSP}] = jea9LinuxSignalFrame{
 		snapshot:   snap,
 		signalMask: ctx.signalMask,
 	}
@@ -2150,7 +2150,7 @@ func (j *Jea9Linux) deliverSignal(cpu *CPU, ctx *jea9LinuxContext, sig uint64, i
 	restorer := action.restorer
 	if restorer == 0 {
 		var errno int64
-		restorer, errno = j.ensureSignalRestorer(cpu)
+		restorer, errno = jos.ensureSignalRestorer(cpu)
 		if errno != 0 {
 			return false, errno
 		}
@@ -2163,7 +2163,7 @@ func (j *Jea9Linux) deliverSignal(cpu *CPU, ctx *jea9LinuxContext, sig uint64, i
 	snap.x[12] = ucontextAddr
 	snap.x[0] = 0
 	ctx.signalMask |= action.mask | jea9LinuxSignalBit(sig)
-	j.cancelContextWait(ctx)
+	jos.cancelContextWait(ctx)
 	ctx.state = jea9LinuxContextRunnable
 	ctx.snapshot = snap
 	if current {
@@ -2172,11 +2172,11 @@ func (j *Jea9Linux) deliverSignal(cpu *CPU, ctx *jea9LinuxContext, sig uint64, i
 	return true, 0
 }
 
-func (j *Jea9Linux) ensureSignalRestorer(cpu *CPU) (uint64, int64) {
-	if j.signalRestorer != 0 {
-		return j.signalRestorer, 0
+func (jos *Jea9Linux) ensureSignalRestorer(cpu *CPU) (uint64, int64) {
+	if jos.signalRestorer != 0 {
+		return jos.signalRestorer, 0
 	}
-	vm := j.ensureVM(cpu)
+	vm := jos.ensureVM(cpu)
 	addr, ok := vm.allocRange(cpu.mem.Size(), GuestPageSize)
 	if !ok {
 		return 0, jea9LinuxErrENOMEM
@@ -2192,7 +2192,7 @@ func (j *Jea9Linux) ensureSignalRestorer(cpu *CPU) (uint64, int64) {
 	}
 	vm.mapRange(addr, GuestPageSize, jea9LinuxProtRead|jea9LinuxProtExec)
 	vm.updateExecMetadata(&cpu.mem, addr, GuestPageSize, jea9LinuxProtRead|jea9LinuxProtExec)
-	j.signalRestorer = addr
+	jos.signalRestorer = addr
 	return addr, 0
 }
 
@@ -2203,12 +2203,12 @@ func encodeJea9LinuxADDI(rd, rs1 uint32, imm int32) uint32 {
 		0x13
 }
 
-func (j *Jea9Linux) writeSignalFrame(cpu *CPU, ctx *jea9LinuxContext, snap jea9LinuxCPUSnapshot, info jea9LinuxSignalInfo) (frameSP, siginfoAddr, ucontextAddr uint64, errno int64) {
+func (jos *Jea9Linux) writeSignalFrame(cpu *CPU, ctx *jea9LinuxContext, snap jea9LinuxCPUSnapshot, info jea9LinuxSignalInfo) (frameSP, siginfoAddr, ucontextAddr uint64, errno int64) {
 	stackTop := snap.x[2]
 	if ctx.sigaltFlags&jea9LinuxSSDisable == 0 &&
 		ctx.sigaltSP != 0 &&
 		ctx.sigaltSize >= jea9LinuxSignalFrameSize &&
-		j.signalActions[info.signo].flags&jea9LinuxSAOnstack != 0 {
+		jos.signalActions[info.signo].flags&jea9LinuxSAOnstack != 0 {
 		stackTop = ctx.sigaltSP + ctx.sigaltSize
 	}
 	if stackTop < jea9LinuxSignalFrameSize {
@@ -2341,9 +2341,9 @@ func storeJea9LinuxSignalInfo(cpu *CPU, addr uint64, info jea9LinuxSignalInfo) i
 	return 0
 }
 
-func (j *Jea9Linux) cancelContextWait(ctx *jea9LinuxContext) {
+func (jos *Jea9Linux) cancelContextWait(ctx *jea9LinuxContext) {
 	if ctx.waitKind == jea9LinuxWaitFutex {
-		j.removeFutexWaiter(ctx.waitAddr, ctx.tid)
+		jos.removeFutexWaiter(ctx.waitAddr, ctx.tid)
 	}
 	ctx.waitKind = jea9LinuxWaitNone
 	ctx.waitAddr = 0
@@ -2354,16 +2354,16 @@ func (j *Jea9Linux) cancelContextWait(ctx *jea9LinuxContext) {
 	ctx.waitMaxEvents = 0
 }
 
-func (j *Jea9Linux) sysClone(cpu *CPU, flags, childStack, parentTIDAddr, tls, childTIDAddr uint64) int64 {
-	parent := j.ensureScheduler(cpu)
+func (jos *Jea9Linux) sysClone(cpu *CPU, flags, childStack, parentTIDAddr, tls, childTIDAddr uint64) int64 {
+	parent := jos.ensureScheduler(cpu)
 	if !jea9LinuxCloneFlagsSupported(flags) {
 		return jea9LinuxErrEINVAL
 	}
-	tid := j.nextTID
-	for tid == 0 || j.contexts[tid] != nil {
+	tid := jos.nextTID
+	for tid == 0 || jos.contexts[tid] != nil {
 		tid++
 	}
-	j.nextTID = tid + 1
+	jos.nextTID = tid + 1
 
 	if flags&jea9LinuxCloneParentSetTID != 0 {
 		if parentTIDAddr == 0 {
@@ -2401,8 +2401,8 @@ func (j *Jea9Linux) sysClone(cpu *CPU, flags, childStack, parentTIDAddr, tls, ch
 	if flags&jea9LinuxCloneChildClearTID != 0 {
 		child.clearChildTID = childTIDAddr
 	}
-	j.contexts[tid] = child
-	j.contextOrder = append(j.contextOrder, tid)
+	jos.contexts[tid] = child
+	jos.contextOrder = append(jos.contextOrder, tid)
 
 	cpu.SetReg(10, tid)
 	parent.state = jea9LinuxContextRunnable
@@ -2428,22 +2428,22 @@ func jea9LinuxCloneFlagsSupported(flags uint64) bool {
 	return flags&required == required
 }
 
-func (j *Jea9Linux) sysSchedYield(cpu *CPU) NoteDisposition {
-	ctx := j.ensureScheduler(cpu)
-	from := j.traceTID()
+func (jos *Jea9Linux) sysSchedYield(cpu *CPU) NoteDisposition {
+	ctx := jos.ensureScheduler(cpu)
+	from := jos.traceTID()
 	to := from
 	cpu.SetReg(10, 0)
 	ctx.state = jea9LinuxContextRunnable
 	ctx.snapshot = snapshotJea9LinuxCPU(cpu)
-	if next, ok := j.nextRunnableAfterCurrent(); ok {
-		j.loadContext(cpu, next)
+	if next, ok := jos.nextRunnableAfterCurrent(); ok {
+		jos.loadContext(cpu, next)
 		to = next
 	}
-	j.recordScheduleTrace(cpu, "yield", from, to)
+	jos.recordScheduleTrace(cpu, "yield", from, to)
 	return NoteHandled
 }
 
-func (j *Jea9Linux) sysSchedGetAffinity(cpu *CPU, pid, cpuSetSize, maskAddr uint64) int64 {
+func (jos *Jea9Linux) sysSchedGetAffinity(cpu *CPU, pid, cpuSetSize, maskAddr uint64) int64 {
 	_ = pid
 	if cpuSetSize == 0 {
 		return jea9LinuxErrEINVAL
@@ -2460,69 +2460,69 @@ func (j *Jea9Linux) sysSchedGetAffinity(cpu *CPU, pid, cpuSetSize, maskAddr uint
 	return 0
 }
 
-func (j *Jea9Linux) sysSetTidAddress(cpu *CPU, addr uint64) int64 {
-	ctx := j.ensureScheduler(cpu)
+func (jos *Jea9Linux) sysSetTidAddress(cpu *CPU, addr uint64) int64 {
+	ctx := jos.ensureScheduler(cpu)
 	ctx.clearChildTID = addr
 	ctx.snapshot = snapshotJea9LinuxCPU(cpu)
-	return int64(j.currentTID)
+	return int64(jos.currentTID)
 }
 
-func (j *Jea9Linux) sysSetRobustList(cpu *CPU, addr, length uint64) int64 {
-	ctx := j.ensureScheduler(cpu)
+func (jos *Jea9Linux) sysSetRobustList(cpu *CPU, addr, length uint64) int64 {
+	ctx := jos.ensureScheduler(cpu)
 	ctx.robustList = addr
 	ctx.robustListLen = length
 	ctx.snapshot = snapshotJea9LinuxCPU(cpu)
 	return 0
 }
 
-func (j *Jea9Linux) sysExit(cpu *CPU, code uint64, exitGroup bool) NoteDisposition {
-	ctx := j.ensureScheduler(cpu)
-	if exitGroup || ctx.tid == j.pid {
+func (jos *Jea9Linux) sysExit(cpu *CPU, code uint64, exitGroup bool) NoteDisposition {
+	ctx := jos.ensureScheduler(cpu)
+	if exitGroup || ctx.tid == jos.pid {
 		cpu.ExitCode = int(int32(code))
 		return NoteExit
 	}
-	j.exitCurrentThread(cpu)
-	if next, ok := j.nextRunnableAfterCurrent(); ok {
-		j.loadContext(cpu, next)
+	jos.exitCurrentThread(cpu)
+	if next, ok := jos.nextRunnableAfterCurrent(); ok {
+		jos.loadContext(cpu, next)
 		return NoteHandled
 	}
 	cpu.ExitCode = int(int32(code))
 	return NoteExit
 }
 
-func (j *Jea9Linux) exitCurrentThread(cpu *CPU) {
-	ctx := j.ensureScheduler(cpu)
+func (jos *Jea9Linux) exitCurrentThread(cpu *CPU) {
+	ctx := jos.ensureScheduler(cpu)
 	ctx.snapshot = snapshotJea9LinuxCPU(cpu)
 	ctx.state = jea9LinuxContextExited
 	if ctx.clearChildTID != 0 {
 		if f := cpu.mem.Store32(ctx.clearChildTID, 0); f == nil {
-			j.wakeFutex(ctx.clearChildTID, 1)
+			jos.wakeFutex(ctx.clearChildTID, 1)
 		}
 	}
 }
 
-func (j *Jea9Linux) sysFutex(cpu *CPU, addr, op, val, timeoutAddr, val3 uint64) NoteDisposition {
+func (jos *Jea9Linux) sysFutex(cpu *CPU, addr, op, val, timeoutAddr, val3 uint64) NoteDisposition {
 	_ = val3
-	ctx := j.ensureScheduler(cpu)
+	ctx := jos.ensureScheduler(cpu)
 	cmd := op & 0xf
 	switch cmd {
 	case jea9LinuxFutexWait, jea9LinuxFutexWaitBitset:
-		ret, blocked := j.futexWait(cpu, ctx, addr, uint32(val), timeoutAddr)
+		ret, blocked := jos.futexWait(cpu, ctx, addr, uint32(val), timeoutAddr)
 		if blocked {
-			if next, ok := j.nextRunnableAfterCurrent(); ok {
-				j.loadContext(cpu, next)
-				j.blocked = false
-				j.blockedHasDeadline = false
+			if next, ok := jos.nextRunnableAfterCurrent(); ok {
+				jos.loadContext(cpu, next)
+				jos.blocked = false
+				jos.blockedHasDeadline = false
 				return NoteHandled
 			}
-			j.blocked = true
+			jos.blocked = true
 			return NoteExit
 		}
 		cpu.SetReg(10, uint64(ret))
 		ctx.snapshot = snapshotJea9LinuxCPU(cpu)
 		return NoteHandled
 	case jea9LinuxFutexWake, jea9LinuxFutexWakeBitset:
-		woken := j.wakeFutex(addr, int(val))
+		woken := jos.wakeFutex(addr, int(val))
 		cpu.SetReg(10, uint64(woken))
 		ctx.snapshot = snapshotJea9LinuxCPU(cpu)
 		return NoteHandled
@@ -2534,7 +2534,7 @@ func (j *Jea9Linux) sysFutex(cpu *CPU, addr, op, val, timeoutAddr, val3 uint64) 
 	}
 }
 
-func (j *Jea9Linux) futexWait(cpu *CPU, ctx *jea9LinuxContext, addr uint64, expected uint32, timeoutAddr uint64) (int64, bool) {
+func (jos *Jea9Linux) futexWait(cpu *CPU, ctx *jea9LinuxContext, addr uint64, expected uint32, timeoutAddr uint64) (int64, bool) {
 	if addr%4 != 0 {
 		return jea9LinuxErrEINVAL, false
 	}
@@ -2545,16 +2545,16 @@ func (j *Jea9Linux) futexWait(cpu *CPU, ctx *jea9LinuxContext, addr uint64, expe
 	if got != expected {
 		return jea9LinuxErrEAGAIN, false
 	}
-	deadline, hasDeadline, errno := j.futexDeadline(cpu, timeoutAddr)
+	deadline, hasDeadline, errno := jos.futexDeadline(cpu, timeoutAddr)
 	if errno != 0 {
 		return errno, false
 	}
-	if hasDeadline && deadline <= j.monotonicNS {
+	if hasDeadline && deadline <= jos.monotonicNS {
 		return jea9LinuxErrETIMEDOUT, false
 	}
-	if hasDeadline && j.clockMode != Jea9ClockManual {
-		if _, ok := j.nextRunnableAfterCurrent(); !ok {
-			j.monotonicNS = deadline
+	if hasDeadline && jos.clockMode != Jea9ClockManual {
+		if _, ok := jos.nextRunnableAfterCurrent(); !ok {
+			jos.monotonicNS = deadline
 			return jea9LinuxErrETIMEDOUT, false
 		}
 	}
@@ -2564,49 +2564,49 @@ func (j *Jea9Linux) futexWait(cpu *CPU, ctx *jea9LinuxContext, addr uint64, expe
 	ctx.waitAddr = addr
 	ctx.waitDeadlineNS = deadline
 	ctx.waitHasDeadline = hasDeadline
-	j.futexWaiters[addr] = append(j.futexWaiters[addr], ctx.tid)
+	jos.futexWaiters[addr] = append(jos.futexWaiters[addr], ctx.tid)
 	if hasDeadline {
-		j.blockedUntil = deadline
-		j.blockedHasDeadline = true
+		jos.blockedUntil = deadline
+		jos.blockedHasDeadline = true
 	}
 	return 0, true
 }
 
-func (j *Jea9Linux) futexDeadline(cpu *CPU, timeoutAddr uint64) (int64, bool, int64) {
+func (jos *Jea9Linux) futexDeadline(cpu *CPU, timeoutAddr uint64) (int64, bool, int64) {
 	if timeoutAddr == 0 {
 		return 0, false, 0
 	}
-	return j.timespecDeadline(cpu, timeoutAddr)
+	return jos.timespecDeadline(cpu, timeoutAddr)
 }
 
-func (j *Jea9Linux) wakeFutex(addr uint64, limit int) int {
+func (jos *Jea9Linux) wakeFutex(addr uint64, limit int) int {
 	if limit <= 0 {
 		return 0
 	}
-	waiters := j.futexWaiters[addr]
+	waiters := jos.futexWaiters[addr]
 	woken := 0
 	kept := waiters[:0]
 	for _, tid := range waiters {
 		if woken < limit {
-			j.markRunnable(tid, 0)
+			jos.markRunnable(tid, 0)
 			woken++
 			continue
 		}
 		kept = append(kept, tid)
 	}
 	if len(kept) == 0 {
-		delete(j.futexWaiters, addr)
+		delete(jos.futexWaiters, addr)
 	} else {
-		j.futexWaiters[addr] = kept
+		jos.futexWaiters[addr] = kept
 	}
-	if woken > 0 && j.hasRunnableContext() {
-		j.blocked = false
-		j.blockedHasDeadline = false
+	if woken > 0 && jos.hasRunnableContext() {
+		jos.blocked = false
+		jos.blockedHasDeadline = false
 	}
 	return woken
 }
 
-func (j *Jea9Linux) sysGetrandom(cpu *CPU, bufAddr, n, flags uint64) int64 {
+func (jos *Jea9Linux) sysGetrandom(cpu *CPU, bufAddr, n, flags uint64) int64 {
 	const supportedFlags = uint64(1 | 2) // GRND_NONBLOCK | GRND_RANDOM
 	if flags&^supportedFlags != 0 {
 		return jea9LinuxErrEINVAL
@@ -2618,15 +2618,15 @@ func (j *Jea9Linux) sysGetrandom(cpu *CPU, bufAddr, n, flags uint64) int64 {
 		return jea9LinuxErrEINVAL
 	}
 	buf := make([]byte, int(n))
-	j.fillRandom(buf)
-	j.recordRandomTrace("getrandom", n, flags, buf)
+	jos.fillRandom(buf)
+	jos.recordRandomTrace("getrandom", n, flags, buf)
 	if f := cpu.mem.WriteBytes(bufAddr, buf); f != nil {
 		return jea9LinuxErrEFAULT
 	}
 	return int64(n)
 }
 
-func (j *Jea9Linux) sysOpenat(cpu *CPU, dirfd, pathAddr, flags, mode uint64) int64 {
+func (jos *Jea9Linux) sysOpenat(cpu *CPU, dirfd, pathAddr, flags, mode uint64) int64 {
 	_, _, _ = dirfd, flags, mode
 	path, errno := readLinuxCString(cpu, pathAddr, 4096)
 	if errno != 0 {
@@ -2637,24 +2637,24 @@ func (j *Jea9Linux) sysOpenat(cpu *CPU, dirfd, pathAddr, flags, mode uint64) int
 	}
 	switch path {
 	case "/dev/urandom", "/dev/random":
-		fd := j.nextFD
-		j.nextFD++
-		j.fds[fd] = jea9LinuxFD{kind: jea9LinuxFDRandom}
+		fd := jos.nextFD
+		jos.nextFD++
+		jos.fds[fd] = jea9LinuxFD{kind: jea9LinuxFDRandom}
 		return int64(fd)
 	default:
-		if data, ok := j.files[path]; ok {
-			fd := j.nextFD
-			j.nextFD++
-			j.fds[fd] = jea9LinuxFD{kind: jea9LinuxFDFile, data: data}
+		if data, ok := jos.files[path]; ok {
+			fd := jos.nextFD
+			jos.nextFD++
+			jos.fds[fd] = jea9LinuxFD{kind: jea9LinuxFDFile, data: data}
 			return int64(fd)
 		}
 		return jea9LinuxErrENOENT
 	}
 }
 
-func (j *Jea9Linux) sysRead(cpu *CPU, fdRaw, bufAddr, n uint64) int64 {
+func (jos *Jea9Linux) sysRead(cpu *CPU, fdRaw, bufAddr, n uint64) int64 {
 	fd := int(int64(fdRaw))
-	f, ok := j.fds[fd]
+	f, ok := jos.fds[fd]
 	if !ok {
 		return jea9LinuxErrEBADF
 	}
@@ -2666,11 +2666,11 @@ func (j *Jea9Linux) sysRead(cpu *CPU, fdRaw, bufAddr, n uint64) int64 {
 	}
 	switch f.kind {
 	case jea9LinuxFDStdin:
-		if j.stdin == nil {
+		if jos.stdin == nil {
 			return 0
 		}
 		buf := make([]byte, int(n))
-		nread, err := j.stdin.Read(buf)
+		nread, err := jos.stdin.Read(buf)
 		if nread < 0 {
 			return jea9LinuxErrEIO
 		}
@@ -2689,8 +2689,8 @@ func (j *Jea9Linux) sysRead(cpu *CPU, fdRaw, bufAddr, n uint64) int64 {
 		return 0
 	case jea9LinuxFDRandom:
 		buf := make([]byte, int(n))
-		j.fillRandom(buf)
-		j.recordRandomTrace("random-device", n, 0, buf)
+		jos.fillRandom(buf)
+		jos.recordRandomTrace("random-device", n, 0, buf)
 		if fault := cpu.mem.WriteBytes(bufAddr, buf); fault != nil {
 			return jea9LinuxErrEFAULT
 		}
@@ -2701,20 +2701,20 @@ func (j *Jea9Linux) sysRead(cpu *CPU, fdRaw, bufAddr, n uint64) int64 {
 			return count
 		}
 		f.off += count
-		j.fds[fd] = f
+		jos.fds[fd] = f
 		return count
 	case jea9LinuxFDEventfd:
-		return j.sysEventfdRead(cpu, fd, f, bufAddr, n)
+		return jos.sysEventfdRead(cpu, fd, f, bufAddr, n)
 	case jea9LinuxFDPipeRead:
-		return j.sysPipeRead(cpu, fd, f, bufAddr, n)
+		return jos.sysPipeRead(cpu, fd, f, bufAddr, n)
 	default:
 		return jea9LinuxErrEBADF
 	}
 }
 
-func (j *Jea9Linux) sysWrite(cpu *CPU, fdRaw, bufAddr, n uint64) int64 {
+func (jos *Jea9Linux) sysWrite(cpu *CPU, fdRaw, bufAddr, n uint64) int64 {
 	fd := int(int64(fdRaw))
-	f, ok := j.fds[fd]
+	f, ok := jos.fds[fd]
 	if !ok {
 		return jea9LinuxErrEBADF
 	}
@@ -2731,13 +2731,13 @@ func (j *Jea9Linux) sysWrite(cpu *CPU, fdRaw, bufAddr, n uint64) int64 {
 	var w io.Writer
 	switch f.kind {
 	case jea9LinuxFDStdout:
-		w = j.stdout
+		w = jos.stdout
 	case jea9LinuxFDStderr:
-		w = j.stderr
+		w = jos.stderr
 	case jea9LinuxFDEventfd:
-		return j.sysEventfdWrite(cpu, fd, f, bufAddr, n)
+		return jos.sysEventfdWrite(cpu, fd, f, bufAddr, n)
 	case jea9LinuxFDPipeWrite:
-		return j.sysPipeWrite(cpu, fd, f, bufAddr, n)
+		return jos.sysPipeWrite(cpu, fd, f, bufAddr, n)
 	default:
 		return jea9LinuxErrEBADF
 	}
@@ -2754,7 +2754,7 @@ func (j *Jea9Linux) sysWrite(cpu *CPU, fdRaw, bufAddr, n uint64) int64 {
 	return int64(written)
 }
 
-func (j *Jea9Linux) sysEventfdRead(cpu *CPU, fd int, f jea9LinuxFD, bufAddr, n uint64) int64 {
+func (jos *Jea9Linux) sysEventfdRead(cpu *CPU, fd int, f jea9LinuxFD, bufAddr, n uint64) int64 {
 	if n < 8 {
 		return jea9LinuxErrEINVAL
 	}
@@ -2771,11 +2771,11 @@ func (j *Jea9Linux) sysEventfdRead(cpu *CPU, fd int, f jea9LinuxFD, bufAddr, n u
 	if fault := cpu.mem.Store64(bufAddr, value); fault != nil {
 		return jea9LinuxErrEFAULT
 	}
-	j.fds[fd] = f
+	jos.fds[fd] = f
 	return 8
 }
 
-func (j *Jea9Linux) sysEventfdWrite(cpu *CPU, fd int, f jea9LinuxFD, bufAddr, n uint64) int64 {
+func (jos *Jea9Linux) sysEventfdWrite(cpu *CPU, fd int, f jea9LinuxFD, bufAddr, n uint64) int64 {
 	if n < 8 {
 		return jea9LinuxErrEINVAL
 	}
@@ -2787,12 +2787,12 @@ func (j *Jea9Linux) sysEventfdWrite(cpu *CPU, fd int, f jea9LinuxFD, bufAddr, n 
 		return jea9LinuxErrEAGAIN
 	}
 	f.eventfdCounter += value
-	j.fds[fd] = f
-	j.wakeEpollWaitersForFD(cpu, fd)
+	jos.fds[fd] = f
+	jos.wakeEpollWaitersForFD(cpu, fd)
 	return 8
 }
 
-func (j *Jea9Linux) sysPipeRead(cpu *CPU, fd int, f jea9LinuxFD, bufAddr, n uint64) int64 {
+func (jos *Jea9Linux) sysPipeRead(cpu *CPU, fd int, f jea9LinuxFD, bufAddr, n uint64) int64 {
 	_ = fd
 	if f.pipe == nil {
 		return jea9LinuxErrEBADF
@@ -2812,7 +2812,7 @@ func (j *Jea9Linux) sysPipeRead(cpu *CPU, fd int, f jea9LinuxFD, bufAddr, n uint
 	return int64(count)
 }
 
-func (j *Jea9Linux) sysPipeWrite(cpu *CPU, fd int, f jea9LinuxFD, bufAddr, n uint64) int64 {
+func (jos *Jea9Linux) sysPipeWrite(cpu *CPU, fd int, f jea9LinuxFD, bufAddr, n uint64) int64 {
 	_ = fd
 	if f.pipe == nil {
 		return jea9LinuxErrEBADF
@@ -2830,22 +2830,22 @@ func (j *Jea9Linux) sysPipeWrite(cpu *CPU, fd int, f jea9LinuxFD, bufAddr, n uin
 		return jea9LinuxErrEFAULT
 	}
 	f.pipe.buf = append(f.pipe.buf, buf...)
-	j.wakeEpollWaitersForFD(cpu, f.pipe.readFD)
+	jos.wakeEpollWaitersForFD(cpu, f.pipe.readFD)
 	return int64(count)
 }
 
-func (j *Jea9Linux) sysClose(fdRaw uint64) int64 {
+func (jos *Jea9Linux) sysClose(fdRaw uint64) int64 {
 	fd := int(int64(fdRaw))
-	if _, ok := j.fds[fd]; !ok {
+	if _, ok := jos.fds[fd]; !ok {
 		return jea9LinuxErrEBADF
 	}
-	delete(j.fds, fd)
+	delete(jos.fds, fd)
 	return 0
 }
 
-func (j *Jea9Linux) sysFcntl(fdRaw, cmd, arg uint64) int64 {
+func (jos *Jea9Linux) sysFcntl(fdRaw, cmd, arg uint64) int64 {
 	fd := int(int64(fdRaw))
-	f, ok := j.fds[fd]
+	f, ok := jos.fds[fd]
 	if !ok {
 		return jea9LinuxErrEBADF
 	}
@@ -2858,16 +2858,16 @@ func (j *Jea9Linux) sysFcntl(fdRaw, cmd, arg uint64) int64 {
 		return int64(f.flags)
 	case jea9LinuxFSetFL:
 		f.flags = arg
-		j.fds[fd] = f
+		jos.fds[fd] = f
 		return 0
 	default:
 		return jea9LinuxErrEINVAL
 	}
 }
 
-func (j *Jea9Linux) sysLseek(fdRaw, offRaw, whence uint64) int64 {
+func (jos *Jea9Linux) sysLseek(fdRaw, offRaw, whence uint64) int64 {
 	fd := int(int64(fdRaw))
-	f, ok := j.fds[fd]
+	f, ok := jos.fds[fd]
 	if !ok {
 		return jea9LinuxErrEBADF
 	}
@@ -2890,13 +2890,13 @@ func (j *Jea9Linux) sysLseek(fdRaw, offRaw, whence uint64) int64 {
 		return jea9LinuxErrEINVAL
 	}
 	f.off = next
-	j.fds[fd] = f
+	jos.fds[fd] = f
 	return next
 }
 
-func (j *Jea9Linux) sysPread64(cpu *CPU, fdRaw, bufAddr, n, offRaw uint64) int64 {
+func (jos *Jea9Linux) sysPread64(cpu *CPU, fdRaw, bufAddr, n, offRaw uint64) int64 {
 	fd := int(int64(fdRaw))
-	f, ok := j.fds[fd]
+	f, ok := jos.fds[fd]
 	if !ok {
 		return jea9LinuxErrEBADF
 	}
@@ -2949,7 +2949,7 @@ func readLinuxCString(cpu *CPU, addr uint64, max int) (string, int64) {
 	return "", jea9LinuxErrEINVAL
 }
 
-func (j *Jea9Linux) sysUname(cpu *CPU, addr uint64) int64 {
+func (jos *Jea9Linux) sysUname(cpu *CPU, addr uint64) int64 {
 	const fieldLen = 65
 	buf := make([]byte, fieldLen*6)
 	storeFixedLinuxString(buf[0*fieldLen:], fieldLen, "Linux")
@@ -2971,7 +2971,7 @@ func storeFixedLinuxString(dst []byte, fieldLen int, s string) {
 	copy(dst, s)
 }
 
-func (j *Jea9Linux) sysGetrlimit(cpu *CPU, resource, addr uint64) int64 {
+func (jos *Jea9Linux) sysGetrlimit(cpu *CPU, resource, addr uint64) int64 {
 	cur, max, ok := jea9LinuxRlimit(resource)
 	if !ok {
 		return jea9LinuxErrEINVAL
@@ -2979,8 +2979,8 @@ func (j *Jea9Linux) sysGetrlimit(cpu *CPU, resource, addr uint64) int64 {
 	return storeLinuxRlimit(cpu, addr, cur, max)
 }
 
-func (j *Jea9Linux) sysPrlimit64(cpu *CPU, pid, resource, newLimitAddr, oldLimitAddr uint64) int64 {
-	if pid != 0 && pid != j.pid {
+func (jos *Jea9Linux) sysPrlimit64(cpu *CPU, pid, resource, newLimitAddr, oldLimitAddr uint64) int64 {
+	if pid != 0 && pid != jos.pid {
 		return jea9LinuxErrESRCH
 	}
 	if newLimitAddr != 0 {
@@ -3026,9 +3026,9 @@ func storeLinuxRlimit(cpu *CPU, addr, cur, max uint64) int64 {
 	return 0
 }
 
-func (j *Jea9Linux) sysSysinfo(cpu *CPU, addr uint64) int64 {
+func (jos *Jea9Linux) sysSysinfo(cpu *CPU, addr uint64) int64 {
 	buf := make([]byte, 112)
-	uptime := j.monotonicNS / 1_000_000_000
+	uptime := jos.monotonicNS / 1_000_000_000
 	if uptime < 0 {
 		uptime = 0
 	}
@@ -3043,7 +3043,7 @@ func (j *Jea9Linux) sysSysinfo(cpu *CPU, addr uint64) int64 {
 	return 0
 }
 
-func (j *Jea9Linux) sysPrctl(cpu *CPU, option, arg2, arg3, arg4, arg5 uint64) int64 {
+func (jos *Jea9Linux) sysPrctl(cpu *CPU, option, arg2, arg3, arg4, arg5 uint64) int64 {
 	_, _, _ = arg3, arg4, arg5
 	switch option {
 	case jea9LinuxPRSetName:
@@ -3051,11 +3051,11 @@ func (j *Jea9Linux) sysPrctl(cpu *CPU, option, arg2, arg3, arg4, arg5 uint64) in
 		if errno != 0 {
 			return errno
 		}
-		j.threadName = name
+		jos.threadName = name
 		return 0
 	case jea9LinuxPRGetName:
 		var buf [16]byte
-		copy(buf[:], j.threadName)
+		copy(buf[:], jos.threadName)
 		if f := cpu.mem.WriteBytes(arg2, buf[:]); f != nil {
 			return jea9LinuxErrEFAULT
 		}
@@ -3082,8 +3082,8 @@ func readLinuxThreadName(cpu *CPU, addr uint64) (string, int64) {
 	return string(raw[:15]), 0
 }
 
-func (j *Jea9Linux) sysBrk(cpu *CPU, addr uint64) uint64 {
-	vm := j.ensureVM(cpu)
+func (jos *Jea9Linux) sysBrk(cpu *CPU, addr uint64) uint64 {
+	vm := jos.ensureVM(cpu)
 	if addr == 0 {
 		return vm.brk
 	}
@@ -3112,9 +3112,9 @@ func (j *Jea9Linux) sysBrk(cpu *CPU, addr uint64) uint64 {
 	return addr
 }
 
-func (j *Jea9Linux) sysMmap(cpu *CPU, addr, length, prot, flags, fd, off uint64) int64 {
+func (jos *Jea9Linux) sysMmap(cpu *CPU, addr, length, prot, flags, fd, off uint64) int64 {
 	_, _ = fd, off
-	vm := j.ensureVM(cpu)
+	vm := jos.ensureVM(cpu)
 	if length == 0 || prot&^(jea9LinuxProtRead|jea9LinuxProtWrite|jea9LinuxProtExec) != 0 {
 		return jea9LinuxErrEINVAL
 	}
@@ -3146,8 +3146,8 @@ func (j *Jea9Linux) sysMmap(cpu *CPU, addr, length, prot, flags, fd, off uint64)
 	return int64(chosen)
 }
 
-func (j *Jea9Linux) sysMunmap(cpu *CPU, addr, length uint64) int64 {
-	vm := j.ensureVM(cpu)
+func (jos *Jea9Linux) sysMunmap(cpu *CPU, addr, length uint64) int64 {
+	vm := jos.ensureVM(cpu)
 	if addr%GuestPageSize != 0 {
 		return jea9LinuxErrEINVAL
 	}
@@ -3160,8 +3160,8 @@ func (j *Jea9Linux) sysMunmap(cpu *CPU, addr, length uint64) int64 {
 	return 0
 }
 
-func (j *Jea9Linux) sysMprotect(cpu *CPU, addr, length, prot uint64) int64 {
-	vm := j.ensureVM(cpu)
+func (jos *Jea9Linux) sysMprotect(cpu *CPU, addr, length, prot uint64) int64 {
+	vm := jos.ensureVM(cpu)
 	if addr%GuestPageSize != 0 || prot&^(jea9LinuxProtRead|jea9LinuxProtWrite|jea9LinuxProtExec) != 0 {
 		return jea9LinuxErrEINVAL
 	}
@@ -3177,8 +3177,8 @@ func (j *Jea9Linux) sysMprotect(cpu *CPU, addr, length, prot uint64) int64 {
 	return 0
 }
 
-func (j *Jea9Linux) sysMincore(cpu *CPU, addr, length, vecAddr uint64) int64 {
-	vm := j.ensureVM(cpu)
+func (jos *Jea9Linux) sysMincore(cpu *CPU, addr, length, vecAddr uint64) int64 {
+	vm := jos.ensureVM(cpu)
 	if addr%GuestPageSize != 0 {
 		return jea9LinuxErrEINVAL
 	}
@@ -3200,8 +3200,8 @@ func (j *Jea9Linux) sysMincore(cpu *CPU, addr, length, vecAddr uint64) int64 {
 	return 0
 }
 
-func (j *Jea9Linux) sysMadvise(cpu *CPU, addr, length, advice uint64) int64 {
-	_, _ = j.ensureVM(cpu), advice
+func (jos *Jea9Linux) sysMadvise(cpu *CPU, addr, length, advice uint64) int64 {
+	_, _ = jos.ensureVM(cpu), advice
 	if length == 0 {
 		return 0
 	}
@@ -3211,19 +3211,19 @@ func (j *Jea9Linux) sysMadvise(cpu *CPU, addr, length, advice uint64) int64 {
 	return 0
 }
 
-func (j *Jea9Linux) sysClockGettime(cpu *CPU, clockID, tsAddr uint64) int64 {
-	ns, ok := j.clockNow(clockID)
+func (jos *Jea9Linux) sysClockGettime(cpu *CPU, clockID, tsAddr uint64) int64 {
+	ns, ok := jos.clockNow(clockID)
 	if !ok {
 		return jea9LinuxErrEINVAL
 	}
-	j.recordClockTrace("clock_gettime", clockID, ns)
+	jos.recordClockTrace("clock_gettime", clockID, ns)
 	return storeLinuxTimespec(cpu, tsAddr, ns)
 }
 
-func (j *Jea9Linux) sysGettimeofday(cpu *CPU, tvAddr, tzAddr uint64) int64 {
+func (jos *Jea9Linux) sysGettimeofday(cpu *CPU, tvAddr, tzAddr uint64) int64 {
 	if tvAddr != 0 {
-		ns := j.monotonicNS + j.realtimeOffsetNS
-		j.recordClockTrace("gettimeofday", jea9LinuxClockRealtime, ns)
+		ns := jos.monotonicNS + jos.realtimeOffsetNS
+		jos.recordClockTrace("gettimeofday", jea9LinuxClockRealtime, ns)
 		sec, nsec := splitLinuxNS(ns)
 		if f := cpu.mem.Store64(tvAddr, uint64(sec)); f != nil {
 			return jea9LinuxErrEFAULT
@@ -3243,7 +3243,7 @@ func (j *Jea9Linux) sysGettimeofday(cpu *CPU, tvAddr, tzAddr uint64) int64 {
 	return 0
 }
 
-func (j *Jea9Linux) sysNanosleep(cpu *CPU, reqAddr, remAddr uint64) (int64, bool) {
+func (jos *Jea9Linux) sysNanosleep(cpu *CPU, reqAddr, remAddr uint64) (int64, bool) {
 	_ = remAddr
 	secRaw, f := cpu.mem.Load64(reqAddr)
 	if f != nil {
@@ -3259,63 +3259,63 @@ func (j *Jea9Linux) sysNanosleep(cpu *CPU, reqAddr, remAddr uint64) (int64, bool
 		return jea9LinuxErrEINVAL, false
 	}
 	delta := sec*1_000_000_000 + nsec
-	if j.clockMode == Jea9ClockManual && delta > 0 {
-		j.blocked = true
-		j.blockedUntil = j.monotonicNS + delta
-		j.blockedHasDeadline = true
+	if jos.clockMode == Jea9ClockManual && delta > 0 {
+		jos.blocked = true
+		jos.blockedUntil = jos.monotonicNS + delta
+		jos.blockedHasDeadline = true
 		return 0, true
 	}
-	j.monotonicNS += delta
+	jos.monotonicNS += delta
 	return 0, false
 }
 
-func (j *Jea9Linux) refreshBlocked() {
-	j.refreshFutexTimeouts()
-	j.refreshEpollTimeouts()
-	if j.blocked && j.blockedHasDeadline && j.monotonicNS >= j.blockedUntil {
-		j.blocked = false
-		j.blockedHasDeadline = false
+func (jos *Jea9Linux) refreshBlocked() {
+	jos.refreshFutexTimeouts()
+	jos.refreshEpollTimeouts()
+	if jos.blocked && jos.blockedHasDeadline && jos.monotonicNS >= jos.blockedUntil {
+		jos.blocked = false
+		jos.blockedHasDeadline = false
 	}
 }
 
-func (j *Jea9Linux) refreshFutexTimeouts() {
-	if len(j.contexts) == 0 {
+func (jos *Jea9Linux) refreshFutexTimeouts() {
+	if len(jos.contexts) == 0 {
 		return
 	}
-	for _, ctx := range j.contexts {
+	for _, ctx := range jos.contexts {
 		if ctx.state != jea9LinuxContextWaiting || ctx.waitKind != jea9LinuxWaitFutex || !ctx.waitHasDeadline {
 			continue
 		}
-		if j.monotonicNS < ctx.waitDeadlineNS {
+		if jos.monotonicNS < ctx.waitDeadlineNS {
 			continue
 		}
 		addr := ctx.waitAddr
-		j.removeFutexWaiter(addr, ctx.tid)
-		j.markRunnable(ctx.tid, jea9LinuxErrETIMEDOUT)
+		jos.removeFutexWaiter(addr, ctx.tid)
+		jos.markRunnable(ctx.tid, jea9LinuxErrETIMEDOUT)
 	}
 }
 
-func (j *Jea9Linux) refreshEpollTimeouts() {
-	if len(j.contexts) == 0 {
+func (jos *Jea9Linux) refreshEpollTimeouts() {
+	if len(jos.contexts) == 0 {
 		return
 	}
-	for _, ctx := range j.contexts {
+	for _, ctx := range jos.contexts {
 		if ctx.state != jea9LinuxContextWaiting || ctx.waitKind != jea9LinuxWaitEpoll || !ctx.waitHasDeadline {
 			continue
 		}
-		if j.monotonicNS < ctx.waitDeadlineNS {
+		if jos.monotonicNS < ctx.waitDeadlineNS {
 			continue
 		}
-		j.markRunnable(ctx.tid, 0)
+		jos.markRunnable(ctx.tid, 0)
 	}
 }
 
-func (j *Jea9Linux) clockNow(clockID uint64) (int64, bool) {
+func (jos *Jea9Linux) clockNow(clockID uint64) (int64, bool) {
 	switch clockID {
 	case jea9LinuxClockRealtime, jea9LinuxClockRealtimeCoarse:
-		return j.monotonicNS + j.realtimeOffsetNS, true
+		return jos.monotonicNS + jos.realtimeOffsetNS, true
 	case jea9LinuxClockMonotonic, jea9LinuxClockMonotonicCoarse:
-		return j.monotonicNS, true
+		return jos.monotonicNS, true
 	default:
 		return 0, false
 	}
@@ -3342,40 +3342,39 @@ func splitLinuxNS(ns int64) (sec int64, nsec int64) {
 	return sec, nsec
 }
 
-func InstallJea9Linux(cpu *CPU, j *Jea9Linux) func() {
-	directSyscallWasDisabled := directSyscallDisabled
-	DisableDirectSyscall()
-	cleanupCore := installJea9LinuxCore(cpu, j)
+func InstallJea9Linux(cpu *CPU, jos *Jea9Linux) func() {
+
+	cleanupCore := installJea9LinuxCore(cpu, jos)
 	return func() {
 		cleanupCore()
-		directSyscallDisabled = directSyscallWasDisabled
 	}
 }
 
-func InstallJea9LinuxJIT(cpu *CPU, jit *JIT, j *Jea9Linux) func() {
-	cleanupCore := installJea9LinuxCore(cpu, j)
-	cleanupJIT := jit.installPersonalityEcallHandler(j.Handle, true)
+func InstallJea9LinuxJIT(cpu *CPU, jit *JIT, jos *Jea9Linux) func() {
+	cleanupCore := installJea9LinuxCore(cpu, jos)
+
+	jit.ecallHandler = jos.Handle
+	jit.faultPageZero = true
 	return func() {
 		cleanupCore()
-		cleanupJIT()
 	}
 }
 
-func installJea9LinuxCore(cpu *CPU, j *Jea9Linux) func() {
-	vm := j.ensureVM(cpu)
-	j.ensureScheduler(cpu)
-	cpu.Notes.Push(j.Handle)
+func installJea9LinuxCore(cpu *CPU, jos *Jea9Linux) func() {
+	vm := jos.ensureVM(cpu)
+	jos.ensureScheduler(cpu)
+	cpu.Notes.Push(jos.Handle)
 	return func() {
 		cpu.Notes.Pop()
 		(&cpu.mem).clearAccessOverlay(vm)
 	}
 }
 
-func RunWithJea9Linux(cpu *CPU, j *Jea9Linux) (exitCode int, err error) {
-	cleanup := InstallJea9Linux(cpu, j)
+func RunWithJea9Linux(cpu *CPU, jos *Jea9Linux) (exitCode int, err error) {
+	cleanup := InstallJea9Linux(cpu, jos)
 	defer cleanup()
 	for {
-		err = j.Run(cpu)
+		err = jos.Run(cpu)
 		if errors.Is(err, ErrJea9LinuxBudget) {
 			continue
 		}
@@ -3389,11 +3388,11 @@ func RunWithJea9Linux(cpu *CPU, j *Jea9Linux) (exitCode int, err error) {
 	}
 }
 
-func RunWithJea9LinuxJIT(cpu *CPU, jit *JIT, j *Jea9Linux) (exitCode int, err error) {
-	cleanup := InstallJea9LinuxJIT(cpu, jit, j)
+func RunWithJea9LinuxJIT(cpu *CPU, jit *JIT, jos *Jea9Linux) (exitCode int, err error) {
+	cleanup := InstallJea9LinuxJIT(cpu, jit, jos)
 	defer cleanup()
 	for {
-		err = j.RunJIT(cpu, jit)
+		err = jos.RunJIT(cpu, jit)
 		if errors.Is(err, ErrJea9LinuxBudget) {
 			continue
 		}

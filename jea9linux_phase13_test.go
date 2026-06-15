@@ -15,23 +15,6 @@ type jea9LinuxELFRunResult struct {
 	trace  Jea9LinuxTraceSnapshot
 }
 
-func withDirectEcallEnabled(t *testing.T) {
-	t.Helper()
-	directWasEnabled := DirectSyscallEnabled()
-	inlineWasEnabled := InlineEcallEnabled()
-	EnableDirectSyscall()
-	SetInlineEcallEnabled(true)
-	t.Cleanup(func() {
-		if !directWasEnabled {
-			DisableDirectSyscall()
-		}
-		SetInlineEcallEnabled(inlineWasEnabled)
-	})
-	if !DirectSyscallEnabled() {
-		t.Skip("direct syscall fast path unavailable on this host")
-	}
-}
-
 func runJITWithJea9Linux(cpu *CPU, j *Jea9Linux) (int, error) {
 	jit := NewJIT()
 	defer jit.Close()
@@ -97,8 +80,7 @@ func runJea9LinuxELFFixture(t *testing.T, path string, useJIT bool, opts Jea9Lin
 	}
 }
 
-func TestJea9Linux_JITDoesNotUseHostWrite(t *testing.T) {
-	withDirectEcallEnabled(t)
+func TestJea9Linux_JITWriteUsesPersonalityStdout(t *testing.T) {
 
 	const (
 		codeVA = uint64(0x1000)
@@ -123,25 +105,19 @@ func TestJea9Linux_JITDoesNotUseHostWrite(t *testing.T) {
 
 	var guestStdout bytes.Buffer
 	j := NewJea9Linux(Jea9LinuxOptions{Stdout: &guestStdout})
-	hostStdout := captureStdout(t, func() {
-		code, err := runJITWithJea9Linux(cpu, j)
-		if err != nil {
-			t.Fatalf("runJITWithJea9Linux: %v", err)
-		}
-		if code != 0 {
-			t.Fatalf("exit code = %d, want 0", code)
-		}
-	})
-	if guestStdout.String() != string(msg) {
-		t.Fatalf("jea9linux stdout = %q, want %q; host stdout captured %q", guestStdout.String(), msg, hostStdout)
+	code, err := runJITWithJea9Linux(cpu, j)
+	if err != nil {
+		t.Fatalf("runJITWithJea9Linux: %v", err)
 	}
-	if len(hostStdout) != 0 {
-		t.Fatalf("host stdout captured %q, want no host write", hostStdout)
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	if guestStdout.String() != string(msg) {
+		t.Fatalf("jea9linux stdout = %q, want %q", guestStdout.String(), msg)
 	}
 }
 
 func TestJea9Linux_JITGettidUsesVirtualTid(t *testing.T) {
-	withDirectEcallEnabled(t)
 
 	const codeVA = uint64(0x1000)
 	insns := []uint32{
@@ -164,7 +140,6 @@ func TestJea9Linux_JITGettidUsesVirtualTid(t *testing.T) {
 }
 
 func TestJea9Linux_JITClockUsesDeterministicClock(t *testing.T) {
-	withDirectEcallEnabled(t)
 
 	const (
 		codeVA = uint64(0x1000)
@@ -194,7 +169,6 @@ func TestJea9Linux_JITClockUsesDeterministicClock(t *testing.T) {
 }
 
 func TestJea9Linux_JITRandomMatchesInterpreter(t *testing.T) {
-	withDirectEcallEnabled(t)
 
 	const (
 		codeVA = uint64(0x1000)
@@ -238,7 +212,6 @@ func TestJea9Linux_JITRandomMatchesInterpreter(t *testing.T) {
 }
 
 func TestJea9Linux_JITDirectEcallDoesNotRewind(t *testing.T) {
-	withDirectEcallEnabled(t)
 
 	const (
 		codeVA = uint64(0x1000)
@@ -359,167 +332,7 @@ func TestJea9Linux_JITReplayMatchesInterpreterTrace(t *testing.T) {
 	}
 }
 
-func TestJea9Linux_JITFreshAfterSyscallModeChange(t *testing.T) {
-	withDirectEcallEnabled(t)
-
-	const (
-		codeVA = uint64(0x1000)
-		msgVA  = uint64(0x3000)
-	)
-	msg := []byte("fresh jea9linux policy\n")
-	insns := []uint32{
-		ienc(opOPIMM, 0, 10, 0, 1),               // a0 = stdout
-		uenc(opLUI, 11, uint32(msgVA)),           // a1 = msgVA
-		ienc(opOPIMM, 0, 12, 0, int32(len(msg))), // a2 = len
-		ienc(opOPIMM, 0, 17, 0, 64),              // a7 = write
-		instrECALL,
-		ienc(opOPIMM, 0, 10, 0, 0),  // a0 = exit code
-		ienc(opOPIMM, 0, 17, 0, 93), // a7 = exit
-		instrECALL,
-	}
-	cpu, mem := newTestCPU(t, Size64MB, codeVA, insns)
-	defer mem.Free()
-	if f := mem.WriteBytes(msgVA, msg); f != nil {
-		t.Fatal(f)
-	}
-
-	jit := NewJIT()
-	defer jit.Close()
-
-	hostWarmup := captureStdout(t, func() {
-		if _, err := jit.StepBlock(cpu); err != nil {
-			t.Fatalf("initial host-policy StepBlock: %v", err)
-		}
-	})
-	if string(hostWarmup) != string(msg) {
-		t.Fatalf("host warmup stdout = %q, want %q", hostWarmup, msg)
-	}
-	if cpu.PC() != codeVA+20 {
-		t.Fatalf("PC after initial StepBlock = 0x%x, want post-write 0x%x", cpu.PC(), codeVA+20)
-	}
-
-	cpu.SetPC(codeVA)
-	var guestStdout bytes.Buffer
-	j := NewJea9Linux(Jea9LinuxOptions{Stdout: &guestStdout})
-	var err error
-	hostAfterInstall := captureStdout(t, func() {
-		cleanup := InstallJea9LinuxJIT(cpu, jit, j)
-		err = jit.RunJIT(cpu)
-		cleanup()
-	})
-	if ex, ok := err.(*ExitError); ok {
-		if ex.Code != 0 {
-			t.Fatalf("exit code = %d, want 0 after policy change", ex.Code)
-		}
-	} else if err != nil {
-		t.Fatalf("RunJIT after policy change: %v", err)
-	} else if cpu.ExitCode != 0 {
-		t.Fatalf("cpu.ExitCode = %d, want 0 after policy change", cpu.ExitCode)
-	}
-	if guestStdout.String() != string(msg) {
-		t.Fatalf("jea9linux stdout = %q, want %q", guestStdout.String(), msg)
-	}
-	if len(hostAfterInstall) != 0 {
-		t.Fatalf("host stdout after jea9linux install = %q, want none", hostAfterInstall)
-	}
-	if got := jit.PersonalityEcallCount(); got != 2 {
-		t.Fatalf("PersonalityEcallCount() = %d, want write+exit after fresh policy", got)
-	}
-}
-
-func TestJea9Linux_InstallRestoresDirectSyscallPolicy(t *testing.T) {
-	original := directSyscallDisabled
-	t.Cleanup(func() { directSyscallDisabled = original })
-
-	for _, startDisabled := range []bool{false, true} {
-		t.Run(func() string {
-			if startDisabled {
-				return "initially-disabled"
-			}
-			return "initially-enabled"
-		}(), func(t *testing.T) {
-			directSyscallDisabled = startDisabled
-			mem, err := NewGuestMemory(Size64MB)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer mem.Free()
-			cpu := NewCPU(*mem)
-			j := NewJea9Linux(Jea9LinuxOptions{})
-			cleanup := InstallJea9Linux(cpu, j)
-			if !directSyscallDisabled {
-				t.Fatal("InstallJea9Linux left host direct syscall dispatcher enabled")
-			}
-			cleanup()
-			if directSyscallDisabled != startDisabled {
-				t.Fatalf("directSyscallDisabled after cleanup = %v, want %v", directSyscallDisabled, startDisabled)
-			}
-		})
-	}
-}
-
-func TestJea9Linux_InstallJITDoesNotMutateGlobalDirectSyscallPolicy(t *testing.T) {
-	original := directSyscallDisabled
-	t.Cleanup(func() { directSyscallDisabled = original })
-
-	for _, startDisabled := range []bool{false, true} {
-		t.Run(func() string {
-			if startDisabled {
-				return "initially-disabled"
-			}
-			return "initially-enabled"
-		}(), func(t *testing.T) {
-			directSyscallDisabled = startDisabled
-			mem, err := NewGuestMemory(Size64MB)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer mem.Free()
-			cpu := NewCPU(*mem)
-			jit := NewJIT()
-			j := NewJea9Linux(Jea9LinuxOptions{})
-			cleanup := InstallJea9LinuxJIT(cpu, jit, j)
-			if directSyscallDisabled != startDisabled {
-				t.Fatalf("InstallJea9LinuxJIT changed directSyscallDisabled to %v, want %v", directSyscallDisabled, startDisabled)
-			}
-			cleanup()
-			if directSyscallDisabled != startDisabled {
-				t.Fatalf("directSyscallDisabled after cleanup = %v, want %v", directSyscallDisabled, startDisabled)
-			}
-		})
-	}
-}
-
-func TestJea9Linux_InstallJITRestoresPerJITSyscallPolicy(t *testing.T) {
-	original := directSyscallDisabled
-	t.Cleanup(func() { directSyscallDisabled = original })
-	directSyscallDisabled = false
-
-	mem, err := NewGuestMemory(Size64MB)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer mem.Free()
-	cpu := NewCPU(*mem)
-	jit := NewJIT()
-	before := jit.currentSyscallDispatcherAddr()
-	if before == 0 && DirectSyscallEnabled() {
-		t.Fatal("test requires a nonzero inherited direct syscall dispatcher")
-	}
-
-	j := NewJea9Linux(Jea9LinuxOptions{})
-	cleanup := InstallJea9LinuxJIT(cpu, jit, j)
-	if got := jit.currentSyscallDispatcherAddr(); got != 0 {
-		t.Fatalf("installed jea9linux JIT dispatcher addr = 0x%x, want 0", got)
-	}
-	cleanup()
-	if got := jit.currentSyscallDispatcherAddr(); got != before {
-		t.Fatalf("restored JIT dispatcher addr = 0x%x, want 0x%x", got, before)
-	}
-}
-
 func TestJea9Linux_JITPersonalityCalloutBypassesEcallNoteChain(t *testing.T) {
-	withDirectEcallEnabled(t)
 
 	const codeVA = uint64(0x1000)
 	insns := []uint32{

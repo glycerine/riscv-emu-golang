@@ -2391,40 +2391,6 @@ func (lc *lowerARM64Ctx) call(ins *IRInstr) error {
 }
 
 func (lc *lowerARM64Ctx) syscall(ins *IRInstr) error {
-	if int(ins.Imm2) >= len(lc.blk.CTab) {
-		lc.loadImm(0, a64A)
-		lc.emitResultImm(ins.Imm, jitEcall, a64A)
-		lc.emitReturn()
-		return nil
-	}
-	sym := lc.blk.CTab[ins.Imm2]
-
-	lc.storeRegsBack()
-	lc.spillICReg()
-	if err := lc.saveHostCallState(); err != nil {
-		return err
-	}
-	lc.emitRR(arm64.AMOVD, lc.xBaseReg(), goasm.REG_ARM64_R0)
-	lc.loadMemBase(goasm.REG_ARM64_R1)
-	lc.loadMemMask(goasm.REG_ARM64_R2)
-	lc.loadImm(int64(sym.Addr), a64Call)
-	lc.emitIndirectCall(a64Call)
-	lc.emitRR(arm64.AMOVD, goasm.REG_ARM64_R0, a64A)
-	lc.restoreHostCallState()
-
-	lc.cmpImm(a64A, 0)
-	slow := lc.branchTo(arm64.ABNE)
-
-	lc.loadICReg()
-	lc.loadAllocatedRegs()
-	lc.emitChainExit(uint64(ins.Imm))
-
-	slowProg := lc.c.NewProg()
-	slowProg.As = obj.ANOP
-	lc.c.Append(slowProg)
-	slow.To.SetTarget(slowProg)
-
-	lc.loadAllocatedRegs()
 	lc.loadImm(0, a64A)
 	lc.emitResultImm(ins.Imm, jitEcall, a64A)
 	lc.emitReturn()

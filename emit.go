@@ -273,32 +273,11 @@ func (e *Emitter) ChainExit(targetPC uint64, exitIdx int) {
 	e.emit(IRInstr{Op: IRChainExit, Imm: int64(targetPC), Imm2: int64(exitIdx)})
 }
 
-// Syscall emits an ECALL fast-path dispatch to the SysV-ABI
-// dispatcher at dispatcherAddr (obtained from
-// riscv/internal/syscalls.DispatchAddr()). resumePC is where execution
-// continues (pc+4). The caller must emit WriteBackAll before Syscall
-// so the dispatcher sees fresh guest registers in x[].
-//
-// The emitter always terminates the IR block at Syscall — post-ECALL
-// code lives in a separate AOT block entered via chain exit from
-// lowerSyscall. dirty[] is therefore never mutated here.
-func (e *Emitter) Syscall(resumePC uint64, dispatcherAddr uintptr) {
-	const sym = "syscall_dispatcher"
-	idx := -1
-	for i, cs := range e.Block.CTab {
-		if cs.Name == sym {
-			if cs.Addr != dispatcherAddr {
-				panic("ir.Emitter.Syscall: dispatcher address changed")
-			}
-			idx = i
-			break
-		}
-	}
-	if idx < 0 {
-		idx = len(e.Block.CTab)
-		e.Block.CTab = append(e.Block.CTab, CSym{Name: sym, Addr: dispatcherAddr})
-	}
-	e.emit(IRInstr{Op: IRSyscall, Imm: int64(resumePC), Imm2: int64(idx)})
+// Syscall emits an ECALL boundary. Direct host syscall dispatch is no
+// longer supported; ECALL must return to Go so an installed OS
+// personality can handle it.
+func (e *Emitter) Syscall(resumePC uint64, _ uintptr) {
+	e.Ret(resumePC, jitEcall, VRegZero)
 }
 
 // JalrIC emits a JALR-site inline cache. The lowerer emits a

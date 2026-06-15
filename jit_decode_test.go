@@ -1,7 +1,7 @@
 package riscv
 
 import (
-	"io"
+	"bytes"
 	"os"
 	"strings"
 	"testing"
@@ -31,26 +31,18 @@ func TestClassifyFlow_EcallNotGated(t *testing.T) {
 		}
 	}
 
-	saved := InlineEcallEnabled()
-	defer SetInlineEcallEnabled(saved)
-
 	type row struct {
 		name string
 		insn uint32
-		flag bool
 	}
 	rows := []row{
-		{"ECALL flag=off", 0x00000073, false},
-		{"ECALL flag=on", 0x00000073, true},
-		{"EBREAK flag=off", 0x00100073, false},
-		{"EBREAK flag=on", 0x00100073, true},
-		{"CSRRW flag=off", 0x30001073, false},
-		{"CSRRW flag=on", 0x30001073, true},
+		{"ECALL", 0x00000073},
+		{"EBREAK", 0x00100073},
+		{"CSRRW", 0x30001073},
 	}
 
 	for _, r := range rows {
 		writeInsn(r.insn)
-		SetInlineEcallEnabled(r.flag)
 		gotFC, _, sz := classifyFlow(mem, pc)
 		if gotFC != flowTerm || sz != 4 {
 			t.Errorf("%s: got (fc=%v, sz=%d), want (fc=flowTerm, sz=4)",
@@ -59,25 +51,15 @@ func TestClassifyFlow_EcallNotGated(t *testing.T) {
 	}
 }
 
-// TestInlineEcall_HelloEndToEnd runs the full hello-world ELF with
-// the InlineEcallEnabled flag on. After Step 4 (Option D) and until
-// Step 5 lands, flag-on behavior is bit-identical to flag-off: the
-// emitter terminates at every ECALL and the V1 lowerer still emits
-// an unconditional epilogue. This test guards that identity, so when
-// Step 5 starts emitting the inline TESTQ+JNZ+ChainExit pattern we
-// can attribute any regression to Step 5 specifically.
+// TestInlineEcall_HelloEndToEnd runs the full hello-world ELF through
+// the JIT with an installed Linux OS personality. ECALL must return to
+// Go for OS handling; JIT/native code must not issue host syscalls.
 func TestInlineEcall_HelloEndToEnd(t *testing.T) {
-	if !DirectSyscallEnabled() {
-		t.Skip("direct syscall fast path disabled")
-	}
+
 	data, err := os.ReadFile("bench/hello_guest/hello_gocpu.elf")
 	if err != nil {
 		t.Skipf("bench/hello_guest/hello_gocpu.elf: %v", err)
 	}
-
-	saved := InlineEcallEnabled()
-	defer SetInlineEcallEnabled(saved)
-	SetInlineEcallEnabled(true)
 
 	mem, err := NewGuestMemory(Size64MB)
 	if err != nil {
@@ -92,43 +74,34 @@ func TestInlineEcall_HelloEndToEnd(t *testing.T) {
 	cpu.SetPC(elf.Entry)
 	cpu.SetReg(2, 0x03F00000)
 
-	cleanup := InstallLinuxOS(cpu, io.Discard)
+	var out bytes.Buffer
+	cleanup := InstallLinuxOS(cpu, &out)
 	defer cleanup()
 
 	j := NewJIT()
-
-	captured := captureStdout(t, func() {
-		runErr := j.RunJIT(cpu)
-		if runErr != nil {
-			if _, ok := runErr.(*ExitError); !ok {
-				t.Fatalf("RunJIT: %v", runErr)
-			}
+	runErr := j.RunJIT(cpu)
+	if runErr != nil {
+		if _, ok := runErr.(*ExitError); !ok {
+			t.Fatalf("RunJIT: %v", runErr)
 		}
-	})
+	}
 
 	want := strings.Repeat("Hello, Go CPU!\n", 10000)
-	if len(captured) != len(want) {
-		t.Fatalf("captured length = %d, want %d", len(captured), len(want))
+	if out.Len() != len(want) {
+		t.Fatalf("output length = %d, want %d", out.Len(), len(want))
 	}
-	if string(captured) != want {
-		t.Fatal("captured mismatch (same length, different content)")
+	if out.String() != want {
+		t.Fatal("output mismatch (same length, different content)")
 	}
 }
 
-func TestInlineEcall_TinyDirectWrite(t *testing.T) {
-	if !DirectSyscallEnabled() {
-		t.Skip("direct syscall fast path disabled")
-	}
-
-	saved := InlineEcallEnabled()
-	defer SetInlineEcallEnabled(saved)
-	SetInlineEcallEnabled(true)
+func TestInlineEcall_TinyLinuxWrite(t *testing.T) {
 
 	const (
 		codeVA = uint64(0x1000)
 		msgVA  = uint64(0x2000)
 	)
-	msg := []byte("arm64 direct syscall\n")
+	msg := []byte("jit linux write\n")
 	insns := []uint32{
 		ienc(opOPIMM, 0, 10, 0, 1),               // a0 = stdout
 		uenc(opLUI, 11, uint32(msgVA)),           // a1 = msgVA
@@ -147,19 +120,18 @@ func TestInlineEcall_TinyDirectWrite(t *testing.T) {
 			t.Fatalf("Store8 msg[%d]: %v", i, fault)
 		}
 	}
-	cleanup := InstallLinuxOS(cpu, io.Discard)
+	var out bytes.Buffer
+	cleanup := InstallLinuxOS(cpu, &out)
 	defer cleanup()
 
 	j := NewJIT()
-	captured := captureStdout(t, func() {
-		err := j.RunJIT(cpu)
-		if err != nil {
-			if exit, ok := err.(*ExitError); !ok || exit.Code != 0 {
-				t.Fatalf("RunJIT: %v", err)
-			}
+	err := j.RunJIT(cpu)
+	if err != nil {
+		if exit, ok := err.(*ExitError); !ok || exit.Code != 0 {
+			t.Fatalf("RunJIT: %v", err)
 		}
-	})
-	if string(captured) != string(msg) {
-		t.Fatalf("captured = %q, want %q", captured, msg)
+	}
+	if out.String() != string(msg) {
+		t.Fatalf("stdout = %q, want %q", out.String(), msg)
 	}
 }

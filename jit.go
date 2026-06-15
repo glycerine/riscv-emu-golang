@@ -280,11 +280,9 @@ type JIT struct {
 	useABJIT   bool
 	abjitState *abjit.State
 
-	syscallDispatcherOverride bool
-	syscallDispatcherAddr     uintptr
-	ecallHandler              JITEcallHandler
-	personalityEcallCount     uint64
-	faultPageZero             bool
+	ecallHandler          JITEcallHandler
+	personalityEcallCount uint64
+	faultPageZero         bool
 
 	stopperPage uintptr // InfiniteLoopStopperPage: mmap'd guard page for preemption
 	watchAddr   uint64  // tohost address; JIT blocks exit when a store hits this address
@@ -410,6 +408,7 @@ func (j *JIT) reserveInstructionCounterReg(b *Block) bool {
 	return j.preciseInstructionCounterEnabled() || blockTouchesInstructionCounterReg(b)
 }
 
+/* never want this, destroys our aot compiled code
 func (j *JIT) resetCompiledCode() {
 	for _, s := range j.aotSegments {
 		s.Release()
@@ -431,6 +430,7 @@ func (j *JIT) resetCompiledCode() {
 	j.hotRegionCounts = nil
 	j.abjitState = nil
 }
+*/
 
 // SetHotRegionThreshold enables lazy-to-AOT promotion for executable
 // regions. A value of zero disables promotion.

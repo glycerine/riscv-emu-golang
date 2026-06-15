@@ -34,15 +34,6 @@ func init() {
 	}
 }
 
-// InlineSyscall gates lowerSyscall's inline fast path. When true, a
-// successful dispatcher return (RAX==0) chains directly to the
-// post-ECALL block via the existing chain-exit machinery; a non-zero
-// return falls through to the cold-path sret write + RET (today's
-// behavior). When false, lowerSyscall unconditionally takes the
-// cold path after the dispatcher CALL (bit-identical to pre-Step-5).
-// Set from the root package's SetInlineEcallEnabled.
-var InlineSyscall bool
-
 // VReg is a virtual register index. 0 is reserved for "discard" (sink writes,
 // zero reads — mirrors RISC-V's x0). Emitter allocates fresh VRegs via Tmp()
 // or uses fixed IDs 1..31 for guest x1..x31, and 32..63 for f0..f31.
@@ -234,9 +225,9 @@ const (
 
 	IRJalrIC // JALR site "inline cache" (vestigial name, and was never instruction count). Now better described as: JALR indirect jump via decoder-cache lookup (the old 2-slot IC is deprecated). {targetVReg=A, siteIdx=Imm}. WriteBackAll must precede.
 
-	IRSyscall // ECALL fast path. Imm=pc+4 (resume), Imm2=CTab index for dispatcher sym.
-	// Calls the SysV-ABI dispatcher with (xBase, memBase, memMask), writes sret with
-	// Status=RAX (0=jitOK, 1=jitEcall), and returns. Terminator. WriteBackAll must precede.
+	IRSyscall // ECALL boundary. Imm=pc+4 (resume). Always returns jitEcall to Go.
+	// Terminator. WriteBackAll must precede so the installed OS/personality
+	// handler observes current guest register state.
 
 	IRMisalignLoad  // Dst = byte-by-byte load(addr=A, width=T). Lowerer inlines using [RBP+520/528] for memBase/memMask.
 	IRMisalignStore // byte-by-byte store(addr=A, value=B, width=T). Lowerer inlines using [RBP+520/528].

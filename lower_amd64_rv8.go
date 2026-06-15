@@ -461,91 +461,11 @@ func (lc *lowerCtxRV8) rv8Call(ins *IRInstr) {
 
 // ── Syscall ──
 //
-// IRSyscall: call the SysV dispatcher with (xBase, memBase, memMask).
-// On return, RAX holds the status: 0=jitOK (chain-exit to resumePC),
-// non-zero=jitEcall (return to Go dispatcher).
-// WriteBackAll was already emitted by the emitter before IRSyscall.
+// IRSyscall: direct host syscall dispatch is no longer supported.
+// Return to Go with jitEcall so an installed OS personality handles it.
 
 func (lc *lowerCtxRV8) rv8Syscall(ins *IRInstr) {
-	if int(ins.Imm2) >= len(lc.blk.CTab) {
-		lc.rv8Ret(&IRInstr{Op: IRRet, Imm: ins.Imm, Imm2: 1, A: VRegZero})
-		return
-	}
-	sym := lc.blk.CTab[ins.Imm2]
-
-	// Set up SysV args: RDI=xBase(RBP), RSI=memBase, RDX=memMask.
-	lc.emit2(x86.AMOVQ, goasm.REG_AMD64_BP, goasm.REG_AMD64_DI)
-
-	memBaseHost := lc.hostReg(VRMemBase)
-	if memBaseHost >= 0 {
-		lc.emit2(x86.AMOVQ, memBaseHost, goasm.REG_AMD64_SI)
-	} else if int(VRMemBase) < len(lc.alloc.Kind) && lc.alloc.Kind[VRMemBase] == AllocStack {
-		lc.loadSpill(lc.alloc.SpillSlot[VRMemBase], goasm.REG_AMD64_SI)
-	} else {
-		lc.emitRM(x86.AMOVQ, goasm.REG_AMD64_SP, lc.sretOffset, stgA)
-		lc.emitRM(x86.AMOVQ, stgA, 128, goasm.REG_AMD64_SI)
-	}
-
-	memMaskHost := lc.hostReg(VRMemMask)
-	if memMaskHost >= 0 {
-		lc.emit2(x86.AMOVQ, memMaskHost, goasm.REG_AMD64_DX)
-	} else if int(VRMemMask) < len(lc.alloc.Kind) && lc.alloc.Kind[VRMemMask] == AllocStack {
-		lc.loadSpill(lc.alloc.SpillSlot[VRMemMask], goasm.REG_AMD64_DX)
-	} else {
-		lc.emitRM(x86.AMOVQ, goasm.REG_AMD64_SP, lc.sretOffset, stgA)
-		lc.emitRM(x86.AMOVQ, stgA, 136, goasm.REG_AMD64_DX)
-	}
-
-	lc.loadImm(int64(sym.Addr), stgA)
-	p := lc.c.NewProg()
-	p.As = obj.ACALL
-	p.To.Type = obj.TYPE_REG
-	p.To.Reg = stgA
-	lc.c.Append(p)
-
-	// RAX = dispatcher return: 0=jitOK, non-zero=jitEcall.
-	lc.emit2(x86.ATESTQ, goasm.REG_AMD64_AX, goasm.REG_AMD64_AX)
-	slowPath := lc.c.NewProg()
-	slowPath.As = x86.AJNE
-	slowPath.To.Type = obj.TYPE_BRANCH
-	lc.c.Append(slowPath)
-
-	// Fast path (status=0): chain exit.
-	lc.emitRM(x86.AMOVQ, goasm.REG_AMD64_SP, lc.sretOffset, stgA) // RAX = sret
-	lc.emitRI(x86.AADDQ, lc.frameSize, goasm.REG_AMD64_SP)
-
-	const sentinel = int64(0x7BADC0DE7BADC0DE)
-	movProg := lc.c.NewProg()
-	movProg.As = x86.AMOVQ
-	movProg.From.Type = obj.TYPE_CONST
-	movProg.From.Offset = sentinel
-	movProg.To.Type = obj.TYPE_REG
-	movProg.To.Reg = stgB
-	lc.c.Append(movProg)
-
-	lc.chainExits = append(lc.chainExits, chainExitInfo{
-		targetPC: uint64(ins.Imm),
-		movProg:  movProg,
-	})
-
-	jp := lc.c.NewProg()
-	jp.As = obj.AJMP
-	jp.To.Type = obj.TYPE_REG
-	jp.To.Reg = stgB
-	lc.c.Append(jp)
-
-	// Slow path (status!=0): return with jitEcall.
-	slowNop := lc.c.NewProg()
-	slowNop.As = obj.ANOP
-	lc.c.Append(slowNop)
-	slowPath.To.SetTarget(slowNop)
-
-	lc.emitRM(x86.AMOVQ, goasm.REG_AMD64_SP, lc.sretOffset, stgA)
-	lc.loadImm(ins.Imm, stgB)
-	lc.emitMR(x86.AMOVQ, stgB, stgA, 0) // Result.PC = resumePC
-	lc.emitMI(x86.AMOVQ, 1, stgA, 8)    // Result.Status = jitEcall
-	lc.emitMI(x86.AMOVQ, 0, stgA, 16)   // Result.FaultAddr = 0
-	lc.emitEpilogue()
+	lc.rv8Ret(&IRInstr{Op: IRRet, Imm: ins.Imm, Imm2: 1, A: VRegZero})
 }
 
 // ── JALR inline cache (decoder_cache lookup) ──
