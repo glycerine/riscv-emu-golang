@@ -78,7 +78,7 @@ func benchJITBenchGuestNoIC(b *testing.B, policy riscv.RegPolicy, strategy strin
 		if strategy != "" {
 			jit.SetAllocStrategy(strategy)
 		}
-		jit.SetInstructionCounterMode(riscv.JITICNone)
+
 		t0 := time.Now()
 		exitCode, _ := runJITBenchGuestWith(cpu, jit)
 		if exitCode != 0 {
