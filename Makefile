@@ -23,7 +23,7 @@
 #   make help           # this message
 
 .PHONY: all help bench-setup bench bench-quick \
-        bench-raw bench-ours bench-cpu bench-libriscv bench-mem \
+        bench-raw bench-ours bench-cpu lazy-bench bench-libriscv bench-mem \
         bench-smoke bench-summary bench-lots test clean check-tools \
         libriscv-build guest-elf guest-native guest-wasm \
         coremark-elf dhrystone-elf bench-coremark bench-dhrystone \
@@ -180,6 +180,7 @@ endif
 	@echo "    make bench-smoke      quick sanity check (~3s)"
 	@echo "    make bench-coremark   CoreMark RV64 (cached vs uncached interpreter)"
 	@echo "    make bench-dhrystone  Dhrystone RV64 (cached vs uncached interpreter)"
+	@echo "    make lazy-bench       zygo fib(10) under Jea9Linux lazy JIT"
 	@echo "    make bench-jit-coremark   CoreMark under JIT (rv8 vs abjit)"
 	@echo "    make bench-jit-dhrystone  Dhrystone under JIT (rv8 vs abjit)"
 	@echo "    make bench-chain-ref      chain-counter reference, abjit (all 3 workloads)"
@@ -517,6 +518,13 @@ bench-cpu: guest-elf
 	cd $(ROOT) && BENCH_ELF=$(GUEST_ELF) \
 	    $(GO) test -count=1 -benchtime=1x -benchmem \
 	        -run='^$$' -bench='^BenchmarkCPU' \
+	        ./bench/ 2>&1
+
+lazy-bench:
+	@echo "── zygo fib(10), Jea9Linux lazy JIT ───────────────────────────"
+	cd $(ROOT) && ZYGO_ELF=$(ROOT)bench/zygo.elf \
+	    $(GO) test -count=1 -benchtime=1x -benchmem \
+	        -run='^$$' -bench='^BenchmarkCPU_ZygoFib10_LazyJIT$$' \
 	        ./bench/ 2>&1
 
 bench-coremark: coremark-elf

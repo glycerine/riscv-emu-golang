@@ -195,6 +195,74 @@ func loadELFFrom(tb testing.TB, envVar, defaultPath string) []byte {
 	return data
 }
 
+const zygoFib10Program = "(defn fib [x] (cond (== x 0) 0 (== x 1) 1 (+ (fib (- x 1)) (fib (- x 2))))) (println (fib 10))"
+
+func newZygoJea9LinuxCPU(tb testing.TB, elfData []byte) (*riscv.CPU, *riscv.GuestMemory, *riscv.Jea9Linux) {
+	tb.Helper()
+	mem, err := riscv.NewGuestMemory(riscv.Size16GB)
+	if err != nil {
+		tb.Fatal(err)
+	}
+	elf, err := riscv.LoadELFBytes(mem, elfData)
+	if err != nil {
+		mem.Free()
+		tb.Fatal(err)
+	}
+	cpu := riscv.NewCPU(*mem)
+	jlinux := riscv.NewJea9Linux(riscv.Jea9LinuxOptions{
+		ClockMode:         riscv.Jea9ClockIdleJump,
+		MonotonicStartNS:  1,
+		NSPerInstruction:  1,
+		InstructionBudget: 1 << 20,
+		Stdin:             os.Stdin,
+		Stdout:            os.Stdout,
+		Stderr:            os.Stderr,
+	})
+	args := []string{"bench/zygo.elf", "-c", zygoFib10Program}
+	if err := jlinux.InitELFStack(cpu, elf, riscv.Jea9LinuxStartOptions{
+		Args:     args,
+		ExecPath: args[0],
+	}); err != nil {
+		mem.Free()
+		tb.Fatal(err)
+	}
+	return cpu, mem, jlinux
+}
+
+func BenchmarkCPU_ZygoFib10_LazyJIT(b *testing.B) {
+	elfData := loadELFFrom(b, "ZYGO_ELF", "zygo.elf")
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	totalInsns := uint64(0)
+	var totalStats jitBenchStats
+	for i := 0; i < b.N; i++ {
+		cpu, mem, jlinux := newZygoJea9LinuxCPU(b, elfData)
+		jit := riscv.NewJIT()
+		jit.AutoAOT = false
+		code, err := riscv.RunWithJea9LinuxJIT(cpu, jit, jlinux)
+		insns := cpu.RiscvInstrBegun()
+		totalInsns += insns
+		totalStats.add(jit)
+		jit.Close()
+		mem.Free()
+		if err != nil {
+			b.Fatalf("RunWithJea9LinuxJIT: %v", err)
+		}
+		if code != 0 {
+			b.Fatalf("zygo exited with code %d, want 0", code)
+		}
+	}
+
+	b.StopTimer()
+	elapsed := b.Elapsed().Seconds()
+	if elapsed > 0 && totalInsns > 0 {
+		b.ReportMetric(float64(totalInsns)/elapsed/1e6, "MIPS")
+	}
+	totalStats.report(b)
+}
+
 // ── CoreMark benchmarks ───────────────────────────────────────────────────
 
 // TestCPU_CoreMark_Smoke verifies the CoreMark guest ELF runs to completion
