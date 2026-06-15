@@ -2,11 +2,13 @@ package riscv
 
 import (
 	"bytes"
+	"encoding/binary"
 	"os"
 	"testing"
 )
 
 const (
+	jea9TestSysIoctl     = uint64(29)
 	jea9TestSysFcntl     = uint64(25)
 	jea9TestSysLseek     = uint64(62)
 	jea9TestSysWrite     = uint64(64)
@@ -20,6 +22,11 @@ const (
 	jea9TestSysPrlimit64 = uint64(261)
 
 	jea9TestFGetFL = uint64(3)
+
+	jea9TestTCGETS     = uint64(0x5401)
+	jea9TestTCSETS     = uint64(0x5402)
+	jea9TestTIOCGWINSZ = uint64(0x5413)
+	jea9TestTIOCSWINSZ = uint64(0x5414)
 
 	jea9TestSeekSet = uint64(0)
 	jea9TestSeekCur = uint64(1)
@@ -124,6 +131,106 @@ func TestJea9Linux_WriteBadFD(t *testing.T) {
 		t.Fatalf("write bad fd disposition = %v", d)
 	}
 	requireSyscallReturn(t, cpu, -9)
+}
+
+func TestJea9Linux_IoctlTermiosRoundTrip(t *testing.T) {
+	j := NewJea9Linux(Jea9LinuxOptions{})
+	cpu, mem := newJea9LinuxSyscallCPU(t, j)
+	defer mem.Free()
+
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysIoctl, 0, jea9TestTCGETS, 0x5000); d != NoteHandled {
+		t.Fatalf("TCGETS disposition = %v", d)
+	}
+	requireSyscallReturn(t, cpu, 0)
+	term := readGuestBytes(t, mem, 0x5000, jea9LinuxTermiosSize)
+	if got := binary.LittleEndian.Uint32(term[8:]); got == 0 {
+		t.Fatal("TCGETS cflag is zero, want plausible terminal mode")
+	}
+	if got := term[17+6]; got != 1 {
+		t.Fatalf("TCGETS VMIN = %d, want 1", got)
+	}
+
+	binary.LittleEndian.PutUint32(term[12:], 0x12345678)
+	term[17+6] = 7
+	if f := mem.WriteBytes(0x6000, term); f != nil {
+		t.Fatalf("write termios: %v", f)
+	}
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysIoctl, 0, jea9TestTCSETS, 0x6000); d != NoteHandled {
+		t.Fatalf("TCSETS disposition = %v", d)
+	}
+	requireSyscallReturn(t, cpu, 0)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysIoctl, 0, jea9TestTCGETS, 0x7000); d != NoteHandled {
+		t.Fatalf("second TCGETS disposition = %v", d)
+	}
+	requireSyscallReturn(t, cpu, 0)
+	got := readGuestBytes(t, mem, 0x7000, jea9LinuxTermiosSize)
+	if !bytes.Equal(got, term) {
+		t.Fatalf("TCGETS after TCSETS mismatch\ngot  %x\nwant %x", got, term)
+	}
+}
+
+func TestJea9Linux_IoctlWinsizeRoundTrip(t *testing.T) {
+	j := NewJea9Linux(Jea9LinuxOptions{})
+	cpu, mem := newJea9LinuxSyscallCPU(t, j)
+	defer mem.Free()
+
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysIoctl, 1, jea9TestTIOCGWINSZ, 0x5000); d != NoteHandled {
+		t.Fatalf("TIOCGWINSZ disposition = %v", d)
+	}
+	requireSyscallReturn(t, cpu, 0)
+	win := readGuestBytes(t, mem, 0x5000, jea9LinuxWinsizeSize)
+	if rows, cols := binary.LittleEndian.Uint16(win[0:]), binary.LittleEndian.Uint16(win[2:]); rows != 24 || cols != 80 {
+		t.Fatalf("default winsize = %dx%d, want 24x80", rows, cols)
+	}
+
+	binary.LittleEndian.PutUint16(win[0:], 40)
+	binary.LittleEndian.PutUint16(win[2:], 120)
+	if f := mem.WriteBytes(0x6000, win); f != nil {
+		t.Fatalf("write winsize: %v", f)
+	}
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysIoctl, 1, jea9TestTIOCSWINSZ, 0x6000); d != NoteHandled {
+		t.Fatalf("TIOCSWINSZ disposition = %v", d)
+	}
+	requireSyscallReturn(t, cpu, 0)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysIoctl, 1, jea9TestTIOCGWINSZ, 0x7000); d != NoteHandled {
+		t.Fatalf("second TIOCGWINSZ disposition = %v", d)
+	}
+	requireSyscallReturn(t, cpu, 0)
+	got := readGuestBytes(t, mem, 0x7000, jea9LinuxWinsizeSize)
+	if !bytes.Equal(got, win) {
+		t.Fatalf("winsize after TIOCSWINSZ mismatch: got %x want %x", got, win)
+	}
+}
+
+func TestJea9Linux_IoctlErrors(t *testing.T) {
+	j := NewJea9Linux(Jea9LinuxOptions{Files: map[string][]byte{"/file": []byte("abc")}})
+	cpu, mem := newJea9LinuxSyscallCPU(t, j)
+	defer mem.Free()
+
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysIoctl, 99, jea9TestTCGETS, 0x5000); d != NoteHandled {
+		t.Fatalf("bad fd ioctl disposition = %v", d)
+	}
+	requireSyscallReturn(t, cpu, jea9LinuxErrEBADF)
+
+	writeGuestCString(t, mem, 0x5000, "/file")
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysOpenat, jea9TestATFDCWD, 0x5000, 0, 0); d != NoteHandled {
+		t.Fatalf("openat disposition = %v", d)
+	}
+	fd := cpu.Reg(10)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysIoctl, fd, jea9TestTCGETS, 0x6000); d != NoteHandled {
+		t.Fatalf("file ioctl disposition = %v", d)
+	}
+	requireSyscallReturn(t, cpu, jea9LinuxErrENOTTY)
+
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysIoctl, 0, 0xdeadbeef, 0x6000); d != NoteHandled {
+		t.Fatalf("unknown ioctl disposition = %v", d)
+	}
+	requireSyscallReturn(t, cpu, jea9LinuxErrENOTTY)
+
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysIoctl, 0, jea9TestTCGETS, mem.Size()-2); d != NoteHandled {
+		t.Fatalf("fault ioctl disposition = %v", d)
+	}
+	requireSyscallReturn(t, cpu, jea9LinuxErrEFAULT)
 }
 
 func TestJea9Linux_ReadStdinEOFAndConfiguredInput(t *testing.T) {

@@ -40,6 +40,7 @@ const (
 	jea9LinuxErrEAGAIN    = int64(-11)
 	jea9LinuxErrEEXIST    = int64(-17)
 	jea9LinuxErrESPIPE    = int64(-29)
+	jea9LinuxErrENOTTY    = int64(-25)
 	jea9LinuxErrETIMEDOUT = int64(-110)
 
 	jea9LinuxSysEventfd2         = uint64(19)
@@ -47,6 +48,7 @@ const (
 	jea9LinuxSysEpollCtl         = uint64(21)
 	jea9LinuxSysEpollPwait       = uint64(22)
 	jea9LinuxSysFcntl            = uint64(25)
+	jea9LinuxSysIoctl            = uint64(29)
 	jea9LinuxSysOpenat           = uint64(56)
 	jea9LinuxSysClose            = uint64(57)
 	jea9LinuxSysPipe2            = uint64(59)
@@ -126,6 +128,16 @@ const (
 	jea9LinuxFSetFD = uint64(2)
 	jea9LinuxFGetFL = uint64(3)
 	jea9LinuxFSetFL = uint64(4)
+
+	jea9LinuxTCGETS     = uint64(0x5401)
+	jea9LinuxTCSETS     = uint64(0x5402)
+	jea9LinuxTCSETSW    = uint64(0x5403)
+	jea9LinuxTCSETSF    = uint64(0x5404)
+	jea9LinuxTIOCGWINSZ = uint64(0x5413)
+	jea9LinuxTIOCSWINSZ = uint64(0x5414)
+
+	jea9LinuxTermiosSize = 44
+	jea9LinuxWinsizeSize = 8
 
 	jea9LinuxSeekSet = uint64(0)
 	jea9LinuxSeekCur = uint64(1)
@@ -222,6 +234,10 @@ type jea9LinuxFD struct {
 	eventfdCounter uint64
 	epoll          *jea9LinuxEpoll
 	pipe           *jea9LinuxPipe
+	termios        [jea9LinuxTermiosSize]byte
+	termiosSet     bool
+	winsize        [jea9LinuxWinsizeSize]byte
+	winsizeSet     bool
 }
 
 type jea9LinuxEpollRegistration struct {
@@ -1398,6 +1414,9 @@ func (jos *Jea9Linux) Handle(cpu *CPU, n Note) (disp NoteDisposition) {
 		return jos.sysEpollPwait(cpu, args.A0, args.A1, args.A2, args.A3, args.A4, args.A5)
 	case jea9LinuxSysFcntl:
 		cpu.SetReg(10, uint64(jos.sysFcntl(args.A0, args.A1, args.A2)))
+		return NoteHandled
+	case jea9LinuxSysIoctl:
+		cpu.SetReg(10, uint64(jos.sysIoctl(cpu, args.A0, args.A1, args.A2)))
 		return NoteHandled
 	case jea9LinuxSysOpenat:
 		cpu.SetReg(10, uint64(jos.sysOpenat(cpu, args.A0, args.A1, args.A2, args.A3)))
@@ -2915,6 +2934,99 @@ func (jos *Jea9Linux) sysFcntl(fdRaw, cmd, arg uint64) int64 {
 	default:
 		return jea9LinuxErrEINVAL
 	}
+}
+
+func (jos *Jea9Linux) sysIoctl(cpu *CPU, fdRaw, req, arg uint64) int64 {
+	fd := int(int64(fdRaw))
+	f, ok := jos.fds[fd]
+	if !ok {
+		return jea9LinuxErrEBADF
+	}
+	if !f.kind.isTerminal() {
+		return jea9LinuxErrENOTTY
+	}
+	switch req {
+	case jea9LinuxTCGETS:
+		t := f.termios
+		if !f.termiosSet {
+			t = defaultJea9LinuxTermios()
+		}
+		if fault := cpu.mem.WriteBytes(arg, t[:]); fault != nil {
+			return jea9LinuxErrEFAULT
+		}
+		return 0
+	case jea9LinuxTCSETS, jea9LinuxTCSETSW, jea9LinuxTCSETSF:
+		var t [jea9LinuxTermiosSize]byte
+		if fault := cpu.mem.ReadBytes(arg, t[:]); fault != nil {
+			return jea9LinuxErrEFAULT
+		}
+		f.termios = t
+		f.termiosSet = true
+		jos.fds[fd] = f
+		return 0
+	case jea9LinuxTIOCGWINSZ:
+		w := f.winsize
+		if !f.winsizeSet {
+			w = defaultJea9LinuxWinsize()
+		}
+		if fault := cpu.mem.WriteBytes(arg, w[:]); fault != nil {
+			return jea9LinuxErrEFAULT
+		}
+		return 0
+	case jea9LinuxTIOCSWINSZ:
+		var w [jea9LinuxWinsizeSize]byte
+		if fault := cpu.mem.ReadBytes(arg, w[:]); fault != nil {
+			return jea9LinuxErrEFAULT
+		}
+		f.winsize = w
+		f.winsizeSet = true
+		jos.fds[fd] = f
+		return 0
+	default:
+		return jea9LinuxErrENOTTY
+	}
+}
+
+func (k jea9LinuxFDKind) isTerminal() bool {
+	return k == jea9LinuxFDStdin || k == jea9LinuxFDStdout || k == jea9LinuxFDStderr
+}
+
+func defaultJea9LinuxTermios() [jea9LinuxTermiosSize]byte {
+	const (
+		iflag = uint32(0x2 | 0x100 | 0x400)                    // BRKINT | ICRNL | IXON
+		oflag = uint32(0x1 | 0x4)                              // OPOST | ONLCR
+		cflag = uint32(0xf | 0x30 | 0x80 | 0x400)              // B38400 | CS8 | CREAD | HUPCL
+		lflag = uint32(0x1 | 0x2 | 0x8 | 0x10 | 0x20 | 0x8000) // ISIG | ICANON | ECHO | ECHOE | ECHOK | IEXTEN
+	)
+	var t [jea9LinuxTermiosSize]byte
+	binary.LittleEndian.PutUint32(t[0:], iflag)
+	binary.LittleEndian.PutUint32(t[4:], oflag)
+	binary.LittleEndian.PutUint32(t[8:], cflag)
+	binary.LittleEndian.PutUint32(t[12:], lflag)
+	cc := t[17:36]
+	cc[0] = 3                                  // VINTR
+	cc[1] = 28                                 // VQUIT
+	cc[2] = 127                                // VERASE
+	cc[3] = 21                                 // VKILL
+	cc[4] = 4                                  // VEOF
+	cc[6] = 1                                  // VMIN
+	cc[8] = 17                                 // VSTART
+	cc[9] = 19                                 // VSTOP
+	cc[10] = 26                                // VSUSP
+	cc[12] = 18                                // VREPRINT
+	cc[13] = 15                                // VDISCARD
+	cc[14] = 23                                // VWERASE
+	cc[15] = 22                                // VLNEXT
+	binary.LittleEndian.PutUint32(t[36:], 0xf) // input speed: B38400
+	binary.LittleEndian.PutUint32(t[40:], 0xf) // output speed: B38400
+	return t
+}
+
+func defaultJea9LinuxWinsize() [jea9LinuxWinsizeSize]byte {
+	var w [jea9LinuxWinsizeSize]byte
+	binary.LittleEndian.PutUint16(w[0:], 24)
+	binary.LittleEndian.PutUint16(w[2:], 80)
+	return w
 }
 
 func (jos *Jea9Linux) sysLseek(fdRaw, offRaw, whence uint64) int64 {
