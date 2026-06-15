@@ -12,13 +12,12 @@
 // The verify pass is the regression guardrail: a dispatcher bug that
 // silently drops or corrupts bytes can't hide behind a "slightly
 // faster" timing. The timed pass uses a cheap sink so capture
-// overhead (tempfile writes in the direct-syscall case, ~3 µs/call)
-// doesn't confound the numbers.
+// overhead doesn't confound the numbers.
 //
 //	$ cd ~/ris && make hello
 //	  libriscv             ??? ns/call   Hello, libriscv!
 //	  GoCPU interpreter    ??? ns/call   Hello, Go CPU!
-//	  GoCPU direct syscall ??? ns/call   Hello, Go CPU!
+//	  GoCPU JIT            ??? ns/call   Hello, Go CPU!
 package main
 
 import (
@@ -36,7 +35,6 @@ import (
 
 	riscv "github.com/glycerine/riscv-emu-golang"
 	libriscv "github.com/glycerine/riscv-emu-golang/bench/libriscv"
-	"github.com/glycerine/riscv-emu-golang/internal/syscalls"
 )
 
 const (
@@ -49,7 +47,7 @@ func main() {
 	var (
 		flagRepeat = flag.Int("repeat", 5, "number of timed runs per configuration")
 		flagElfDir = flag.String("elfdir", "bench/hello_guest", "dir containing hello_*.elf")
-		flagOnly   = flag.String("only", "", "run only one configuration: libriscv|libriscv-real|gocpu-interp|gocpu-syscall|gocpu-callback. Intended for CPU profiling — attach `sample $PID 10` or Xcode Instruments to the running process.")
+		flagOnly   = flag.String("only", "", "run only one configuration: libriscv|libriscv-real|gocpu-interp|gocpu-jit. Intended for CPU profiling — attach `sample $PID 10` or Xcode Instruments to the running process.")
 	)
 	flag.Parse()
 
@@ -73,7 +71,7 @@ func main() {
 	// Example macOS profiling session:
 	//   ./hellobench -only=libriscv       -repeat=100000 &   # libriscv
 	//   sample $! 10 -file /tmp/libriscv.sampled
-	//   ./hellobench -only=gocpu-callback -repeat=100000 &   # GoCPU
+	//   ./hellobench -only=gocpu-jit      -repeat=100000 &   # GoCPU
 	//   sample $! 10 -file /tmp/gocpu.sampled
 	//   diff <(awk '/Call graph/,0' /tmp/libriscv.sampled) \
 	//        <(awk '/Call graph/,0' /tmp/gocpu.sampled)
@@ -89,22 +87,13 @@ func main() {
 	verifyLibriscv(libriscvELF, "Hello, libriscv!\n")
 	verifyLibriscvRealWrite(libriscvELF, "Hello, libriscv!\n")
 	verifyGoCPUInterp(gocpuELF, "Hello, Go CPU!\n")
-	if hasDirectSyscall() {
-		verifyGoCPUDirect(gocpuELF, "Hello, Go CPU!\n")
-		// The direct-callback path's output is discarded by the null
-		// callback — nothing to capture. Dispatcher correctness for
-		// the callback path is covered by
-		// internal/syscalls/dispatch_test.go:TestDispatchNullCallback.
-	}
+	verifyGoCPUJIT(gocpuELF, "Hello, Go CPU!\n")
 
 	// ── timed runs with cheap sinks ────────────────────────────────────
 	//
-	// Each emulator gets (a) a dispatch-only line where guest stdout
-	// never reaches the kernel (libriscv null_stdout, GoCPU io.Discard,
-	// GoCPU null callback) and (b) a kernel-inclusive line (libriscv
-	// with real write, GoCPU direct SYSCALL). The dispatch-only pair
-	// is directly comparable; the kernel-inclusive pair is the
-	// realistic production cost.
+	// Each emulator runs through its normal OS personality. GoCPU stdout
+	// is routed to io.Discard so ECALL handling is included without
+	// measuring terminal or filesystem writes.
 
 	libriscvNs, stddev := meanVar(*flagRepeat, func() int64 {
 		return timeLibriscv(libriscvELF)
@@ -121,17 +110,10 @@ func main() {
 	})
 	printLine("GoCPU interpreter", gocpuInterpNs, stddev, defaultITERS, "Hello, Go CPU!")
 
-	if hasDirectSyscall() {
-		gocpuDirectNs, stddev := meanVar(*flagRepeat, func() int64 {
-			return timeGoCPUDirect(gocpuELF, true /*realSystemCall*/)
-		})
-		printLine("GoCPU direct syscall", gocpuDirectNs, stddev, defaultITERS, "Hello, Go CPU!")
-
-		gocpuCbNs, stddev := meanVar(*flagRepeat, func() int64 {
-			return timeGoCPUDirect(gocpuELF, false /*realSystemCall*/)
-		})
-		printLine("GoCPU direct callback", gocpuCbNs, stddev, defaultITERS, "Hello, Go CPU!")
-	}
+	gocpuJITNs, stddev := meanVar(*flagRepeat, func() int64 {
+		return timeGoCPU(gocpuELF, true)
+	})
+	printLine("GoCPU JIT", gocpuJITNs, stddev, defaultITERS, "Hello, Go CPU!")
 }
 
 // runOnly executes a single configuration repeat times, printing the
@@ -151,17 +133,8 @@ func runOnly(mode string, repeat int, libriscvELF, gocpuELF []byte) {
 	case "gocpu-interp":
 		fn = func() int64 { return timeGoCPU(gocpuELF, false) }
 		tag = "Hello, Go CPU!"
-	case "gocpu-syscall":
-		if !hasDirectSyscall() {
-			die("gocpu-syscall requested but DirectSyscall path is not built")
-		}
-		fn = func() int64 { return timeGoCPUDirect(gocpuELF, true) }
-		tag = "Hello, Go CPU!"
-	case "gocpu-callback":
-		if !hasDirectSyscall() {
-			die("gocpu-callback requested but DirectSyscall path is not built")
-		}
-		fn = func() int64 { return timeGoCPUDirect(gocpuELF, false) }
+	case "gocpu-jit":
+		fn = func() int64 { return timeGoCPU(gocpuELF, true) }
 		tag = "Hello, Go CPU!"
 	default:
 		die("unknown -only mode: %q", mode)
@@ -174,74 +147,6 @@ func runOnly(mode string, repeat int, libriscvELF, gocpuELF []byte) {
 
 	mean, stddev := meanVar(repeat, fn)
 	printLine(mode, mean, stddev, defaultITERS, tag)
-
-	// For gocpu modes, also run a single instrumented pass and print
-	// the JIT dispatch / chain-patch / fallback counters. Answers the
-	// question: after each ECALL, did the JIT chain to the next block
-	// natively, or did it round-trip back to Go?
-	if strings.HasPrefix(mode, "gocpu-") && mode != "gocpu-interp" {
-		realSys := mode == "gocpu-syscall"
-		j := timeGoCPUDirectCollectCounters(gocpuELF, realSys)
-		dispatchTotal := j.DispatchOK + j.DispatchOther + j.DispatchInterp
-		fmt.Fprintf(os.Stderr, "# JIT counters for one run of %d guest ECALLs:\n", defaultITERS)
-		fmt.Fprintf(os.Stderr, "#   DispatchOK       = %d   (block returned to Go with jitOK)\n", j.DispatchOK)
-		fmt.Fprintf(os.Stderr, "#   DispatchOther    = %d   (ecall/fault/ebreak returns)\n", j.DispatchOther)
-		fmt.Fprintf(os.Stderr, "#   DispatchInterp   = %d   (interpreter fallback)\n", j.DispatchInterp)
-		fmt.Fprintf(os.Stderr, "#   DispatchCompile  = %d   (lazy block compilations)\n", j.DispatchCompile)
-		fmt.Fprintf(os.Stderr, "#   ChainPatched     = %d   (chain-exit sentinels → direct-jump targets)\n", j.ChainPatched)
-		fmt.Fprintf(os.Stderr, "#   ChainPatchedJalr = %d   (JALR IC site patches)\n", j.ChainPatchedJalr)
-		fmt.Fprintf(os.Stderr, "#   JalrICMisses     = %d   (JALR IC returns to Go)\n", j.JalrICMisses)
-		fmt.Fprintf(os.Stderr, "#   total dispatch returns: %d over ~%d guest insns + %d ECALLs\n",
-			dispatchTotal, defaultITERS*9, defaultITERS)
-	}
-}
-
-// timeGoCPUDirectCollectCounters runs one VM to completion and returns
-// the JIT so the caller can inspect dispatch/chain counters. Mirrors
-// timeGoCPUDirect's structure but returns *JIT instead of elapsed ns.
-func timeGoCPUDirectCollectCounters(elf []byte, realSystemCall bool) *riscv.JIT {
-	mem, err := riscv.NewGuestMemory(guestMem)
-	if err != nil {
-		die("NewGuestMemory: %v", err)
-	}
-	defer mem.Free()
-	elfInfo, err := riscv.LoadELFBytes(mem, elf)
-	if err != nil {
-		die("LoadELFBytes: %v", err)
-	}
-	cpu := riscv.NewCPU(*mem)
-	cpu.SetPC(elfInfo.Entry)
-	cpu.SetReg(2, guestSP)
-	cleanup := riscv.InstallLinuxOS(cpu, io.Discard)
-	defer cleanup()
-
-	if !realSystemCall {
-		syscalls.RegisterWriteCallback(syscalls.NullWriteCallbackAddr())
-		defer syscalls.RegisterWriteCallback(0)
-	}
-
-	j := riscv.NewJIT()
-	if err := j.InstallAOTFromMem(mem); err != nil {
-		die("InstallAOTFromMem: %v", err)
-	}
-
-	run := func() {
-		defer func() {
-			if r := recover(); r != nil {
-				if _, ok := r.(*riscv.ExitError); ok {
-					return
-				}
-				panic(r)
-			}
-		}()
-		_ = j.RunJIT(cpu)
-	}
-	if realSystemCall {
-		withStdoutToDevNull(run)
-	} else {
-		run()
-	}
-	return j
 }
 
 // ── correctness (verify) runs — one-shot per config ──────────────────
@@ -292,7 +197,7 @@ func verifyGoCPUInterp(elf []byte, expectedLine string) {
 	verifyOutput("GoCPU interpreter", buf.Bytes(), expectedLine)
 }
 
-func verifyGoCPUDirect(elf []byte, expectedLine string) {
+func verifyGoCPUJIT(elf []byte, expectedLine string) {
 	mem, err := riscv.NewGuestMemory(guestMem)
 	if err != nil {
 		die("NewGuestMemory: %v", err)
@@ -306,29 +211,28 @@ func verifyGoCPUDirect(elf []byte, expectedLine string) {
 	cpu.SetPC(elfInfo.Entry)
 	cpu.SetReg(2, guestSP)
 
-	cleanup := riscv.InstallLinuxOS(cpu, io.Discard) // fallback for exit(93)
+	var buf bytes.Buffer
+	cleanup := riscv.InstallLinuxOS(cpu, &buf)
 	defer cleanup()
 
 	j := riscv.NewJIT()
 
-	captured := withStdoutToTempFile(func() {
-		func() {
-			defer func() {
-				if r := recover(); r != nil {
-					if _, ok := r.(*riscv.ExitError); ok {
-						return
-					}
-					panic(r)
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				if _, ok := r.(*riscv.ExitError); ok {
+					return
 				}
-			}()
-			if err := j.RunJIT(cpu); err != nil {
-				if _, ok := err.(*riscv.ExitError); !ok {
-					die("RunJIT: %v", err)
-				}
+				panic(r)
 			}
 		}()
-	})
-	verifyOutput("GoCPU direct syscall", captured, expectedLine)
+		if err := j.RunJIT(cpu); err != nil {
+			if _, ok := err.(*riscv.ExitError); !ok {
+				die("RunJIT: %v", err)
+			}
+		}
+	}()
+	verifyOutput("GoCPU JIT", buf.Bytes(), expectedLine)
 }
 
 // ── timed (sink) runs — called N times for mean/stddev ───────────────
@@ -404,89 +308,6 @@ func timeGoCPU(elf []byte, jit bool) int64 {
 		}
 	}
 	return elapsed
-}
-
-// timeGoCPUDirect runs gocpuELF through the JIT with the native ECALL
-// fast path. When realSystemCall is true, the dispatcher issues a
-// real kernel SYSCALL — fd=1 redirected to /dev/null to avoid
-// terminal spam. When false, the dispatcher invokes the built-in
-// null callback instead — no kernel entry, no redirection needed.
-//
-// Returned value is elapsed ns for the run only (JIT setup and
-// teardown excluded).
-func timeGoCPUDirect(elf []byte, realSystemCall bool) int64 {
-	mem, err := riscv.NewGuestMemory(guestMem)
-	if err != nil {
-		die("NewGuestMemory: %v", err)
-	}
-	defer mem.Free()
-	elfInfo, err := riscv.LoadELFBytes(mem, elf)
-	if err != nil {
-		die("LoadELFBytes: %v", err)
-	}
-	cpu := riscv.NewCPU(*mem)
-	cpu.SetPC(elfInfo.Entry)
-	cpu.SetReg(2, guestSP)
-
-	cleanup := riscv.InstallLinuxOS(cpu, io.Discard)
-	defer cleanup()
-
-	if !realSystemCall {
-		syscalls.RegisterWriteCallback(syscalls.NullWriteCallbackAddr())
-		defer syscalls.RegisterWriteCallback(0)
-	}
-
-	j := riscv.NewJIT()
-
-	// Pre-install AOT BEFORE timing starts, matching libriscv's
-	// convention where NewMachine (which translates guest code) runs
-	// before the RunToCompletion timer. Without this, GoCPU's timed
-	// region includes AOT compilation while libriscv's does not — a
-	// ~2.5× apples-to-oranges difference.
-	if err := j.InstallAOTFromMem(mem); err != nil {
-		die("InstallAOTFromMem: %v", err)
-	}
-
-	runGuest := func() int64 {
-		t0 := time.Now()
-		var runErr error
-		func() {
-			defer func() {
-				if r := recover(); r != nil {
-					if _, ok := r.(*riscv.ExitError); ok {
-						return
-					}
-					panic(r)
-				}
-			}()
-			runErr = j.RunJIT(cpu)
-		}()
-		elapsed := time.Since(t0).Nanoseconds()
-		if runErr != nil {
-			if _, ok := runErr.(*riscv.ExitError); !ok {
-				die("timeGoCPUDirect: %v", runErr)
-			}
-		}
-		return elapsed
-	}
-
-	if !realSystemCall {
-		// Null callback doesn't touch fd=1 — no redirection needed.
-		return runGuest()
-	}
-	var elapsed int64
-	withStdoutToDevNull(func() {
-		elapsed = runGuest()
-	})
-	return elapsed
-}
-
-// hasDirectSyscall reports whether the JIT's Phase-2 fast path is
-// compiled in. Checked at runtime so the driver transparently skips
-// the third line on platforms where the dispatcher stubs aren't
-// present.
-func hasDirectSyscall() bool {
-	return riscv.DirectSyscallEnabled()
 }
 
 // ── correctness checking ─────────────────────────────────────────────
