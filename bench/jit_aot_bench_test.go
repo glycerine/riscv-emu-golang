@@ -19,17 +19,22 @@ func benchAotJITELF(b *testing.B, elfData []byte) {
 	b.StopTimer()
 
 	totalInsns := uint64(0)
+	var totalStats jitBenchStats
+	var totalAOTSetup time.Duration
 	for i := 0; i < b.N; i++ {
 		cpu, mem := newBenchCPU(b, elfData)
 		jit := riscv.NewJIT()
 		jit.SetAllocStrategy("fixed")
+		setupStart := time.Now()
 		if err := jit.InstallAOT(mem, elfData); err != nil {
 			b.Fatalf("InstallAOT: %v", err)
 		}
+		totalAOTSetup += time.Since(setupStart)
 		b.StartTimer()
 		_, insns := runJITBenchGuestWith(cpu, jit)
 		b.StopTimer()
 		totalInsns += insns
+		totalStats.add(jit)
 		mem.Free()
 	}
 
@@ -37,6 +42,10 @@ func benchAotJITELF(b *testing.B, elfData []byte) {
 	if elapsed > 0 && totalInsns > 0 {
 		b.ReportMetric(float64(totalInsns)/elapsed/1e6, "MIPS")
 	}
+	if b.N > 0 && totalAOTSetup > 0 {
+		b.ReportMetric(float64(totalAOTSetup.Nanoseconds())/float64(b.N), "aot_setup_ns/op")
+	}
+	totalStats.report(b)
 }
 
 func BenchmarkAotJIT_CoreMark(b *testing.B) {
@@ -59,6 +68,7 @@ func benchLazyJITELF(b *testing.B, elfData []byte) {
 	b.StopTimer()
 
 	totalInsns := uint64(0)
+	var totalStats jitBenchStats
 	for i := 0; i < b.N; i++ {
 		cpu, mem := newBenchCPU(b, elfData)
 		jit := riscv.NewJIT()
@@ -66,12 +76,75 @@ func benchLazyJITELF(b *testing.B, elfData []byte) {
 		_, insns := runJITBenchGuestWith(cpu, jit)
 		b.StopTimer()
 		totalInsns += insns
+		totalStats.add(jit)
 		mem.Free()
 	}
 
 	elapsed := b.Elapsed().Seconds()
 	if elapsed > 0 && totalInsns > 0 {
 		b.ReportMetric(float64(totalInsns)/elapsed/1e6, "MIPS")
+	}
+	totalStats.report(b)
+}
+
+type jitBenchStats struct {
+	dispatchOK             uint64
+	dispatchCompile        uint64
+	dispatchInterp         uint64
+	chainPatchedJalr       uint64
+	jalrICMisses           uint64
+	jalrICDeopts           uint64
+	aotSegmentsInstalled   uint64
+	aotBlocksInstalled     uint64
+	aotCompileFailures     uint64
+	aotDecoderCacheLookups uint64
+	aotDecoderCacheHits    uint64
+	aotDecoderCacheMisses  uint64
+	aotDecoderCacheOutside uint64
+}
+
+func (s *jitBenchStats) add(jit *riscv.JIT) {
+	s.dispatchOK += jit.DispatchOK
+	s.dispatchCompile += jit.DispatchCompile
+	s.dispatchInterp += jit.DispatchInterp
+	s.chainPatchedJalr += jit.ChainPatchedJalr
+	s.jalrICMisses += jit.JalrICMisses
+	s.jalrICDeopts += jit.JalrICDeopts
+	s.aotSegmentsInstalled += jit.AOTSegmentsInstalled
+	s.aotBlocksInstalled += jit.AOTBlocksInstalled
+	s.aotCompileFailures += jit.AOTCompileFailures
+	s.aotDecoderCacheLookups += jit.AOTDecoderCacheLookups
+	s.aotDecoderCacheHits += jit.AOTDecoderCacheHits
+	s.aotDecoderCacheMisses += jit.AOTDecoderCacheMisses
+	s.aotDecoderCacheOutside += jit.AOTDecoderCacheOutside
+}
+
+func (s jitBenchStats) report(b *testing.B) {
+	b.Helper()
+	if b.N == 0 {
+		return
+	}
+	n := float64(b.N)
+	if s.dispatchOK != 0 || s.dispatchCompile != 0 || s.dispatchInterp != 0 {
+		b.ReportMetric(float64(s.dispatchOK)/n, "dispatch_ok/op")
+		b.ReportMetric(float64(s.dispatchCompile)/n, "compile/op")
+		b.ReportMetric(float64(s.dispatchInterp)/n, "interp_fallback/op")
+		b.ReportMetric(float64(s.chainPatchedJalr)/n, "jalr_patch/op")
+		b.ReportMetric(float64(s.jalrICMisses)/n, "jalr_miss/op")
+		b.ReportMetric(float64(s.jalrICDeopts)/n, "jalr_deopt/op")
+	}
+	if s.aotSegmentsInstalled != 0 || s.aotCompileFailures != 0 {
+		b.ReportMetric(float64(s.aotSegmentsInstalled)/n, "aotseg/op")
+		b.ReportMetric(float64(s.aotBlocksInstalled)/n, "aotblock/op")
+		b.ReportMetric(float64(s.aotCompileFailures)/n, "aotfail/op")
+	}
+	if s.aotDecoderCacheLookups != 0 {
+		b.ReportMetric(float64(s.aotDecoderCacheLookups)/n, "aotdc_lookup/op")
+		b.ReportMetric(float64(s.aotDecoderCacheHits)/n, "aotdc_hit/op")
+		b.ReportMetric(float64(s.aotDecoderCacheMisses)/n, "aotdc_miss/op")
+	}
+	if s.aotDecoderCacheOutside != 0 {
+		b.ReportMetric(float64(s.aotDecoderCacheOutside)/n, "aotdc_outside/op")
 	}
 }
 

@@ -107,9 +107,9 @@ func TestMachineClone_MemoryIsolation_ChildUntouched(t *testing.T) {
 	}
 }
 
-// ── Segment sharing ─────────────────────────────────────────────────────────
+// ── Fresh JIT clone ─────────────────────────────────────────────────────────
 
-func TestMachineClone_SegmentSharing(t *testing.T) {
+func TestMachineClone_FreshJIT(t *testing.T) {
 	parent := buildExitMachine(t)
 	if len(parent.JIT.aotSegments) != 1 {
 		t.Fatalf("parent has %d segments, want 1", len(parent.JIT.aotSegments))
@@ -121,57 +121,17 @@ func TestMachineClone_SegmentSharing(t *testing.T) {
 	}
 	t.Cleanup(child.Close)
 
-	if len(child.JIT.aotSegments) != 1 {
-		t.Fatalf("child has %d segments, want 1", len(child.JIT.aotSegments))
+	if child.JIT == nil {
+		t.Fatal("child.JIT is nil, want fresh configured JIT")
 	}
-	if parent.JIT.aotSegments[0] != child.JIT.aotSegments[0] {
-		t.Errorf("segment pointers differ: parent=%p child=%p",
-			parent.JIT.aotSegments[0], child.JIT.aotSegments[0])
+	if len(child.JIT.aotSegments) != 0 {
+		t.Fatalf("child has %d AOT segments, want none shared from parent", len(child.JIT.aotSegments))
 	}
-	// soleSegment invariant holds.
-	if child.JIT.soleSegment != child.JIT.aotSegments[0] {
-		t.Errorf("child.soleSegment not refreshed after CloneShared")
+	if child.JIT.useABJIT != parent.JIT.useABJIT {
+		t.Errorf("child.useABJIT = %v, want %v", child.JIT.useABJIT, parent.JIT.useABJIT)
 	}
-}
-
-// ── Refcount balance ────────────────────────────────────────────────────────
-
-func TestMachineClone_RefcountBalance(t *testing.T) {
-	parent := buildExitMachine(t)
-	seg := parent.JIT.aotSegments[0]
-	if got := seg.refcount.Load(); got != 1 {
-		t.Fatalf("initial refcount = %d, want 1", got)
-	}
-
-	// Clone three times → refcount 4.
-	clones := make([]*Machine, 3)
-	for i := range clones {
-		c, err := parent.Clone()
-		if err != nil {
-			t.Fatalf("Clone %d: %v", i, err)
-		}
-		clones[i] = c
-	}
-	if got := seg.refcount.Load(); got != 4 {
-		t.Errorf("refcount after 3 clones = %d, want 4", got)
-	}
-
-	// Close clones one by one; refcount ticks down.
-	for i, c := range clones {
-		c.Close()
-		want := int32(4 - i - 1)
-		if got := seg.refcount.Load(); got != want {
-			t.Errorf("refcount after closing clone %d = %d, want %d", i, got, want)
-		}
-	}
-
-	// Parent still holds the last ref. Close parent → refcount 0 → mmaps freed.
-	parent.Close()
-	if got := seg.refcount.Load(); got != 0 {
-		t.Errorf("refcount after parent Close = %d, want 0", got)
-	}
-	if seg.nativeCodeMmap != nil {
-		t.Errorf("segment nativeCodeMmap not released at refcount 0")
+	if child.JIT.AutoAOT != parent.JIT.AutoAOT {
+		t.Errorf("child.AutoAOT = %v, want %v", child.JIT.AutoAOT, parent.JIT.AutoAOT)
 	}
 }
 

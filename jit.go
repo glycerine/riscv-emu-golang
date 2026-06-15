@@ -71,9 +71,11 @@ const jalrICDeoptThreshold uint32 = 16
 // block inside the segment, or a mid-block PC that is not a BB entry).
 //
 // The decoder_cache lives in its own mmap, separate from main guest
-// memory. It is mprotect'd PROT_READ after population — neither a
-// JIT bug nor a hostile guest can corrupt it. Guest ld/st use the
-// main guest-memory base (R14) and cannot reach the decoder_cache.
+// memory. It is intentionally mutable, like libriscv's DecoderData
+// table: lazy blocks discovered after AOT install are published back
+// into this table so native JALR dispatch can hit without returning
+// to Go. Guest ld/st use the main guest-memory base (R14) and cannot
+// reach the decoder_cache.
 type DecodedExecuteSegment struct {
 	vaddrBegin       uint64                    // guest VA start
 	vaddrEnd         uint64                    // guest VA end (exclusive)
@@ -81,7 +83,7 @@ type DecodedExecuteSegment struct {
 	nativeCodeBase   uintptr                   // first byte of unified code mmap
 	nativeCodeSize   int                       // total bytes in code mmap
 	nativeCodeMmap   []byte                    // same slab as nativeCodeBase; held for Munmap
-	decoderCacheMmap []byte                    // DecoderData[] mmap (RO post-init)
+	decoderCacheMmap []byte                    // DecoderData[] mmap; mutable by the owning JIT
 	decoderCacheBase uintptr                   // = &decoderCacheMmap[0]
 	decoderCacheMask uint64                    // power-of-two - 1
 	blocks           map[uint64]*compiledBlock // PC → block (AOT + any lazy additions)
@@ -92,34 +94,13 @@ type DecodedExecuteSegment struct {
 	// future Phase 2c features (FENCE.I opt-in invalidation, stale
 	// detection on mprotect -X). Ignored in Phase 2b dispatch.
 	isLikelyJIT bool
-
-	// refcount gates native-code + decoder_cache mmap release. Starts at
-	// 1 on install; every (future) sharer Retain()s; destroying a holder
-	// Release()s. When it reaches 0, both mmaps are Munmap'd. Segments
-	// are immutable after install (blocks map read-only, decoder_cache
-	// mprotect RO, native code already patched), so sharing is safe.
-	refcount atomic.Int32
 }
 
-// Retain increments the segment's refcount. Matches libriscv's
-// shared_ptr semantics for segments shared across forked Machines.
-// No-op if seg is nil.
-func (seg *DecodedExecuteSegment) Retain() {
+// free releases the native code and decoder_cache backing stores.
+// Segments are single-JIT owned; after free, neither the segment nor
+// any block that points into it may be dispatched.
+func (seg *DecodedExecuteSegment) free() {
 	if seg == nil {
-		return
-	}
-	seg.refcount.Add(1)
-}
-
-// Release decrements the segment's refcount and, on reaching zero,
-// munmaps the native code and decoder_cache backing stores. The
-// segment must not be used after the final Release.
-// No-op if seg is nil.
-func (seg *DecodedExecuteSegment) Release() {
-	if seg == nil {
-		return
-	}
-	if seg.refcount.Add(-1) != 0 {
 		return
 	}
 	if len(seg.nativeCodeMmap) > 0 {
@@ -147,15 +128,16 @@ type compiledBlock struct {
 	hasFP          bool              // block uses FP registers (skip f[] copy when false)
 	numInsns       int               // static instruction count from emission
 
-	// segment is the DecodedExecuteSegment that owns this block's native
-	// code, or nil for lazy-compiled blocks. Set at AOT install time;
-	// RunJIT reads it to publish the right decoder_cache parameters to
-	// CallAOT's sret extension.
+	// segment is the DecodedExecuteSegment whose decoder_cache should be
+	// used while running this block, or nil for pure lazy blocks outside
+	// AOT regions. AOT blocks live in segment.nativeCodeMmap; lazy
+	// additions inside an AOT region still own nativeMmap per block.
 	segment *DecodedExecuteSegment
 
 	// nativeMmap is the per-block code slab for lazy-compiled blocks.
 	// nil for AOT blocks (their code lives in segment.nativeCodeMmap,
-	// reclaimed by segment.Release). Held here so JIT.Close can munmap.
+	// reclaimed when the owning segment is freed). Held here so
+	// JIT.Close can munmap lazy blocks.
 	nativeMmap []byte
 }
 
@@ -408,30 +390,6 @@ func (j *JIT) reserveInstructionCounterReg(b *Block) bool {
 	return j.preciseInstructionCounterEnabled() || blockTouchesInstructionCounterReg(b)
 }
 
-/* never want this, destroys our aot compiled code
-func (j *JIT) resetCompiledCode() {
-	for _, s := range j.aotSegments {
-		s.Release()
-	}
-	j.aotSegments = nil
-	j.hotSegment = nil
-	j.soleSegment = nil
-
-	for _, blk := range j.lazyBlocks {
-		if len(blk.nativeMmap) > 0 {
-			_ = syscall.Munmap(blk.nativeMmap)
-			blk.nativeMmap = nil
-			blk.fn = 0
-		}
-	}
-	j.lazyBlocks = nil
-	j.cache = [blockCacheSize]blockCacheEntry{}
-	j.noJIT = make(map[uint64]bool)
-	j.hotRegionCounts = nil
-	j.abjitState = nil
-}
-*/
-
 // SetHotRegionThreshold enables lazy-to-AOT promotion for executable
 // regions. A value of zero disables promotion.
 func (j *JIT) SetHotRegionThreshold(n uint32) {
@@ -479,7 +437,7 @@ func (j *JIT) StepBlockBudget(cpu *CPU, budget uint64) (RunBudgetResult, error) 
 // block ranges, batch-compiles every translatable block into one
 // unified native-code mmap per PT_LOAD, pre-resolves every static
 // chain exit whose target is in the AOT set, and builds a mask-
-// bounded read-only decoder_cache. The resulting segments are
+// bounded mutable decoder_cache. The resulting segments are
 // appended to j.aotSegments.
 //
 // Safe to call on a fresh JIT; installing twice appends additional
@@ -544,37 +502,23 @@ func (j *JIT) compileAOTRegion(mem *GuestMemory, begin, end, size uint64, writab
 	j.AOTBlocksInstalled += uint64(len(seg.blocks))
 }
 
-// CloneShared returns a new JIT that shares j's AOT segments (each
-// Retain'd) but has its own lazy block cache. Safe to install more
-// AOT segments or lazy-compile blocks in the clone without affecting
-// j, because Phase 2b segments are structurally immutable after
-// install (blocks map read-only, decoder_cache mprotect RO, native
-// code already patched).
-//
-// The clone preserves the register policy, allocator, AOT segments, and
-// instruction-counter mode. Debug dispatch flags such as InterpOnly and trace
-// start at zero values; set them on the returned JIT if desired. Counters also
-// start at zero so the clone gets its own measurement baseline.
-//
-// The noJIT failure set starts empty in the clone; it may re-discover
-// untranslatable PCs the parent already found, at tiny cost. The
-// child's lazyBlocks registry is also empty — lazy mmaps are per-JIT
-// and stay with the JIT that owns them until its Close.
-func (j *JIT) CloneShared() *JIT {
-	child := &JIT{
-		aotSegments:               append([]*DecodedExecuteSegment(nil), j.aotSegments...),
-		noJIT:                     make(map[uint64]bool),
-		irAlloc:                   j.irAlloc,   // stateless; sharing is safe
-		regPolicy:                 j.regPolicy, // struct copy; function pointers are safe to share
-		useABJIT:                  j.useABJIT,
-		UseR15InstructionCounter:  j.UseR15InstructionCounter,
-		DebugOneBlockLockstepMode: j.DebugOneBlockLockstepMode,
-		LockstepModeBudget:        j.LockstepModeBudget,
-	}
-	for _, s := range child.aotSegments {
-		s.Retain()
-	}
-	child.refreshSoleSegment()
+// CloneConfig returns a fresh JIT with the same policy/configuration as j,
+// but no compiled code. AOT segments are mutable and JIT-owned, so Machine
+// clones deliberately do not share them; the child lazily compiles or
+// AutoAOT-installs against its own guest memory.
+func (j *JIT) CloneConfig() *JIT {
+	child := NewJIT()
+	child.irAlloc = j.irAlloc
+	child.regPolicy = j.regPolicy
+	child.useABJIT = j.useABJIT
+	child.InterpOnly = j.InterpOnly
+	child.AutoAOT = j.AutoAOT
+	child.HotRegionThreshold = j.HotRegionThreshold
+	child.UseR15InstructionCounter = j.UseR15InstructionCounter
+	child.DebugOneBlockLockstepMode = j.DebugOneBlockLockstepMode
+	child.LockstepModeBudget = j.LockstepModeBudget
+	child.ecallHandler = j.ecallHandler
+	child.faultPageZero = j.faultPageZero
 	return child
 }
 
@@ -584,7 +528,7 @@ func (j *JIT) CloneShared() *JIT {
 // dispatch — the native code mmaps are gone.
 func (j *JIT) Close() {
 	for _, s := range j.aotSegments {
-		s.Release()
+		s.free()
 	}
 	j.aotSegments = nil
 	j.hotSegment = nil
@@ -603,7 +547,7 @@ func (j *JIT) Close() {
 }
 
 // InvalidateSegment removes the segment containing pc from the
-// dispatch set and Release()s it. On the next JALR/dispatch into the
+// dispatch set and frees it. On the next JALR/dispatch into the
 // same region, nextExecuteSegment will re-create a fresh segment from
 // the current guest memory contents (mirrors libriscv's
 // evict_execute_segment + next_execute_segment flow).
@@ -613,7 +557,7 @@ func (j *JIT) Close() {
 //
 // Caveat: existing lazy blocks or other AOT segments may hold chain-
 // exit pointers or JALR IC entries referencing the invalidated
-// segment's native code. Release() munmaps it, so those pointers are
+// segment's native code. free() munmaps it, so those pointers are
 // dangling. Phase 2b uses this API only in controlled test scenarios
 // where no such references exist. Phase 2c will add cross-segment
 // reference tracking for safe runtime invalidation.
@@ -626,7 +570,7 @@ func (j *JIT) InvalidateSegment(pc uint64) bool {
 			}
 			j.refreshSoleSegment()
 			j.clearBlockCache()
-			s.Release()
+			s.free()
 			return true
 		}
 	}
@@ -653,7 +597,7 @@ func (j *JIT) InvalidateExecRegion(begin, end uint64) int {
 		if j.hotSegment == s {
 			j.hotSegment = nil
 		}
-		s.Release()
+		s.free()
 		freed++
 	}
 	j.aotSegments = kept
@@ -757,28 +701,55 @@ func (j *JIT) countAOTDecoderCacheProbe(seg *DecodedExecuteSegment, pc uint64) {
 }
 
 func decoderCacheEntry(seg *DecodedExecuteSegment, pc uint64) uintptr {
-	if seg == nil || len(seg.decoderCacheMmap) < 8 {
+	slot := decoderCacheSlot(seg, pc)
+	if slot == nil {
 		return 0
 	}
+	return atomic.LoadUintptr(slot)
+}
+
+func decoderCacheSlot(seg *DecodedExecuteSegment, pc uint64) *uintptr {
+	if seg == nil || len(seg.decoderCacheMmap) < 8 {
+		return nil
+	}
 	if pc < seg.vaddrBegin || pc >= seg.vaddrEnd {
-		return 0
+		return nil
 	}
 	byteOff := ((pc - seg.vaddrBegin) << 2) & seg.decoderCacheMask
 	if byteOff+8 > uint64(len(seg.decoderCacheMmap)) {
-		return 0
+		return nil
 	}
-	return uintptr(binary.LittleEndian.Uint64(seg.decoderCacheMmap[byteOff:]))
+	return (*uintptr)(unsafe.Pointer(&seg.decoderCacheMmap[int(byteOff)]))
+}
+
+func storeDecoderCacheEntry(seg *DecodedExecuteSegment, pc uint64, chainEntry uintptr) bool {
+	slot := decoderCacheSlot(seg, pc)
+	if slot == nil {
+		return false
+	}
+	atomic.StoreUintptr(slot, chainEntry)
+	return true
 }
 
 // insertBlock stores a compiled block in the cache. If blk owns its
 // own native-code mmap (set by the lazy-compile path), the block is
-// also registered in j.lazyBlocks so JIT.Close can munmap it. TCC and
-// AOT blocks don't set nativeMmap and are not registered here.
+// also registered in j.lazyBlocks so JIT.Close can munmap it. Lazy
+// blocks that land inside an AOT segment are also published into that
+// segment's mutable decoder_cache so native JALR dispatch can jump to
+// them without returning to Go on the next hit.
 func (j *JIT) insertBlock(pc uint64, blk *compiledBlock) {
 	idx := cacheIdx(pc)
 	j.cache[idx] = blockCacheEntry{pc, blk}
 	if blk != nil && blk.nativeMmap != nil {
 		j.lazyBlocks = append(j.lazyBlocks, blk)
+	}
+	if blk == nil || blk.chainEntry == 0 || len(j.aotSegments) == 0 {
+		return
+	}
+	if seg := j.findSegment(pc); seg != nil {
+		seg.blocks[pc] = blk
+		blk.segment = seg
+		storeDecoderCacheEntry(seg, pc, blk.chainEntry)
 	}
 }
 

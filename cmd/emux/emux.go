@@ -45,7 +45,9 @@ type EmuxJITStats struct {
 	DispatchOK             uint64
 	DispatchCompile        uint64
 	DispatchInterp         uint64
+	ChainPatchedJalr       uint64
 	JalrICMisses           uint64
+	JalrICDeopts           uint64
 	AOTSegmentsInstalled   uint64
 	AOTBlocksInstalled     uint64
 	AOTCompileFailures     uint64
@@ -221,7 +223,9 @@ func runEmuxJIT(cpu *riscv.CPU, mem *riscv.GuestMemory, jlinux *riscv.Jea9Linux,
 			DispatchOK:             jit.DispatchOK,
 			DispatchCompile:        jit.DispatchCompile,
 			DispatchInterp:         jit.DispatchInterp,
+			ChainPatchedJalr:       jit.ChainPatchedJalr,
 			JalrICMisses:           jit.JalrICMisses,
+			JalrICDeopts:           jit.JalrICDeopts,
 			AOTSegmentsInstalled:   jit.AOTSegmentsInstalled,
 			AOTBlocksInstalled:     jit.AOTBlocksInstalled,
 			AOTCompileFailures:     jit.AOTCompileFailures,

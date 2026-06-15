@@ -5,12 +5,11 @@ package riscv
 // to work; the Machine type is purely additive, needed only when
 // callers want Clone semantics.
 //
-// Clone() mirrors libriscv's Machine(const Machine&) constructor:
-// the parent must outlive the clone (or at least outlive the clone's
-// access to any shared state), guest memory is copy-on-write via the
-// OS (mach_vm_remap on darwin, memfd + MAP_PRIVATE on linux), and
-// AOT segments are shared through atomic ref-counting from Phase 2b.
-// CPU register state is eagerly copied.
+// Clone() copies guest memory copy-on-write via the OS (mach_vm_remap
+// on darwin, memfd + MAP_PRIVATE on linux) and eagerly copies CPU
+// register state. JIT compiled code is not shared: AOT segments are
+// mutable decoder-cache tables owned by one JIT, so clones get a fresh
+// JIT with the same configuration and warm their own native code.
 
 // Machine is a forkable sandbox: a CPU with embedded GuestMemory,
 // plus an optional JIT and optional OS. The zero value is not useful;
@@ -43,10 +42,11 @@ func NewMachine(cpu *CPU, jit *JIT) *Machine {
 }
 
 // Clone returns a child Machine whose guest memory is a copy-on-write
-// view of this Machine's, whose JIT (if any) shares AOT segments via
-// Retain, and whose CPU register/CSR state equals this Machine's at
-// fork time. The parent and child are fully independent after the
-// call: writes on either side don't cross the fence.
+// view of this Machine's and whose CPU register/CSR state equals this
+// Machine's at fork time. If the parent has a JIT, the child gets a
+// fresh JIT with the same configuration but no compiled code. The
+// parent and child are fully independent after the call: writes on
+// either side don't cross the fence.
 //
 // The child's NoteChain starts fresh. If the parent had an OS
 // installed via InstallOS, the same *OS is auto-installed on the
@@ -61,25 +61,25 @@ func (m *Machine) Clone() (*Machine, error) {
 		return nil, err
 	}
 	childCPU := &CPU{
-		mem:       *childMem, // value-copy base+mask+size+execRegions into the new CPU
-		pc:        m.CPU.pc,
-		x:         m.CPU.x,
-		f:         m.CPU.f,
-		fcsr:      m.CPU.fcsr,
+		mem:             *childMem, // value-copy base+mask+size+execRegions into the new CPU
+		pc:              m.CPU.pc,
+		x:               m.CPU.x,
+		f:               m.CPU.f,
+		fcsr:            m.CPU.fcsr,
 		riscvInstrBegun: m.CPU.riscvInstrBegun,
-		resvAddr:  m.CPU.resvAddr,
-		resvValid: m.CPU.resvValid,
-		watchAddr: m.CPU.watchAddr,
-		mtvec:     m.CPU.mtvec,
-		mepc:      m.CPU.mepc,
-		mcause:    m.CPU.mcause,
-		mstatus:   m.CPU.mstatus,
-		mtval:     m.CPU.mtval,
+		resvAddr:        m.CPU.resvAddr,
+		resvValid:       m.CPU.resvValid,
+		watchAddr:       m.CPU.watchAddr,
+		mtvec:           m.CPU.mtvec,
+		mepc:            m.CPU.mepc,
+		mcause:          m.CPU.mcause,
+		mstatus:         m.CPU.mstatus,
+		mtval:           m.CPU.mtval,
 		// Notes: zero value (empty NoteChain). Caller reinstalls handlers.
 	}
 	var childJIT *JIT
 	if m.JIT != nil {
-		childJIT = m.JIT.CloneShared()
+		childJIT = m.JIT.CloneConfig()
 	}
 	child := &Machine{
 		CPU:      childCPU,
@@ -109,9 +109,9 @@ func (m *Machine) InstallOS(os *OS) {
 	m.CPU.Notes.Push(os.Handle)
 }
 
-// Close releases resources this Machine owns: ref-decrements every
-// shared AOT segment in the JIT (via JIT.Close), then frees the guest
-// memory if the Machine owns it (i.e., was produced by Clone).
+// Close releases resources this Machine owns: any compiled code in
+// the JIT, then the guest memory if the Machine owns it (i.e., was
+// produced by Clone).
 //
 // After Close, the Machine's CPU and JIT must not be used.
 // Idempotent — subsequent calls are no-ops.

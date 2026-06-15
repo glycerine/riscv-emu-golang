@@ -231,7 +231,9 @@ func benchmarkRunEmuxGoHello(b *testing.B, mode EmuxConfig) {
 		totalStats.DispatchOK += stats.DispatchOK
 		totalStats.DispatchCompile += stats.DispatchCompile
 		totalStats.DispatchInterp += stats.DispatchInterp
+		totalStats.ChainPatchedJalr += stats.ChainPatchedJalr
 		totalStats.JalrICMisses += stats.JalrICMisses
+		totalStats.JalrICDeopts += stats.JalrICDeopts
 		totalStats.AOTSegmentsInstalled += stats.AOTSegmentsInstalled
 		totalStats.AOTBlocksInstalled += stats.AOTBlocksInstalled
 		totalStats.AOTCompileFailures += stats.AOTCompileFailures
@@ -244,7 +246,9 @@ func benchmarkRunEmuxGoHello(b *testing.B, mode EmuxConfig) {
 		b.ReportMetric(float64(totalStats.DispatchOK)/float64(b.N), "dispatch_ok/op")
 		b.ReportMetric(float64(totalStats.DispatchCompile)/float64(b.N), "compile/op")
 		b.ReportMetric(float64(totalStats.DispatchInterp)/float64(b.N), "interp_fallback/op")
+		b.ReportMetric(float64(totalStats.ChainPatchedJalr)/float64(b.N), "jalr_patch/op")
 		b.ReportMetric(float64(totalStats.JalrICMisses)/float64(b.N), "jalr_miss/op")
+		b.ReportMetric(float64(totalStats.JalrICDeopts)/float64(b.N), "jalr_deopt/op")
 	}
 	if totalStats.AOTSegmentsInstalled != 0 || totalStats.AOTCompileFailures != 0 {
 		b.ReportMetric(float64(totalStats.AOTSegmentsInstalled)/float64(b.N), "aotseg/op")

@@ -136,8 +136,7 @@ func TestAOTEmitBlockLinear_Dhrystone(t *testing.T) {
 //     slot derived from its guest PC;
 //   - for every chain exit whose target PC is in the AOT set, the
 //     MOVABS imm64 at patchOffset holds that target's absolute
-//     chainEntry (NOT the chain-exit sentinel);
-//   - the decoder_cache is read-only after init.
+//     chainEntry (NOT the chain-exit sentinel).
 func TestAOTCompile_Dhrystone(t *testing.T) {
 	data, err := os.ReadFile("bench/dhrystone.elf")
 	if err != nil {
@@ -236,15 +235,9 @@ func TestAOTCompile_Dhrystone(t *testing.T) {
 		t.Errorf("no chain exits pre-patched — AOT pre-resolution not firing")
 	}
 
-	// decoder_cache must be read-only: a raw write should fault. We can't
-	// easily test SIGSEGV recovery portably in a unit test, so we assert
-	// via syscall.Mprotect that making it RW succeeds (which would not
-	// be possible if the mmap were permanently RO, but mprotect is not a
-	// permanent hardware property — it's a flag we can flip). Instead,
-	// verify the mapping is at least currently RO by checking that the
-	// decoder_cache *address* is a valid mmap entry and the contents
-	// match expectations; SIGSEGV-based testing is deferred to an
-	// integration test.
+	// The decoder_cache is intentionally mutable. Lazy blocks discovered
+	// after AOT install are published into it so native JALR dispatch can
+	// hit the table without a Go round-trip.
 	_ = seg.decoderCacheMask // sanity touch
 }
 
@@ -682,10 +675,9 @@ func TestAOT_CrossSegmentJALR_Runs(t *testing.T) {
 		j.DispatchOK, j.JalrICMisses)
 }
 
-// TestAOT_SegmentRefcount_BalancesOnClose verifies that Close() releases
-// every segment. Each segment starts with refcount=1 at install; after
-// JIT.Close() runs, refcount reaches 0 and backing mmaps are cleared.
-func TestAOT_SegmentRefcount_BalancesOnClose(t *testing.T) {
+// TestAOT_SegmentCloseReleasesOwnedMmaps verifies that Close() releases
+// every segment owned by the JIT.
+func TestAOT_SegmentCloseReleasesOwnedMmaps(t *testing.T) {
 	const (
 		segAVA = uint64(0x10000)
 		segBVA = uint64(0x20000)
@@ -715,26 +707,17 @@ func TestAOT_SegmentRefcount_BalancesOnClose(t *testing.T) {
 	if len(j.aotSegments) != 2 {
 		t.Fatalf("len(aotSegments) = %d, want 2", len(j.aotSegments))
 	}
-	// Each segment starts at refcount=1.
 	segs := make([]*DecodedExecuteSegment, len(j.aotSegments))
 	copy(segs, j.aotSegments)
-	for i, s := range segs {
-		if got := s.refcount.Load(); got != 1 {
-			t.Errorf("seg[%d].refcount before Close = %d, want 1", i, got)
-		}
-	}
 
 	j.Close()
 
-	// After Close, aotSegments is cleared and each segment's refcount
-	// reached 0 (mmaps released).
+	// After Close, aotSegments is cleared and each segment's mmaps are
+	// released.
 	if j.aotSegments != nil {
 		t.Errorf("j.aotSegments not nil after Close; %+v", j.aotSegments)
 	}
 	for i, s := range segs {
-		if got := s.refcount.Load(); got != 0 {
-			t.Errorf("seg[%d].refcount after Close = %d, want 0", i, got)
-		}
 		if s.nativeCodeMmap != nil {
 			t.Errorf("seg[%d].nativeCodeMmap not nil after Close", i)
 		}
@@ -745,6 +728,56 @@ func TestAOT_SegmentRefcount_BalancesOnClose(t *testing.T) {
 
 	// Idempotent: second Close is a no-op.
 	j.Close()
+}
+
+func TestAOT_MutableDecoderCachePublishesLazyBlock(t *testing.T) {
+	const base = uint64(0x10000)
+	data := BuildELF(base, []uint32{
+		0x00100093, // ADDI ra, x0, 1
+		0x00200113, // ADDI sp, x0, 2
+		0x00000073, // ECALL
+	})
+
+	mem, err := NewGuestMemory(Size1GB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mem.Free()
+	if _, err := LoadELFBytes(mem, data); err != nil {
+		t.Fatalf("LoadELFBytes: %v", err)
+	}
+
+	j := NewJIT()
+	defer j.Close()
+	if err := j.InstallAOT(mem, data); err != nil {
+		t.Fatalf("InstallAOT: %v", err)
+	}
+	if len(j.aotSegments) != 1 {
+		t.Fatalf("len(aotSegments) = %d, want 1", len(j.aotSegments))
+	}
+	seg := j.aotSegments[0]
+
+	midBlockPC := base + 4
+	if _, ok := seg.blocks[midBlockPC]; ok {
+		t.Fatalf("test setup: mid-block PC 0x%x was already an AOT block", midBlockPC)
+	}
+	if got := decoderCacheEntry(seg, midBlockPC); got != 0 {
+		t.Fatalf("decoderCacheEntry(0x%x) before publish = 0x%x, want 0", midBlockPC, got)
+	}
+
+	blk := &compiledBlock{fn: 0x12340000, chainEntry: 0x12340080}
+	j.insertBlock(midBlockPC, blk)
+
+	if got := seg.blocks[midBlockPC]; got != blk {
+		t.Fatalf("seg.blocks[0x%x] = %p, want %p", midBlockPC, got, blk)
+	}
+	if blk.segment != seg {
+		t.Fatalf("blk.segment = %p, want %p", blk.segment, seg)
+	}
+	if got := decoderCacheEntry(seg, midBlockPC); got != blk.chainEntry {
+		t.Fatalf("decoderCacheEntry(0x%x) = 0x%x, want 0x%x",
+			midBlockPC, got, blk.chainEntry)
+	}
 }
 
 // TestAOT_DynamicSegmentCreate simulates a LuaJIT-style guest:
@@ -962,56 +995,5 @@ func TestAOT_InvalidateExecRegion_Bulk(t *testing.T) {
 	if j.aotSegments[0].vaddrBegin != 0x30000 {
 		t.Errorf("remaining segment VAddr=0x%x, want 0x30000",
 			j.aotSegments[0].vaddrBegin)
-	}
-}
-
-// TestAOT_SegmentRefcount_RetainPreventsFree verifies that an extra
-// Retain() delays the mmap free until the extra Release() matches. This
-// simulates the Phase 2c fork path where parent and child share a
-// segment via refcount.
-func TestAOT_SegmentRefcount_RetainPreventsFree(t *testing.T) {
-	data := BuildELF(0x10000, []uint32{0x00000073}) // single ECALL
-	mem, err := NewGuestMemory(Size1GB)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer mem.Free()
-	if _, err := LoadELFBytes(mem, data); err != nil {
-		t.Fatalf("LoadELFBytes: %v", err)
-	}
-
-	j := NewJIT()
-	if err := j.InstallAOT(mem, data); err != nil {
-		t.Fatalf("InstallAOT: %v", err)
-	}
-	if len(j.aotSegments) != 1 {
-		t.Fatalf("len(aotSegments) = %d, want 1", len(j.aotSegments))
-	}
-	seg := j.aotSegments[0]
-
-	// Extra Retain — simulates a "child JIT" referencing the same segment.
-	seg.Retain()
-	if got := seg.refcount.Load(); got != 2 {
-		t.Fatalf("refcount after Retain = %d, want 2", got)
-	}
-
-	j.Close() // Releases once — refcount back to 1; mmap still alive.
-	if got := seg.refcount.Load(); got != 1 {
-		t.Fatalf("refcount after Close = %d, want 1", got)
-	}
-	if seg.nativeCodeMmap == nil {
-		t.Fatal("nativeCodeMmap released prematurely (while refcount > 0)")
-	}
-
-	// Final Release.
-	seg.Release()
-	if got := seg.refcount.Load(); got != 0 {
-		t.Fatalf("refcount after final Release = %d, want 0", got)
-	}
-	if seg.nativeCodeMmap != nil {
-		t.Error("nativeCodeMmap not freed at refcount=0")
-	}
-	if seg.decoderCacheMmap != nil {
-		t.Error("decoderCacheMmap not freed at refcount=0")
 	}
 }

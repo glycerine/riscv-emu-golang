@@ -12,7 +12,6 @@ package riscv
 import (
 	"encoding/binary"
 	"fmt"
-	"syscall"
 	"unsafe"
 
 	"github.com/glycerine/riscv-emu-golang/goasm"
@@ -34,7 +33,7 @@ type aotBlockCompile struct {
 
 // jitCompileAOTSegment batch-compiles every block range into one
 // contiguous native-code mmap, builds a DecodedExecuteSegment with
-// a mask-bounded read-only decoder_cache, and pre-resolves static
+// a mask-bounded mutable decoder_cache, and pre-resolves static
 // chain exits whose target PC is inside the segment.
 func (j *JIT) jitCompileAOTSegment(
 	mem *GuestMemory,
@@ -243,13 +242,6 @@ func (j *JIT) jitCompileAOTSegment(
 		binary.LittleEndian.PutUint64(cacheMmap[byteOff:], uint64(bc.blk.chainEntry))
 	}
 
-	// mprotect the decoder_cache read-only. Guest cannot reach it via
-	// its own ld/st anyway (different base pointer), but RO is
-	// defense-in-depth against host-side bugs.
-	if err := syscall.Mprotect(cacheMmap, syscall.PROT_READ); err != nil {
-		return nil, fmt.Errorf("mprotect decoder_cache: %w", err)
-	}
-
 	seg := &DecodedExecuteSegment{
 		vaddrBegin:       vaddrBegin,
 		vaddrEnd:         vaddrEnd,
@@ -262,7 +254,6 @@ func (j *JIT) jitCompileAOTSegment(
 		decoderCacheMask: cacheSize - 1,
 		blocks:           blocks,
 	}
-	seg.refcount.Store(1)
 
 	// Back-link each block to its owning segment so RunJIT can publish
 	// per-block decoder_cache params without another findSegment lookup.
