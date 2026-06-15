@@ -159,6 +159,42 @@ func TestJea9Linux_MmapProtNoneReserveCanBeMprotected(t *testing.T) {
 	}
 }
 
+func TestJea9Linux_MmapProtNoneReserveZeroesOnCommit(t *testing.T) {
+	j := NewJea9Linux(Jea9LinuxOptions{})
+	cpu, mem := newJea9LinuxSyscallCPU(t, j)
+	defer mem.Free()
+
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysMmap, 0, GuestPageSize, jea9TestProtRead|jea9TestProtWrite, jea9TestMapPrivate|jea9TestMapAnonymous, ^uint64(0), 0); d != NoteHandled {
+		t.Fatalf("initial mmap disposition = %v", d)
+	}
+	addr := cpu.Reg(10)
+	if f := (&cpu.mem).Store8(addr, 0x77); f != nil {
+		t.Fatalf("store initial mapping: %v", f)
+	}
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysMunmap, addr, GuestPageSize); d != NoteHandled {
+		t.Fatalf("munmap disposition = %v", d)
+	}
+	requireSyscallReturn(t, cpu, 0)
+
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysMmap, addr, GuestPageSize, 0, jea9TestMapPrivate|jea9TestMapAnonymous|jea9TestMapFixed, ^uint64(0), 0); d != NoteHandled {
+		t.Fatalf("fixed PROT_NONE mmap disposition = %v", d)
+	}
+	if got := cpu.Reg(10); got != addr {
+		t.Fatalf("fixed PROT_NONE mmap returned 0x%x, want 0x%x", got, addr)
+	}
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysMprotect, addr, GuestPageSize, jea9TestProtRead|jea9TestProtWrite); d != NoteHandled {
+		t.Fatalf("mprotect disposition = %v", d)
+	}
+	requireSyscallReturn(t, cpu, 0)
+	got, f := (&cpu.mem).Load8(addr)
+	if f != nil {
+		t.Fatalf("load after commit: %v", f)
+	}
+	if got != 0 {
+		t.Fatalf("committed PROT_NONE reservation byte = 0x%x, want zero", got)
+	}
+}
+
 func TestJea9Linux_MprotectReadOnlyRejectsStoreAndExecMetadata(t *testing.T) {
 	j := NewJea9Linux(Jea9LinuxOptions{})
 	cpu, mem := newJea9LinuxSyscallCPU(t, j)

@@ -144,7 +144,8 @@ const (
 	jea9LinuxProtExec  = uint64(4)
 	jea9LinuxProtMask  = jea9LinuxProtRead | jea9LinuxProtWrite | jea9LinuxProtExec
 
-	jea9LinuxPageMapped = uint64(1 << 63)
+	jea9LinuxPageMapped    = uint64(1 << 63)
+	jea9LinuxPageNeedsZero = uint64(1 << 62)
 
 	jea9LinuxMapPrivate   = uint64(2)
 	jea9LinuxMapFixed     = uint64(0x10)
@@ -894,14 +895,65 @@ func jea9LinuxPageRange(addr, length, memSize uint64) (begin, end uint64, ok boo
 }
 
 func (vm *jea9LinuxVM) mapRange(addr, length, prot uint64) {
+	vm.mapRangeState(addr, length, prot, 0)
+}
+
+func (vm *jea9LinuxVM) mapRangeState(addr, length, prot, extra uint64) {
 	if length == 0 {
 		return
 	}
 	begin := jea9LinuxAlignDown(addr)
 	end := jea9LinuxAlignUp(addr + length)
 	for page := begin / GuestPageSize; page < end/GuestPageSize; page++ {
-		vm.pages[page] = jea9LinuxPageMapped | (prot & jea9LinuxProtMask)
+		vm.pages[page] = jea9LinuxPageMapped | (prot & jea9LinuxProtMask) | extra
 	}
+}
+
+func (vm *jea9LinuxVM) protectRange(addr, length, prot uint64) {
+	if length == 0 {
+		return
+	}
+	begin := jea9LinuxAlignDown(addr)
+	end := jea9LinuxAlignUp(addr + length)
+	for page := begin / GuestPageSize; page < end/GuestPageSize; page++ {
+		extra := vm.pages[page] & jea9LinuxPageNeedsZero
+		if prot != 0 {
+			extra = 0
+		}
+		vm.pages[page] = jea9LinuxPageMapped | (prot & jea9LinuxProtMask) | extra
+	}
+}
+
+func (vm *jea9LinuxVM) zeroNeededRanges(mem *GuestMemory, addr, length uint64) *MemFault {
+	if length == 0 {
+		return nil
+	}
+	begin := jea9LinuxAlignDown(addr)
+	end := jea9LinuxAlignUp(addr + length)
+	var runStart uint64
+	var runPages uint64
+	flush := func() *MemFault {
+		if runPages == 0 {
+			return nil
+		}
+		f := mem.Zero(runStart*GuestPageSize, runPages*GuestPageSize)
+		runPages = 0
+		return f
+	}
+	for page := begin / GuestPageSize; page < end/GuestPageSize; page++ {
+		if vm.pages[page]&jea9LinuxPageNeedsZero == 0 {
+			if f := flush(); f != nil {
+				return f
+			}
+			continue
+		}
+		if runPages == 0 {
+			runStart = page
+		}
+		runPages++
+		vm.pages[page] &^= jea9LinuxPageNeedsZero
+	}
+	return flush()
 }
 
 func (vm *jea9LinuxVM) unmapRange(addr, length uint64) {
@@ -3138,10 +3190,13 @@ func (jos *Jea9Linux) sysMmap(cpu *CPU, addr, length, prot, flags, fd, off uint6
 			return jea9LinuxErrENOMEM
 		}
 	}
-	if f := cpu.mem.Zero(chosen, length); f != nil {
+	extra := uint64(0)
+	if prot == 0 {
+		extra = jea9LinuxPageNeedsZero
+	} else if f := cpu.mem.Zero(chosen, length); f != nil {
 		return jea9LinuxErrENOMEM
 	}
-	vm.mapRange(chosen, length, prot)
+	vm.mapRangeState(chosen, length, prot, extra)
 	vm.updateExecMetadata(&cpu.mem, chosen, length, prot)
 	return int64(chosen)
 }
@@ -3172,7 +3227,12 @@ func (jos *Jea9Linux) sysMprotect(cpu *CPU, addr, length, prot uint64) int64 {
 	if vm.rangeUnmapped(begin, end-begin) {
 		return jea9LinuxErrENOMEM
 	}
-	vm.mapRange(begin, end-begin, prot)
+	if prot != 0 {
+		if f := vm.zeroNeededRanges(&cpu.mem, begin, end-begin); f != nil {
+			return jea9LinuxErrENOMEM
+		}
+	}
+	vm.protectRange(begin, end-begin, prot)
 	vm.updateExecMetadata(&cpu.mem, begin, end-begin, prot)
 	return 0
 }
