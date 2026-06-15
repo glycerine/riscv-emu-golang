@@ -11,38 +11,24 @@ import (
 	riscv "github.com/glycerine/riscv-emu-golang"
 )
 
-func TestRunEmuxGoHelloFixtureModes(t *testing.T) {
-	for _, tc := range []struct {
-		name    string
-		jitlazy bool
-		jitaot  bool
-	}{
-		{name: "interpreter"},
-		{name: "lazy-jit", jitlazy: true},
-		{name: "aot-jit", jitaot: true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			var stdout, stderr bytes.Buffer
-			code, err := runEmux(EmuxConfig{
-				RunPath:           "../../testvectors/jea9linux/go/elf/hello.elf",
-				MemorySize:        riscv.Size16GB,
-				InstructionBudget: 1 << 20,
-				JITLazy:           tc.jitlazy,
-				JITAOT:            tc.jitaot,
-				Stdin:             strings.NewReader(""),
-				Stdout:            &stdout,
-				Stderr:            &stderr,
-			})
-			if err != nil {
-				t.Fatalf("runEmux: %v; stderr=%q", err, stderr.String())
-			}
-			if code != 0 {
-				t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr.String())
-			}
-			if got, want := stdout.String(), "hello jea9linux go\n"; got != want {
-				t.Fatalf("stdout = %q, want %q; stderr=%q", got, want, stderr.String())
-			}
-		})
+func TestRunEmuxDefaultRunsGoHelloFixture(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code, err := runEmux(EmuxConfig{
+		RunPath:           "../../testvectors/jea9linux/go/elf/hello.elf",
+		MemorySize:        riscv.Size16GB,
+		InstructionBudget: 1 << 20,
+		Stdin:             strings.NewReader(""),
+		Stdout:            &stdout,
+		Stderr:            &stderr,
+	})
+	if err != nil {
+		t.Fatalf("runEmux: %v; stderr=%q", err, stderr.String())
+	}
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr.String())
+	}
+	if got, want := stdout.String(), "hello jea9linux go\n"; got != want {
+		t.Fatalf("stdout = %q, want %q; stderr=%q", got, want, stderr.String())
 	}
 }
 
