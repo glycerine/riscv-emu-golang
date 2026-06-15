@@ -174,6 +174,31 @@ func TestJIT_LazyBlockMapSurvivesDirectCacheCollision(t *testing.T) {
 	}
 }
 
+func TestJIT_InlineEcallExitCountsRetiredInstructions(t *testing.T) {
+	const codeVA = uint64(0x1000)
+	insns := []uint32{
+		ienc(opOPIMM, 0, 17, 0, 93), // a7 = exit
+		ienc(opOPIMM, 0, 10, 0, 0),  // a0 = 0
+		instrECALL,
+	}
+	cpu, mem := newTestCPU(t, Size1MB, codeVA, insns)
+	defer mem.Free()
+
+	o := NewOS()
+	o.HandleSyscall(93, LinuxExit)
+	cpu.Notes.Push(o.Handle)
+	defer cpu.Notes.Pop()
+
+	jit := NewJIT()
+	err := jit.RunJIT(cpu)
+	if ex, ok := err.(*ExitError); !ok || ex.Code != 0 {
+		t.Fatalf("RunJIT err = %v, want exit 0", err)
+	}
+	if got := cpu.RiscvInstrBegun(); got != uint64(len(insns)) {
+		t.Fatalf("RiscvInstrBegun() = %d, want %d", got, len(insns))
+	}
+}
+
 // ── Lockstep helpers (used by riscv_test.go too) ─────────────────────────
 
 // compareFullMemory compares guest memory byte-for-byte up to size/2.

@@ -543,6 +543,14 @@ const lockstepMemSize = Size32KB // mismatching, probably aliasing
 //const lockstepMemSize = Size64MB
 
 func runLockstep(t *testing.T, elfPath string) {
+	runLockstepWithAutoAOT(t, elfPath, true)
+}
+
+func runLockstepLazy(t *testing.T, elfPath string) {
+	runLockstepWithAutoAOT(t, elfPath, false)
+}
+
+func runLockstepWithAutoAOT(t *testing.T, elfPath string, autoAOT bool) {
 	//t.Helper()
 
 	//t0 := time.Now()
@@ -593,7 +601,7 @@ func runLockstep(t *testing.T, elfPath string) {
 	// not optional. the whole point of runLockstep():
 	jit.DebugOneBlockLockstepMode = true
 
-	jit.AutoAOT = true
+	jit.AutoAOT = autoAOT
 
 	// timings done with maxBlockIRInsns = 2048;
 	// and               PerBlockCapTimeToSplit = 5000
@@ -734,6 +742,14 @@ func TestRISCVTests_Lockstep_UI(t *testing.T) {
 			runLockstep(t, path)
 		})
 	}
+}
+
+func TestRISCVTests_LockstepLazy_Add(t *testing.T) {
+	path := filepath.Join(rvTestsDir, "rv64ui-p-add")
+	if _, err := os.Stat(path); err != nil {
+		t.Skip("rv64ui-p-add not found")
+	}
+	runLockstepLazy(t, path)
 }
 
 func TestRISCVTests_Lockstep_UM(t *testing.T) {

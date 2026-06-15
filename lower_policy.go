@@ -111,9 +111,9 @@ var PolicyRV8 = RegPolicy{
 	PatchImm64:            patchAMD64MovabsImm64,
 }
 
-// ABJITPool returns the 11-register integer allocation pool for the abjit
-// trampoline path. Excludes R14 (Go goroutine pointer, unsafe when JIT
-// code can trigger Go callbacks).
+// ABJITPool returns the integer allocation pool for the abjit trampoline
+// path. Excludes R14 (Go goroutine pointer) and R15 (native instruction
+// countdown).
 func ABJITPool(_ *Block) RegPool {
 	intRegs := []int16{
 		goasm.REG_AMD64_DX,
@@ -126,7 +126,6 @@ func ABJITPool(_ *Block) RegPool {
 		goasm.REG_AMD64_R11,
 		goasm.REG_AMD64_R12,
 		goasm.REG_AMD64_R13,
-		goasm.REG_AMD64_R15,
 	}
 	fpRegs := []int16{
 		goasm.REG_AMD64_X0, goasm.REG_AMD64_X1, goasm.REG_AMD64_X2, goasm.REG_AMD64_X3,
