@@ -642,8 +642,8 @@ func TestABJITPool(t *testing.T) {
 	b.maxVreg = MaxVReg(b)
 	pool := ABJITPool(b)
 
-	if len(pool.IntRegs) != 11 {
-		t.Fatalf("want 11 int regs, got %d", len(pool.IntRegs))
+	if len(pool.IntRegs) != 10 {
+		t.Fatalf("want 10 int regs, got %d", len(pool.IntRegs))
 	}
 	if len(pool.FPRegs) != 13 {
 		t.Errorf("want 13 FP regs, got %d", len(pool.FPRegs))
@@ -652,6 +652,9 @@ func TestABJITPool(t *testing.T) {
 	for _, r := range pool.IntRegs {
 		if r == goasm.REG_AMD64_R14 {
 			t.Error("pool must not contain R14 (Go goroutine pointer)")
+		}
+		if r == goasm.REG_AMD64_R15 {
+			t.Error("pool must not contain R15 (native instruction countdown)")
 		}
 	}
 
@@ -678,7 +681,6 @@ func TestABJITPool(t *testing.T) {
 		goasm.REG_AMD64_R11: true,
 		goasm.REG_AMD64_R12: true,
 		goasm.REG_AMD64_R13: true,
-		goasm.REG_AMD64_R15: true,
 	}
 	for _, r := range pool.IntRegs {
 		if !want[r] {
@@ -749,12 +751,12 @@ func TestPolicyABJIT(t *testing.T) {
 	b.Instrs = []IRInstr{{Op: IRAdd, T: I64, Dst: VReg(1), A: VReg(2), B: VReg(3)}}
 	b.maxVreg = MaxVReg(b)
 	pool := p.Pool(b)
-	if len(pool.IntRegs) != 11 {
-		t.Errorf("Pool().IntRegs = %d, want 11", len(pool.IntRegs))
+	if len(pool.IntRegs) != 10 {
+		t.Errorf("Pool().IntRegs = %d, want 10", len(pool.IntRegs))
 	}
 }
 
-func TestABJITPool_R14Excluded(t *testing.T) {
+func TestABJITPool_R14AndR15Excluded(t *testing.T) {
 	b := NewBlock()
 	b.Instrs = []IRInstr{{Op: IRAdd, T: I64, Dst: VReg(1), A: VReg(2), B: VReg(3)}}
 	b.maxVreg = MaxVReg(b)
@@ -762,23 +764,29 @@ func TestABJITPool_R14Excluded(t *testing.T) {
 	rv8Pool := RV8Pool(b)
 	abjitPool := ABJITPool(b)
 
-	hasR14 := func(pool RegPool) bool {
+	hasReg := func(pool RegPool, reg int16) bool {
 		for _, r := range pool.IntRegs {
-			if r == goasm.REG_AMD64_R14 {
+			if r == reg {
 				return true
 			}
 		}
 		return false
 	}
-	if !hasR14(rv8Pool) {
+	if !hasReg(rv8Pool, goasm.REG_AMD64_R14) {
 		t.Error("RV8Pool should include R14")
 	}
-	if hasR14(abjitPool) {
+	if !hasReg(rv8Pool, goasm.REG_AMD64_R15) {
+		t.Error("RV8Pool should include R15")
+	}
+	if hasReg(abjitPool, goasm.REG_AMD64_R14) {
 		t.Error("ABJITPool must not include R14")
 	}
+	if hasReg(abjitPool, goasm.REG_AMD64_R15) {
+		t.Error("ABJITPool must not include R15")
+	}
 
-	if len(abjitPool.IntRegs) != len(rv8Pool.IntRegs)-1 {
-		t.Errorf("abjit=%d, rv8=%d, want abjit=rv8-1",
+	if len(abjitPool.IntRegs) != len(rv8Pool.IntRegs)-2 {
+		t.Errorf("abjit=%d, rv8=%d, want abjit=rv8-2",
 			len(abjitPool.IntRegs), len(rv8Pool.IntRegs))
 	}
 }

@@ -335,6 +335,7 @@ func TestRAS_InlinesCalleeAndPredictsReturn(t *testing.T) {
 	for i, insn := range insns {
 		mem.Store32(0x1000+uint64(i)*4, insn)
 	}
+	mem.AddExecRegion(0x1000, 0x1000+uint64(len(insns))*4, false)
 	j := NewJIT()
 	res := j.emitBlock(mem, 0x1000)
 	if res == nil {
@@ -362,6 +363,8 @@ func TestRAS_InlinesCalleeAndPredictsReturn(t *testing.T) {
 	// --- End-to-end execution check ---
 	cpu, mem2 := newTestCPU(t, Size64MB, 0x1000, insns)
 	defer mem2.Free()
+	mem2.AddExecRegion(0x1000, 0x1000+uint64(len(insns))*4, false)
+	cpu.mem.AddExecRegion(0x1000, 0x1000+uint64(len(insns))*4, false)
 	cpu.Notes.Push(ecallStop)
 	jit := NewJIT()
 	jit.RunJIT(cpu)

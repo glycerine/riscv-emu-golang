@@ -63,6 +63,23 @@ func jitInlineEcall() {
 	cpu.fcsr = s.FCSR
 	cpu.pc = resumePC
 
+	if cpu.mtvec != 0 {
+		// Match CPU.stepFromInsn: an ECALL with mtvec installed traps into
+		// guest code instead of becoming a host-side note/syscall.
+		cpu.mepc = resumePC - 4
+		cpu.mcause = CauseEcallU
+		cpu.mtval = 0
+		cpu.pc = cpu.mtvec
+
+		s.X = cpu.x
+		s.F = cpu.f
+		s.FCSR = cpu.fcsr
+		s.PC = cpu.pc
+		s.Status = jitOK
+		s.EcallAction = abjitEcallExit
+		return
+	}
+
 	n := noteFromStepErr(ErrEcall, resumePC)
 	disp := cpu.Notes.Deliver(cpu, n)
 
