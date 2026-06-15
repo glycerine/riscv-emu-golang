@@ -34,7 +34,6 @@ const (
 	abjitVAddrBeginOff = 576
 	abjitSegSizeOff    = 584
 	abjitCyclesOff     = 592
-	abjitICOff         = abjitStateICOffset
 )
 
 func init() {
@@ -49,7 +48,7 @@ func init() {
 		unsafe.Offsetof(s.VAddrBegin) != abjitVAddrBeginOff ||
 		unsafe.Offsetof(s.SegSize) != abjitSegSizeOff ||
 		unsafe.Offsetof(s.Cycles) != abjitCyclesOff ||
-		unsafe.Offsetof(s.IC) != abjitICOff {
+		unsafe.Offsetof(s.IC) != abjitStateICOffset {
 		panic("abjit.State layout mismatch")
 	}
 }

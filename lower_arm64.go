@@ -1004,12 +1004,10 @@ func (lc *lowerARM64Ctx) sretBase() int16 {
 
 func (lc *lowerARM64Ctx) resultOffsets() (pc, status, fault, ic int64) {
 	if lc.abi == arm64ABJIT {
-		return abjitPCOff, abjitStatusOff, abjitFaultAddrOff, abjitICOff
+		return abjitPCOff, abjitStatusOff, abjitFaultAddrOff, abjitStateICOffset
 	}
 	return 0, 8, 16, 24
 }
-
-const abjitICOff = 600
 
 func (lc *lowerARM64Ctx) lowerInstr(ins *IRInstr) error {
 	switch ins.Op {
