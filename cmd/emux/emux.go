@@ -38,6 +38,21 @@ type EmuxConfig struct {
 	Stdin             io.Reader
 	Stdout            io.Writer
 	Stderr            io.Writer
+	JITStats          *EmuxJITStats
+}
+
+type EmuxJITStats struct {
+	DispatchOK             uint64
+	DispatchCompile        uint64
+	DispatchInterp         uint64
+	JalrICMisses           uint64
+	AOTSegmentsInstalled   uint64
+	AOTBlocksInstalled     uint64
+	AOTCompileFailures     uint64
+	AOTDecoderCacheLookups uint64
+	AOTDecoderCacheHits    uint64
+	AOTDecoderCacheMisses  uint64
+	AOTDecoderCacheOutside uint64
 }
 
 // FAQ: why is the default mode a "cached" interpreter?
@@ -183,12 +198,12 @@ func runEmux(cfg EmuxConfig) (int, error) {
 	}
 
 	if cfg.JITLazy || cfg.JITAOT {
-		return runEmuxJIT(cpu, mem, jlinux, cfg.JITAOT)
+		return runEmuxJIT(cpu, mem, jlinux, cfg.JITAOT, cfg.JITStats)
 	}
 	return riscv.RunWithJea9Linux(cpu, jlinux)
 }
 
-func runEmuxJIT(cpu *riscv.CPU, mem *riscv.GuestMemory, jlinux *riscv.Jea9Linux, aot bool) (int, error) {
+func runEmuxJIT(cpu *riscv.CPU, mem *riscv.GuestMemory, jlinux *riscv.Jea9Linux, aot bool, stats *EmuxJITStats) (int, error) {
 	jit := riscv.NewJIT()
 	defer jit.Close()
 
@@ -200,7 +215,23 @@ func runEmuxJIT(cpu *riscv.CPU, mem *riscv.GuestMemory, jlinux *riscv.Jea9Linux,
 		}
 	}
 
-	return riscv.RunWithJea9LinuxJIT(cpu, jit, jlinux)
+	code, err := riscv.RunWithJea9LinuxJIT(cpu, jit, jlinux)
+	if stats != nil {
+		*stats = EmuxJITStats{
+			DispatchOK:             jit.DispatchOK,
+			DispatchCompile:        jit.DispatchCompile,
+			DispatchInterp:         jit.DispatchInterp,
+			JalrICMisses:           jit.JalrICMisses,
+			AOTSegmentsInstalled:   jit.AOTSegmentsInstalled,
+			AOTBlocksInstalled:     jit.AOTBlocksInstalled,
+			AOTCompileFailures:     jit.AOTCompileFailures,
+			AOTDecoderCacheLookups: jit.AOTDecoderCacheLookups,
+			AOTDecoderCacheHits:    jit.AOTDecoderCacheHits,
+			AOTDecoderCacheMisses:  jit.AOTDecoderCacheMisses,
+			AOTDecoderCacheOutside: jit.AOTDecoderCacheOutside,
+		}
+	}
+	return code, err
 }
 
 func (c EmuxConfig) withDefaults() EmuxConfig {

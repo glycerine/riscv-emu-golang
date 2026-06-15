@@ -204,8 +204,10 @@ func BenchmarkRunEmuxGoHelloAOTJIT(b *testing.B) {
 func benchmarkRunEmuxGoHello(b *testing.B, mode EmuxConfig) {
 	b.Helper()
 	b.ReportAllocs()
+	var totalStats EmuxJITStats
 	for i := 0; i < b.N; i++ {
 		var stdout, stderr bytes.Buffer
+		var stats EmuxJITStats
 		cfg := mode
 		cfg.RunPath = "../../testvectors/jea9linux/go/elf/hello.elf"
 		cfg.MemorySize = riscv.Size16GB
@@ -213,6 +215,7 @@ func benchmarkRunEmuxGoHello(b *testing.B, mode EmuxConfig) {
 		cfg.Stdin = strings.NewReader("")
 		cfg.Stdout = &stdout
 		cfg.Stderr = &stderr
+		cfg.JITStats = &stats
 
 		code, err := runEmux(cfg)
 		if err != nil {
@@ -224,6 +227,37 @@ func benchmarkRunEmuxGoHello(b *testing.B, mode EmuxConfig) {
 		if got, want := stdout.String(), "hello jea9linux go\n"; got != want {
 			b.Fatalf("stdout = %q, want %q; stderr=%q", got, want, stderr.String())
 		}
+
+		totalStats.DispatchOK += stats.DispatchOK
+		totalStats.DispatchCompile += stats.DispatchCompile
+		totalStats.DispatchInterp += stats.DispatchInterp
+		totalStats.JalrICMisses += stats.JalrICMisses
+		totalStats.AOTSegmentsInstalled += stats.AOTSegmentsInstalled
+		totalStats.AOTBlocksInstalled += stats.AOTBlocksInstalled
+		totalStats.AOTCompileFailures += stats.AOTCompileFailures
+		totalStats.AOTDecoderCacheLookups += stats.AOTDecoderCacheLookups
+		totalStats.AOTDecoderCacheHits += stats.AOTDecoderCacheHits
+		totalStats.AOTDecoderCacheMisses += stats.AOTDecoderCacheMisses
+		totalStats.AOTDecoderCacheOutside += stats.AOTDecoderCacheOutside
+	}
+	if totalStats.DispatchOK != 0 || totalStats.DispatchCompile != 0 || totalStats.DispatchInterp != 0 {
+		b.ReportMetric(float64(totalStats.DispatchOK)/float64(b.N), "dispatch_ok/op")
+		b.ReportMetric(float64(totalStats.DispatchCompile)/float64(b.N), "compile/op")
+		b.ReportMetric(float64(totalStats.DispatchInterp)/float64(b.N), "interp_fallback/op")
+		b.ReportMetric(float64(totalStats.JalrICMisses)/float64(b.N), "jalr_miss/op")
+	}
+	if totalStats.AOTSegmentsInstalled != 0 || totalStats.AOTCompileFailures != 0 {
+		b.ReportMetric(float64(totalStats.AOTSegmentsInstalled)/float64(b.N), "aotseg/op")
+		b.ReportMetric(float64(totalStats.AOTBlocksInstalled)/float64(b.N), "aotblock/op")
+		b.ReportMetric(float64(totalStats.AOTCompileFailures)/float64(b.N), "aotfail/op")
+	}
+	if totalStats.AOTDecoderCacheLookups != 0 {
+		b.ReportMetric(float64(totalStats.AOTDecoderCacheLookups)/float64(b.N), "aotdc_lookup/op")
+		b.ReportMetric(float64(totalStats.AOTDecoderCacheHits)/float64(b.N), "aotdc_hit/op")
+		b.ReportMetric(float64(totalStats.AOTDecoderCacheMisses)/float64(b.N), "aotdc_miss/op")
+	}
+	if totalStats.AOTDecoderCacheOutside != 0 {
+		b.ReportMetric(float64(totalStats.AOTDecoderCacheOutside)/float64(b.N), "aotdc_outside/op")
 	}
 }
 

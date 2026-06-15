@@ -303,6 +303,19 @@ type JIT struct {
 	ChainPatchedJalr uint64 // JALR IC sites successfully patched
 	JalrICMisses     uint64 // JALR IC returns to Go (site not warm or polymorphic)
 	JalrICDeopts     uint64 // JALR IC sites that crossed the deopt threshold
+
+	AOTSegmentsInstalled uint64 // AOT segments successfully installed
+	AOTBlocksInstalled   uint64 // AOT blocks in successfully installed segments
+	AOTCompileFailures   uint64 // AOT region compile attempts that failed/skipped
+
+	// AOT decoder-cache probes visible to the Go dispatcher. Native
+	// decoder-cache jumps do not return to Go, so these are not total
+	// native hit counts. They classify Go-observed dispatch PCs that
+	// fall inside an installed AOT segment.
+	AOTDecoderCacheLookups uint64
+	AOTDecoderCacheHits    uint64
+	AOTDecoderCacheMisses  uint64
+	AOTDecoderCacheOutside uint64
 }
 
 // NewJIT creates a new JIT translation cache using the Fixed
@@ -522,10 +535,13 @@ func (j *JIT) compileAOTRegion(mem *GuestMemory, begin, end, size uint64, writab
 	ranges := enumerateBlockRanges(mem, begin, size)
 	seg, err := j.jitCompileAOTSegment(mem, ranges, begin, end)
 	if err != nil {
+		j.AOTCompileFailures++
 		return
 	}
 	seg.isLikelyJIT = writable
 	j.aotSegments = append(j.aotSegments, seg)
+	j.AOTSegmentsInstalled++
+	j.AOTBlocksInstalled += uint64(len(seg.blocks))
 }
 
 // CloneShared returns a new JIT that shares j's AOT segments (each
@@ -707,15 +723,21 @@ func (j *JIT) lookupBlock(pc uint64) *compiledBlock {
 		// Fast path: exactly one segment installed. Inline bounds check
 		// avoids the findSegment call + hotSegment indirection.
 		if pc >= s.vaddrBegin && pc < s.vaddrEnd {
+			j.countAOTDecoderCacheProbe(s, pc)
 			if blk, ok := s.blocks[pc]; ok {
 				return blk
 			}
+		} else {
+			j.AOTDecoderCacheOutside++
 		}
 	} else if len(j.aotSegments) > 0 {
 		if s := j.findSegment(pc); s != nil {
+			j.countAOTDecoderCacheProbe(s, pc)
 			if blk, ok := s.blocks[pc]; ok {
 				return blk
 			}
+		} else {
+			j.AOTDecoderCacheOutside++
 		}
 	}
 	idx := cacheIdx(pc)
@@ -723,6 +745,29 @@ func (j *JIT) lookupBlock(pc uint64) *compiledBlock {
 		return j.cache[idx].blk
 	}
 	return nil
+}
+
+func (j *JIT) countAOTDecoderCacheProbe(seg *DecodedExecuteSegment, pc uint64) {
+	j.AOTDecoderCacheLookups++
+	if decoderCacheEntry(seg, pc) != 0 {
+		j.AOTDecoderCacheHits++
+	} else {
+		j.AOTDecoderCacheMisses++
+	}
+}
+
+func decoderCacheEntry(seg *DecodedExecuteSegment, pc uint64) uintptr {
+	if seg == nil || len(seg.decoderCacheMmap) < 8 {
+		return 0
+	}
+	if pc < seg.vaddrBegin || pc >= seg.vaddrEnd {
+		return 0
+	}
+	byteOff := ((pc - seg.vaddrBegin) << 2) & seg.decoderCacheMask
+	if byteOff+8 > uint64(len(seg.decoderCacheMmap)) {
+		return 0
+	}
+	return uintptr(binary.LittleEndian.Uint64(seg.decoderCacheMmap[byteOff:]))
 }
 
 // insertBlock stores a compiled block in the cache. If blk owns its
