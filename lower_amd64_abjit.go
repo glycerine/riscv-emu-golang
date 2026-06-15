@@ -313,10 +313,13 @@ func (lc *lowerCtxABJIT) abjitRet(ins *IRInstr) {
 	lc.jmpExitThunk()
 }
 
-// abjitSetPC emits MOV QWORD [RBP+PC_offset], $imm.
+// abjitSetPC writes the unexecuted instruction's PC through a scratch register.
+// x86-64 cannot encode MOVQ imm64 directly to memory; high guest mmap
+// addresses therefore need the same MOVABS + store shape used by Ret.
 // Used by budget cold paths to write the unexecuted instruction's PC.
 func (lc *lowerCtxABJIT) abjitSetPC(ins *IRInstr) {
-	lc.emitMI(x86.AMOVQ, ins.Imm, goasm.REG_AMD64_BP, abjitPCOff)
+	lc.loadImm(ins.Imm, stgB)
+	lc.emitMR(x86.AMOVQ, stgB, goasm.REG_AMD64_BP, abjitPCOff)
 }
 
 // abjitRetBudget emits the shared budget exit: status=jitBudget, exitinfo=0,

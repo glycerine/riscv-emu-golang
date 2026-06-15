@@ -1,6 +1,7 @@
 package bench
 
 import (
+	"fmt"
 	"os"
 	"testing"
 
@@ -231,6 +232,7 @@ func newZygoJea9LinuxCPU(tb testing.TB, elfData []byte) (*riscv.CPU, *riscv.Gues
 
 func BenchmarkCPU_ZygoFib10_LazyJIT(b *testing.B) {
 	elfData := loadELFFrom(b, "ZYGO_ELF", "zygo.elf")
+	traceFallbacks := os.Getenv("GOCPU_JIT_FALLBACK_TRACE") != ""
 
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -241,10 +243,16 @@ func BenchmarkCPU_ZygoFib10_LazyJIT(b *testing.B) {
 		cpu, mem, jlinux := newZygoJea9LinuxCPU(b, elfData)
 		jit := riscv.NewJIT()
 		jit.AutoAOT = false
+		if traceFallbacks {
+			jit.EnableFallbackTrace()
+		}
 		code, err := riscv.RunWithJea9LinuxJIT(cpu, jit, jlinux)
 		insns := cpu.RiscvInstrBegun()
 		totalInsns += insns
 		totalStats.add(jit)
+		if traceFallbacks {
+			dumpJITFallbackTrace(b, jit, 32)
+		}
 		jit.Close()
 		mem.Free()
 		if err != nil {
@@ -261,6 +269,26 @@ func BenchmarkCPU_ZygoFib10_LazyJIT(b *testing.B) {
 		b.ReportMetric(float64(totalInsns)/elapsed/1e6, "MIPS")
 	}
 	totalStats.report(b)
+}
+
+func dumpJITFallbackTrace(tb testing.TB, jit *riscv.JIT, limit int) {
+	tb.Helper()
+	top := jit.FallbackTraceTop(limit)
+	fmt.Fprintf(os.Stderr, "\nlazy JIT interpreter fallback trace: top=%d total_pcs=%d\n", len(top), jit.NoJITSize())
+	for i, ent := range top {
+		exec := "exec=<none>"
+		if ent.InExec {
+			exec = fmt.Sprintf("exec=[0x%x,0x%x)", ent.RegionBegin, ent.RegionEnd)
+		}
+		insn := ent.FetchFault
+		if insn == "" && ent.IsRVC {
+			insn = fmt.Sprintf("half=0x%04x %s", ent.Half, ent.Disasm)
+		} else if insn == "" {
+			insn = fmt.Sprintf("word=0x%08x %s", ent.Word, ent.Disasm)
+		}
+		fmt.Fprintf(os.Stderr, "  %2d pc=0x%x count=%d reason=%s %s %s\n",
+			i+1, ent.PC, ent.Count, ent.Reason, exec, insn)
+	}
 }
 
 // ── CoreMark benchmarks ───────────────────────────────────────────────────

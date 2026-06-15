@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"runtime/debug"
+	"sort"
 	"sync/atomic"
 	"syscall"
 	"unsafe"
@@ -201,6 +202,22 @@ func (m JITInstructionCounterMode) String() string {
 	}
 }
 
+// JITFallbackTraceEntry records one PC that the lazy JIT could not dispatch
+// as native code and therefore had to hand to the interpreter.
+type JITFallbackTraceEntry struct {
+	PC          uint64
+	Count       uint64
+	Reason      string
+	InExec      bool
+	RegionBegin uint64
+	RegionEnd   uint64
+	IsRVC       bool
+	Half        uint16
+	Word        uint32
+	Disasm      string
+	FetchFault  string
+}
+
 // JIT holds the cache of compiled basic blocks.
 type JIT struct {
 
@@ -257,6 +274,8 @@ type JIT struct {
 	noJIT      map[uint64]bool // PCs where translation failed — don't retry
 	InterpOnly bool            // debug: force all-interpreter mode
 	trace      bool            // debug: log block executions to stderr
+
+	fallbackTrace map[uint64]*JITFallbackTraceEntry
 
 	// AutoAOT opts into RunJIT's first-entry auto-install of
 	// AOT segments based on cpu.mem.ExecRegions(). Leave false
@@ -380,6 +399,123 @@ func (j *JIT) SetInstructionCounterMode(mode JITInstructionCounterMode) {
 // precise because the JIT has one countdown-budget codegen contract.
 func (j *JIT) InstructionCounterMode() JITInstructionCounterMode {
 	return JITICPrecise
+}
+
+// EnableFallbackTrace enables a low-volume histogram of lazy-JIT PCs that
+// retire through the interpreter because no native block is available.
+func (j *JIT) EnableFallbackTrace() {
+	if j.fallbackTrace == nil {
+		j.fallbackTrace = make(map[uint64]*JITFallbackTraceEntry)
+	}
+}
+
+// FallbackTraceTop returns the fallback histogram sorted by descending count.
+func (j *JIT) FallbackTraceTop(limit int) []JITFallbackTraceEntry {
+	if len(j.fallbackTrace) == 0 || limit == 0 {
+		return nil
+	}
+	out := make([]JITFallbackTraceEntry, 0, len(j.fallbackTrace))
+	for _, ent := range j.fallbackTrace {
+		out = append(out, *ent)
+	}
+	sort.Slice(out, func(i, k int) bool {
+		if out[i].Count == out[k].Count {
+			return out[i].PC < out[k].PC
+		}
+		return out[i].Count > out[k].Count
+	})
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out
+}
+
+func (j *JIT) markNoJIT(mem *GuestMemory, pc uint64, reason string) {
+	j.noJIT[pc] = true
+	if j.fallbackTrace != nil {
+		ent := j.fallbackTraceEntry(mem, pc)
+		if ent.Reason == "" || ent.Reason == "nojit-hit" {
+			ent.Reason = reason
+		}
+	}
+}
+
+func (j *JIT) recordInterpreterFallback(mem *GuestMemory, pc uint64) {
+	if j.fallbackTrace == nil {
+		return
+	}
+	ent := j.fallbackTraceEntry(mem, pc)
+	ent.Count++
+	if ent.Reason == "" {
+		ent.Reason = "nojit-hit"
+	}
+}
+
+func (j *JIT) fallbackTraceEntry(mem *GuestMemory, pc uint64) *JITFallbackTraceEntry {
+	if ent := j.fallbackTrace[pc]; ent != nil {
+		return ent
+	}
+	ent := &JITFallbackTraceEntry{PC: pc}
+	if mem != nil {
+		if r := mem.FindExecRegion(pc); r != nil {
+			ent.InExec = true
+			ent.RegionBegin = r.VAddrBegin
+			ent.RegionEnd = r.VAddrEnd
+		}
+		half, fh := mem.Fetch16(pc)
+		if fh != nil {
+			ent.FetchFault = fh.Error()
+		} else {
+			ent.Half = half
+			if half&0x3 != 0x3 {
+				ent.IsRVC = true
+				ent.Disasm = DisasmRVC(half)
+			} else {
+				word, fw := mem.Fetch32(pc)
+				if fw != nil && fw.Kind == FaultMisalign {
+					word, fw = mem.Fetch32U(pc)
+				}
+				if fw != nil {
+					ent.FetchFault = fw.Error()
+				} else {
+					ent.Word = word
+					ent.Disasm = DisasmRV32(pc, word)
+				}
+			}
+		}
+	}
+	j.fallbackTrace[pc] = ent
+	return ent
+}
+
+func lazyCompilePanicMessage(mem *GuestMemory, pc uint64, res *emitResult, err error) string {
+	msg := fmt.Sprintf("lazy JIT native compile failed: pc=0x%x", pc)
+	if res != nil {
+		irCount := 0
+		if res.block != nil {
+			irCount = len(res.block.Instrs)
+		}
+		msg += fmt.Sprintf(" numInsns=%d ir=%d", res.numInsns, irCount)
+	}
+	if mem != nil {
+		ent := (&JIT{fallbackTrace: make(map[uint64]*JITFallbackTraceEntry)}).fallbackTraceEntry(mem, pc)
+		if ent.InExec {
+			msg += fmt.Sprintf(" exec=[0x%x,0x%x)", ent.RegionBegin, ent.RegionEnd)
+		} else {
+			msg += " exec=<none>"
+		}
+		if ent.FetchFault != "" {
+			msg += " fetch=" + ent.FetchFault
+		} else if ent.IsRVC {
+			msg += fmt.Sprintf(" half=0x%04x insn=%s", ent.Half, ent.Disasm)
+		} else {
+			msg += fmt.Sprintf(" word=0x%08x insn=%s", ent.Word, ent.Disasm)
+		}
+	}
+	if err != nil {
+		msg += ": " + err.Error()
+	}
+	return msg
 }
 
 func (j *JIT) preciseInstructionCounterEnabled() bool {
@@ -1000,12 +1136,18 @@ func (j *JIT) stepBlockWithBudget(cpu *CPU, budget uint64) (ic uint64, err error
 				j.maybeCompileHotRegion(&cpu.mem, pc)
 				return j.stepBlockWithBudget(cpu, budget) // retry — returns cpu.riscvInstrBegun
 			}
+			panic(lazyCompilePanicMessage(&cpu.mem, pc, res, cerr))
 		}
-		j.noJIT[pc] = true
+		if res == nil {
+			j.markNoJIT(&cpu.mem, pc, "emit-nil")
+		} else {
+			j.markNoJIT(&cpu.mem, pc, "emit-zero")
+		}
 	}
 
 	// Interpreter fallback
 	j.DispatchInterp++
+	j.recordInterpreterFallback(&cpu.mem, pc)
 	err = j.stepInterpreted(cpu)
 	return cpu.riscvInstrBegun, err
 }
@@ -1239,9 +1381,7 @@ func (j *JIT) RunJIT(cpu *CPU) (err0 error) {
 					j.maybeCompileHotRegion(&cpu.mem, pc)
 					continue
 				}
-				if debugJIT {
-					fmt.Fprintf(os.Stderr, "COMPILE_FAIL pc=0x%x numInsns=%d err=%v\n", pc, res.numInsns, err)
-				}
+				panic(lazyCompilePanicMessage(&cpu.mem, pc, res, err))
 			} else if debugJIT {
 				if res == nil {
 					fmt.Fprintf(os.Stderr, "EMIT_NIL pc=0x%x\n", pc)
@@ -1249,11 +1389,16 @@ func (j *JIT) RunJIT(cpu *CPU) (err0 error) {
 					fmt.Fprintf(os.Stderr, "EMIT_ZERO pc=0x%x numInsns=%d\n", pc, res.numInsns)
 				}
 			}
-			j.noJIT[pc] = true
+			if res == nil {
+				j.markNoJIT(&cpu.mem, pc, "emit-nil")
+			} else {
+				j.markNoJIT(&cpu.mem, pc, "emit-zero")
+			}
 		}
 
 		// Interpret one instruction.
 		j.DispatchInterp++
+		j.recordInterpreterFallback(&cpu.mem, pc)
 		err := j.stepInterpreted(cpu)
 		if err == nil {
 			continue
