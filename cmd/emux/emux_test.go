@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/binary"
 	"flag"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -291,6 +293,64 @@ func TestParseClockModeAndSeedBytes(t *testing.T) {
 	const seed = uint64(0x0102030405060708)
 	if got := binary.LittleEndian.Uint64(seedBytes(seed)); got != seed {
 		t.Fatalf("seedBytes round trip = %#x, want %#x", got, seed)
+	}
+}
+
+func TestLoadEmuxTimeZoneFilesFollowsGoRuntimePaths(t *testing.T) {
+	hostZoneRoot := filepath.Join(t.TempDir(), "zoneinfo")
+	writeTestFile(t, filepath.Join(hostZoneRoot, "America", "Los_Angeles"), []byte("la-zone"))
+	writeTestFile(t, filepath.Join(hostZoneRoot, "Europe", "London"), []byte("london-zone"))
+
+	hostEtcRoot := filepath.Join(t.TempDir(), "etc-zoneinfo")
+	writeTestFile(t, filepath.Join(hostEtcRoot, "America", "New_York"), []byte("ny-zone"))
+
+	hostGoRoot := t.TempDir()
+	hostZip := filepath.Join(hostGoRoot, "lib", "time", "zoneinfo.zip")
+	writeTestFile(t, hostZip, []byte("zip-zoneinfo"))
+
+	files := loadEmuxTimeZoneFiles([]emuxZoneInfoSource{
+		{guestPath: "/usr/share/zoneinfo/", hostPath: hostZoneRoot},
+		{guestPath: "/etc/zoneinfo", hostPath: hostEtcRoot},
+		{guestPath: "/usr/local/go/lib/time/zoneinfo.zip", hostPath: hostZip},
+	})
+
+	if got := string(files["/usr/share/zoneinfo//America/Los_Angeles"]); got != "la-zone" {
+		t.Fatalf("Los_Angeles zone = %q, want la-zone", got)
+	}
+	if got := string(files["/usr/share/zoneinfo//Europe/London"]); got != "london-zone" {
+		t.Fatalf("London zone = %q, want london-zone", got)
+	}
+	if got := string(files["/etc/zoneinfo/America/New_York"]); got != "ny-zone" {
+		t.Fatalf("New_York zone = %q, want ny-zone", got)
+	}
+	if got := string(files["/usr/local/go/lib/time/zoneinfo.zip"]); got != "zip-zoneinfo" {
+		t.Fatalf("zoneinfo.zip = %q, want zip-zoneinfo", got)
+	}
+}
+
+func TestLoadEmuxTimeZoneFilesFollowsSymlinkedSourceRoot(t *testing.T) {
+	hostZoneRoot := filepath.Join(t.TempDir(), "real-zoneinfo")
+	writeTestFile(t, filepath.Join(hostZoneRoot, "America", "Los_Angeles"), []byte("la-zone"))
+	linkRoot := filepath.Join(t.TempDir(), "zoneinfo-link")
+	if err := os.Symlink(hostZoneRoot, linkRoot); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	files := loadEmuxTimeZoneFiles([]emuxZoneInfoSource{
+		{guestPath: "/usr/share/zoneinfo/", hostPath: linkRoot},
+	})
+	if got := string(files["/usr/share/zoneinfo//America/Los_Angeles"]); got != "la-zone" {
+		t.Fatalf("symlinked Los_Angeles zone = %q, want la-zone", got)
+	}
+}
+
+func writeTestFile(t *testing.T, path string, data []byte) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("MkdirAll(%q): %v", filepath.Dir(path), err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatalf("WriteFile(%q): %v", path, err)
 	}
 }
 
