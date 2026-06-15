@@ -316,6 +316,7 @@ func NewJIT() *JIT {
 		LockstepModeBudget:       65536,
 
 		// faster to disable AOT? massively.
+		// at: 18fcb35 (origin/oslayer, oslayer) atg on linux and darwin
 		// GOCPU_VIZJIT_OFF=1 make bench-jit-coremark
 		// DisableAutoAOT: true =>
 		// BenchmarkJIT_CoreMark_ABJIT-8 1  575_636_119 ns/op 676.8 MIPS  27835656 B/op     42_213 allocs/op (10x fewer allocations!)
