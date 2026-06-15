@@ -752,6 +752,43 @@ func TestRISCVTests_LockstepLazy_Add(t *testing.T) {
 	runLockstepLazy(t, path)
 }
 
+func runLockstepLazyGlob(t *testing.T, pattern, prefix, missing string) {
+	entries, err := filepath.Glob(filepath.Join(rvTestsDir, pattern))
+	if err != nil || len(entries) == 0 {
+		t.Skip(missing)
+	}
+	for _, path := range entries {
+		name := strings.TrimPrefix(filepath.Base(path), prefix)
+		t.Run(name, func(t *testing.T) { runLockstepLazy(t, path) })
+	}
+}
+
+func TestRISCVTests_LockstepLazy_UI(t *testing.T) {
+	runLockstepLazyGlob(t, "rv64ui-p-*", "rv64ui-p-", "rv64ui ELFs not found")
+}
+
+func TestRISCVTests_LockstepLazy_UM(t *testing.T) {
+	runLockstepLazyGlob(t, "rv64um-p-*", "rv64um-p-", "rv64um ELFs not found")
+}
+
+func TestRISCVTests_LockstepLazy_UA(t *testing.T) {
+	runLockstepLazyGlob(t, "rv64ua-p-*", "rv64ua-p-", "rv64ua ELFs not found")
+}
+
+func TestRISCVTests_LockstepLazy_UF(t *testing.T) {
+	t.Skip("JIT does not propagate fflags — lockstep FCSR comparison diverges")
+	runLockstepLazyGlob(t, "rv64uf-p-*", "rv64uf-p-", "rv64uf ELFs not found")
+}
+
+func TestRISCVTests_LockstepLazy_UD(t *testing.T) {
+	t.Skip("JIT does not propagate fflags — lockstep FCSR comparison diverges")
+	runLockstepLazyGlob(t, "rv64ud-p-*", "rv64ud-p-", "rv64ud ELFs not found")
+}
+
+func TestRISCVTests_LockstepLazy_UC(t *testing.T) {
+	runLockstepLazyGlob(t, "rv64uc-p-*", "rv64uc-p-", "rv64uc ELFs not found")
+}
+
 func TestRISCVTests_Lockstep_UM(t *testing.T) {
 	entries, err := filepath.Glob(filepath.Join(rvTestsDir, "rv64um-p-*"))
 	if err != nil || len(entries) == 0 {
