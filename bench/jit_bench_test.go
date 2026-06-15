@@ -32,8 +32,6 @@ func TestJIT_DispatchStats(t *testing.T) {
 	defer mem.Free()
 
 	jit := riscv.NewJIT()
-	riscv.SetDebugJIT(true) // enable emitBlock diagnostic logging
-	defer riscv.SetDebugJIT(false)
 	exitCode, insns := runJITBenchGuestWith(cpu, jit)
 	t.Logf("retired %d instructions, exit code %d", insns, exitCode)
 	t.Logf("Dispatch stats:")
