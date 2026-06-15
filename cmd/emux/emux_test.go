@@ -11,24 +11,38 @@ import (
 	riscv "github.com/glycerine/riscv-emu-golang"
 )
 
-func TestRunEmuxRunsGoHelloFixture(t *testing.T) {
-	var stdout, stderr bytes.Buffer
-	code, err := runEmux(EmuxConfig{
-		RunPath:           "../../testvectors/jea9linux/go/elf/hello.elf",
-		MemorySize:        riscv.Size16GB,
-		InstructionBudget: 1 << 20,
-		Stdin:             strings.NewReader(""),
-		Stdout:            &stdout,
-		Stderr:            &stderr,
-	})
-	if err != nil {
-		t.Fatalf("runEmux: %v; stderr=%q", err, stderr.String())
-	}
-	if code != 0 {
-		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr.String())
-	}
-	if got, want := stdout.String(), "hello jea9linux go\n"; got != want {
-		t.Fatalf("stdout = %q, want %q; stderr=%q", got, want, stderr.String())
+func TestRunEmuxGoHelloFixtureModes(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		jitlazy bool
+		jitaot  bool
+	}{
+		{name: "interpreter"},
+		{name: "lazy-jit", jitlazy: true},
+		{name: "aot-jit", jitaot: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			code, err := runEmux(EmuxConfig{
+				RunPath:           "../../testvectors/jea9linux/go/elf/hello.elf",
+				MemorySize:        riscv.Size16GB,
+				InstructionBudget: 1 << 20,
+				JITLazy:           tc.jitlazy,
+				JITAOT:            tc.jitaot,
+				Stdin:             strings.NewReader(""),
+				Stdout:            &stdout,
+				Stderr:            &stderr,
+			})
+			if err != nil {
+				t.Fatalf("runEmux: %v; stderr=%q", err, stderr.String())
+			}
+			if code != 0 {
+				t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr.String())
+			}
+			if got, want := stdout.String(), "hello jea9linux go\n"; got != want {
+				t.Fatalf("stdout = %q, want %q; stderr=%q", got, want, stderr.String())
+			}
+		})
 	}
 }
 
@@ -66,25 +80,49 @@ func TestRunEmuxSeedControlsGetrandom(t *testing.T) {
 	}
 }
 
-func TestRunEmuxJITRunsJea9LinuxFixture(t *testing.T) {
-	var stdout, stderr bytes.Buffer
-	code, err := runEmux(EmuxConfig{
-		RunPath:           "../../testvectors/jea9linux/elf/write_stdout.elf",
-		MemorySize:        riscv.Size64MB,
-		InstructionBudget: 1 << 20,
-		JIT:               true,
-		Stdin:             strings.NewReader(""),
-		Stdout:            &stdout,
-		Stderr:            &stderr,
-	})
-	if err != nil {
-		t.Fatalf("runEmux: %v; stderr=%q", err, stderr.String())
+func TestRunEmuxJea9LinuxFixtureModes(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		jitlazy bool
+		jitaot  bool
+	}{
+		{name: "interpreter"},
+		{name: "lazy-jit", jitlazy: true},
+		{name: "aot-jit", jitaot: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			code, err := runEmux(EmuxConfig{
+				RunPath:           "../../testvectors/jea9linux/elf/write_stdout.elf",
+				MemorySize:        riscv.Size64MB,
+				InstructionBudget: 1 << 20,
+				JITLazy:           tc.jitlazy,
+				JITAOT:            tc.jitaot,
+				Stdin:             strings.NewReader(""),
+				Stdout:            &stdout,
+				Stderr:            &stderr,
+			})
+			if err != nil {
+				t.Fatalf("runEmux: %v; stderr=%q", err, stderr.String())
+			}
+			if code != 0 {
+				t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr.String())
+			}
+			if got, want := stdout.String(), "jea9linux stdout\n"; got != want {
+				t.Fatalf("stdout = %q, want %q", got, want)
+			}
+		})
 	}
-	if code != 0 {
-		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr.String())
+}
+
+func TestEmuxJITFlagsAreMutuallyExclusive(t *testing.T) {
+	cfg := EmuxConfig{
+		RunPath: "../../testvectors/jea9linux/elf/write_stdout.elf",
+		JITLazy: true,
+		JITAOT:  true,
 	}
-	if got, want := stdout.String(), "jea9linux stdout\n"; got != want {
-		t.Fatalf("stdout = %q, want %q", got, want)
+	if err := cfg.ValidateConfig(); err == nil {
+		t.Fatal("ValidateConfig accepted both -jitlazy and -jitaot")
 	}
 }
 
@@ -137,6 +175,69 @@ func TestEmuxConfigDefaultsPreserveExplicitZeroClock(t *testing.T) {
 	explicitZero := EmuxConfig{MonotonicStartSet: true}.withDefaults()
 	if explicitZero.MonotonicStartNS != 0 {
 		t.Fatalf("explicit MonotonicStartNS = %d, want zero preserved", explicitZero.MonotonicStartNS)
+	}
+}
+
+func TestParseEmuxJITModeFlags(t *testing.T) {
+	lazy, _, _ := parseEmuxConfigForTest(t,
+		"-run", "../../testvectors/jea9linux/elf/write_stdout.elf",
+		"-jitlazy",
+	)
+	if !lazy.JITLazy || lazy.JITAOT {
+		t.Fatalf("-jitlazy parsed as JITLazy=%v JITAOT=%v", lazy.JITLazy, lazy.JITAOT)
+	}
+
+	aot, _, _ := parseEmuxConfigForTest(t,
+		"-run", "../../testvectors/jea9linux/elf/write_stdout.elf",
+		"-jitaot",
+	)
+	if !aot.JITAOT || aot.JITLazy {
+		t.Fatalf("-jitaot parsed as JITLazy=%v JITAOT=%v", aot.JITLazy, aot.JITAOT)
+	}
+
+	interp, _, _ := parseEmuxConfigForTest(t,
+		"-run", "../../testvectors/jea9linux/elf/write_stdout.elf",
+	)
+	if interp.JITLazy || interp.JITAOT {
+		t.Fatalf("default parsed as JITLazy=%v JITAOT=%v", interp.JITLazy, interp.JITAOT)
+	}
+}
+
+func BenchmarkRunEmuxGoHelloInterpreter(b *testing.B) {
+	benchmarkRunEmuxGoHello(b, EmuxConfig{})
+}
+
+func BenchmarkRunEmuxGoHelloLazyJIT(b *testing.B) {
+	benchmarkRunEmuxGoHello(b, EmuxConfig{JITLazy: true})
+}
+
+func BenchmarkRunEmuxGoHelloAOTJIT(b *testing.B) {
+	benchmarkRunEmuxGoHello(b, EmuxConfig{JITAOT: true})
+}
+
+func benchmarkRunEmuxGoHello(b *testing.B, mode EmuxConfig) {
+	b.Helper()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		var stdout, stderr bytes.Buffer
+		cfg := mode
+		cfg.RunPath = "../../testvectors/jea9linux/go/elf/hello.elf"
+		cfg.MemorySize = riscv.Size16GB
+		cfg.InstructionBudget = 1 << 20
+		cfg.Stdin = strings.NewReader("")
+		cfg.Stdout = &stdout
+		cfg.Stderr = &stderr
+
+		code, err := runEmux(cfg)
+		if err != nil {
+			b.Fatalf("runEmux: %v; stderr=%q", err, stderr.String())
+		}
+		if code != 0 {
+			b.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr.String())
+		}
+		if got, want := stdout.String(), "hello jea9linux go\n"; got != want {
+			b.Fatalf("stdout = %q, want %q; stderr=%q", got, want, stderr.String())
+		}
 	}
 }
 

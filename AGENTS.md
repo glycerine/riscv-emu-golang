@@ -1,5 +1,8 @@
 # AGENTS.md
 
+Never use git. The user commits in the background, and it will conflict. It will
+also mislead you. So, never use git. It is fine to run any 'make' targets that incidentally happen to use git, since they are only checking the version of git.
+
 ## Read This First
 
 This repository is a performance-oriented RV64 emulator and native JIT, not

@@ -785,11 +785,51 @@ func (j *JIT) stepBlockWithBudget(cpu *CPU, budget uint64) (ic uint64, err error
 	if blk != nil {
 		var res jitcall.Result
 		if j.useABJIT {
-			res = abjitDispatch(blk, cpu, j, 0, 0, 0, 0, budget)
+			var dcBase uintptr
+			var dcMask, vBegin, segSz uint64
+			if seg := j.soleSegment; seg != nil {
+				dcBase = seg.decoderCacheBase
+				dcMask = seg.decoderCacheMask
+				vBegin = seg.vaddrBegin
+				segSz = seg.vaddrSize
+			} else if len(j.aotSegments) > 0 {
+				seg := blk.segment
+				if seg == nil {
+					seg = j.hotSegment
+				}
+				if seg == nil {
+					seg = j.aotSegments[0]
+				}
+				dcBase = seg.decoderCacheBase
+				dcMask = seg.decoderCacheMask
+				vBegin = seg.vaddrBegin
+				segSz = seg.vaddrSize
+			}
+			res = abjitDispatch(blk, cpu, j, dcBase, dcMask, vBegin, segSz, budget)
 		} else {
+			var dcBase uintptr
+			var dcMask, vBegin, segSz uint64
+			if seg := j.soleSegment; seg != nil {
+				dcBase = seg.decoderCacheBase
+				dcMask = seg.decoderCacheMask
+				vBegin = seg.vaddrBegin
+				segSz = seg.vaddrSize
+			} else if len(j.aotSegments) > 0 {
+				seg := blk.segment
+				if seg == nil {
+					seg = j.hotSegment
+				}
+				if seg == nil {
+					seg = j.aotSegments[0]
+				}
+				dcBase = seg.decoderCacheBase
+				dcMask = seg.decoderCacheMask
+				vBegin = seg.vaddrBegin
+				segSz = seg.vaddrSize
+			}
 			res = sandboxRv8Call(blk.fn, cpu,
 				cpu.mem.RegFileBase(), cpu.mem.StackTop(),
-				0, 0, 0, 0, budget)
+				dcBase, dcMask, vBegin, segSz, budget)
 			cpu.riscvInstrBegun += res.ICdelta
 		}
 		if j.trace {
@@ -800,8 +840,14 @@ func (j *JIT) stepBlockWithBudget(cpu *CPU, budget uint64) (ic uint64, err error
 
 		switch int(res.Status) {
 		case jitOK:
+			j.DispatchOK++
+			if len(blk.chainExits) > 0 {
+				j.tryPatchChain(blk, cpu.pc)
+			}
 			return cpu.riscvInstrBegun, nil
 		case jitOKJalrMiss:
+			j.JalrICMisses++
+			j.tryPatchJalrIC(blk, int(res.FaultAddr), cpu.pc)
 			return cpu.riscvInstrBegun, nil
 		case jitBudget:
 			if res.ICdelta == 0 && budget > 0 {
@@ -852,6 +898,7 @@ func (j *JIT) stepBlockWithBudget(cpu *CPU, budget uint64) (ic uint64, err error
 	}
 
 	// Interpreter fallback
+	j.DispatchInterp++
 	err = j.stepInterpreted(cpu)
 	return cpu.riscvInstrBegun, err
 }

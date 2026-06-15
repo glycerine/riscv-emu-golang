@@ -16,7 +16,6 @@ var ProgramName = "emux"
 const (
 	defaultEmuxMemorySize        = riscv.Size16GB
 	defaultEmuxInstructionBudget = uint64(1 << 20)
-	defaultEmuxJIT               = true
 	defaultEmuxClockMode         = "idle-jump"
 	defaultEmuxMonotonicStartNS  = int64(1)
 	defaultEmuxNSPerInstruction  = int64(1)
@@ -27,7 +26,8 @@ type EmuxConfig struct {
 	Seed              uint64
 	MemorySize        uint64
 	InstructionBudget uint64
-	JIT               bool
+	JITLazy           bool
+	JITAOT            bool
 	ClockMode         string
 	MonotonicStartNS  int64
 	MonotonicStartSet bool
@@ -40,13 +40,13 @@ type EmuxConfig struct {
 	Stderr            io.Writer
 }
 
-// FAQ: why is it either JIT or "cached" interpreter?
+// FAQ: why is the default mode a "cached" interpreter?
 //
-// A: because the non--jit path does not use CPU.Step()
+// A: because the interpreter path does not use CPU.Step()
 // instruction-by-instruction directly. It goes
 // through the repo’s fast interpreter path:
 //
-// emux -jit=false -> RunWithJea9Linux -> Jea9Linux.Run -> RunDefaultBudget -> runCachedBudget.
+// emux -> RunWithJea9Linux -> Jea9Linux.Run -> RunDefaultBudget -> runCachedBudget.
 //
 // What is cached is the decode, not execution results.
 // runCached uses a DecoderCache keyed by guest PC;
@@ -73,7 +73,8 @@ func (c *EmuxConfig) DefineFlags(fs *flag.FlagSet) {
 	fs.Uint64Var(&c.Seed, "seed", 0, "pseudo random number generator seed")
 	fs.Uint64Var(&c.MemorySize, "mem", defaultEmuxMemorySize, "guest memory size in bytes")
 	fs.Uint64Var(&c.InstructionBudget, "budget", defaultEmuxInstructionBudget, "jea9linux instruction budget per scheduler slice")
-	fs.BoolVar(&c.JIT, "jit", defaultEmuxJIT, "run with the native JIT instead of the interpreter")
+	fs.BoolVar(&c.JITLazy, "jitlazy", false, "run with the native lazy JIT instead of the interpreter")
+	fs.BoolVar(&c.JITAOT, "jitaot", false, "run with explicit AOT JIT instead of the interpreter")
 	fs.StringVar(&c.ClockMode, "clock", defaultEmuxClockMode, "clock mode: idle-jump, ic-tick, or manual")
 	fs.Int64Var(&c.MonotonicStartNS, "monotonic-ns", defaultEmuxMonotonicStartNS, "initial monotonic clock value in nanoseconds")
 	fs.Int64Var(&c.RealtimeOffsetNS, "realtime-offset-ns", 0, "realtime clock offset from monotonic time in nanoseconds")
@@ -92,6 +93,9 @@ func (c *EmuxConfig) ValidateConfig() error {
 	}
 	if c.MemorySize > riscv.MaxGuestMemory {
 		return fmt.Errorf("-mem %d exceeds max guest memory %d", c.MemorySize, riscv.MaxGuestMemory)
+	}
+	if c.JITLazy && c.JITAOT {
+		return fmt.Errorf("-jitlazy and -jitaot are mutually exclusive")
 	}
 	if _, err := parseClockMode(c.ClockMode); err != nil {
 		return err
@@ -178,21 +182,23 @@ func runEmux(cfg EmuxConfig) (int, error) {
 		return 0, err
 	}
 
-	if cfg.JIT {
-		return runEmuxJIT(cpu, jlinux)
+	if cfg.JITLazy || cfg.JITAOT {
+		return runEmuxJIT(cpu, mem, jlinux, cfg.JITAOT)
 	}
 	return riscv.RunWithJea9Linux(cpu, jlinux)
 }
 
-func runEmuxJIT(cpu *riscv.CPU, jlinux *riscv.Jea9Linux) (int, error) {
+func runEmuxJIT(cpu *riscv.CPU, mem *riscv.GuestMemory, jlinux *riscv.Jea9Linux, aot bool) (int, error) {
 	jit := riscv.NewJIT()
 	defer jit.Close()
 
-	// 9 sec true
-	// 8 sec false; on this very simple test:
-	// time emux -jit=true -run testvectors/jea9linux/go/elf/timenow.elf
-	// (and 3.3 sec if jit=false, so using the interpreter).
-	//jit.DisableAutoAOT = true
+	if aot {
+		if err := jit.InstallAOTFromMem(mem); err != nil {
+			return 0, err
+		}
+	} else {
+		jit.DisableAutoAOT = true
+	}
 
 	return riscv.RunWithJea9LinuxJIT(cpu, jit, jlinux)
 }
