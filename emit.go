@@ -273,11 +273,12 @@ func (e *Emitter) ChainExit(targetPC uint64, exitIdx int) {
 	e.emit(IRInstr{Op: IRChainExit, Imm: int64(targetPC), Imm2: int64(exitIdx)})
 }
 
-// Syscall emits an ECALL boundary. Direct host syscall dispatch is no
-// longer supported; ECALL must return to Go so an installed OS
-// personality can handle it.
-func (e *Emitter) Syscall(resumePC uint64, _ uintptr) {
-	e.Ret(resumePC, jitEcall, VRegZero)
+// Syscall emits a guest ECALL. Direct host syscall dispatch is not
+// supported; ABJIT lowers this as a resumable callout to the installed
+// guest OS, while other backends may return jitEcall to Go.
+func (e *Emitter) Syscall(resumePC uint64, addr uintptr) {
+	_ = addr
+	e.emit(IRInstr{Op: IRSyscall, Imm: int64(resumePC)})
 }
 
 // JalrIC emits a JALR-site inline cache. The lowerer emits a

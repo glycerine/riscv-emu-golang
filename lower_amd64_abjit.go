@@ -14,6 +14,7 @@ package riscv
 import (
 	"fmt"
 	"sort"
+	"unsafe"
 
 	"github.com/glycerine/riscv-emu-golang/abjit"
 	"github.com/glycerine/riscv-emu-golang/goasm"
@@ -23,17 +24,37 @@ import (
 
 // State field offsets relative to RBP (must match abjit.State layout).
 const (
-	abjitMemBaseOff    = 520
-	abjitMemMaskOff    = 528
-	abjitPCOff         = 536
-	abjitStatusOff     = 544
-	abjitFaultAddrOff  = 552
-	abjitDCBaseOff     = 560
-	abjitDCMaskOff     = 568
-	abjitVAddrBeginOff = 576
-	abjitSegSizeOff    = 584
-	abjitCyclesOff     = 592
+	abjitMemBaseOff     = 520
+	abjitMemMaskOff     = 528
+	abjitPCOff          = 536
+	abjitStatusOff      = 544
+	abjitFaultAddrOff   = 552
+	abjitDCBaseOff      = 560
+	abjitDCMaskOff      = 568
+	abjitVAddrBeginOff  = 576
+	abjitSegSizeOff     = 584
+	abjitCyclesOff      = 592
+	abjitICOff          = abjitStateICOffset
+	abjitEcallActionOff = abjitStateEcallActionOffset
 )
+
+func init() {
+	var s abjit.State
+	if unsafe.Offsetof(s.MemBase) != abjitMemBaseOff ||
+		unsafe.Offsetof(s.MemMask) != abjitMemMaskOff ||
+		unsafe.Offsetof(s.PC) != abjitPCOff ||
+		unsafe.Offsetof(s.Status) != abjitStatusOff ||
+		unsafe.Offsetof(s.FaultAddr) != abjitFaultAddrOff ||
+		unsafe.Offsetof(s.DCBase) != abjitDCBaseOff ||
+		unsafe.Offsetof(s.DCMask) != abjitDCMaskOff ||
+		unsafe.Offsetof(s.VAddrBegin) != abjitVAddrBeginOff ||
+		unsafe.Offsetof(s.SegSize) != abjitSegSizeOff ||
+		unsafe.Offsetof(s.Cycles) != abjitCyclesOff ||
+		unsafe.Offsetof(s.IC) != abjitICOff ||
+		unsafe.Offsetof(s.EcallAction) != abjitEcallActionOff {
+		panic("abjit.State layout mismatch")
+	}
+}
 
 type lowerCtxABJIT struct {
 	lowerOps
@@ -395,7 +416,116 @@ func (lc *lowerCtxABJIT) emitSlowExitStub(targetPC uint64) *obj.Prog {
 // ── Syscall ──
 
 func (lc *lowerCtxABJIT) abjitSyscall(ins *IRInstr) {
-	lc.abjitRet(&IRInstr{Op: IRRet, Imm: ins.Imm, Imm2: 1, A: VRegZero})
+	lc.storeRegsBack()
+	lc.opsSpillIC()
+	lc.emitMI(x86.AMOVQ, ins.Imm, goasm.REG_AMD64_BP, abjitPCOff)
+	lc.emitMI(x86.AMOVQ, abjitEcallContinue, goasm.REG_AMD64_BP, abjitEcallActionOff)
+
+	lc.emitRI(x86.ASUBQ, 16, goasm.REG_AMD64_SP)
+
+	const gocallSentinel = int64(0x7CAFFE7CAFFE7CAF)
+	addrMov := lc.c.NewProg()
+	addrMov.As = x86.AMOVQ
+	addrMov.From.Type = obj.TYPE_CONST
+	addrMov.From.Offset = gocallSentinel
+	addrMov.To.Type = obj.TYPE_REG
+	addrMov.To.Reg = stgA
+	lc.c.Append(addrMov)
+	lc.emitMR(x86.AMOVQ, stgA, goasm.REG_AMD64_SP, 0)
+
+	lc.loadImm(int64(jitInlineEcallAddr()), goasm.REG_AMD64_R10)
+	lc.loadImm(int64(abjit.GocallAddr()), stgA)
+	jp := lc.c.NewProg()
+	jp.As = obj.AJMP
+	jp.To.Type = obj.TYPE_REG
+	jp.To.Reg = stgA
+	lc.c.Append(jp)
+
+	resumeNop := lc.c.NewProg()
+	resumeNop.As = obj.ANOP
+	lc.c.Append(resumeNop)
+	lc.gocallResumes = append(lc.gocallResumes, GocallResumeDesc{
+		AddrMov:    addrMov,
+		ResumeProg: resumeNop,
+	})
+
+	lc.emitRI(x86.AADDQ, 16, goasm.REG_AMD64_SP)
+
+	lc.emitRM(x86.AMOVQ, goasm.REG_AMD64_BP, abjitEcallActionOff, stgA)
+	lc.emit2(x86.ATESTQ, stgA, stgA)
+	continueJmp := lc.c.NewProg()
+	continueJmp.As = x86.AJEQ
+	continueJmp.To.Type = obj.TYPE_BRANCH
+	lc.c.Append(continueJmp)
+
+	lc.jmpExitThunk()
+
+	continueNop := lc.c.NewProg()
+	continueNop.As = obj.ANOP
+	lc.c.Append(continueNop)
+	continueJmp.To.SetTarget(continueNop)
+	lc.reloadABJITStateRegs()
+	lc.opsLoadIC()
+}
+
+func (lc *lowerCtxABJIT) reloadABJITStateRegs() {
+	for vr := VReg(1); vr < 32; vr++ {
+		if int(vr) >= len(lc.alloc.Kind) {
+			continue
+		}
+		switch lc.alloc.Kind[vr] {
+		case AllocReg:
+			if host := lc.rIdx.lookup(vr, lc.idx); host >= 0 {
+				lc.emitRM(x86.AMOVQ, goasm.REG_AMD64_BP, int64(vr)*8, host)
+			}
+		case AllocStack:
+			lc.emitRM(x86.AMOVQ, goasm.REG_AMD64_BP, int64(vr)*8, stgA)
+			lc.storeSpill(stgA, lc.alloc.SpillSlot[vr])
+		}
+	}
+	for vr := VReg(32); vr < 64; vr++ {
+		if int(vr) >= len(lc.alloc.Kind) {
+			continue
+		}
+		off := int64(fpRegOffset) + int64(vr-32)*8
+		switch lc.alloc.Kind[vr] {
+		case AllocReg:
+			if host := lc.rIdx.lookup(vr, lc.idx); host >= 0 {
+				lc.emitRM(x86.AMOVSD, goasm.REG_AMD64_BP, off, host)
+			}
+		case AllocStack:
+			lc.emitRM(x86.AMOVSD, goasm.REG_AMD64_BP, off, stgFA)
+			lc.storeFPSpill(stgFA, lc.alloc.SpillSlot[vr])
+		}
+	}
+	lc.reloadABJITMemRegs()
+}
+
+func (lc *lowerCtxABJIT) reloadABJITMemRegs() {
+	if int(VRMemBase) < len(lc.alloc.Kind) {
+		switch lc.alloc.Kind[VRMemBase] {
+		case AllocReg:
+			host := lc.rIdx.lookup(VRMemBase, lc.idx)
+			if host >= 0 {
+				lc.emitRM(x86.AMOVQ, goasm.REG_AMD64_BP, abjitMemBaseOff, host)
+			}
+		case AllocStack:
+			lc.emitRM(x86.AMOVQ, goasm.REG_AMD64_BP, abjitMemBaseOff, stgA)
+			lc.storeSpill(stgA, lc.alloc.SpillSlot[VRMemBase])
+		}
+	}
+	if int(VRMemMask) < len(lc.alloc.Kind) {
+		switch lc.alloc.Kind[VRMemMask] {
+		case AllocReg:
+			host := lc.rIdx.lookup(VRMemMask, lc.idx)
+			if host >= 0 {
+				lc.emitRM(x86.AMOVQ, goasm.REG_AMD64_BP, abjitMemMaskOff, host)
+			}
+		case AllocStack:
+			lc.emitRM(x86.AMOVQ, goasm.REG_AMD64_BP, abjitMemMaskOff, stgA)
+			lc.storeSpill(stgA, lc.alloc.SpillSlot[VRMemMask])
+		}
+	}
 }
 
 // ── JALR IC (decoder-cache lookup; the old 2-slot IC is deprecated) ──

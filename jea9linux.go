@@ -398,6 +398,8 @@ type Jea9Linux struct {
 	nextTID             uint64
 	loadedGuestContexts int
 	futexWaiters        map[uint64][]uint64
+	timedFutexWaiters   int
+	timedEpollWaiters   int
 	signalActions       map[uint64]jea9LinuxSignalAction
 	signalFrames        map[jea9LinuxSignalFrameKey]jea9LinuxSignalFrame
 	signalRestorer      uint64
@@ -840,13 +842,7 @@ func (jos *Jea9Linux) markRunnable(tid uint64, retval int64) {
 	}
 	ctx.state = jea9LinuxContextRunnable
 	ctx.snapshot.x[10] = uint64(retval)
-	ctx.waitKind = jea9LinuxWaitNone
-	ctx.waitAddr = 0
-	ctx.waitDeadlineNS = 0
-	ctx.waitHasDeadline = false
-	ctx.waitFD = 0
-	ctx.waitEventAddr = 0
-	ctx.waitMaxEvents = 0
+	jos.clearContextWaitFields(ctx)
 }
 
 func (jos *Jea9Linux) removeFutexWaiter(addr, tid uint64) {
@@ -1348,11 +1344,7 @@ func (jos *Jea9Linux) RunJIT(cpu *CPU, jit *JIT) error {
 			}
 			n := noteFromStepErr(err, cpu.PC())
 			var disp NoteDisposition
-			if errors.Is(err, ErrEcall) {
-				disp = jit.deliverEcall(cpu, n)
-			} else {
-				disp = cpu.Notes.Deliver(cpu, n)
-			}
+			disp = cpu.Notes.Deliver(cpu, n)
 			switch disp {
 			case NoteHandled:
 				if jos.Blocked() {
@@ -1702,6 +1694,7 @@ func (jos *Jea9Linux) sysEpollPwait(cpu *CPU, epfdRaw, eventsAddr, maxEvents, ti
 	}
 	ctx.snapshot = snapshotJea9LinuxCPU(cpu)
 	ctx.state = jea9LinuxContextWaiting
+	jos.clearContextWaitFields(ctx)
 	ctx.waitKind = jea9LinuxWaitEpoll
 	ctx.waitFD = int(int64(epfdRaw))
 	ctx.waitEventAddr = eventsAddr
@@ -1709,6 +1702,7 @@ func (jos *Jea9Linux) sysEpollPwait(cpu *CPU, epfdRaw, eventsAddr, maxEvents, ti
 	ctx.waitDeadlineNS = deadline
 	ctx.waitHasDeadline = hasDeadline
 	if hasDeadline {
+		jos.timedEpollWaiters++
 		jos.blockedUntil = deadline
 		jos.blockedHasDeadline = true
 	}
@@ -2434,6 +2428,22 @@ func (jos *Jea9Linux) cancelContextWait(ctx *jea9LinuxContext) {
 	if ctx.waitKind == jea9LinuxWaitFutex {
 		jos.removeFutexWaiter(ctx.waitAddr, ctx.tid)
 	}
+	jos.clearContextWaitFields(ctx)
+}
+
+func (jos *Jea9Linux) clearContextWaitFields(ctx *jea9LinuxContext) {
+	if ctx.waitHasDeadline {
+		switch ctx.waitKind {
+		case jea9LinuxWaitFutex:
+			if jos.timedFutexWaiters > 0 {
+				jos.timedFutexWaiters--
+			}
+		case jea9LinuxWaitEpoll:
+			if jos.timedEpollWaiters > 0 {
+				jos.timedEpollWaiters--
+			}
+		}
+	}
 	ctx.waitKind = jea9LinuxWaitNone
 	ctx.waitAddr = 0
 	ctx.waitDeadlineNS = 0
@@ -2582,6 +2592,7 @@ func (jos *Jea9Linux) sysExit(cpu *CPU, code uint64, exitGroup bool) NoteDisposi
 func (jos *Jea9Linux) exitCurrentThread(cpu *CPU) {
 	ctx := jos.ensureScheduler(cpu)
 	ctx.snapshot = snapshotJea9LinuxCPU(cpu)
+	jos.cancelContextWait(ctx)
 	ctx.state = jea9LinuxContextExited
 	if ctx.clearChildTID != 0 {
 		if f := cpu.mem.Store32(ctx.clearChildTID, 0); f == nil {
@@ -2649,12 +2660,14 @@ func (jos *Jea9Linux) futexWait(cpu *CPU, ctx *jea9LinuxContext, addr uint64, ex
 	}
 	ctx.snapshot = snapshotJea9LinuxCPU(cpu)
 	ctx.state = jea9LinuxContextWaiting
+	jos.clearContextWaitFields(ctx)
 	ctx.waitKind = jea9LinuxWaitFutex
 	ctx.waitAddr = addr
 	ctx.waitDeadlineNS = deadline
 	ctx.waitHasDeadline = hasDeadline
 	jos.futexWaiters[addr] = append(jos.futexWaiters[addr], ctx.tid)
 	if hasDeadline {
+		jos.timedFutexWaiters++
 		jos.blockedUntil = deadline
 		jos.blockedHasDeadline = true
 	}
@@ -3628,8 +3641,12 @@ func (jos *Jea9Linux) sysNanosleep(cpu *CPU, reqAddr, remAddr uint64) (int64, bo
 }
 
 func (jos *Jea9Linux) refreshBlocked() {
-	jos.refreshFutexTimeouts()
-	jos.refreshEpollTimeouts()
+	if jos.timedFutexWaiters > 0 {
+		jos.refreshFutexTimeouts()
+	}
+	if jos.timedEpollWaiters > 0 {
+		jos.refreshEpollTimeouts()
+	}
 	if jos.blocked && jos.blockedHasDeadline && jos.monotonicNS >= jos.blockedUntil {
 		jos.blocked = false
 		jos.blockedHasDeadline = false
@@ -3711,7 +3728,6 @@ func InstallJea9Linux(cpu *CPU, jos *Jea9Linux) func() {
 func InstallJea9LinuxJIT(cpu *CPU, jit *JIT, jos *Jea9Linux) func() {
 	cleanupCore := installJea9LinuxCore(cpu, jos)
 
-	jit.ecallHandler = jos.Handle
 	jit.faultPageZero = true
 	return func() {
 		cleanupCore()

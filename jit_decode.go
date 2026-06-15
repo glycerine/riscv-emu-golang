@@ -11,7 +11,7 @@ const (
 	flowBranch                  // conditional: next = {pc + insnSize, target}
 	flowJump                    // unconditional J/C.J rd==0: next = target only
 	flowCall                    // JAL ra: next = {pc + insnSize, target}
-	flowTerm                    // no successors (JALR, JAL rd!=0, ECALL, CSR)
+	flowTerm                    // no successors (JALR, JAL rd!=0, EBREAK, CSR)
 )
 
 // classifyFlow determines the control-flow type of the instruction at pc.
@@ -88,9 +88,10 @@ func classifyFlow(mem *GuestMemory, pc uint64) (flowClass, uint64, uint64) {
 		return flowTerm, 0, 4
 	case 0x67: // JALR
 		return flowTerm, 0, 4
-	case 0x73: // SYSTEM (ECALL, EBREAK, CSR) — all terminate the block.
-		// ECALL returns to Go for OS/personality handling, so execution
-		// resumes at pc+4 only after the handler completes.
+	case 0x73: // SYSTEM
+		if insn == 0x00000073 {
+			return flowSeq, 0, 4
+		}
 		return flowTerm, 0, 4
 	default:
 		return flowSeq, 0, 4
@@ -165,6 +166,52 @@ func scanRegion(mem *GuestMemory, entryPC uint64) regionInfo {
 	}
 
 	return regionInfo{endPC: maxEnd, pcCount: visited.len()}
+}
+
+// scanLazyBlock returns a lazy-JIT translation extent. For registered
+// executable regions it follows libriscv's translator shape: scan linearly
+// forward through the segment, do not BFS through branch/call targets, and
+// only split after a large chunk at a hard stopping instruction. For raw test
+// memory with no exec-region bounds, keep the old conservative local scan so
+// we do not wander through zero-filled guest memory.
+func scanLazyBlock(mem *GuestMemory, entryPC uint64) regionInfo {
+	regionEnd := uint64(0)
+	if r := mem.FindExecRegion(entryPC); r != nil {
+		regionEnd = r.VAddrEnd
+	}
+
+	pc := entryPC
+	count := 0
+	for {
+		if regionEnd != 0 && pc >= regionEnd {
+			break
+		}
+		fc, _, insnSize := classifyFlow(mem, pc)
+		if insnSize == 0 {
+			break
+		}
+		pc += insnSize
+		count++
+
+		if regionEnd == 0 {
+			if fc != flowSeq {
+				break
+			}
+			if PerBlockCapTimeToSplit > 0 && int64(count) >= PerBlockCapTimeToSplit {
+				break
+			}
+			continue
+		}
+
+		if PerBlockCapTimeToSplit > 0 &&
+			int64(count) >= PerBlockCapTimeToSplit {
+			if isLazySplitStoppingFlow(fc) ||
+				int64(count) >= PerBlockCapTimeToSplit*2 {
+				break
+			}
+		}
+	}
+	return regionInfo{endPC: pc, pcCount: count}
 }
 
 // ── RVC immediate extraction ────────────────────────────────────────────

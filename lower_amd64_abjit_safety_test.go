@@ -25,8 +25,7 @@ func lowerABJITBlock(t *testing.T, b *Block) (*goasm.Ctx, *LowerResult) {
 
 // TestABJIT_NoJITtoJIT_CALL verifies that the ABJIT lowerer never
 // emits x86 CALL/RET for JIT-to-JIT transitions. CALL/RET must only
-// appear at Go-boundary crossings (syscall dispatch, Go callbacks,
-// exit-thunk RET). A stray CALL would push a return address pointing
+// appear at Go-boundary crossings. A stray CALL would push a return address pointing
 // into mmap'd JIT memory onto the Go stack, which panics the GC.
 func TestABJIT_NoJITtoJIT_CALL(t *testing.T) {
 	// Block with ALU + chain exit + JALR IC — no syscalls or Go
@@ -60,8 +59,8 @@ func TestABJIT_NoJITtoJIT_CALL(t *testing.T) {
 }
 
 // TestABJIT_SyscallCALL_CountsCorrect verifies that a block with one
-// IRSyscall produces zero CALL/RET. ECALL returns to Go through the
-// regular exit thunk so an installed OS personality can handle it.
+// IRSyscall produces zero CALL/RET. ECALL enters the Go OS path through
+// the abjit gocall JMP trampoline and resumes native code when handled.
 func TestABJIT_SyscallCALL_CountsCorrect(t *testing.T) {
 	b := NewBlock()
 	b.Instrs = []IRInstr{

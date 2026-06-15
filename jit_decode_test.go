@@ -7,10 +7,9 @@ import (
 	"testing"
 )
 
-// TestClassifyFlow_EcallTerminatesBlock confirms all three SYSTEM-opcode
-// instructions (ECALL, EBREAK, CSR*) return flowTerm. ECALL resumes at
-// pc+4 only after the installed OS/personality handler completes.
-func TestClassifyFlow_EcallTerminatesBlock(t *testing.T) {
+// TestClassifyFlow_SystemOps confirms ECALL is ordinary fallthrough for
+// lazy block formation, while EBREAK and CSR instructions still stop blocks.
+func TestClassifyFlow_SystemOps(t *testing.T) {
 	mem, err := NewGuestMemory(Size1MB)
 	if err != nil {
 		t.Fatalf("NewGuestMemory: %v", err)
@@ -31,20 +30,62 @@ func TestClassifyFlow_EcallTerminatesBlock(t *testing.T) {
 	type row struct {
 		name string
 		insn uint32
+		want flowClass
 	}
 	rows := []row{
-		{"ECALL", 0x00000073},
-		{"EBREAK", 0x00100073},
-		{"CSRRW", 0x30001073},
+		{"ECALL", 0x00000073, flowSeq},
+		{"EBREAK", 0x00100073, flowTerm},
+		{"CSRRW", 0x30001073, flowTerm},
 	}
 
 	for _, r := range rows {
 		writeInsn(r.insn)
 		gotFC, _, sz := classifyFlow(mem, pc)
-		if gotFC != flowTerm || sz != 4 {
-			t.Errorf("%s: got (fc=%v, sz=%d), want (fc=flowTerm, sz=4)",
-				r.name, gotFC, sz)
+		if gotFC != r.want || sz != 4 {
+			t.Errorf("%s: got (fc=%v, sz=%d), want (fc=%v, sz=4)",
+				r.name, gotFC, sz, r.want)
 		}
+	}
+}
+
+func TestScanLazyBlockUsesLargeLinearRegion(t *testing.T) {
+	mem, err := NewGuestMemory(Size1MB)
+	if err != nil {
+		t.Fatalf("NewGuestMemory: %v", err)
+	}
+	defer mem.Free()
+
+	oldSplit := PerBlockCapTimeToSplit
+	PerBlockCapTimeToSplit = 3
+	defer func() { PerBlockCapTimeToSplit = oldSplit }()
+
+	const entry = uint64(0x1000)
+	mem.AddExecRegion(entry, 0x1200, false)
+	if f := mem.Store32(entry, jenc(1, 0x100)); f != nil { // JAL ra, +0x100
+		t.Fatalf("Store32 call: %v", f)
+	}
+	if f := mem.Store32(entry+4, ienc(opOPIMM, 0, 5, 0, 1)); f != nil {
+		t.Fatalf("Store32 fallthrough: %v", f)
+	}
+	if f := mem.Store32(entry+8, ienc(opOPIMM, 0, 6, 0, 2)); f != nil {
+		t.Fatalf("Store32 second fallthrough: %v", f)
+	}
+	if f := mem.Store32(entry+12, ienc(opJALR, 0, 0, 1, 0)); f != nil {
+		t.Fatalf("Store32 return: %v", f)
+	}
+	if f := mem.Store32(entry+0x100, ienc(opOPIMM, 0, 6, 0, 2)); f != nil {
+		t.Fatalf("Store32 callee: %v", f)
+	}
+
+	lazy := scanLazyBlock(mem, entry)
+	if lazy.endPC != entry+16 || lazy.pcCount != 4 {
+		t.Fatalf("scanLazyBlock = {endPC:0x%x pcCount:%d}, want {0x%x, 4}",
+			lazy.endPC, lazy.pcCount, entry+16)
+	}
+	bfs := scanRegion(mem, entry)
+	if bfs.endPC <= lazy.endPC {
+		t.Fatalf("scanRegion endPC = 0x%x, want it to chase callee beyond lazy end 0x%x",
+			bfs.endPC, lazy.endPC)
 	}
 }
 

@@ -8,24 +8,25 @@ import (
 	"os"
 )
 
-// maxBlockIRInsns limits the total IR instructions per block. Each RISC-V
-// instruction expands to ~5-10 IR ops; very large blocks hit O(N*L) in the
-// register allocator's spill phase where L is average interval length.
-// 4096 IR instructions covers ~500-800 RISC-V instructions — large enough
-// for good optimization, small enough for fast compilation.
-const maxBlockIRInsns = 100 // 2048
+// maxBlockIRInsns limits the total IR instructions per lazy block. Each
+// RISC-V instruction expands to several IR ops; very large blocks hit O(N*L)
+// in the register allocator's spill phase where L is average interval length.
+// 4096 IR instructions gives lazy translation a libriscv-style chunk without
+// letting one cold miss monopolize the process.
+const maxBlockIRInsns = 4096
 
 // PerBlockCapTimeToSplit is the soft cap on guest instructions per JIT
 // block. After exceeding this threshold, the emitter terminates the block
 // at the next natural break point (JALR, ECALL, unconditional jump, etc.)
 // as determined by classifyFlow(). Set to 0 to disable the cap entirely.
 // Follows the libriscv model (ITS_TIME_TO_SPLIT = 5000 for TCC).
-var PerBlockCapTimeToSplit int64 = 50
+var PerBlockCapTimeToSplit int64 = 5000
 
-// isStoppingFlow returns true for flow classes that are natural block
-// boundaries: unconditional jumps, calls, and terminators.
-func isStoppingFlow(fc flowClass) bool {
-	return fc >= flowJump // flowJump=2, flowCall=3, flowTerm=4
+// isLazySplitStoppingFlow mirrors libriscv's binary-translation split point:
+// after the chunk is already large, wait for a hard stop rather than cutting
+// at ordinary branches or direct calls.
+func isLazySplitStoppingFlow(fc flowClass) bool {
+	return fc == flowTerm
 }
 
 // emitResult holds the generated IR block and metadata.
@@ -382,11 +383,12 @@ func (e *emitter) emitReturn(pc uint64, status int) {
 	e.irEm.Ret(pc, status, VRegZero)
 }
 
-// emitSyscall emits an ECALL boundary. Guest OS handling is always a
-// personality/NoteChain responsibility, so the JIT writes back state
-// and returns jitEcall to Go rather than issuing host syscalls itself.
+// emitSyscall emits a guest ECALL. ABJIT lowers this as a resumable
+// Jea9Linux/NoteChain callout, not as a host syscall.
 func (e *emitter) emitSyscall(resumePC uint64) {
-	e.emitReturn(resumePC, jitEcall)
+	e.spillIC()
+	e.irEm.WriteBackAll()
+	e.irEm.Syscall(resumePC, 0)
 }
 
 // allocFaultLabel allocates a per-call-site fault label and registers its
@@ -421,16 +423,16 @@ func (e *emitter) emitChainableReturn(pc uint64) {
 // x86 unconditionally leaves the block. When true, finalize()'s
 // fall-through emitChainableReturn is dead code and is skipped.
 //
-// Recognised terminators: IRRet, IRRetDyn, IRSyscall, IRChainExit,
-// IRJalrIC. Any future IR op whose lowerer unconditionally exits
-// the block must be added to this switch.
+// Recognised terminators: IRRet, IRRetDyn, IRChainExit, IRJalrIC.
+// IRSyscall is intentionally not listed: ABJIT resumes after handled
+// Jea9Linux ECALLs.
 func (e *emitter) lastIRWasTerminator() bool {
 	ins := e.irEm.Block.Instrs
 	if len(ins) == 0 {
 		return false
 	}
 	switch ins[len(ins)-1].Op {
-	case IRRet, IRRetDyn, IRSyscall, IRChainExit, IRJalrIC:
+	case IRRet, IRRetDyn, IRChainExit, IRJalrIC:
 		return true
 	}
 	return false
@@ -728,9 +730,9 @@ func irStoreWidth(funct3 uint32) int {
 
 func (e *emitter) finalize() *emitResult {
 	// Fall-through return. Emitted only when the last IR is not already a
-	// terminator. Blocks that hit a hard terminator (ECALL, EBREAK, JAL
-	// rd!=0, JALR, branch patterns) already left via IRSyscall/IRRet/
-	// IRChainExit/IRJalrIC/IRRetDyn; adding another fall-through would
+	// terminator. Blocks that hit a hard terminator (EBREAK, JAL rd!=0,
+	// JALR, branch patterns) already left via IRRet/IRChainExit/IRJalrIC/
+	// IRRetDyn; adding another fall-through would
 	// emit ~47 bytes of unreachable code (store + MOVABS+JMP + slow-exit
 	// stub) after the cold RET. Blocks that terminated without emitting a
 	// terminator IR (CSR/unknown SYSTEM, unknown opcode, unknown RVC
@@ -951,10 +953,10 @@ func scanUsedRegs(mem *GuestMemory, startPC, endPC uint64, used *[32]bool) {
 // ── emitBlock ──────────────────────────────────────────────────────────
 
 func (j *JIT) emitBlock(mem *GuestMemory, pc uint64) *emitResult {
-	region := scanRegion(mem, pc)
+	region := scanLazyBlock(mem, pc)
 	if region.pcCount == 0 {
 		if debugJIT {
-			fmt.Fprintf(os.Stderr, "BAIL pc=0x%x reason=scanRegion_empty\n", pc)
+			fmt.Fprintf(os.Stderr, "BAIL pc=0x%x reason=scanLazyBlock_empty\n", pc)
 		}
 		return nil
 	}
@@ -1003,21 +1005,21 @@ func (j *JIT) emitBlockRange(mem *GuestMemory, pc, endPC uint64) *emitResult {
 
 	// Emit IR (populates regsUsed via xreg/xregDst calls).
 	for !e.terminated && e.pc < e.regionEnd {
+		if len(irEm.Block.Instrs) >= maxBlockIRInsns {
+			break
+		}
+
 		// Block size cap (libriscv hybrid model): after exceeding the
-		// soft cap, stop at the next natural break point (flowTerm,
-		// flowCall, or flowJump). Hard cap at 2x prevents unbounded
-		// growth if no natural break appears.
+		// soft cap, stop at the next hard break point. Hard cap at 2x
+		// prevents unbounded growth if no natural break appears.
 		if PerBlockCapTimeToSplit > 0 &&
 			int64(e.numInsns) >= PerBlockCapTimeToSplit {
 
 			if int64(e.numInsns) >= PerBlockCapTimeToSplit*2 {
 				break
 			}
-			if len(irEm.Block.Instrs) >= maxBlockIRInsns {
-				break
-			}
 			fc, _, _ := classifyFlow(e.mem, e.pc)
-			if isStoppingFlow(fc) {
+			if isLazySplitStoppingFlow(fc) {
 				break
 			}
 		}
@@ -1298,12 +1300,9 @@ func (e *emitter) emit32(insn uint32) {
 
 	case 0x73: // SYSTEM
 		switch insn {
-		case 0x00000073: // ECALL — always terminates the block.
-			// ECALL always returns to Go so an installed OS/personality
-			// can handle it. Native code must not issue host syscalls.
+		case 0x00000073: // ECALL
 			e.advancePC(4)
 			e.emitSyscall(e.pc)
-			e.terminated = true
 		case 0x00100073: // EBREAK
 			e.advancePC(4)
 			e.emitReturn(e.pc, jitEbreak)

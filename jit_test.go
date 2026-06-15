@@ -150,6 +150,30 @@ func newTestCPU(t *testing.T, memSize uint64, codeVA uint64, insns []uint32) (*C
 	return cpu, mem
 }
 
+func TestJIT_LazyBlockMapSurvivesDirectCacheCollision(t *testing.T) {
+	jit := NewJIT()
+	pc1 := uint64(0x1000)
+	pc2 := pc1 + blockCacheSize*2
+	if cacheIdx(pc1) != cacheIdx(pc2) {
+		t.Fatalf("test PCs do not collide: idx1=%d idx2=%d", cacheIdx(pc1), cacheIdx(pc2))
+	}
+	blk1 := &compiledBlock{fn: 0x11110000, chainEntry: 0x11110080, nativeMmap: []byte{}}
+	blk2 := &compiledBlock{fn: 0x22220000, chainEntry: 0x22220080, nativeMmap: []byte{}}
+
+	jit.insertBlock(pc1, blk1)
+	jit.insertBlock(pc2, blk2)
+	if got := jit.lookupBlock(pc2); got != blk2 {
+		t.Fatalf("lookupBlock(pc2) = %p, want blk2 %p", got, blk2)
+	}
+	if got := jit.lookupBlock(pc1); got != blk1 {
+		t.Fatalf("lookupBlock(pc1) after collision = %p, want blk1 %p", got, blk1)
+	}
+	if entry := jit.cache[cacheIdx(pc1)]; entry.pc != pc1 || entry.blk != blk1 {
+		t.Fatalf("direct cache after backing-map hit = {pc:0x%x blk:%p}, want {0x%x %p}",
+			entry.pc, entry.blk, pc1, blk1)
+	}
+}
+
 // ── Lockstep helpers (used by riscv_test.go too) ─────────────────────────
 
 // compareFullMemory compares guest memory byte-for-byte up to size/2.

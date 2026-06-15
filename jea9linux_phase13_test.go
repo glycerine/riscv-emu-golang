@@ -332,14 +332,16 @@ func TestJea9Linux_JITReplayMatchesInterpreterTrace(t *testing.T) {
 	}
 }
 
-func TestJea9Linux_JITPersonalityCalloutBypassesEcallNoteChain(t *testing.T) {
+func TestJea9Linux_JITInlineEcallContinuesThroughOS(t *testing.T) {
 
 	const codeVA = uint64(0x1000)
 	insns := []uint32{
 		ienc(opOPIMM, 0, 17, 0, 172), // a7 = getpid
 		instrECALL,
-		ienc(opOPIMM, 0, 17, 0, 93), // a7 = exit, a0 remains getpid
+		ienc(opOPIMM, 0, 10, 10, 1), // a0++
+		ienc(opOPIMM, 0, 17, 0, 93), // a7 = exit
 		instrECALL,
+		instrEBREAK,
 	}
 	cpu, mem := newTestCPU(t, Size64MB, codeVA, insns)
 	defer mem.Free()
@@ -349,30 +351,23 @@ func TestJea9Linux_JITPersonalityCalloutBypassesEcallNoteChain(t *testing.T) {
 	cleanup := InstallJea9LinuxJIT(cpu, jit, j)
 	defer cleanup()
 
-	ecallNotes := 0
-	cpu.Notes.Push(func(cpu *CPU, n Note) NoteDisposition {
-		if IsEcall(n) {
-			ecallNotes++
-			return NoteFatal
-		}
-		return NoteForward
-	})
-	defer cpu.Notes.Pop()
+	res := jit.emitBlock(&cpu.mem, codeVA)
+	if res == nil {
+		t.Fatalf("emitBlock returned nil")
+	}
+	if res.numInsns != len(insns) {
+		t.Fatalf("lazy block decoded %d instructions, want %d through ECALLs",
+			res.numInsns, len(insns))
+	}
 
 	err := jit.RunJIT(cpu)
 	if ex, ok := err.(*ExitError); ok {
-		if ex.Code != 19 {
-			t.Fatalf("exit code = %d, want virtual pid 19", ex.Code)
+		if ex.Code != 20 {
+			t.Fatalf("exit code = %d, want virtual pid+1 = 20", ex.Code)
 		}
 	} else if err != nil {
 		t.Fatalf("RunJIT: %v", err)
-	} else if cpu.ExitCode != 19 {
-		t.Fatalf("cpu.ExitCode = %d, want virtual pid 19", cpu.ExitCode)
-	}
-	if ecallNotes != 0 {
-		t.Fatalf("ECALL note chain saw %d ECALL notes, want direct JIT personality callout", ecallNotes)
-	}
-	if got := jit.PersonalityEcallCount(); got != 2 {
-		t.Fatalf("PersonalityEcallCount() = %d, want getpid+exit", got)
+	} else if cpu.ExitCode != 20 {
+		t.Fatalf("cpu.ExitCode = %d, want virtual pid+1 = 20", cpu.ExitCode)
 	}
 }

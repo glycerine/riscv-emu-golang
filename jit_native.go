@@ -158,6 +158,14 @@ func (j *JIT) jitCompile(res *emitResult, mem ...*GuestMemory) (*compiledBlock, 
 
 	flushIcache(codeBase, len(code))
 
+	if len(mem) > 0 && blk.chainEntry != 0 {
+		if seg := j.ensureLazyDecoderSegment(mem[0], res.startPC); seg != nil {
+			blk.segment = seg
+			seg.blocks[res.startPC] = blk
+			storeDecoderCacheEntry(seg, res.startPC, blk.chainEntry)
+		}
+	}
+
 	return blk, nil
 }
 

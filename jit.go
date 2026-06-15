@@ -160,7 +160,8 @@ const (
 	jitMisalign = JitMisalign
 	// jitBudget: native countdown budget gate fired. sret.PC is the
 	// unexecuted guest PC and State.IC/result IC holds the remaining budget.
-	jitBudget = 8
+	jitBudget    = 8
+	jitEcallExit = 9
 )
 
 // Block cache: direct-mapped array replaces map[uint64]*compiledBlock.
@@ -229,6 +230,15 @@ type JIT struct {
 	// single-PT_LOAD ELFs (coremark, dhrystone, bench_guest).
 	soleSegment *DecodedExecuteSegment
 
+	// lazySegments are decoder-cache-only execute segments used by the
+	// pure lazy JIT. They do not own a unified native-code slab; each
+	// lazy block still owns its per-block nativeMmap. The segment exists
+	// so native JALR/return dispatch can look up any already-compiled
+	// lazy target through the same flat decoder_cache that AOT uses.
+	lazySegments    []*DecodedExecuteSegment
+	hotLazySegment  *DecodedExecuteSegment
+	soleLazySegment *DecodedExecuteSegment
+
 	// lazyBlocks holds every lazy-compiled block whose nativeMmap is
 	// non-nil. Grown via insertBlock; drained by Close(), which munmaps
 	// each block's nativeMmap. Bounded in practice by the number of
@@ -236,6 +246,13 @@ type JIT struct {
 	// remain live for chain-exit pin safety (patches in other blocks
 	// may still target their native code).
 	lazyBlocks []*compiledBlock
+
+	// lazyBlockMap is the collision-safe backing store for lazy blocks.
+	// lookupBlock hits the direct-mapped cache first, then this map on
+	// misses. This keeps the common dispatch path cheap without losing
+	// already-compiled blocks when larger guests collide in the 4096-slot
+	// direct cache.
+	lazyBlockMap map[uint64]*compiledBlock
 
 	cache      [blockCacheSize]blockCacheEntry
 	noJIT      map[uint64]bool // PCs where translation failed — don't retry
@@ -262,9 +279,7 @@ type JIT struct {
 	useABJIT   bool
 	abjitState *abjit.State
 
-	ecallHandler          JITEcallHandler
-	personalityEcallCount uint64
-	faultPageZero         bool
+	faultPageZero bool
 
 	stopperPage uintptr // InfiniteLoopStopperPage: mmap'd guard page for preemption
 	watchAddr   uint64  // tohost address; JIT blocks exit when a store hits this address
@@ -304,6 +319,7 @@ type JIT struct {
 func NewJIT() *JIT {
 	j := &JIT{
 		noJIT:                    make(map[uint64]bool),
+		lazyBlockMap:             make(map[uint64]*compiledBlock),
 		irAlloc:                  NewFixedStaticAllocator(),
 		UseR15InstructionCounter: true,
 		LockstepModeBudget:       65536,
@@ -331,6 +347,7 @@ func (j *JIT) SetAllocStrategy(name string) {
 	j.irAlloc = NewFixedStaticAllocator()
 	// Clear block cache — compiled blocks used the old allocator.
 	j.cache = [blockCacheSize]blockCacheEntry{}
+	j.lazyBlockMap = make(map[uint64]*compiledBlock)
 	j.noJIT = make(map[uint64]bool)
 }
 
@@ -340,6 +357,7 @@ func (j *JIT) SetRegPolicy(p RegPolicy) {
 	j.regPolicy = p
 	j.useABJIT = p.Name == "abjit"
 	j.cache = [blockCacheSize]blockCacheEntry{}
+	j.lazyBlockMap = make(map[uint64]*compiledBlock)
 	j.noJIT = make(map[uint64]bool)
 }
 
@@ -517,7 +535,6 @@ func (j *JIT) CloneConfig() *JIT {
 	child.UseR15InstructionCounter = j.UseR15InstructionCounter
 	child.DebugOneBlockLockstepMode = j.DebugOneBlockLockstepMode
 	child.LockstepModeBudget = j.LockstepModeBudget
-	child.ecallHandler = j.ecallHandler
 	child.faultPageZero = j.faultPageZero
 	return child
 }
@@ -534,6 +551,13 @@ func (j *JIT) Close() {
 	j.hotSegment = nil
 	j.soleSegment = nil
 
+	for _, s := range j.lazySegments {
+		s.free()
+	}
+	j.lazySegments = nil
+	j.hotLazySegment = nil
+	j.soleLazySegment = nil
+
 	for _, blk := range j.lazyBlocks {
 		if len(blk.nativeMmap) > 0 {
 			_ = syscall.Munmap(blk.nativeMmap)
@@ -542,6 +566,7 @@ func (j *JIT) Close() {
 		}
 	}
 	j.lazyBlocks = nil
+	j.lazyBlockMap = nil
 	j.abjitState = nil
 	j.freeStopperPage()
 }
@@ -613,6 +638,7 @@ func (j *JIT) InvalidateExecRegion(begin, end uint64) int {
 // chain-exits point into freed mmaps.
 func (j *JIT) clearBlockCache() {
 	j.cache = [blockCacheSize]blockCacheEntry{}
+	j.lazyBlockMap = make(map[uint64]*compiledBlock)
 }
 
 // refreshSoleSegment maintains the soleSegment invariant: points at
@@ -624,6 +650,14 @@ func (j *JIT) refreshSoleSegment() {
 		j.soleSegment = j.aotSegments[0]
 	} else {
 		j.soleSegment = nil
+	}
+}
+
+func (j *JIT) refreshSoleLazySegment() {
+	if len(j.lazySegments) == 1 {
+		j.soleLazySegment = j.lazySegments[0]
+	} else {
+		j.soleLazySegment = nil
 	}
 }
 
@@ -641,6 +675,86 @@ func (j *JIT) findSegment(pc uint64) *DecodedExecuteSegment {
 		}
 	}
 	return nil
+}
+
+func (j *JIT) findLazySegment(pc uint64) *DecodedExecuteSegment {
+	if s := j.hotLazySegment; s != nil && pc >= s.vaddrBegin && pc < s.vaddrEnd {
+		return s
+	}
+	for _, s := range j.lazySegments {
+		if pc >= s.vaddrBegin && pc < s.vaddrEnd {
+			j.hotLazySegment = s
+			return s
+		}
+	}
+	return nil
+}
+
+func allocLazyDecoderCache(vaddrBegin, vaddrEnd uint64) ([]byte, uint64, error) {
+	if vaddrBegin >= vaddrEnd {
+		return nil, 0, fmt.Errorf("allocLazyDecoderCache: empty range")
+	}
+	minSize := uint64((vaddrEnd - vaddrBegin) / 2 * 8)
+	cacheSize := uint64(1)
+	for cacheSize < minSize {
+		cacheSize *= 2
+	}
+	if cacheSize < 8 {
+		cacheSize = 8
+	}
+	cacheMmap, err := allocRWAnon(int(cacheSize))
+	if err != nil {
+		return nil, 0, err
+	}
+	return cacheMmap, cacheSize - 1, nil
+}
+
+func (j *JIT) ensureLazyDecoderSegment(mem *GuestMemory, pc uint64) *DecodedExecuteSegment {
+	if mem == nil {
+		return nil
+	}
+	if s := j.soleLazySegment; s != nil && pc >= s.vaddrBegin && pc < s.vaddrEnd {
+		return s
+	}
+	if s := j.findLazySegment(pc); s != nil {
+		return s
+	}
+	region := mem.FindExecRegion(pc)
+	if region == nil || region.VAddrEnd <= region.VAddrBegin {
+		return nil
+	}
+	begin := region.VAddrBegin
+	end := region.VAddrEnd
+	cacheMmap, cacheMask, err := allocLazyDecoderCache(begin, end)
+	if err != nil {
+		return nil
+	}
+	seg := &DecodedExecuteSegment{
+		vaddrBegin:       begin,
+		vaddrEnd:         end,
+		vaddrSize:        end - begin,
+		decoderCacheMmap: cacheMmap,
+		decoderCacheBase: uintptr(unsafe.Pointer(&cacheMmap[0])),
+		decoderCacheMask: cacheMask,
+		blocks:           make(map[uint64]*compiledBlock),
+		isLikelyJIT:      region.IsLikelyJIT,
+	}
+	j.lazySegments = append(j.lazySegments, seg)
+	j.hotLazySegment = seg
+	j.refreshSoleLazySegment()
+	return seg
+}
+
+func (j *JIT) decoderParamsForBlock(blk *compiledBlock) (uintptr, uint64, uint64, uint64) {
+	if blk != nil {
+		if seg := blk.segment; seg != nil {
+			return seg.decoderCacheBase, seg.decoderCacheMask, seg.vaddrBegin, seg.vaddrSize
+		}
+	}
+	if seg := j.soleSegment; seg != nil {
+		return seg.decoderCacheBase, seg.decoderCacheMask, seg.vaddrBegin, seg.vaddrSize
+	}
+	return 0, 0, 0, 0
 }
 
 // SetTrace enables/disables trace logging to stderr.
@@ -687,6 +801,10 @@ func (j *JIT) lookupBlock(pc uint64) *compiledBlock {
 	idx := cacheIdx(pc)
 	if j.cache[idx].pc == pc {
 		return j.cache[idx].blk
+	}
+	if blk := j.lazyBlockMap[pc]; blk != nil {
+		j.cache[idx] = blockCacheEntry{pc, blk}
+		return blk
 	}
 	return nil
 }
@@ -742,8 +860,20 @@ func (j *JIT) insertBlock(pc uint64, blk *compiledBlock) {
 	j.cache[idx] = blockCacheEntry{pc, blk}
 	if blk != nil && blk.nativeMmap != nil {
 		j.lazyBlocks = append(j.lazyBlocks, blk)
+		if j.lazyBlockMap == nil {
+			j.lazyBlockMap = make(map[uint64]*compiledBlock)
+		}
+		j.lazyBlockMap[pc] = blk
 	}
-	if blk == nil || blk.chainEntry == 0 || len(j.aotSegments) == 0 {
+	if blk == nil || blk.chainEntry == 0 {
+		return
+	}
+	if seg := blk.segment; seg != nil {
+		seg.blocks[pc] = blk
+		storeDecoderCacheEntry(seg, pc, blk.chainEntry)
+		return
+	}
+	if len(j.aotSegments) == 0 {
 		return
 	}
 	if seg := j.findSegment(pc); seg != nil {
@@ -801,48 +931,10 @@ func (j *JIT) stepBlockWithBudget(cpu *CPU, budget uint64) (ic uint64, err error
 	if blk != nil {
 		var res jitcall.Result
 		if j.useABJIT {
-			var dcBase uintptr
-			var dcMask, vBegin, segSz uint64
-			if seg := j.soleSegment; seg != nil {
-				dcBase = seg.decoderCacheBase
-				dcMask = seg.decoderCacheMask
-				vBegin = seg.vaddrBegin
-				segSz = seg.vaddrSize
-			} else if len(j.aotSegments) > 0 {
-				seg := blk.segment
-				if seg == nil {
-					seg = j.hotSegment
-				}
-				if seg == nil {
-					seg = j.aotSegments[0]
-				}
-				dcBase = seg.decoderCacheBase
-				dcMask = seg.decoderCacheMask
-				vBegin = seg.vaddrBegin
-				segSz = seg.vaddrSize
-			}
+			dcBase, dcMask, vBegin, segSz := j.decoderParamsForBlock(blk)
 			res = abjitDispatch(blk, cpu, j, dcBase, dcMask, vBegin, segSz, budget)
 		} else {
-			var dcBase uintptr
-			var dcMask, vBegin, segSz uint64
-			if seg := j.soleSegment; seg != nil {
-				dcBase = seg.decoderCacheBase
-				dcMask = seg.decoderCacheMask
-				vBegin = seg.vaddrBegin
-				segSz = seg.vaddrSize
-			} else if len(j.aotSegments) > 0 {
-				seg := blk.segment
-				if seg == nil {
-					seg = j.hotSegment
-				}
-				if seg == nil {
-					seg = j.aotSegments[0]
-				}
-				dcBase = seg.decoderCacheBase
-				dcMask = seg.decoderCacheMask
-				vBegin = seg.vaddrBegin
-				segSz = seg.vaddrSize
-			}
+			dcBase, dcMask, vBegin, segSz := j.decoderParamsForBlock(blk)
 			res = sandboxRv8Call(blk.fn, cpu,
 				cpu.mem.RegFileBase(), cpu.mem.StackTop(),
 				dcBase, dcMask, vBegin, segSz, budget)
@@ -886,6 +978,8 @@ func (j *JIT) stepBlockWithBudget(cpu *CPU, budget uint64) (ic uint64, err error
 				return cpu.riscvInstrBegun, nil
 			}
 			return cpu.riscvInstrBegun, ErrEcall
+		case jitEcallExit:
+			return cpu.riscvInstrBegun, &ExitError{Code: cpu.ExitCode}
 		case jitEbreak:
 			return cpu.riscvInstrBegun, ErrEbreak
 		case jitLoadFault:
@@ -922,12 +1016,14 @@ func (j *JIT) stepBlockWithBudget(cpu *CPU, budget uint64) (ic uint64, err error
 // stepBlockDebugV1V2 runs a block through both V1 and V2, compares all
 // register outputs, and panics with full diagnostics on first mismatch.
 // The V1 result is used to update cpu state (it's the production path).
-func (j *JIT) stepBlockResult(_ *CPU, res jitcall.Result) (uint64, error) {
+func (j *JIT) stepBlockResult(cpu *CPU, res jitcall.Result) (uint64, error) {
 	switch int(res.Status) {
 	case jitOK:
 		return 0, nil
 	case jitEcall:
 		return 0, ErrEcall
+	case jitEcallExit:
+		return 0, &ExitError{Code: cpu.ExitCode}
 	case jitEbreak:
 		return 0, ErrEbreak
 	case jitLoadFault:
@@ -1004,49 +1100,14 @@ func (j *JIT) RunJIT(cpu *CPU) (err0 error) {
 
 			var res jitcall.Result
 			if j.useABJIT {
-				var dcBase uintptr
-				var dcMask, vBegin, segSz uint64
-				if seg := j.soleSegment; seg != nil {
-					dcBase = seg.decoderCacheBase
-					dcMask = seg.decoderCacheMask
-					vBegin = seg.vaddrBegin
-					segSz = seg.vaddrSize
-				} else if len(j.aotSegments) > 0 {
-					seg := blk.segment
-					if seg == nil {
-						seg = j.hotSegment
-					}
-					if seg == nil {
-						seg = j.aotSegments[0]
-					}
-					dcBase = seg.decoderCacheBase
-					dcMask = seg.decoderCacheMask
-					vBegin = seg.vaddrBegin
-					segSz = seg.vaddrSize
-				}
+				dcBase, dcMask, vBegin, segSz := j.decoderParamsForBlock(blk)
 				res = abjitDispatch(blk, cpu, j, dcBase, dcMask, vBegin, segSz, jitMaxBudget)
 			} else {
 				regFile := cpu.mem.RegFileBase()
 				stackTop := cpu.mem.StackTop()
-				if seg := j.soleSegment; seg != nil {
-					res = sandboxRv8Call(blk.fn, cpu, regFile, stackTop,
-						seg.decoderCacheBase, seg.decoderCacheMask,
-						seg.vaddrBegin, seg.vaddrSize, jitMaxBudget)
-				} else if len(j.aotSegments) > 0 {
-					seg := blk.segment
-					if seg == nil {
-						seg = j.hotSegment
-						if seg == nil {
-							seg = j.aotSegments[0]
-						}
-					}
-					res = sandboxRv8Call(blk.fn, cpu, regFile, stackTop,
-						seg.decoderCacheBase, seg.decoderCacheMask,
-						seg.vaddrBegin, seg.vaddrSize, jitMaxBudget)
-				} else {
-					res = sandboxRv8Call(blk.fn, cpu, regFile, stackTop,
-						0, 0, 0, 0, jitMaxBudget)
-				}
+				dcBase, dcMask, vBegin, segSz := j.decoderParamsForBlock(blk)
+				res = sandboxRv8Call(blk.fn, cpu, regFile, stackTop,
+					dcBase, dcMask, vBegin, segSz, jitMaxBudget)
 				cpu.riscvInstrBegun += res.ICdelta
 			}
 			cpu.pc = res.PC
@@ -1097,7 +1158,7 @@ func (j *JIT) RunJIT(cpu *CPU) (err0 error) {
 					continue
 				}
 				n := noteFromStepErr(ErrEcall, cpu.pc)
-				switch j.deliverEcall(cpu, n) {
+				switch cpu.Notes.Deliver(cpu, n) {
 				case NoteHandled:
 					continue
 				case NoteExit:
@@ -1105,6 +1166,9 @@ func (j *JIT) RunJIT(cpu *CPU) (err0 error) {
 				default:
 					return ErrEcall
 				}
+
+			case jitEcallExit:
+				return &ExitError{Code: cpu.ExitCode}
 
 			case jitEbreak:
 				n := noteFromStepErr(ErrEbreak, cpu.pc)
