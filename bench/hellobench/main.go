@@ -56,7 +56,7 @@ func main() {
 	// If the user asked for GoCPU VizJit dumps, mirror the setup on the
 	// libriscv side so every block gets a companion file in
 	// debug_libriscv_dir/ with the same <tag>.asm.pc_0x... prefix.
-	// Must run before any NewMachine/InstallAOT call (libriscv reads
+	// Must run before any NewMachine call (libriscv reads
 	// LIBRISCV_DUMP_DIR at translation time).
 	setupLibriscvDump()
 	// After all libriscv runs finish, enrich the Guest RISC-V section
@@ -221,9 +221,6 @@ func timeGoCPUDirectCollectCounters(elf []byte, realSystemCall bool) *riscv.JIT 
 	}
 
 	j := riscv.NewJIT()
-	if err := j.InstallAOTFromMem(mem); err != nil {
-		die("InstallAOTFromMem: %v", err)
-	}
 
 	run := func() {
 		defer func() {
@@ -437,15 +434,6 @@ func timeGoCPUDirect(elf []byte, realSystemCall bool) int64 {
 	}
 
 	j := riscv.NewJIT()
-
-	// Pre-install AOT BEFORE timing starts, matching libriscv's
-	// convention where NewMachine (which translates guest code) runs
-	// before the RunToCompletion timer. Without this, GoCPU's timed
-	// region includes AOT compilation while libriscv's does not — a
-	// ~2.5× apples-to-oranges difference.
-	if err := j.InstallAOTFromMem(mem); err != nil {
-		die("InstallAOTFromMem: %v", err)
-	}
 
 	runGuest := func() int64 {
 		t0 := time.Now()

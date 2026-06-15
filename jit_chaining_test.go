@@ -444,7 +444,7 @@ func TestLazyJIT_JALR_NoGoRoundTrip(t *testing.T) {
 	cpu.Notes.Push(ecallStop)
 
 	jit := NewJIT()
-	jit.DisableAutoAOT = true
+
 	jit.RunJIT(cpu)
 
 	if cpu.Reg(10) != loopCount {

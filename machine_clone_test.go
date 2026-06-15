@@ -39,10 +39,10 @@ func buildExitMachine(t *testing.T) *Machine {
 	cpu.SetPC(entry)
 
 	jit := NewJIT()
-	if err := jit.InstallAOT(mem, data); err != nil {
-		mem.Free()
-		t.Fatalf("InstallAOT: %v", err)
-	}
+	// if err := jit.InstallAOT(mem, data); err != nil {
+	// 	mem.Free()
+	// 	t.Fatalf("InstallAOT: %v", err)
+	// }
 	m := NewMachine(cpu, jit)
 	t.Cleanup(func() {
 		m.Close()  // releases JIT segments (no-op on already-closed)

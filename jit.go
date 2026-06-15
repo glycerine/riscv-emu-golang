@@ -195,30 +195,6 @@ type blockCacheEntry struct {
 	blk *compiledBlock
 }
 
-type JITInstructionCounterMode uint8
-
-const (
-	// JITICNone is retained for older callers. The native JIT no longer has
-	// a no-counter emission mode: all emitted code uses R15 as a decreasing
-	// guest-instruction budget, and Go derives retired instructions at the
-	// dispatch boundary.
-	JITICNone JITInstructionCounterMode = iota
-
-	// JITICPrecise is the only effective native JIT mode.
-	JITICPrecise
-)
-
-func (m JITInstructionCounterMode) String() string {
-	switch m {
-	case JITICNone:
-		return "none"
-	case JITICPrecise:
-		return "precise"
-	default:
-		return fmt.Sprintf("unknown(%d)", uint8(m))
-	}
-}
-
 // JIT holds the cache of compiled basic blocks.
 type JIT struct {
 
@@ -260,16 +236,10 @@ type JIT struct {
 	InterpOnly bool            // debug: force all-interpreter mode
 	trace      bool            // debug: log block executions to stderr
 
-	// DisableAutoAOT opts out of RunJIT's first-entry auto-install of
-	// AOT segments based on cpu.mem.ExecRegions(). Set to true to force
-	// the lazy compile path — used by benchmarks that measure the
-	// lazy-vs-AOT gap and by tests that want to drive the fallback path.
-	DisableAutoAOT bool
-
 	// HotRegionThreshold promotes a registered executable region from
 	// lazy block compilation to a full AOT segment after this many lazy
 	// compiles inside the region. Zero disables promotion. This is an
-	// explicit opt-in and still works when DisableAutoAOT is true, so
+	// explicit opt-in;
 	// callers can measure a lazy warm-up followed by segment execution.
 	HotRegionThreshold uint32
 	HotRegionsCompiled uint64
@@ -289,7 +259,6 @@ type JIT struct {
 	stopperPage uintptr // InfiniteLoopStopperPage: mmap'd guard page for preemption
 	watchAddr   uint64  // tohost address; JIT blocks exit when a store hits this address
 
-	UseR15InstructionCounter  bool  // compatibility knob; R15 budget codegen is always enabled
 	DebugOneBlockLockstepMode bool  // StepBlock uses LockstepModeBudget as its native dispatch budget
 	LockstepModeBudget        int64 // max IC before forced exit (default 65536)
 
@@ -310,20 +279,9 @@ type JIT struct {
 // allocation policy is PolicyABJIT (compare PolicyRV8); see lower_amd64.go
 func NewJIT() *JIT {
 	j := &JIT{
-		noJIT:                    make(map[uint64]bool),
-		irAlloc:                  NewFixedStaticAllocator(),
-		UseR15InstructionCounter: true,
-		LockstepModeBudget:       65536,
-
-		// faster to disable AOT? massively.
-		// at: 18fcb35 (origin/oslayer, oslayer) atg on linux and darwin
-		// GOCPU_VIZJIT_OFF=1 make bench-jit-coremark
-		// DisableAutoAOT: true =>
-		// BenchmarkJIT_CoreMark_ABJIT-8 1  575_636_119 ns/op 676.8 MIPS  27835656 B/op     42_213 allocs/op (10x fewer allocations!)
-		//  with AutoAOT: false =>
-		// BenchmarkJIT_CoreMark_ABJIT-8 1 1_092_111_163 ns/op 356.8 MIPS  817350016 B/op    579_873 allocs/op
-
-		DisableAutoAOT: true,
+		noJIT:              make(map[uint64]bool),
+		irAlloc:            NewFixedStaticAllocator(),
+		LockstepModeBudget: 65536,
 	}
 	j.SetRegPolicy(PolicyABJIT)
 	if err := j.initStopperPage(); err != nil {
@@ -353,48 +311,26 @@ func (j *JIT) SetRegPolicy(p RegPolicy) {
 // NoJITSize returns the number of PCs in the noJIT set (translation failures).
 func (j *JIT) NoJITSize() int { return len(j.noJIT) }
 
-// SetInstructionCounterMode validates the legacy instruction-counter mode API.
-// Native code generation no longer switches modes: every emitted block uses
-// R15 as a decreasing budget and Go computes retired instructions from the
-// remaining value returned by the trampoline.
-func (j *JIT) SetInstructionCounterMode(mode JITInstructionCounterMode) {
-	switch mode {
-	case JITICNone, JITICPrecise:
-		j.UseR15InstructionCounter = true
-	default:
-		panic(fmt.Sprintf("unknown JIT instruction counter mode: %d", uint8(mode)))
-	}
-}
-
-// InstructionCounterMode reports the effective mode. It always reports
-// precise because the JIT has one countdown-budget codegen contract.
-func (j *JIT) InstructionCounterMode() JITInstructionCounterMode {
-	return JITICPrecise
-}
-
-func (j *JIT) preciseInstructionCounterEnabled() bool {
-	return true
-}
-
-func blockTouchesInstructionCounterReg(b *Block) bool {
-	if b == nil {
-		return false
-	}
-	for i := range b.Instrs {
-		switch b.Instrs[i].Op {
-		case IRZeroIC, IRLoadIC, IRIncIC, IRDecIC, IRSpillIC, IRRegBudget,
-			IRBudgetZero, IRBudgetReserve, IRCall, IRSyscall, IRJalrIC:
-			return true
-		}
-	}
-	return false
-}
+// no longer used anywhere. keep for reference but comment out.
+// func blockTouchesInstructionCounterReg(b *Block) bool {
+// 	if b == nil {
+// 		return false
+// 	}
+// 	for i := range b.Instrs {
+// 		switch b.Instrs[i].Op {
+// 		case IRZeroIC, IRLoadIC, IRIncIC, IRDecIC, IRSpillIC, IRRegBudget,
+// 			IRBudgetZero, IRBudgetReserve, IRCall, IRSyscall, IRJalrIC:
+// 			return true
+// 		}
+// 	}
+// 	return false
+// }
 
 func (j *JIT) reserveInstructionCounterReg(b *Block) bool {
 	if j.regPolicy.InstructionCounterReg == 0 {
 		return false
 	}
-	return j.preciseInstructionCounterEnabled() || blockTouchesInstructionCounterReg(b)
+	return true
 }
 
 func (j *JIT) resetCompiledCode() {
@@ -460,74 +396,6 @@ func (j *JIT) StepBlockBudget(cpu *CPU, budget uint64) (RunBudgetResult, error) 
 	return RunBudgetContinue, nil
 }
 
-// InstallAOT runs the whole-program AOT translator on the ELF bytes.
-// For every PT_LOAD segment with PF_X set, it registers an ExecRegion
-// on the guest memory, linearly scans the range to enumerate basic-
-// block ranges, batch-compiles every translatable block into one
-// unified native-code mmap per PT_LOAD, pre-resolves every static
-// chain exit whose target is in the AOT set, and builds a mask-
-// bounded read-only decoder_cache. The resulting segments are
-// appended to j.aotSegments.
-//
-// Safe to call on a fresh JIT; installing twice appends additional
-// segments (the old mmaps are retained).
-//
-// Returns nil if the ELF has no PT_LOAD R-X entries (callers can still
-// use the lazy path in that case). Individual segments that fail to
-// compile are skipped; other segments still install.
-func (j *JIT) InstallAOT(mem *GuestMemory, elfBytes []byte) error {
-	loads, ok := FindExecLoads(elfBytes)
-	if !ok || len(loads) == 0 {
-		return nil
-	}
-	for _, load := range loads {
-		begin := load.VAddr
-		end := load.VAddr + load.MemSz
-		mem.AddExecRegion(begin, end, load.Writable)
-		j.compileAOTRegion(mem, begin, end, load.MemSz, load.Writable)
-	}
-	j.refreshSoleSegment()
-	return nil
-}
-
-// InstallAOTFromMem runs the AOT translator on every executable region
-// already registered on mem (e.g., set up by LoadELFBytes). This is the
-// path RunJIT calls automatically on first entry, so callers who load
-// an ELF through LoadELFBytes get whole-program AOT without having to
-// invoke InstallAOT explicitly. Does nothing if mem has no ExecRegions.
-//
-// Individual segments that fail to compile are skipped silently — the
-// lazy compile path covers them at runtime.
-func (j *JIT) InstallAOTFromMem(mem *GuestMemory) error {
-	regions := mem.ExecRegions()
-	if len(regions) == 0 {
-		return nil
-	}
-	for _, r := range regions {
-		if r.VAddrEnd <= r.VAddrBegin {
-			continue
-		}
-		size := r.VAddrEnd - r.VAddrBegin
-		j.compileAOTRegion(mem, r.VAddrBegin, r.VAddrEnd, size, r.IsLikelyJIT)
-	}
-	j.refreshSoleSegment()
-	return nil
-}
-
-// compileAOTRegion is the shared body of InstallAOT and
-// InstallAOTFromMem: enumerate blocks in [begin, end), compile them as
-// one segment, and record it. Silently skips on failure so other
-// regions still install.
-func (j *JIT) compileAOTRegion(mem *GuestMemory, begin, end, size uint64, writable bool) {
-	ranges := enumerateBlockRanges(mem, begin, size)
-	seg, err := j.jitCompileAOTSegment(mem, ranges, begin, end)
-	if err != nil {
-		return
-	}
-	seg.isLikelyJIT = writable
-	j.aotSegments = append(j.aotSegments, seg)
-}
-
 // CloneShared returns a new JIT that shares j's AOT segments (each
 // Retain'd) but has its own lazy block cache. Safe to install more
 // AOT segments or lazy-compile blocks in the clone without affecting
@@ -551,7 +419,6 @@ func (j *JIT) CloneShared() *JIT {
 		irAlloc:                   j.irAlloc,   // stateless; sharing is safe
 		regPolicy:                 j.regPolicy, // struct copy; function pointers are safe to share
 		useABJIT:                  j.useABJIT,
-		UseR15InstructionCounter:  j.UseR15InstructionCounter,
 		DebugOneBlockLockstepMode: j.DebugOneBlockLockstepMode,
 		LockstepModeBudget:        j.LockstepModeBudget,
 	}
@@ -907,20 +774,6 @@ func (j *JIT) RunJIT(cpu *CPU) (err0 error) {
 		panic("JIT: ELF has tohost symbol but cpu.SetWatchAddr was never called — JIT blocks with tohost writes will hang")
 	}
 
-	//vv("RunJIT(): j.DisableAutoAOT = %v", j.DisableAutoAOT)
-
-	// AOT is the default: on the first RunJIT call for a JIT that has
-	// no segments yet, transparently translate every executable region
-	// the loader already registered on cpu.mem. Only PCs outside those
-	// regions (self-modifying code, guest-generated blocks, tests that
-	// built a raw mem) fall back to the lazy compile path below.
-	// Set DisableAutoAOT on the JIT to force the lazy path end-to-end.
-	if !j.DisableAutoAOT && len(j.aotSegments) == 0 && len(cpu.mem.ExecRegions()) > 0 {
-		err := j.InstallAOTFromMem(&cpu.mem)
-		//vv("j.InstallAOTFromMem err = '%v'", err)
-		panicOn(err)
-	}
-
 	for {
 		// Tohost polling — once per dispatch cycle (block granularity).
 		// This is how the standard RISCV test ELFs communicate they
@@ -1098,9 +951,7 @@ func (j *JIT) RunJIT(cpu *CPU) (err0 error) {
 		// that isn't yet covered by any AOT segment (e.g., the guest
 		// mmapped a new R-X region and jumped to it — LuaJIT pattern),
 		// build a segment for it now. Re-try dispatch on success.
-		// DisableAutoAOT opts out — benchmarks and tests that measure
-		// the lazy path need to prevent on-demand AOT too.
-		if !j.InterpOnly && !j.DisableAutoAOT && len(cpu.mem.execRegions) > 0 {
+		if !j.InterpOnly && len(cpu.mem.execRegions) > 0 {
 			if seg := j.nextExecuteSegment(&cpu.mem, pc); seg != nil {
 				if _, ok := seg.blocks[pc]; ok {
 					continue // retry — next lookupBlock hits the new AOT block

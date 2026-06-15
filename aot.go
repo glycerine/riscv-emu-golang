@@ -85,7 +85,7 @@ func collectBranchTargets(mem *GuestMemory, textBase, textSize uint64) (
 // enumerateBlockRanges returns a sorted list of block ranges covering
 // [textBase, textEnd). Block starts are:
 //
-//   textBase ∪ collectBranchTargets.targets ∪ collectBranchTargets.termFT
+//	textBase ∪ collectBranchTargets.targets ∪ collectBranchTargets.termFT
 //
 // Each adjacent pair in the sorted list defines a block's [startPC,
 // endPC). The final range extends to textEnd.

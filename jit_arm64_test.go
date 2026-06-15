@@ -38,7 +38,7 @@ func TestARM64_RV8IC_MatchesInterpreter(t *testing.T) {
 
 	jit := NewJIT()
 	jit.SetRegPolicy(PolicyRV8)
-	jit.DisableAutoAOT = true
+
 	err = jit.RunJIT(jitCPU)
 	if ex, ok := err.(*ExitError); ok {
 		if ex.Code != 0 {
@@ -120,7 +120,7 @@ func TestARM64_DirectSyscall_ReloadsA0BeforeChain(t *testing.T) {
 	defer cleanup()
 
 	jit := NewJIT()
-	jit.DisableAutoAOT = true
+
 	err := jit.RunJIT(cpu)
 	if ex, ok := err.(*ExitError); ok {
 		if ex.Code != 0 {

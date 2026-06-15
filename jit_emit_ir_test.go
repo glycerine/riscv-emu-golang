@@ -275,9 +275,7 @@ func TestJITInstructionCounterMode_Emission(t *testing.T) {
 	defer mem.Free()
 
 	j := NewJIT()
-	if got := j.InstructionCounterMode(); got != JITICPrecise {
-		t.Fatalf("new JIT IC mode = %s, want %s", got, JITICPrecise)
-	}
+
 	precise := j.emitBlock(mem, 0x1000)
 	if precise == nil {
 		t.Fatal("precise emitBlock returned nil")
@@ -289,10 +287,6 @@ func TestJITInstructionCounterMode_Emission(t *testing.T) {
 		t.Fatalf("precise IC mode emitted %d legacy count-up budget checks, want 0", got)
 	}
 
-	j.SetInstructionCounterMode(JITICNone)
-	if got := j.InstructionCounterMode(); got != JITICPrecise {
-		t.Fatalf("legacy off JIT IC mode = %s, want effective %s", got, JITICPrecise)
-	}
 	off := j.emitBlock(mem, 0x1000)
 	if off == nil {
 		t.Fatal("off emitBlock returned nil")
@@ -322,7 +316,7 @@ func TestJITInstructionCounterMode_ReservePredicate(t *testing.T) {
 	defer mem.Free()
 
 	j := NewJIT()
-	j.SetInstructionCounterMode(JITICNone)
+	//noop: j.SetInstructionCounterMode(JITICNone)
 	res := j.emitBlock(mem, 0x1000)
 	if res == nil {
 		t.Fatal("emitBlock returned nil")
