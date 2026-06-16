@@ -68,6 +68,69 @@ func runJITFP(t *testing.T, code []uint32, fregs map[uint8]uint64) *CPU {
 	return cpu
 }
 
+func runJITFPWithSetup(t *testing.T, code []uint32, setup func(*CPU)) *CPU {
+	t.Helper()
+	const va = uint64(0x10000)
+	full := append([]uint32(nil), code...)
+	full = append(full, 0x05D00893, 0x00000073)
+	data := BuildELF(va, full)
+
+	mem, err := NewGuestMemory(Size1GB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(mem.Free)
+	if _, err := LoadELFBytes(mem, data); err != nil {
+		t.Fatal(err)
+	}
+	cpu := NewCPU(*mem)
+	cpu.SetPC(va)
+	if setup != nil {
+		setup(cpu)
+	}
+
+	jit := NewJIT()
+	t.Cleanup(jit.Close)
+	for i := 0; i < 100; i++ {
+		if _, err := jit.StepBlock(cpu); err != nil {
+			break
+		}
+	}
+	if jit.noJIT[va] {
+		t.Fatalf("JIT failed to compile entry block at pc=0x%x", va)
+	}
+	if jit.lookupBlock(va) == nil {
+		t.Fatalf("JIT did not compile entry block at pc=0x%x", va)
+	}
+	return cpu
+}
+
+func runInterpFPWithSetup(t *testing.T, code []uint32, setup func(*CPU)) *CPU {
+	t.Helper()
+	const va = uint64(0x10000)
+	data := BuildELF(va, code)
+
+	mem, err := NewGuestMemory(Size1GB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(mem.Free)
+	if _, err := LoadELFBytes(mem, data); err != nil {
+		t.Fatal(err)
+	}
+	cpu := NewCPU(*mem)
+	cpu.SetPC(va)
+	if setup != nil {
+		setup(cpu)
+	}
+	for range code {
+		if err := cpu.Step(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return cpu
+}
+
 // encFP encodes an RV32F FP-OP instruction (opcode 0x53).
 //
 //	funct5 [31:27]  fmt [26:25]  rs2 [24:20]  rs1 [19:15]  funct3 [14:12]
@@ -131,6 +194,32 @@ func checkF64(t *testing.T, cpu *CPU, rd uint8, want uint64, label string) {
 	t.Helper()
 	if got := cpu.FReg(rd); got != want {
 		t.Errorf("%s: f%d = 0x%016X, want 0x%016X", label, rd, got, want)
+	}
+}
+
+func TestJIT_FLDThenFSUBD_UsesLoadedValueInSameBlock(t *testing.T) {
+	const dataVA = uint64(0x20000)
+	code := []uint32{
+		ienc(0x07, 3, 4, 10, 0),    // FLD f4, 0(a0)
+		encFP(0x01, 1, 1, 4, 3, 0), // FSUB.D f1, f4, f3
+	}
+	setup := func(cpu *CPU) {
+		cpu.SetReg(10, dataVA)
+		cpu.SetFReg(3, f64_1_0)
+		cpu.SetFReg(4, f64_posZero)
+		if fault := cpu.mem.Store64(dataVA, f64_3_0); fault != nil {
+			t.Fatalf("Store64(0x%x): %v", dataVA, fault)
+		}
+	}
+
+	interp := runInterpFPWithSetup(t, code, setup)
+	jit := runJITFPWithSetup(t, code, setup)
+
+	if got := interp.FReg(1); got != f64_2_0 {
+		t.Fatalf("interpreter sanity: f1 = 0x%016X, want 0x%016X", got, f64_2_0)
+	}
+	if got, want := jit.FReg(1), interp.FReg(1); got != want {
+		t.Fatalf("JIT did not use same-block FLD result: f1 = 0x%016X, want 0x%016X", got, want)
 	}
 }
 

@@ -213,27 +213,28 @@ func (e *emitter) canonF64(val VReg) VReg {
 	return out
 }
 
-// ── NaN-boxing helpers ─────────────────────────────────────────────────
+// ── FP register bit helpers ────────────────────────────────────────────
 //
-// Both helpers bypass the FP VReg `freg(rs)` / `fregDst(rd)` for reads
-// and writes of the raw NaN-boxed 64-bit word, and instead access
-// f[rs]/f[rd] directly as I64 via `Load`/`Store` through `FBase()`.
+// Guest FP registers are architecturally 64-bit raw bit patterns. Keep those
+// bits in the f[] backing store and use FP VRegs only for transient host FP
+// values. Mixing the two as persistent sources is unsafe: a same-block FLD or
+// boxed FP result can update f[] while an already-materialized FP VReg still
+// contains the block-entry value.
 //
-// Rationale: if we read the guest FP register through its VReg, the
-// allocator's type-driven load selects MOVSS for F32-typed reads,
-// which zero-extends the upper 32 bits into XMM and destroys the
-// NaN-box signature. Subsequent MOVQ xmm→gpr then yields `upper=0`
-// and unboxF32 classifies the input as malformed, returning canonical
-// NaN for every read. Going through memory as I64 guarantees the
-// full 64 bits survive.
-//
-// The FP result is materialized via a GPR→XMM bitcast (`MovT` with
-// F32 type) so downstream FADD/FSUB/... lower to ADDSS/SUBSS.
-//
-// boxF32 writes the NaN-boxed word directly to f[rd] in memory and
-// also invalidates any cached VReg — but since we avoid `fregDst`
-// (which would mark the VReg dirty and trigger a stale writeback),
-// the memory-write is the single source of truth.
+// The raw f[] path also preserves NaN-boxed single-precision values. Loading a
+// guest FP register as an F32 VReg can select MOVSS and zero the upper 32 bits,
+// which makes a valid NaN-box look malformed. Load/store raw bits as I64, then
+// bit-cast with MovT only when an arithmetic instruction needs an XMM value.
+
+func (e *emitter) loadFRegBits(r uint32) VReg {
+	raw := e.irEm.Tmp()
+	e.irEm.Load(raw, e.irEm.FBase(), int64(r)*8, I64, false)
+	return raw
+}
+
+func (e *emitter) storeFRegBits(r uint32, raw VReg) {
+	e.irEm.Store(e.irEm.FBase(), int64(r)*8, raw, I64)
+}
 
 // boxF32 NaN-boxes a 32-bit value into f[rd] (spec §11.2).
 func (e *emitter) boxF32(rd uint32, val VReg) {
@@ -250,7 +251,7 @@ func (e *emitter) boxF32(rd uint32, val VReg) {
 	boxed := em.Tmp()
 	em.Or(boxed, low, hi)
 	// Store the boxed word directly to f[rd] memory.
-	em.Store(em.FBase(), int64(rd)*8, boxed, I64)
+	e.storeFRegBits(rd, boxed)
 }
 
 // unboxF32 extracts a 32-bit float from f[rs], returning canonical
@@ -260,8 +261,7 @@ func (e *emitter) unboxF32(rs uint32) VReg {
 	em := e.irEm
 	// Load the raw 64-bit word from f[rs] directly as I64. This
 	// bypasses the FP VReg typing and its MOVSS-zero-extend hazard.
-	srcInt := em.Tmp()
-	em.Load(srcInt, em.FBase(), int64(rs)*8, I64, false)
+	srcInt := e.loadFRegBits(rs)
 	// Check upper 32 == 0xFFFFFFFF.
 	upper := em.Tmp()
 	em.ShrImm(upper, srcInt, 32)
@@ -2460,7 +2460,7 @@ func (e *emitter) emitFPLoad(rd, rs1 uint32, imm int64, funct3 uint32) {
 	if funct3 == 2 {
 		e.boxF32(rd, tmp)
 	} else {
-		e.irEm.Mov(e.fregDst(rd), tmp)
+		e.storeFRegBits(rd, tmp)
 	}
 	e.irEm.Jump(doneLabel)
 
@@ -2471,7 +2471,9 @@ func (e *emitter) emitFPLoad(rd, rs1 uint32, imm int64, funct3 uint32) {
 		e.irEm.MaskedLoadAddr(tmp2, addr, e.irEm.MemBase(), e.irEm.MemMask(), 4, false, faultLabel)
 		e.boxF32(rd, tmp2)
 	} else {
-		e.irEm.MaskedLoadAddr(e.fregDst(rd), addr, e.irEm.MemBase(), e.irEm.MemMask(), 8, false, faultLabel)
+		tmp2 := e.irEm.Tmp()
+		e.irEm.MaskedLoadAddr(tmp2, addr, e.irEm.MemBase(), e.irEm.MemMask(), 8, false, faultLabel)
+		e.storeFRegBits(rd, tmp2)
 	}
 	e.irEm.PlaceLabel(doneLabel)
 }
@@ -2484,7 +2486,7 @@ func (e *emitter) emitMisalignedFPLoad(rd uint32, addr VReg, width int, faultLab
 	if width == 4 { // FLW: NaN-box low 32 bits into f[rd]
 		e.boxF32(rd, tmp)
 	} else { // FLD: copy raw bits to f[rd]
-		e.irEm.Mov(e.fregDst(rd), tmp)
+		e.storeFRegBits(rd, tmp)
 	}
 }
 
@@ -2518,23 +2520,25 @@ func (e *emitter) emitFPStore(rs1, rs2 uint32, imm int64, funct3 uint32) {
 		e.emitOOBCheck(addr, width, faultLabel)
 	}
 	t := WidthToType(width)
+	src := e.loadFRegBits(rs2)
 	if funct3 == 2 {
 		tmp := e.irEm.Tmp()
-		e.irEm.Zext(tmp, e.freg(rs2), I32)
+		e.irEm.Zext(tmp, src, I32)
 		e.irEm.MisalignedStore(addr, tmp, t)
 	} else {
-		e.irEm.MisalignedStore(addr, e.freg(rs2), t)
+		e.irEm.MisalignedStore(addr, src, t)
 	}
 	e.irEm.Jump(doneLabel)
 
 	// Aligned path.
 	e.irEm.PlaceLabel(alignedLabel)
+	src2 := e.loadFRegBits(rs2)
 	if funct3 == 2 {
 		tmp := e.irEm.Tmp()
-		e.irEm.Zext(tmp, e.freg(rs2), I32)
+		e.irEm.Zext(tmp, src2, I32)
 		e.irEm.GuestStoreAddr(addr, e.irEm.MemBase(), e.irEm.MemMask(), tmp, 4, faultLabel)
 	} else {
-		e.irEm.GuestStoreAddr(addr, e.irEm.MemBase(), e.irEm.MemMask(), e.freg(rs2), 8, faultLabel)
+		e.irEm.GuestStoreAddr(addr, e.irEm.MemBase(), e.irEm.MemMask(), src2, 8, faultLabel)
 	}
 	e.irEm.PlaceLabel(doneLabel)
 }
@@ -2542,12 +2546,13 @@ func (e *emitter) emitFPStore(rs1, rs2 uint32, imm int64, funct3 uint32) {
 // emitMisalignedFPStore emits a byte-by-byte FP store (FSW or FSD) at a
 // misaligned address. faultLabel is the per-call-site fault tail.
 func (e *emitter) emitMisalignedFPStore(rs2 uint32, addr VReg, width int, faultLabel Label) {
+	srcBits := e.loadFRegBits(rs2)
 	if width == 4 { // FSW: extract low 32 bits, then byte-by-byte
 		src := e.irEm.Tmp()
-		e.irEm.Zext(src, e.freg(rs2), I32)
+		e.irEm.Zext(src, srcBits, I32)
 		e.emitMisalignedStore(addr, src, 4, faultLabel)
 	} else { // FSD: store all 64 bits
-		e.emitMisalignedStore(addr, e.freg(rs2), 8, faultLabel)
+		e.emitMisalignedStore(addr, srcBits, 8, faultLabel)
 	}
 }
 
@@ -2659,7 +2664,7 @@ func (e *emitter) emitFPOpS(rd, rs1, rs2, funct3, funct5 uint32) {
 		e.emitFMinMax(result, a, b, F32, funct3 == 1) // funct3=0: MIN, 1: MAX
 		e.boxF32(rd, result)                          // FMinMax emits canon on the two-NaN path internally
 	case 0x08: // FCVT.S.D
-		a := e.freg(rs1)
+		a := e.unboxF64(rs1)
 		result := e.irEm.Tmp()
 		e.irEm.FCvtFF(result, a, F64, F32)
 		e.boxF32(rd, e.canonF32(result))
@@ -2673,7 +2678,7 @@ func (e *emitter) emitFPOpS(rd, rs1, rs2, funct3, funct5 uint32) {
 		switch funct3 {
 		case 0: // FMV.X.W
 			if rd != 0 {
-				e.irEm.Sext(e.xregDst(rd), e.freg(rs1), I32)
+				e.irEm.Sext(e.xregDst(rd), e.loadFRegBits(rs1), I32)
 			}
 		default:
 			e.terminated = true
@@ -2693,15 +2698,14 @@ func (e *emitter) boxF64(rd uint32, val VReg) {
 	em := e.irEm
 	intBits := em.Tmp()
 	em.MovT(intBits, val, I64)
-	em.Store(em.FBase(), int64(rd)*8, intBits, I64)
+	e.storeFRegBits(rd, intBits)
 }
 
 // unboxF64 loads the 64-bit double from f[rs] as F64 suitable for
 // ADDSD/SUBSD/etc. Avoids the FP-VReg typing hazard.
 func (e *emitter) unboxF64(rs uint32) VReg {
 	em := e.irEm
-	intBits := em.Tmp()
-	em.Load(intBits, em.FBase(), int64(rs)*8, I64, false)
+	intBits := e.loadFRegBits(rs)
 	out := em.Tmp()
 	em.MovT(out, intBits, F64)
 	return out
@@ -2761,13 +2765,13 @@ func (e *emitter) emitFPOpD(rd, rs1, rs2, funct3, funct5 uint32) {
 		switch funct3 {
 		case 0:
 			if rd != 0 {
-				e.irEm.Mov(e.xregDst(rd), e.freg(rs1))
+				e.irEm.Mov(e.xregDst(rd), e.loadFRegBits(rs1))
 			}
 		default:
 			e.terminated = true
 		}
 	case 0x1E: // FMV.D.X
-		e.irEm.Mov(e.fregDst(rd), e.xreg(rs1))
+		e.storeFRegBits(rd, e.xreg(rs1))
 	default:
 		e.terminated = true
 	}
@@ -2808,13 +2812,13 @@ func (e *emitter) emitFsgnjS(rd, rs1, rs2, funct3 uint32) {
 }
 
 func (e *emitter) emitFsgnjD(rd, rs1, rs2, funct3 uint32) {
-	a := e.freg(rs1)
-	b := e.freg(rs2)
-	dst := e.fregDst(rd)
+	a := e.loadFRegBits(rs1)
+	b := e.loadFRegBits(rs2)
 	signMask := e.irEm.Tmp()
 	e.irEm.Const(signMask, -9223372036854775808) // 0x8000000000000000 as int64 (math.MinInt64)
 	absMask := e.irEm.Tmp()
 	e.irEm.Const(absMask, 9223372036854775807) // 0x7FFFFFFFFFFFFFFF as int64 (math.MaxInt64)
+	result := e.irEm.Tmp()
 
 	switch funct3 {
 	case 0: // FSGNJ.D
@@ -2822,21 +2826,23 @@ func (e *emitter) emitFsgnjD(rd, rs1, rs2, funct3 uint32) {
 		e.irEm.And(t1, a, absMask)
 		t2 := e.irEm.Tmp()
 		e.irEm.And(t2, b, signMask)
-		e.irEm.Or(dst, t1, t2)
+		e.irEm.Or(result, t1, t2)
 	case 1: // FSGNJN.D
 		t1 := e.irEm.Tmp()
 		e.irEm.And(t1, a, absMask)
 		t2 := e.irEm.Tmp()
 		e.irEm.Not(t2, b)
 		e.irEm.And(t2, t2, signMask)
-		e.irEm.Or(dst, t1, t2)
+		e.irEm.Or(result, t1, t2)
 	case 2: // FSGNJX.D
 		t2 := e.irEm.Tmp()
 		e.irEm.And(t2, b, signMask)
-		e.irEm.Xor(dst, a, t2)
+		e.irEm.Xor(result, a, t2)
 	default:
 		e.terminated = true
+		return
 	}
+	e.storeFRegBits(rd, result)
 }
 
 // ── FP comparison ──────────────────────────────────────────────────────
@@ -2864,8 +2870,8 @@ func (e *emitter) emitFcmpD(rd, rs1, rs2, funct3 uint32) {
 	if rd == 0 {
 		return
 	}
-	a := e.freg(rs1)
-	b := e.freg(rs2)
+	a := e.unboxF64(rs1)
+	b := e.unboxF64(rs2)
 	dst := e.xregDst(rd)
 	switch funct3 {
 	case 0:
@@ -2909,7 +2915,7 @@ func (e *emitter) emitFcvtToIntD(rd, rs1, rs2 uint32) {
 	if rd == 0 {
 		return
 	}
-	a := e.freg(rs1)
+	a := e.unboxF64(rs1)
 	dst := e.xregDst(rd)
 	switch rs2 {
 	case 0:
@@ -2959,20 +2965,27 @@ func (e *emitter) emitFcvtFromIntS(rd, rs1, rs2 uint32) {
 
 func (e *emitter) emitFcvtFromIntD(rd, rs1, rs2 uint32) {
 	s := e.xreg(rs1)
-	dst := e.fregDst(rd)
 	switch rs2 {
 	case 0:
 		t := e.irEm.Tmp()
 		e.irEm.Sext(t, s, I32)
-		e.irEm.FCvtFromI(dst, t, I32, F64)
+		result := e.irEm.Tmp()
+		e.irEm.FCvtFromI(result, t, I32, F64)
+		e.boxF64(rd, result)
 	case 1:
 		t := e.irEm.Tmp()
 		e.irEm.Zext(t, s, I32)
-		e.irEm.FCvtFromU(dst, t, I32, F64)
+		result := e.irEm.Tmp()
+		e.irEm.FCvtFromU(result, t, I32, F64)
+		e.boxF64(rd, result)
 	case 2:
-		e.irEm.FCvtFromI(dst, s, I64, F64)
+		result := e.irEm.Tmp()
+		e.irEm.FCvtFromI(result, s, I64, F64)
+		e.boxF64(rd, result)
 	case 3:
-		e.irEm.FCvtFromU(dst, s, I64, F64)
+		result := e.irEm.Tmp()
+		e.irEm.FCvtFromU(result, s, I64, F64)
+		e.boxF64(rd, result)
 	default:
 		e.terminated = true
 	}
