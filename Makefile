@@ -122,7 +122,6 @@ RESULTS_DIR := /tmp/riscv-bench
 
 # ── tools ──────────────────────────────────────────────────────────────────
 
-GO            ?= go
 CMAKE         ?= cmake
 GIT           ?= git
 #LIBRISCV_REPO ?= https://github.com/libriscv/libriscv.git
@@ -225,7 +224,7 @@ check-tools:
 	    || { echo "  ✗ cmake not found"; \
 	         echo "    macOS: brew install cmake"; \
 	         echo "    Linux: apt install cmake"; exit 1; }
-	@command -v $(GO)     >/dev/null 2>&1 \
+	@command -v go     >/dev/null 2>&1 \
 	    || { echo "  ✗ go not found  →  https://go.dev/dl/"; exit 1; }
 	@# C++ compiler for libriscv build (clang++ on macOS, g++ on Linux)
 	@command -v clang++ >/dev/null 2>&1 \
@@ -243,7 +242,7 @@ check-tools:
 	@echo "  ✓ c++:    $$(clang++ --version 2>/dev/null | head -1 \
 	                 || g++ --version | head -1)"
 	@echo "  ✓ zig:    $$($(ZIG_CC) version)"
-	@echo "  ✓ go:     $$($(GO) version | awk '{print $$3, $$4}')"
+	@echo "  ✓ go:     $$(go version | awk '{print $$3, $$4}')"
 
 # ── libriscv clone ─────────────────────────────────────────────────────────
 
@@ -372,7 +371,7 @@ $(HELLO_GC): $(HELLO_SRC) $(HELLO_LD)
 
 hello: hello-elfs
 	@echo "── per-ECALL timing (libriscv vs GoCPU) ────────────────────────"
-	GOCPU_VIZJIT_OFF=1 $(GO) run -tags libriscv ./bench/hellobench/
+	GOCPU_VIZJIT_OFF=1 go run -tags libriscv ./bench/hellobench/
 
 bench-wasm:
 	go run ./bench/wazero_bench $(ROOT)/bench/libriscv_guest/bench_guest.wasm
@@ -454,7 +453,7 @@ bench-lots: bench-setup
 	@echo "══════════════════════════════════════════════════════════════════"
 	@echo ""
 	@echo "── [1/2] our GuestMemory ───────────────────────────────────────"
-	cd $(ROOT) && $(GO) test $(BENCH_FLAGS) \
+	cd $(ROOT) && go test $(BENCH_FLAGS) \
 	    -run='^$$' -bench='^BenchmarkGuestMem' \
 	    ./bench/ 2>&1 | tee $(RESULTS_DIR)/ours.txt
 	@echo ""
@@ -463,7 +462,7 @@ bench-lots: bench-setup
 	    CGO_CFLAGS="$(CGO_CFLAGS_VAL)" \
 	    CGO_LDFLAGS="$(CGO_LDFLAGS_VAL)" \
 	    BENCH_ELF=$(GUEST_ELF) \
-	    $(GO) test -tags libriscv $(BENCH_FLAGS) \
+	    go test -tags libriscv $(BENCH_FLAGS) \
 	        -run='^$$' -bench='^BenchmarkLibriscv' \
 	        ./bench/libriscv/ 2>&1 | tee $(RESULTS_DIR)/libriscv.txt
 	@$(MAKE) --no-print-directory bench-summary
@@ -475,7 +474,7 @@ bench-quick: bench-setup
 	@echo "── quick benchmark ────────────────────────────────────────────"
 	@echo ""
 	@printf "  %-40s " "GuestMem Store64+Load64 pair:"
-	@cd $(ROOT) && $(GO) test -count=1 -benchtime=100ms -benchmem \
+	@cd $(ROOT) && go test -count=1 -benchtime=100ms -benchmem \
 	    -run='^$$' -bench='^BenchmarkGuestMem_Store64Load64Pair$$' \
 	    ./bench/ 2>&1 | awk '/Benchmark/{printf "%-12s %s\n", $$3, $$4}'
 	@echo "  libriscv (memory pair + execution throughput):"
@@ -483,7 +482,7 @@ bench-quick: bench-setup
 	    CGO_CFLAGS="$(CGO_CFLAGS_VAL)" \
 	    CGO_LDFLAGS="$(CGO_LDFLAGS_VAL)" \
 	    BENCH_ELF=$(GUEST_ELF) \
-	    $(GO) test -tags libriscv -count=1 -benchtime=100ms -benchmem \
+	    go test -tags libriscv -count=1 -benchtime=100ms -benchmem \
 	        -run='^$$' \
 	        -bench='^BenchmarkLibriscv_MemWriteRead64$$|^BenchmarkLibriscv_FullExecution_Steady$$|^BenchmarkLibriscv_FullExecution_NoJIT$$' \
 	        ./bench/libriscv/ 2>&1 \
@@ -494,7 +493,7 @@ bench-quick: bench-setup
 	    '
 	@echo "  Go CPU (full execution throughput):"
 	@cd $(ROOT) && BENCH_ELF=$(GUEST_ELF) \
-	    $(GO) test -count=1 -benchtime=1x -benchmem \
+	    go test -count=1 -benchtime=1x -benchmem \
 	        -run='^$$' -bench='^BenchmarkCPU_FullExecution$$' \
 	        ./bench/ 2>&1 \
 	    | awk ' \
@@ -507,7 +506,7 @@ bench-raw: bench-setup
 	    CGO_CFLAGS="$(CGO_CFLAGS_VAL)" \
 	    CGO_LDFLAGS="$(CGO_LDFLAGS_VAL)" \
 	    BENCH_ELF=$(GUEST_ELF) \
-	    $(GO) test -tags libriscv -count=1 -benchtime=100ms -benchmem \
+	    go test -tags libriscv -count=1 -benchtime=100ms -benchmem \
 	        -run='^$$' \
 	        -bench='^BenchmarkLibriscv_MemWriteRead64$$|^BenchmarkLibriscv_FullExecution_Steady$$' \
 	        ./bench/libriscv/ 2>&1
@@ -516,55 +515,58 @@ bench-raw: bench-setup
 bench-cpu: guest-elf
 	@echo "── Go CPU execution benchmark ─────────────────────────────────"
 	cd $(ROOT) && BENCH_ELF=$(GUEST_ELF) \
-	    $(GO) test -count=1 -benchtime=1x -benchmem \
+	    go test -count=1 -benchtime=1x -benchmem \
 	        -run='^$$' -bench='^BenchmarkCPU' \
 	        ./bench/ 2>&1
 
 lazy-bench:
 	@echo "── zygo fib(10), Jea9Linux lazy JIT ───────────────────────────"
 	cd $(ROOT) && ZYGO_ELF=$(ROOT)bench/zygo.elf \
-	    $(GO) test -count=1 -benchtime=1x -benchmem -cpuprofile pprof.cpu.out \
-	        -run='^$$' -bench='^BenchmarkCPU_ZygoFib10_LazyJIT$$' \
+	    go test -count=1 -benchtime=1x -benchmem -cpuprofile pprof.cpu.out \
+	        -run=xxx -bench=BenchmarkCPU_ZygoFib10_LazyJIT \
 	        ./bench/ 2>&1
+	go test -tags libriscv -count=1 -benchtime=1x -benchmem \
+	         -run=xxx -bench=BenchmarkCPU_ZygoFib10_Libriscv \
+	         ./bench/ 2>&1
 
 bench-coremark: coremark-elf
 	@echo "── CoreMark (cached vs uncached) ───────────────────────────────"
 	cd $(ROOT) && CM_ELF=$(CM_ELF) \
-	    $(GO) test -count=1 -benchtime=1x -benchmem \
+	    go test -count=1 -benchtime=1x -benchmem \
 	        -run='^$$' -bench='^BenchmarkCPU_CoreMark' \
 	        ./bench/ 2>&1
 
 bench-dhrystone: dhrystone-elf
 	@echo "── Dhrystone (cached vs uncached) ──────────────────────────────"
 	cd $(ROOT) && DHRY_ELF=$(DHRY_ELF) \
-	    $(GO) test -count=1 -benchtime=1x -benchmem \
+	    go test -count=1 -benchtime=1x -benchmem \
 	        -run='^$$' -bench='^BenchmarkCPU_Dhrystone' \
 	        ./bench/ 2>&1
 
 bench-jit-coremark: coremark-elf
 	@echo "── CoreMark (JIT, rv8 vs abjit) ───────────────────────────────"
 	cd $(ROOT) && CM_ELF=$(CM_ELF) \
-	    $(GO) test -count=1 -benchtime=1x -benchmem \
+	    go test -count=1 -benchtime=1x -benchmem \
 	        -run='^$$' -bench='^BenchmarkJIT_CoreMark' \
 	        ./bench/ 2>&1
 
 bench-jit-dhrystone: dhrystone-elf
 	@echo "── Dhrystone (JIT, rv8 vs abjit) ──────────────────────────────"
 	cd $(ROOT) && DHRY_ELF=$(DHRY_ELF) \
-	    $(GO) test -count=1 -benchtime=1x -benchmem \
+	    go test -count=1 -benchtime=1x -benchmem \
 	        -run='^$$' -bench='^BenchmarkJIT_Dhrystone' \
 	        ./bench/ 2>&1
 
 bench-chain-ref: coremark-elf dhrystone-elf
 	@echo "── Chain-counter reference, abjit (bench_guest + CoreMark + Dhrystone) ─"
 	cd $(ROOT) && CM_ELF=$(CM_ELF) DHRY_ELF=$(DHRY_ELF) \
-	    $(GO) test -count=1 -v \
+	    go test -count=1 -v \
 	        -run='^TestJIT_(ChainReference|CoreMark_ChainReference|Dhrystone_ChainReference)$$' \
 	        ./bench/ 2>&1
 
 bench-ours:
 	@echo "── our GuestMemory benchmarks ──────────────────────────────────"
-	cd $(ROOT) && $(GO) test $(BENCH_FLAGS) \
+	cd $(ROOT) && go test $(BENCH_FLAGS) \
 	    -run='^$$' -bench='^BenchmarkGuestMem' \
 	    ./bench/ 2>&1
 
@@ -574,7 +576,7 @@ bench-libriscv: bench-setup
 	    CGO_CFLAGS="$(CGO_CFLAGS_VAL)" \
 	    CGO_LDFLAGS="$(CGO_LDFLAGS_VAL)" \
 	    BENCH_ELF=$(GUEST_ELF) \
-	    $(GO) test -tags libriscv $(BENCH_FLAGS) \
+	    go test -tags libriscv $(BENCH_FLAGS) \
 	        -run='^$$' -bench='^BenchmarkLibriscv' \
 	        ./bench/libriscv/ 2>&1
 
@@ -583,7 +585,7 @@ bench-mem: bench-setup
 	@echo "── memory pair head-to-head ────────────────────────────────────"
 	@echo ""
 	@echo "  [ours] GuestMemory Store64+Load64 pair"
-	cd $(ROOT) && $(GO) test $(BENCH_FLAGS) \
+	cd $(ROOT) && go test $(BENCH_FLAGS) \
 	    -run='^$$' -bench='^BenchmarkGuestMem_Store64Load64Pair$$' \
 	    ./bench/ 2>&1
 	@echo ""
@@ -592,7 +594,7 @@ bench-mem: bench-setup
 	    CGO_CFLAGS="$(CGO_CFLAGS_VAL)" \
 	    CGO_LDFLAGS="$(CGO_LDFLAGS_VAL)" \
 	    BENCH_ELF=$(GUEST_ELF) \
-	    $(GO) test -tags libriscv $(BENCH_FLAGS) \
+	    go test -tags libriscv $(BENCH_FLAGS) \
 	        -run='^$$' -bench='^BenchmarkLibriscv_MemWriteRead64$$' \
 	        ./bench/libriscv/ 2>&1
 
@@ -602,7 +604,7 @@ bench-smoke: bench-setup
 	    CGO_CFLAGS="$(CGO_CFLAGS_VAL)" \
 	    CGO_LDFLAGS="$(CGO_LDFLAGS_VAL)" \
 	    BENCH_ELF=$(GUEST_ELF) \
-	    $(GO) test -tags libriscv -v \
+	    go test -tags libriscv -v \
 	        -run='^TestLibriscvSmokeTest$$' \
 	        ./bench/libriscv/ 2>&1
 
@@ -623,21 +625,21 @@ bench:
 	@printf "  %-44s %s\n" "────────────────────────────────────────────" "──────────"
 	@printf "  %-44s " "Go JIT — rv8 Fixed Static Mapping (native):"
 	@cd $(ROOT) && BENCH_ELF=$(GUEST_ELF) \
-	    $(GO) test $(PGO_FLAG) -count=1 -benchtime=1x -benchmem \
+	    go test $(PGO_FLAG) -count=1 -benchtime=1x -benchmem \
 	        -run='^$$' -bench='^BenchmarkCPU_FullExecution_JIT_Rv8$$' \
 	        ./bench/ 2>&1 \
 	    | awk '/MIPS/{for(i=1;i<=NF;i++){if($$i=="MIPS"){print p" MIPS";next}; p=$$i}}' \
 	    || echo "(failed)"
 	@printf "  %-44s " "Go JIT — abjit (native):"
 	@cd $(ROOT) && BENCH_ELF=$(GUEST_ELF) \
-	    $(GO) test $(PGO_FLAG) -count=1 -benchtime=1x -benchmem \
+	    go test $(PGO_FLAG) -count=1 -benchtime=1x -benchmem \
 	        -run='^$$' -bench='^BenchmarkCPU_FullExecution_JIT_ABJIT$$' \
 	        ./bench/ 2>&1 \
 	    | awk '/MIPS/{for(i=1;i<=NF;i++){if($$i=="MIPS"){print p" MIPS";next}; p=$$i}}' \
 	    || echo "(failed)"
 	@printf "  %-44s " "Go interpreter (no JIT):"
 	@cd $(ROOT) && BENCH_ELF=$(GUEST_ELF) \
-	    $(GO) test $(PGO_FLAG) -count=1 -benchtime=1x -benchmem \
+	    go test $(PGO_FLAG) -count=1 -benchtime=1x -benchmem \
 	        -run='^$$' -bench='^BenchmarkCPU_FullExecution$$' \
 	        ./bench/ 2>&1 \
 	    | awk '/MIPS/{for(i=1;i<=NF;i++){if($$i=="MIPS"){print p" MIPS";next}; p=$$i}}' \
@@ -647,7 +649,7 @@ bench:
 	    CGO_CFLAGS="$(CGO_CFLAGS_VAL)" \
 	    CGO_LDFLAGS="$(CGO_LDFLAGS_VAL)" \
 	    BENCH_ELF=$(GUEST_ELF) \
-	    $(GO) test $(PGO_FLAG) -tags libriscv -count=1 -benchtime=1x -benchmem \
+	    go test $(PGO_FLAG) -tags libriscv -count=1 -benchtime=1x -benchmem \
 	        -run='^$$' -bench='^BenchmarkLibriscv_FullExecution_Steady$$' \
 	        ./bench/libriscv/ 2>&1 \
 	    | awk '/MIPS/{for(i=1;i<=NF;i++){if($$i=="MIPS"){print p" MIPS";next}; p=$$i}}' \
@@ -657,7 +659,7 @@ bench:
 	    CGO_CFLAGS="$(CGO_CFLAGS_VAL)" \
 	    CGO_LDFLAGS="$(CGO_LDFLAGS_VAL)" \
 	    BENCH_ELF=$(GUEST_ELF) \
-	    $(GO) test $(PGO_FLAG) -tags libriscv -count=1 -benchtime=1x -benchmem \
+	    go test $(PGO_FLAG) -tags libriscv -count=1 -benchtime=1x -benchmem \
 	        -run='^$$' -bench='^BenchmarkLibriscv_FullExecution_NoJIT$$' \
 	        ./bench/libriscv/ 2>&1 \
 	    | awk '/MIPS/{for(i=1;i<=NF;i++){if($$i=="MIPS"){print p" MIPS";next}; p=$$i}}' \
@@ -703,24 +705,24 @@ bench-summary:
 
 test:
 	@echo "── unit tests ──────────────────────────────────────────────────"
-	GOCPU_VIZJIT_OFF=1 cd $(ROOT) && $(GO) test -count=1 -v ./bench/ 2>&1
-	GOCPU_VIZJIT_OFF=1 cd $(ROOT) && $(GO) test -count=1 -v 2>&1
+	GOCPU_VIZJIT_OFF=1 cd $(ROOT) && go test -count=1 -v ./bench/ 2>&1
+	GOCPU_VIZJIT_OFF=1 cd $(ROOT) && go test -count=1 -v 2>&1
 
 test-arm64-qemu:
 	@echo "── linux/arm64 qemu-system test lane ───────────────────────────"
-	GO=$(GO) $(ROOT)scripts/test-arm64-qemu.sh
+	GO=go $(ROOT)scripts/test-arm64-qemu.sh
 
 test-arm64-qemu-main: # about 2 minutes on linux
 	@echo "── linux/arm64 qemu-system main lane ───────────────────────────"
-	ARM64_QEMU_LOCKSTEP=0 GO=$(GO) $(ROOT)scripts/test-arm64-qemu.sh
+	ARM64_QEMU_LOCKSTEP=0 GO=go $(ROOT)scripts/test-arm64-qemu.sh
 
 test-arm64-qemu-lockstep:
 	@echo "── linux/arm64 qemu-system lockstep lane ───────────────────────"
-	ARM64_QEMU_MAIN=0 ARM64_QEMU_LOCKSTEP=1 GO=$(GO) $(ROOT)scripts/test-arm64-qemu.sh
+	ARM64_QEMU_MAIN=0 ARM64_QEMU_LOCKSTEP=1 GO=go $(ROOT)scripts/test-arm64-qemu.sh
 
 bench-arm64-qemu: guest-elf
 	@echo "── linux/arm64 qemu-system JIT comparison ──────────────────────"
-	GO=$(GO) ARM64_QEMU_COMPARE_BENCHTIME=$(ARM64_QEMU_COMPARE_BENCHTIME) \
+	GO=go ARM64_QEMU_COMPARE_BENCHTIME=$(ARM64_QEMU_COMPARE_BENCHTIME) \
 	    $(ROOT)scripts/bench-arm64-qemu.sh
 
 bench-arm64-qemu-full:
@@ -730,7 +732,7 @@ bench-arm64-qemu-full:
 	ARM64_QEMU_MAIN=0 \
 	ARM64_QEMU_LOCKSTEP=0 \
 	ARM64_QEMU_STAGE_BENCH_ELFS=1 \
-	GO=$(GO) $(ROOT)scripts/test-arm64-qemu.sh \
+	GO=go $(ROOT)scripts/test-arm64-qemu.sh \
 	    -test.run '^$$' \
 	    -test.bench '$(ARM64_QEMU_BENCH)' \
 	    -test.benchtime=$(ARM64_QEMU_BENCHTIME) \
@@ -754,7 +756,7 @@ FUZZ_ORACLE_CGO_LDFLAGS := -L$(BUILD) -L$(BUILD)/libriscv \
 fuzz-oracle: bench-setup
 	@echo "── fuzz ALU vs libriscv oracle ($(FUZZ_TIME)) ──────────────"
 	cd $(ROOT) && FUZZ_TIMEOUT=1 \
-	    $(GO) test \
+	    go test \
 	        -run FuzzALUVsLibriscv -fuzz=FuzzALUVsLibriscv \
 	        -fuzztime=$(FUZZ_TIME) \
 	        ./fuzzoracle/ 2>&1
@@ -762,7 +764,7 @@ fuzz-oracle: bench-setup
 fuzz-stores: bench-setup
 	@echo "── fuzz loads/stores vs libriscv oracle ($(FUZZ_TIME)) ─────"
 	cd $(ROOT) && FUZZ_TIMEOUT=1 \
-	    $(GO) test \
+	    go test \
 	        -run FuzzStoresVsLibriscv -fuzz=FuzzStoresVsLibriscv \
 	        -fuzztime=$(FUZZ_TIME) \
 	        ./fuzzoracle/ 2>&1
@@ -772,7 +774,7 @@ fuzz-stores: bench-setup
 fuzz-rvc: bench-setup
 	@echo "── fuzz RVC vs libriscv oracle ($(FUZZ_TIME)) ──────────────"
 	cd $(ROOT) && FUZZ_TIMEOUT=1 \
-	    $(GO) test \
+	    go test \
 	        -run FuzzRVCVsLibriscv -fuzz=FuzzRVCVsLibriscv \
 	        -fuzztime=$(FUZZ_TIME) \
 	        ./fuzzoracle/ 2>&1
@@ -781,7 +783,7 @@ fuzz-rvc: bench-setup
 fuzz-amo: bench-setup
 	@echo "── fuzz AMO vs libriscv oracle ($(FUZZ_TIME)) ──────────────"
 	cd $(ROOT) && FUZZ_TIMEOUT=1 \
-	    $(GO) test \
+	    go test \
 	        -run FuzzAMOVsLibriscv -fuzz=FuzzAMOVsLibriscv \
 	        -fuzztime=$(FUZZ_TIME) \
 	        ./fuzzoracle/ 2>&1
@@ -790,7 +792,7 @@ fuzz-amo: bench-setup
 fuzz-fd: bench-setup
 	@echo "── fuzz F+D vs libriscv oracle ($(FUZZ_TIME)) ──────────────"
 	cd $(ROOT) && FUZZ_TIMEOUT=1 \
-	    $(GO) test \
+	    go test \
 	        -run FuzzFDVsLibriscv -fuzz=FuzzFDVsLibriscv \
 	        -fuzztime=$(FUZZ_TIME) \
 	        ./fuzzoracle/ 2>&1
@@ -799,7 +801,7 @@ fuzz-fd: bench-setup
 fuzz-bitmanip: bench-setup
 	@echo "── fuzz Zicsr/Zba/Zbb/Zbs vs libriscv oracle ($(FUZZ_TIME)) ─"
 	cd $(ROOT) && FUZZ_TIMEOUT=1 \
-	    $(GO) test \
+	    go test \
 	        -run FuzzBitmanipVsLibriscv -fuzz=FuzzBitmanipVsLibriscv \
 	        -fuzztime=$(FUZZ_TIME) \
 	        ./fuzzoracle/ 2>&1
@@ -808,7 +810,7 @@ fuzz-bitmanip: bench-setup
 fuzz-cfloat: bench-setup
 	@echo "── fuzz C.FLD/FSD/FLDSP/FSDSP vs libriscv oracle ($(FUZZ_TIME)) "
 	cd $(ROOT) && FUZZ_TIMEOUT=1 \
-	    $(GO) test \
+	    go test \
 	        -run FuzzCFloatVsLibriscv -fuzz=FuzzCFloatVsLibriscv \
 	        -fuzztime=$(FUZZ_TIME) \
 	        ./fuzzoracle/ 2>&1
@@ -838,7 +840,7 @@ FUZZ_LONG_TIME ?= 4h
 .PHONY: fuzz
 fuzz:
 	@echo "── fuzzing CPU ($(FUZZ_TIME)) ──────────────────────────────────"
-	cd $(ROOT) && FUZZ_TIMEOUT=1 $(GO) test \
+	cd $(ROOT) && FUZZ_TIMEOUT=1 go test \
 	    -run FuzzCPU -fuzz=FuzzCPU \
 	    -fuzztime=$(FUZZ_TIME) \
 	    . 2>&1
@@ -856,62 +858,62 @@ fuzz-all:
 	@echo "══════════════════════════════════════════════════════════════════"
 	@echo ""
 	@echo "── [1/12] FuzzCPU ($(FUZZ_LONG_TIME)) ──"
-	cd $(ROOT) && FUZZ_TIMEOUT=1 $(GO) test \
+	cd $(ROOT) && FUZZ_TIMEOUT=1 go test \
 	    -run FuzzCPU -fuzz=FuzzCPU \
 	    -fuzztime=$(FUZZ_LONG_TIME) . 2>&1 || true
 	@echo ""
 	@echo "── [2/12] FuzzPeepholeTermination ($(FUZZ_LONG_TIME)) ──"
-	cd $(ROOT) && $(GO) test \
+	cd $(ROOT) && go test \
 	    -run FuzzPeepholeTermination -fuzz=FuzzPeepholeTermination \
 	    -fuzztime=$(FUZZ_LONG_TIME)  2>&1 || true
 	@echo ""
 	@echo "── [3/12] FuzzEmitterSequences ($(FUZZ_LONG_TIME)) ──"
-	cd $(ROOT) && $(GO) test \
+	cd $(ROOT) && go test \
 	    -run FuzzEmitterSequences -fuzz=FuzzEmitterSequences \
 	    -fuzztime=$(FUZZ_LONG_TIME)  2>&1 || true
 	@echo ""
 	@echo "── [4/12] FuzzBlockStructure ($(FUZZ_LONG_TIME)) ──"
-	cd $(ROOT) && $(GO) test \
+	cd $(ROOT) && go test \
 	    -run FuzzBlockStructure -fuzz=FuzzBlockStructure \
 	    -fuzztime=$(FUZZ_LONG_TIME)  2>&1 || true
 	@echo ""
 	@echo "── [5/12] FuzzHighLevelHelpers ($(FUZZ_LONG_TIME)) ──"
-	cd $(ROOT) && $(GO) test \
+	cd $(ROOT) && go test \
 	    -run FuzzHighLevelHelpers -fuzz=FuzzHighLevelHelpers \
 	    -fuzztime=$(FUZZ_LONG_TIME)  2>&1 || true
 	@echo ""
 	@echo "── [6/12] FuzzALUVsLibriscv ($(FUZZ_LONG_TIME)) ──"
-	cd $(ROOT) && FUZZ_TIMEOUT=1 $(GO) test \
+	cd $(ROOT) && FUZZ_TIMEOUT=1 go test \
 	    -run FuzzALUVsLibriscv -fuzz=FuzzALUVsLibriscv \
 	    -fuzztime=$(FUZZ_LONG_TIME) ./fuzzoracle/ 2>&1 || true
 	@echo ""
 	@echo "── [7/12] FuzzStoresVsLibriscv ($(FUZZ_LONG_TIME)) ──"
-	cd $(ROOT) && FUZZ_TIMEOUT=1 $(GO) test \
+	cd $(ROOT) && FUZZ_TIMEOUT=1 go test \
 	    -run FuzzStoresVsLibriscv -fuzz=FuzzStoresVsLibriscv \
 	    -fuzztime=$(FUZZ_LONG_TIME) ./fuzzoracle/ 2>&1 || true
 	@echo ""
 	@echo "── [8/12] FuzzRVCVsLibriscv ($(FUZZ_LONG_TIME)) ──"
-	cd $(ROOT) && FUZZ_TIMEOUT=1 $(GO) test \
+	cd $(ROOT) && FUZZ_TIMEOUT=1 go test \
 	    -run FuzzRVCVsLibriscv -fuzz=FuzzRVCVsLibriscv \
 	    -fuzztime=$(FUZZ_LONG_TIME) ./fuzzoracle/ 2>&1 || true
 	@echo ""
 	@echo "── [9/12] FuzzAMOVsLibriscv ($(FUZZ_LONG_TIME)) ──"
-	cd $(ROOT) && FUZZ_TIMEOUT=1 $(GO) test \
+	cd $(ROOT) && FUZZ_TIMEOUT=1 go test \
 	    -run FuzzAMOVsLibriscv -fuzz=FuzzAMOVsLibriscv \
 	    -fuzztime=$(FUZZ_LONG_TIME) ./fuzzoracle/ 2>&1 || true
 	@echo ""
 	@echo "── [10/12] FuzzFDVsLibriscv ($(FUZZ_LONG_TIME)) ──"
-	cd $(ROOT) && FUZZ_TIMEOUT=1 $(GO) test \
+	cd $(ROOT) && FUZZ_TIMEOUT=1 go test \
 	    -run FuzzFDVsLibriscv -fuzz=FuzzFDVsLibriscv \
 	    -fuzztime=$(FUZZ_LONG_TIME) ./fuzzoracle/ 2>&1 || true
 	@echo ""
 	@echo "── [11/12] FuzzCFloatVsLibriscv ($(FUZZ_LONG_TIME)) ──"
-	cd $(ROOT) && FUZZ_TIMEOUT=1 $(GO) test \
+	cd $(ROOT) && FUZZ_TIMEOUT=1 go test \
 	    -run FuzzCFloatVsLibriscv -fuzz=FuzzCFloatVsLibriscv \
 	    -fuzztime=$(FUZZ_LONG_TIME) ./fuzzoracle/ 2>&1 || true
 	@echo ""
 	@echo "── [12/12] FuzzBitmanipVsLibriscv ($(FUZZ_LONG_TIME)) ──"
-	cd $(ROOT) && FUZZ_TIMEOUT=1 $(GO) test \
+	cd $(ROOT) && FUZZ_TIMEOUT=1 go test \
 	    -run FuzzBitmanipVsLibriscv -fuzz=FuzzBitmanipVsLibriscv \
 	    -fuzztime=$(FUZZ_LONG_TIME) ./fuzzoracle/ 2>&1 || true
 	@echo ""
@@ -950,17 +952,17 @@ quad:
 	@echo "── quad: AotJIT vs LazyJIT ─────────────────────────────────────"
 	@echo ""
 	@echo "── 1/4: BenchGuest (fib/sieve) ──"
-	cd $(ROOT) && $(GO) test -count=1 -benchtime=1x -benchmem \
+	cd $(ROOT) && go test -count=1 -benchtime=1x -benchmem \
 	    -run='^$$' -bench='^Benchmark(AotJIT|LazyJIT)_BenchGuest$$' \
 	    ./bench/ 2>&1
 	@echo ""
 	@echo "── 2/4: CoreMark ──"
-	cd $(ROOT) && $(GO) test -count=1 -benchtime=1x -benchmem \
+	cd $(ROOT) && go test -count=1 -benchtime=1x -benchmem \
 	    -run='^$$' -bench='^Benchmark(AotJIT|LazyJIT)_CoreMark$$' \
 	    ./bench/ 2>&1
 	@echo ""
 	@echo "── 3/4: Dhrystone ──"
-	cd $(ROOT) && $(GO) test -count=1 -benchtime=1x -benchmem \
+	cd $(ROOT) && go test -count=1 -benchtime=1x -benchmem \
 	    -run='^$$' -bench='^Benchmark(AotJIT|LazyJIT)_Dhrystone$$' \
 	    ./bench/ 2>&1
 	@echo ""
@@ -968,6 +970,6 @@ quad:
 
 standard:
 	@echo "── 4/4: RISC-V test ELFs (all rv64ui) ──"
-	cd $(ROOT) && $(GO) test -count=1 -benchtime=1x -benchmem -timeout=120s \
+	cd $(ROOT) && go test -count=1 -benchtime=1x -benchmem -timeout=120s \
 	    -run='^$$' -bench='^BenchmarkRVTests_UI_(AotJIT|LazyJIT)$$' \
 	    ./bench/ 2>&1
