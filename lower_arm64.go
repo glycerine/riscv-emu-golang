@@ -160,6 +160,7 @@ type lowerARM64Ctx struct {
 	liveEntryProg   *obj.Prog
 	chainExits      []chainExitInfo
 	jalrICs         []jalrICInfo
+	gocallResumes   []GocallResumeDesc
 }
 
 type arm64FrameLayout struct {
@@ -254,6 +255,7 @@ func lowerARM64(ctx *goasm.Ctx, b *Block, alloc *Allocation, abi arm64ABI) (*Low
 		ChainEntryProg:     lc.chainEntryProg,
 		LiveChainEntryProg: liveEntryProg,
 		LiveChain:          liveChain,
+		GocallResumes:      lc.gocallResumes,
 	}
 	for i := range lc.chainExits {
 		result.ChainExits = append(result.ChainExits, ChainExitDesc{
@@ -2422,7 +2424,21 @@ func (lc *lowerARM64Ctx) call(ins *IRInstr) error {
 		return err
 	}
 	lc.loadImm(int64(sym.Addr), a64Call)
-	lc.emitIndirectCall(a64Call)
+	if lc.abi == arm64ABJIT {
+		resumeMov := lc.emitPatchableLiteralLoad(goasm.REG_ARM64_R19, nativePatchSentinel)
+		lc.loadImm(int64(abjit.GocallAddr()), a64A)
+		lc.emitIndirectJump(a64A)
+
+		resumeNop := lc.c.NewProg()
+		resumeNop.As = obj.ANOP
+		lc.c.Append(resumeNop)
+		lc.gocallResumes = append(lc.gocallResumes, GocallResumeDesc{
+			AddrMov:    resumeMov,
+			ResumeProg: resumeNop,
+		})
+	} else {
+		lc.emitIndirectCall(a64Call)
+	}
 	lc.restoreHostCallState()
 	lc.loadICReg()
 	lc.loadAllocatedRegs()

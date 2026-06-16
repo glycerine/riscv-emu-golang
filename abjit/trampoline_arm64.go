@@ -17,12 +17,18 @@ func init() {
 	impl := callJITImplAddr()
 	b := unsafe.Slice((*byte)(unsafe.Pointer(impl)), 0x100)
 
-	// BLR R16, little-endian. The instruction immediately after this is
-	// the restore/return path generated code jumps to when exiting.
+	// BLR R16, little-endian. The instruction immediately after the first
+	// BLR is the restore/return path generated code jumps to when exiting.
+	// The second BLR is the gocall thunk used for Go helper calls.
 	blrR16 := []byte{0x00, 0x02, 0x3f, 0xd6}
 	callOff := bytes.Index(b, blrR16)
 	if callOff < 0 {
 		panic("abjit: BLR R16 not found in ARM64 callJIT")
 	}
 	retStubAddr = impl + uintptr(callOff+len(blrR16))
+	gocallOff := bytes.Index(b[callOff+len(blrR16):], blrR16)
+	if gocallOff < 0 {
+		panic("abjit: gocall BLR R16 not found in ARM64 callJIT")
+	}
+	gocallAddr = impl + uintptr(callOff+len(blrR16)+gocallOff)
 }

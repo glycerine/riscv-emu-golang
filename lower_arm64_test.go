@@ -362,8 +362,16 @@ func TestLowerARM64_IRCall_Assembles(t *testing.T) {
 			alloc := helperTestAllocate(e.Block, ARM64Pool(e.Block), ARM64Pinned(), nil)
 			ctx := goasm.New(goasm.ARM64)
 			ctx.Append(ctx.NewATEXT())
-			if _, err := tt.lower(ctx, e.Block, alloc); err != nil {
+			res, err := tt.lower(ctx, e.Block, alloc)
+			if err != nil {
 				t.Fatalf("lower: %v", err)
+			}
+			wantGocallResumes := 0
+			if tt.name == "abjit" {
+				wantGocallResumes = 1
+			}
+			if got := len(res.GocallResumes); got != wantGocallResumes {
+				t.Fatalf("GocallResumes len = %d, want %d", got, wantGocallResumes)
 			}
 			code, err := ctx.Assemble()
 			if err != nil {
