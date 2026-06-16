@@ -521,6 +521,7 @@ bench-cpu: guest-elf
 
 lazy-bench:
 	@echo "── zygo fib(10), Jea9Linux lazy JIT vs Interp vs Libriscv ─────"
+	if command -v zygo >/dev/null 2>&1; then time zygo -c '(defn fib [x] (cond (== x 0) 0 (== x 1) 1 (+ (fib (- x 1)) (fib (- x 2))))) (println (fib 10))'; else echo "native zygo command not available, skipping."; fi
 	cd $(ROOT) && go test -count=1 -benchtime=1x -benchmem \
 	         -run=xxx -bench=BenchmarkCPU_ZygoFib10_Interpreter \
 	         ./bench/ 2>&1
