@@ -126,7 +126,7 @@ type compiledBlock struct {
 	liveChain      liveChainMeta     // conservative metadata for no-store ARM64 chaining
 	chainExits     []chainPatchInfo  // chain exits for patching
 	jalrICs        []jalrICPatchInfo // JALR IC sites for patching
-	hasFP          bool              // block uses FP registers (skip f[] copy when false)
+	hasFP          bool              // block-local FP metadata; dispatch must still preserve FP across chains
 	numInsns       int               // static instruction count from emission
 
 	// segment is the DecodedExecuteSegment whose decoder_cache should be

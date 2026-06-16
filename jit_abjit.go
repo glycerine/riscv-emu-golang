@@ -48,9 +48,7 @@ func abjitDispatch(
 	s := j.abjitState
 
 	s.X = cpu.x
-	if blk.hasFP {
-		s.F = cpu.f
-	}
+	s.F = cpu.f
 	s.FCSR = cpu.fcsr
 	s.MemBase = cpu.mem.Base()
 	s.MemMask = cpu.mem.Mask()
@@ -91,9 +89,7 @@ func abjitDispatch(
 	//vv("back from abjit.CallJIT, the call to the assembly trampoline. res = '%v'", &res)
 
 	cpu.x = s.X
-	if blk.hasFP {
-		cpu.f = s.F
-	}
+	cpu.f = s.F
 	cpu.fcsr = s.FCSR
 	cpu.resvAddr = s.ResvAddr
 	cpu.resvValid = s.ResvValid != 0

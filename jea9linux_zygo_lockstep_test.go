@@ -15,9 +15,28 @@ import (
 )
 
 const (
-	zygoLockstepBudget     = uint64(1000)
-	zygoLockstepProgramArg = "(defn fib [x] (cond (== x 0) 0 (== x 1) 1 (+ (fib (- x 1)) (fib (- x 2))))) (println (fib 10))"
+	zygoLockstepCoarseBudget = uint64(1000)
+	zygoLockstepMidBudget    = uint64(100)
+	zygoLockstepFineBudget   = uint64(3)
+	zygoLockstepMidAtIC      = uint64(208_000)
+	zygoLockstepFineAtIC     = uint64(208_600)
+	zygoLockstepFineUntilIC  = uint64(210_000)
+	zygoLockstepProgressIC   = uint64(10_000)
+	zygoLockstepProgramArg   = "(defn fib [x] (cond (== x 0) 0 (== x 1) 1 (+ (fib (- x 1)) (fib (- x 2))))) (println (fib 10))"
 )
+
+type zygoLockstepBudgetPlan struct {
+	coarse  uint64
+	mid     uint64
+	fine    uint64
+	windows []zygoLockstepBudgetWindow
+}
+
+type zygoLockstepBudgetWindow struct {
+	midAt     uint64
+	fineAt    uint64
+	fineUntil uint64
+}
 
 type zygoLockstepSide struct {
 	name    string
@@ -30,19 +49,31 @@ type zygoLockstepSide struct {
 	cleanup func()
 }
 
-func TestJea9Linux_ZygoFib10_LazyJITLockstepBudget1000(t *testing.T) {
+func TestJea9Linux_ZygoFib10_LazyJITLockstepAdaptive(t *testing.T) {
 	data, err := os.ReadFile("bench/zygo.elf")
 	if err != nil {
 		t.Skipf("bench/zygo.elf not found: %v", err)
 	}
 
-	budget := zygoLockstepInstructionBudget(t)
-	interp := newZygoLockstepSide(t, "interp", data, false, budget)
+	budgetPlan := zygoLockstepInstructionBudgetPlan(t)
+	maxIC := zygoLockstepEnvUint(t, "ZYGO_LOCKSTEP_MAX_IC", 0)
+	interp := newZygoLockstepSide(t, "interp", data, false, budgetPlan.coarse)
 	defer interp.close()
-	jit := newZygoLockstepSide(t, "jit", data, true, budget)
+	jit := newZygoLockstepSide(t, "jit", data, true, budgetPlan.coarse)
 	defer jit.close()
 
+	currentBudget := budgetPlan.coarse
+	nextProgressIC := zygoLockstepProgressIC
 	for quantum := 0; ; quantum++ {
+		nextBudget := budgetPlan.budgetForIC(jit.cpu.RiscvInstrBegun())
+		if nextBudget != currentBudget {
+			jit.os.instructionBudget = nextBudget
+			interp.os.instructionBudget = nextBudget
+			fmt.Fprintf(os.Stderr, "zygo lockstep: switching budget %d -> %d at ic=%d quantum=%d\n",
+				currentBudget, nextBudget, jit.cpu.RiscvInstrBegun(), quantum)
+			currentBudget = nextBudget
+		}
+
 		jitBeforeIC := jit.cpu.RiscvInstrBegun()
 		interpBeforeIC := interp.cpu.RiscvInstrBegun()
 		jitErr := jit.os.RunJIT(jit.cpu, jit.jit)
@@ -60,6 +91,18 @@ func TestJea9Linux_ZygoFib10_LazyJITLockstepBudget1000(t *testing.T) {
 		if diff := zygoLockstepCompare(jit, interp); diff != "" {
 			t.Fatalf("quantum %d state mismatch after %s:\n%s\n%s",
 				quantum, jitKind, zygoLockstepSummary(jit, interp, jitDelta, interpDelta), diff)
+		}
+		if nextProgressIC != 0 && jit.cpu.RiscvInstrBegun() >= nextProgressIC {
+			fmt.Fprintf(os.Stderr, "zygo lockstep: ic=%d quantum=%d budget=%d pc=0x%x tid=%d syscalls=%d nanosleep=%d\n",
+				jit.cpu.RiscvInstrBegun(), quantum, currentBudget, jit.cpu.pc, jit.os.currentTID, jit.os.SyscallCount(), jit.os.nanosleepCount)
+			for nextProgressIC != 0 && jit.cpu.RiscvInstrBegun() >= nextProgressIC {
+				nextProgressIC += zygoLockstepProgressIC
+			}
+		}
+		if maxIC != 0 && jit.cpu.RiscvInstrBegun() >= maxIC {
+			t.Logf("lockstep stopped at requested max ic=%d quantum=%d syscalls=%d budget_yields=%d",
+				jit.cpu.RiscvInstrBegun(), quantum, jit.os.SyscallCount(), jit.os.BudgetYields())
+			return
 		}
 
 		switch {
@@ -79,17 +122,90 @@ func TestJea9Linux_ZygoFib10_LazyJITLockstepBudget1000(t *testing.T) {
 	}
 }
 
-func zygoLockstepInstructionBudget(t *testing.T) uint64 {
+func zygoLockstepInstructionBudgetPlan(t *testing.T) zygoLockstepBudgetPlan {
 	t.Helper()
-	raw := os.Getenv("ZYGO_LOCKSTEP_BUDGET")
+	if raw := os.Getenv("ZYGO_LOCKSTEP_BUDGET"); raw != "" {
+		budget := zygoLockstepEnvUint(t, "ZYGO_LOCKSTEP_BUDGET", 0)
+		return zygoLockstepBudgetPlan{coarse: budget, fine: budget}
+	}
+	return zygoLockstepBudgetPlan{
+		coarse:  zygoLockstepEnvUint(t, "ZYGO_LOCKSTEP_COARSE_BUDGET", zygoLockstepCoarseBudget),
+		mid:     zygoLockstepEnvUint(t, "ZYGO_LOCKSTEP_MID_BUDGET", zygoLockstepMidBudget),
+		fine:    zygoLockstepEnvUint(t, "ZYGO_LOCKSTEP_FINE_BUDGET", zygoLockstepFineBudget),
+		windows: zygoLockstepBudgetWindows(t),
+	}
+}
+
+func (p zygoLockstepBudgetPlan) budgetForIC(ic uint64) uint64 {
+	for _, w := range p.windows {
+		if w.fineAt != 0 && ic >= w.fineAt && (w.fineUntil == 0 || ic < w.fineUntil) {
+			return p.fine
+		}
+	}
+	for _, w := range p.windows {
+		if w.midAt != 0 && ic >= w.midAt && (w.fineAt == 0 || ic < w.fineAt) {
+			return p.mid
+		}
+	}
+	return p.coarse
+}
+
+func zygoLockstepBudgetWindows(t *testing.T) []zygoLockstepBudgetWindow {
+	t.Helper()
+	raw := os.Getenv("ZYGO_LOCKSTEP_WINDOWS")
 	if raw == "" {
-		return zygoLockstepBudget
+		return []zygoLockstepBudgetWindow{{
+			midAt:     zygoLockstepEnvUint(t, "ZYGO_LOCKSTEP_MID_AT", zygoLockstepMidAtIC),
+			fineAt:    zygoLockstepEnvUint(t, "ZYGO_LOCKSTEP_FINE_AT", zygoLockstepFineAtIC),
+			fineUntil: zygoLockstepEnvUint(t, "ZYGO_LOCKSTEP_FINE_UNTIL", zygoLockstepFineUntilIC),
+		}}
 	}
-	budget, err := strconv.ParseUint(raw, 10, 64)
-	if err != nil || budget == 0 {
-		t.Fatalf("invalid ZYGO_LOCKSTEP_BUDGET=%q", raw)
+	if raw == "none" {
+		return nil
 	}
-	return budget
+	parts := strings.Split(raw, ",")
+	windows := make([]zygoLockstepBudgetWindow, 0, len(parts))
+	for _, part := range parts {
+		fields := strings.Split(strings.TrimSpace(part), ":")
+		if len(fields) != 3 {
+			t.Fatalf("invalid ZYGO_LOCKSTEP_WINDOWS entry %q; want mid:fine:until", part)
+		}
+		midAt := zygoLockstepParseUint(t, "ZYGO_LOCKSTEP_WINDOWS", fields[0])
+		fineAt := zygoLockstepParseUint(t, "ZYGO_LOCKSTEP_WINDOWS", fields[1])
+		fineUntil := zygoLockstepParseUint(t, "ZYGO_LOCKSTEP_WINDOWS", fields[2])
+		if midAt == 0 || fineAt == 0 || fineAt < midAt || fineUntil != 0 && fineUntil < fineAt {
+			t.Fatalf("invalid ZYGO_LOCKSTEP_WINDOWS entry %q; want 0 < mid <= fine <= until", part)
+		}
+		windows = append(windows, zygoLockstepBudgetWindow{
+			midAt:     midAt,
+			fineAt:    fineAt,
+			fineUntil: fineUntil,
+		})
+	}
+	sort.Slice(windows, func(i, j int) bool { return windows[i].midAt < windows[j].midAt })
+	return windows
+}
+
+func zygoLockstepEnvUint(t *testing.T, key string, def uint64) uint64 {
+	t.Helper()
+	raw := os.Getenv(key)
+	if raw == "" {
+		return def
+	}
+	v := zygoLockstepParseUint(t, key, raw)
+	if v == 0 && key != "ZYGO_LOCKSTEP_FINE_AT" {
+		t.Fatalf("invalid %s=%q", key, raw)
+	}
+	return v
+}
+
+func zygoLockstepParseUint(t *testing.T, key, raw string) uint64 {
+	t.Helper()
+	v, err := strconv.ParseUint(raw, 10, 64)
+	if err != nil {
+		t.Fatalf("invalid %s=%q", key, raw)
+	}
+	return v
 }
 
 func newZygoLockstepSide(t *testing.T, name string, elfData []byte, useJIT bool, budget uint64) *zygoLockstepSide {
