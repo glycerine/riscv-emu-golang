@@ -223,6 +223,10 @@ func runCachedBudget(cpu *CPU, cache *DecoderCache, nc *NoteChain, budget uint64
 			// continue re-dispatches through the megaswitch at no runtime
 			// cost since it only happens once per instruction.
 			case 0:
+				if instrBegun != 0 {
+					cpu.riscvInstrBegun += instrBegun
+					instrBegun = 0
+				}
 				pc, err = slowStep(cpu, cache, slot, pc)
 				if err == nil && slot.op != 0 {
 					continue
@@ -906,6 +910,10 @@ func runCachedBudget(cpu *CPU, cache *DecoderCache, nc *NoteChain, budget uint64
 			//   Default: opDelegate (FP/AMO/SYSTEM/Zb*) or RVC FP classes.
 			// ══════════════════════════════════════════════════════════════
 			default:
+				if instrBegun != 0 {
+					cpu.riscvInstrBegun += instrBegun
+					instrBegun = 0
+				}
 				pc, err = cpu.delegateInsn(slot, pc)
 			}
 

@@ -88,6 +88,34 @@ func TestRunDefaultBudget_ExpiresAtExactInstructionCount(t *testing.T) {
 	}
 }
 
+func TestRunDefaultBudget_CSRSeesRetiredInstructionsInCurrentBatch(t *testing.T) {
+	csrrsCycle := ienc(opSYSTEM, 2, 3, 0, 0xC00) // CSRRS x3, cycle, x0
+	cpu, mem := newTestCPU(t, Size64MB, 0x1000, []uint32{
+		ienc(opOPIMM, 0, 1, 0, 1), // ADDI x1, x0, 1
+		ienc(opOPIMM, 0, 2, 0, 2), // ADDI x2, x0, 2
+		csrrsCycle,                // x3 = retired count before this instruction
+		instrECALL,
+	})
+	defer mem.Free()
+
+	res, err := RunDefaultBudget(cpu, &cpu.Notes, 3)
+	if err != nil {
+		t.Fatalf("RunDefaultBudget: %v", err)
+	}
+	if res != RunBudgetExpired {
+		t.Fatalf("RunDefaultBudget result = %v, want RunBudgetExpired", res)
+	}
+	if got := cpu.Reg(3); got != 2 {
+		t.Fatalf("cycle CSR x3 = %d, want 2 retired instructions before CSR", got)
+	}
+	if got := cpu.RiscvInstrBegun(); got != 3 {
+		t.Fatalf("RiscvInstrBegun() = %d, want 3", got)
+	}
+	if got := cpu.PC(); got != 0x100c {
+		t.Fatalf("PC = 0x%x, want 0x100c", got)
+	}
+}
+
 func TestRunDefaultBudget_ZeroBudgetUsesUnboundedRun(t *testing.T) {
 	cpu, mem := newTestCPU(t, Size64MB, 0x1000, []uint32{
 		ienc(opOPIMM, 0, 17, 0, 93), // a7 = exit
