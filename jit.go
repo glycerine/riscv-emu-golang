@@ -1154,7 +1154,7 @@ func (j *JIT) stepBlockWithBudget(cpu *CPU, budget uint64) (ic uint64, err error
 		case jitOK:
 			j.DispatchOK++
 			sourceBlk := blk
-			if res.SourceBlock != 0 {
+			if j.useABJIT && res.SourceBlock != 0 {
 				sourceBlk = (*compiledBlock)(unsafe.Pointer(res.SourceBlock))
 			}
 			if len(sourceBlk.chainExits) > 0 {
@@ -1335,7 +1335,7 @@ func (j *JIT) RunJIT(cpu *CPU) (err0 error) {
 				// When a chain exit isn't patched, the slow stub returns here.
 				// After patching, future executions jump directly — bypassing Go.
 				sourceBlk := blk
-				if res.SourceBlock != 0 {
+				if j.useABJIT && res.SourceBlock != 0 {
 					sourceBlk = (*compiledBlock)(unsafe.Pointer(res.SourceBlock))
 				}
 				if len(sourceBlk.chainExits) > 0 {

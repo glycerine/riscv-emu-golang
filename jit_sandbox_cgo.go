@@ -40,6 +40,7 @@ func sandboxRv8Call(fn uintptr, cpu *CPU,
 		}
 		cpu.resvAddr = resvAddr
 		cpu.resvValid = resvValid != 0
+		res.SourceBlock = 0
 		return res
 	}
 
