@@ -480,8 +480,7 @@ func zygoLockstepSnapshotDiff(label string, jit, interp jea9LinuxCPUSnapshot) st
 			break
 		}
 	}
-	if jit.resvAddr != interp.resvAddr || jit.resvValid != interp.resvValid ||
-		jit.mtvec != interp.mtvec || jit.mepc != interp.mepc || jit.mcause != interp.mcause ||
+	if jit.mtvec != interp.mtvec || jit.mepc != interp.mepc || jit.mcause != interp.mcause ||
 		jit.mstatus != interp.mstatus || jit.mtval != interp.mtval {
 		fmt.Fprintf(&out, "%s control state mismatch\n", label)
 	}

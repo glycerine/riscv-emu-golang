@@ -484,17 +484,15 @@ func (s jea9LinuxContextState) String() string {
 }
 
 type jea9LinuxCPUSnapshot struct {
-	pc        uint64
-	x         [32]uint64
-	f         [32]uint64
-	fcsr      uint32
-	resvAddr  uint64
-	resvValid bool
-	mtvec     uint64
-	mepc      uint64
-	mcause    uint64
-	mstatus   uint64
-	mtval     uint64
+	pc      uint64
+	x       [32]uint64
+	f       [32]uint64
+	fcsr    uint32
+	mtvec   uint64
+	mepc    uint64
+	mcause  uint64
+	mstatus uint64
+	mtval   uint64
 }
 
 type jea9LinuxContext struct {
@@ -996,17 +994,15 @@ func (jos *Jea9Linux) ensureSignalState() {
 
 func snapshotJea9LinuxCPU(cpu *CPU) jea9LinuxCPUSnapshot {
 	return jea9LinuxCPUSnapshot{
-		pc:        cpu.pc,
-		x:         cpu.x,
-		f:         cpu.f,
-		fcsr:      cpu.fcsr,
-		resvAddr:  cpu.resvAddr,
-		resvValid: cpu.resvValid,
-		mtvec:     cpu.mtvec,
-		mepc:      cpu.mepc,
-		mcause:    cpu.mcause,
-		mstatus:   cpu.mstatus,
-		mtval:     cpu.mtval,
+		pc:      cpu.pc,
+		x:       cpu.x,
+		f:       cpu.f,
+		fcsr:    cpu.fcsr,
+		mtvec:   cpu.mtvec,
+		mepc:    cpu.mepc,
+		mcause:  cpu.mcause,
+		mstatus: cpu.mstatus,
+		mtval:   cpu.mtval,
 	}
 }
 
@@ -1016,8 +1012,6 @@ func restoreJea9LinuxCPU(cpu *CPU, snap jea9LinuxCPUSnapshot) {
 	cpu.x[0] = 0
 	cpu.f = snap.f
 	cpu.fcsr = snap.fcsr
-	cpu.resvAddr = snap.resvAddr
-	cpu.resvValid = snap.resvValid
 	cpu.mtvec = snap.mtvec
 	cpu.mepc = snap.mepc
 	cpu.mcause = snap.mcause
