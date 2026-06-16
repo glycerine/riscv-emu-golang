@@ -10,6 +10,8 @@ It is single threaded, and all entropy and randomness and scheduling can be cont
 You could think of `emux` as "a miniature Antithesis" in one little 
 8MB command line tool. It can run compiled Go code.
 
+Also we support JIT to ARM64 now too, in addition to JIT to AMD64.
+
 Project Summary
 ---------------
 
