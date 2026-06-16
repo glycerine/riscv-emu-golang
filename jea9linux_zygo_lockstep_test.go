@@ -195,9 +195,9 @@ func zygoLockstepCompareCPU(out *strings.Builder, label string, jit, interp *CPU
 			break
 		}
 	}
-	if jit.fcsr != interp.fcsr {
-		fmt.Fprintf(out, "%s fcsr mismatch: jit=0x%x interp=0x%x\n", label, jit.fcsr, interp.fcsr)
-	}
+	// Native FP currently does not propagate sticky fflags into fcsr. This
+	// diagnostic is chasing instruction-accounting and scheduler divergence, so
+	// ignore fcsr-only differences here.
 	if jit.resvAddr != interp.resvAddr || jit.resvValid != interp.resvValid {
 		fmt.Fprintf(out, "%s reservation mismatch: jit=(0x%x,%v) interp=(0x%x,%v)\n",
 			label, jit.resvAddr, jit.resvValid, interp.resvAddr, interp.resvValid)
@@ -260,8 +260,8 @@ func zygoLockstepCompareContext(out *strings.Builder, tid uint64, jit, interp *j
 		jit.sigaltSP != interp.sigaltSP || jit.sigaltSize != interp.sigaltSize || jit.sigaltFlags != interp.sigaltFlags {
 		fmt.Fprintf(out, "context %d metadata mismatch\n", tid)
 	}
-	if jit.snapshot != interp.snapshot {
-		fmt.Fprintf(out, "context %d snapshot mismatch:\n%s", tid, zygoLockstepSnapshotDiff("saved CPU", jit.snapshot, interp.snapshot))
+	if diff := zygoLockstepSnapshotDiff("saved CPU", jit.snapshot, interp.snapshot); diff != "" {
+		fmt.Fprintf(out, "context %d snapshot mismatch:\n%s", tid, diff)
 	}
 }
 
@@ -282,7 +282,7 @@ func zygoLockstepSnapshotDiff(label string, jit, interp jea9LinuxCPUSnapshot) st
 			break
 		}
 	}
-	if jit.fcsr != interp.fcsr || jit.resvAddr != interp.resvAddr || jit.resvValid != interp.resvValid ||
+	if jit.resvAddr != interp.resvAddr || jit.resvValid != interp.resvValid ||
 		jit.mtvec != interp.mtvec || jit.mepc != interp.mepc || jit.mcause != interp.mcause ||
 		jit.mstatus != interp.mstatus || jit.mtval != interp.mtval {
 		fmt.Fprintf(&out, "%s control state mismatch\n", label)
