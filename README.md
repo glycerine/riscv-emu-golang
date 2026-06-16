@@ -5,7 +5,7 @@ A RISC-V 64 emulator in Golang (Go)
 gives deterministic simulation testing (DST) a proper fighting chance.
 It is not really Linux; it just implements the Linux system calls ABI that
 a compiled Go program needs to run; kind of like gvisor. It has stacked
-note handling is inspired by plan 9.
+note handling inspired by plan 9.
 
 We are only about 400x slower than actual hardware. The `emux` command
 line tool will run your RISCV64 ELF binary inside the DST sandbox.
