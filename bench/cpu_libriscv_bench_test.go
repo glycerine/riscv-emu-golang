@@ -12,6 +12,9 @@ import (
 )
 
 func BenchmarkCPU_ZygoFib10_Libriscv(b *testing.B) {
+	if !libriscvbench.HasTCCJIT() {
+		b.Fatal("libriscv build does not have RISCV_BINARY_TRANSLATION + RISCV_LIBTCC enabled")
+	}
 	elfData := loadELFFrom(b, "ZYGO_ELF", "zygo.elf")
 	args := []string{"bench/zygo.elf", "-c", zygoFib10Program}
 	const memSize = uint64(16 << 30)
@@ -22,12 +25,15 @@ func BenchmarkCPU_ZygoFib10_Libriscv(b *testing.B) {
 
 	totalInsns := uint64(0)
 	for i := 0; i < b.N; i++ {
+		b.StopTimer()
 		m := libriscvbench.NewMachineRealWriteWithArgs(elfData, memSize, args, true)
 		if m == nil {
 			b.Fatal("NewMachineRealWriteWithArgs returned nil")
 		}
 		allowLibriscvZygoZoneFiles(m)
+		b.StartTimer()
 		insns := m.RunToCompletion(insnLimit)
+		b.StopTimer()
 		code := m.ReturnValue()
 		m.Close()
 		if insns == 0 {
@@ -39,7 +45,6 @@ func BenchmarkCPU_ZygoFib10_Libriscv(b *testing.B) {
 		totalInsns += insns
 	}
 
-	b.StopTimer()
 	elapsed := b.Elapsed().Seconds()
 	if elapsed > 0 && totalInsns > 0 {
 		b.ReportMetric(float64(totalInsns)/elapsed/1e6, "MIPS")

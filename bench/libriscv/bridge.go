@@ -5,11 +5,12 @@
 package libriscv_bench
 
 /*
-#cgo CFLAGS: -I${SRCDIR}/../../xendor/libriscv/c
+#cgo CFLAGS: -I${SRCDIR}/../../xendor/libriscv/c -I${SRCDIR}/../../xendor/libriscv/build_capi/libriscv
 #cgo LDFLAGS: -L${SRCDIR}/../../xendor/libriscv/build_capi -L${SRCDIR}/../../xendor/libriscv/build_capi/libriscv -lriscv_capi -lriscv -lstdc++ -lm
 #cgo darwin LDFLAGS: -framework Security
 
 #include <libriscv.h>
+#include <libriscv_settings.h>
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
@@ -127,6 +128,14 @@ static void portable_clock_gettime_syscall(RISCVMachine *m) {
 static void install_portable_clock_handlers(void) {
     libriscv_set_syscall_handler(113, portable_clock_gettime_syscall);
     libriscv_set_syscall_handler(403, portable_clock_gettime_syscall);
+}
+
+static int bridge_has_libtcc_jit(void) {
+#if defined(RISCV_BINARY_TRANSLATION) && defined(RISCV_LIBTCC)
+    return 1;
+#else
+    return 0;
+#endif
 }
 
 // ── capturing stdout callback ──────────────────────────────────────────────
@@ -313,6 +322,12 @@ import "unsafe"
 // Machine wraps a libriscv RISCVMachine with a Go-friendly lifecycle.
 type Machine struct {
 	m *C.RISCVMachine
+}
+
+// HasTCCJIT reports whether the linked libriscv build has binary translation
+// with libtcc enabled.
+func HasTCCJIT() bool {
+	return C.bridge_has_libtcc_jit() != 0
 }
 
 // NewMachine creates a libriscv machine from an ELF image in memory.
