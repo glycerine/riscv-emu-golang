@@ -56,25 +56,29 @@ func TestJea9Linux_ZygoFib10_LazyJITLockstepAdaptive(t *testing.T) {
 	}
 
 	budgetPlan := zygoLockstepInstructionBudgetPlan(t)
+	budgetPlan.coarse = 2_330_000
+
 	maxIC := zygoLockstepEnvUint(t, "ZYGO_LOCKSTEP_MAX_IC", 0)
 	interp := newZygoLockstepSide(t, "interp", data, false, budgetPlan.coarse)
 	defer interp.close()
 	jit := newZygoLockstepSide(t, "jit", data, true, budgetPlan.coarse)
 	defer jit.close()
 
-	//currentBudget := budgetPlan.coarse
-	currentBudget := uint64(100_000) // budgetPlan.coarse
-	nextProgressIC := zygoLockstepProgressIC
+	currentBudget := budgetPlan.coarse
+	nextProgressIC := uint64(1) // zygoLockstepProgressIC
 	for quantum := 0; ; quantum++ {
-		if false {
-			nextBudget := budgetPlan.budgetForIC(jit.cpu.RiscvInstrBegun())
-			if nextBudget != currentBudget {
-				jit.os.instructionBudget = nextBudget
-				interp.os.instructionBudget = nextBudget
-				fmt.Fprintf(os.Stderr, "zygo lockstep: switching budget %d -> %d at ic=%d quantum=%d\n",
-					currentBudget, nextBudget, jit.cpu.RiscvInstrBegun(), quantum)
-				currentBudget = nextBudget
-			}
+
+		nextBudget := budgetPlan.budgetForIC(jit.cpu.RiscvInstrBegun())
+
+		if quantum > 0 {
+			nextBudget = 10
+		}
+		if nextBudget != currentBudget {
+			jit.os.instructionBudget = nextBudget
+			interp.os.instructionBudget = nextBudget
+			fmt.Fprintf(os.Stderr, "zygo lockstep: switching budget %d -> %d at ic=%d quantum=%d\n",
+				currentBudget, nextBudget, jit.cpu.RiscvInstrBegun(), quantum)
+			currentBudget = nextBudget
 		}
 
 		jitBeforeIC := jit.cpu.RiscvInstrBegun()
