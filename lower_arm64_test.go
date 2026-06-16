@@ -441,6 +441,30 @@ func TestLowerARM64_Set_Assemble(t *testing.T) {
 	}
 }
 
+func TestLowerARM64_CompareNegativeImmediate_Assemble(t *testing.T) {
+	e := NewEmitter(nil)
+	done := e.NewLabel()
+	e.SetImm(e.XReg(10), VRegZero, -1, LT)
+	e.BranchImm(VRegZero, -1, LT, done)
+	e.PlaceLabel(done)
+	e.Ret(0x1004, 0, VRegZero)
+	MaxVReg(e.Block)
+
+	alloc := helperTestAllocate(e.Block, ARM64Pool(e.Block), ARM64Pinned(), nil)
+	ctx := goasm.New(goasm.ARM64)
+	ctx.Append(ctx.NewATEXT())
+	if _, err := LowerARM64_ABJIT(ctx, e.Block, alloc); err != nil {
+		t.Fatalf("lower: %v", err)
+	}
+	code, err := ctx.Assemble()
+	if err != nil {
+		t.Fatalf("Assemble: %v", err)
+	}
+	if len(code) == 0 {
+		t.Fatal("expected non-empty code")
+	}
+}
+
 func TestLowerARM64_FPTempRegs_Assemble(t *testing.T) {
 	tests := []struct {
 		name string

@@ -2022,12 +2022,29 @@ func (lc *lowerARM64Ctx) cmp(a, b int16) {
 }
 
 func (lc *lowerARM64Ctx) cmpImm(a int16, imm int64) {
+	if !arm64CmpImmEncodable(imm) {
+		tmp := a64D
+		if a == tmp {
+			tmp = a64C
+		}
+		lc.loadImm(imm, tmp)
+		lc.cmp(a, tmp)
+		return
+	}
 	p := lc.c.NewProg()
 	p.As = arm64.ACMP
 	p.From.Type = obj.TYPE_CONST
 	p.From.Offset = imm
 	p.Reg = a
 	lc.c.Append(p)
+}
+
+func arm64CmpImmEncodable(imm int64) bool {
+	if imm < 0 {
+		return false
+	}
+	u := uint64(imm)
+	return u <= 0xfff || (u&0xfff == 0 && u>>12 <= 0xfff)
 }
 
 func predBranch(p Pred) obj.As {
