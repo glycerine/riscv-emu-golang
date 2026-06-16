@@ -213,6 +213,10 @@ func (lc *lowerOps) stageInt(v VReg, idx int) int16 {
 		lc.emit2(x86.AMOVQ, goasm.REG_AMD64_BP, stg)
 		return stg
 	}
+	if v == VRSRetBase {
+		lc.emitRM(x86.AMOVQ, goasm.REG_AMD64_SP, lc.sretOffset, stg)
+		return stg
+	}
 	// VRFBase is the FP register file base at RBP+256.
 	if v == VRFBase {
 		p := lc.c.NewProg()
@@ -335,7 +339,7 @@ func (lc *lowerOps) directReg(v VReg) int16 {
 		return -1
 	}
 	switch v {
-	case VRXBase, VRFBase, VRMemBase, VRMemMask, VRRegFile:
+	case VRXBase, VRFBase, VRMemBase, VRMemMask, VRRegFile, VRSRetBase:
 		return -1
 	}
 	hr := lc.hostReg(v)

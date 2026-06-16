@@ -22,15 +22,27 @@ const (
 // pinned to RBP in the rv8 layout.
 const VRRegFile = VReg(VRegTempStart + 4) // t68
 
+// VRSRetBase is the parameter VReg for the RV8 sret metadata buffer.
+// RV8 uses it for native-visible per-dispatch state that is not part of
+// the architectural register file, such as LR/SC reservation state.
+const VRSRetBase = VReg(VRegTempStart + 5) // t69
+
+const vrParamLast = VRSRetBase
+
 // WARNING: Do NOT pin R15 via a VReg constant here. The Emitter's Tmp()
-// allocates sequential VRegs starting at VRegTempStart+5 (after the 5
-// parameter slots t64-t68). Any constant defined here collides with
+// allocates sequential VRegs starting at VRegTempStart+6 (after the 6
+// parameter slots t64-t69). Any constant defined here collides with
 // those temps — the allocator sees the pinned VReg, assigns R15 to
 // the temp, and silently clobbers the budget register. Instead, reserve it
 // through RegPolicy.InstructionCounterReg. The budget ops use R15 directly
 // on AMD64 without going through the allocator.
 //
-// const VRIC = VReg(VRegTempStart + 5) // DO NOT USE — collides with first Tmp()
+// const VRIC = VReg(VRegTempStart + 6) // DO NOT USE — collides with first Tmp()
+
+const (
+	rv8SRetResvAddrOffset  = 144
+	rv8SRetResvValidOffset = 152
+)
 
 // PatchImm64 writes a native absolute-address patch site.
 type PatchImm64 func(code []byte, prog *obj.Prog, value uint64) (int, error)

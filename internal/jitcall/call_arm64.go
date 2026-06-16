@@ -7,7 +7,19 @@ func Call(fn uintptr, x *[32]uint64, f *[32]uint64, fcsr *uint32,
 	memBase uintptr, memMask uint64, budget uint64) Result
 
 //go:noescape
+func CallResv(fn uintptr, x *[32]uint64, f *[32]uint64, fcsr *uint32,
+	memBase uintptr, memMask uint64,
+	resvAddr *uint64, resvValid *uint64, budget uint64) Result
+
+//go:noescape
 func CallAOT(fn uintptr, x *[32]uint64, f *[32]uint64, fcsr *uint32,
 	memBase uintptr, memMask uint64,
 	decoderCacheBase uintptr, decoderCacheMask uint64,
 	vaddrBegin uint64, segSize uint64, budget uint64) Result
+
+//go:noescape
+func CallAOTResv(fn uintptr, x *[32]uint64, f *[32]uint64, fcsr *uint32,
+	memBase uintptr, memMask uint64,
+	decoderCacheBase uintptr, decoderCacheMask uint64,
+	vaddrBegin uint64, segSize uint64,
+	resvAddr *uint64, resvValid *uint64, budget uint64) Result

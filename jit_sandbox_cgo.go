@@ -22,10 +22,32 @@ func sandboxRv8Call(fn uintptr, cpu *CPU,
 	budget uint64) jitcall.Result {
 
 	if !useRv8SandboxTrampoline {
-		return jitcall.Call(fn, &cpu.x, &cpu.f, &cpu.fcsr,
-			cpu.mem.Base(), cpu.mem.Mask(), budget)
+		resvAddr := cpu.resvAddr
+		var resvValid uint64
+		if cpu.resvValid {
+			resvValid = 1
+		}
+		var res jitcall.Result
+		if dcBase != 0 || dcMask != 0 || vBegin != 0 || segSize != 0 {
+			res = jitcall.CallAOTResv(fn, &cpu.x, &cpu.f, &cpu.fcsr,
+				cpu.mem.Base(), cpu.mem.Mask(),
+				dcBase, dcMask, vBegin, segSize,
+				&resvAddr, &resvValid, budget)
+		} else {
+			res = jitcall.CallResv(fn, &cpu.x, &cpu.f, &cpu.fcsr,
+				cpu.mem.Base(), cpu.mem.Mask(),
+				&resvAddr, &resvValid, budget)
+		}
+		cpu.resvAddr = resvAddr
+		cpu.resvValid = resvValid != 0
+		return res
 	}
 
+	resvAddr := C.uint64_t(cpu.resvAddr)
+	var resvValid C.uint64_t
+	if cpu.resvValid {
+		resvValid = 1
+	}
 	r := C.jit_sandbox_call(
 		C.uintptr_t(fn),
 		(*C.uint64_t)(unsafe.Pointer(&cpu.x[0])),
@@ -35,8 +57,12 @@ func sandboxRv8Call(fn uintptr, cpu *CPU,
 		C.uintptr_t(regFile), C.uintptr_t(stackTop),
 		C.uintptr_t(dcBase), C.uint64_t(dcMask),
 		C.uint64_t(vBegin), C.uint64_t(segSize),
+		(*C.uint64_t)(unsafe.Pointer(&resvAddr)),
+		(*C.uint64_t)(unsafe.Pointer(&resvValid)),
 		C.uint64_t(budget),
 	)
+	cpu.resvAddr = uint64(resvAddr)
+	cpu.resvValid = resvValid != 0
 	return jitcall.Result{
 		PC:        uint64(r.pc),
 		Status:    uint64(r.status),

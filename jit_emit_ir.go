@@ -302,7 +302,14 @@ func (e *emitter) allowInstructionFusion() bool {
 }
 
 func (e *emitter) nativeReservationStateAvailable() bool {
-	return e.irEm.j != nil && e.irEm.j.useABJIT
+	return e.irEm.j != nil && (e.irEm.j.useABJIT || e.irEm.j.regPolicy.Name == "rv8")
+}
+
+func (e *emitter) reservationState() (base VReg, addrOff, validOff int64) {
+	if e.irEm.j != nil && e.irEm.j.useABJIT {
+		return e.irEm.XBase(), abjitStateResvAddrOffset, abjitStateResvValidOffset
+	}
+	return e.irEm.SRetBase(), rv8SRetResvAddrOffset, rv8SRetResvValidOffset
 }
 
 func (e *emitter) emitBudgetCheck() {
@@ -2069,7 +2076,8 @@ func (e *emitter) emitLR(rd uint32, addr VReg, width int) {
 		dst = e.xregDst(rd)
 	}
 	e.emitAMOAlignedLoad(dst, addr, width, width == 4, faultLabel)
-	e.irEm.Store(e.irEm.XBase(), abjitStateResvAddrOffset, addr, I64)
+	base, addrOff, _ := e.reservationState()
+	e.irEm.Store(base, addrOff, addr, I64)
 	e.setReservationValid(true)
 }
 
@@ -2079,10 +2087,11 @@ func (e *emitter) emitSC(rd, rs2 uint32, addr VReg, width int) {
 	doneLabel := e.irEm.NewLabel()
 
 	valid := e.irEm.Tmp()
-	e.irEm.Load(valid, e.irEm.XBase(), abjitStateResvValidOffset, I64, false)
+	base, addrOff, validOff := e.reservationState()
+	e.irEm.Load(valid, base, validOff, I64, false)
 	e.irEm.Branch(valid, VRegZero, EQ, failLabel)
 	resvAddr := e.irEm.Tmp()
-	e.irEm.Load(resvAddr, e.irEm.XBase(), abjitStateResvAddrOffset, I64, false)
+	e.irEm.Load(resvAddr, base, addrOff, I64, false)
 	e.irEm.Branch(resvAddr, addr, NE, failLabel)
 
 	storeFault := e.allocFaultLabel(addr, jitStoreFault)
@@ -2208,7 +2217,8 @@ func (e *emitter) setReservationValid(valid bool) {
 	} else {
 		e.irEm.Const(v, 0)
 	}
-	e.irEm.Store(e.irEm.XBase(), abjitStateResvValidOffset, v, I64)
+	base, _, validOff := e.reservationState()
+	e.irEm.Store(base, validOff, v, I64)
 }
 
 func (e *emitter) clearReservation() {

@@ -482,6 +482,9 @@ func TestParamVRegs_MatchEmitter(t *testing.T) {
 	if e.MemMask() != VRMemMask {
 		t.Errorf("MemMask = %v, want %v", e.MemMask(), VRMemMask)
 	}
+	if e.SRetBase() != VRSRetBase {
+		t.Errorf("SRetBase = %v, want %v", e.SRetBase(), VRSRetBase)
+	}
 }
 
 // ── Phase: rv8 register layout (Stage 1) ──
@@ -622,10 +625,11 @@ func TestRV8Pinned(t *testing.T) {
 
 func TestVRRegFile_Distinct(t *testing.T) {
 	seen := map[VReg]string{
-		VRXBase:   "VRXBase",
-		VRFBase:   "VRFBase",
-		VRMemBase: "VRMemBase",
-		VRMemMask: "VRMemMask",
+		VRXBase:    "VRXBase",
+		VRFBase:    "VRFBase",
+		VRMemBase:  "VRMemBase",
+		VRMemMask:  "VRMemMask",
+		VRSRetBase: "VRSRetBase",
 	}
 	if name, dup := seen[VRRegFile]; dup {
 		t.Fatalf("VRRegFile (%d) collides with %s", VRRegFile, name)

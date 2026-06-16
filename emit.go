@@ -14,10 +14,11 @@ type Emitter struct {
 
 	// Parameter VRegs — set during NewEmitter, represent the JIT block's
 	// function arguments (pinned to host regs by the register allocator).
-	xBase   VReg // pointer to x[32] array
-	fBase   VReg // pointer to f[32] array
-	memBase VReg // guest memory base
-	memMask VReg // guest memory mask
+	xBase    VReg // pointer to x[32] array
+	fBase    VReg // pointer to f[32] array
+	memBase  VReg // guest memory base
+	memMask  VReg // guest memory mask
+	sretBase VReg // RV8 sret metadata buffer
 }
 
 const initialDirtySize = 128
@@ -40,11 +41,12 @@ func NewEmitter(j *JIT) *Emitter {
 
 	// Pre-allocate parameter VRegs. These correspond to the JIT block's
 	// function signature: block_entry(x[], f[], mem_base, mem_mask).
-	e.xBase = e.Tmp()   // t64 = VRXBase
-	e.fBase = e.Tmp()   // t65 = VRFBase
-	e.memBase = e.Tmp() // t66 = VRMemBase
-	e.memMask = e.Tmp() // t67 = VRMemMask
-	e.Tmp()             // t68 = VRRegFile (reserved, pinned to RBP)
+	e.xBase = e.Tmp()    // t64 = VRXBase
+	e.fBase = e.Tmp()    // t65 = VRFBase
+	e.memBase = e.Tmp()  // t66 = VRMemBase
+	e.memMask = e.Tmp()  // t67 = VRMemMask
+	e.Tmp()              // t68 = VRRegFile (reserved, pinned to RBP)
+	e.sretBase = e.Tmp() // t69 = VRSRetBase
 	return e
 }
 
@@ -85,6 +87,9 @@ func (e *Emitter) MemBase() VReg { return e.memBase }
 
 // MemMask returns the VReg holding the guest memory mask.
 func (e *Emitter) MemMask() VReg { return e.memMask }
+
+// SRetBase returns the VReg holding the RV8 sret metadata pointer.
+func (e *Emitter) SRetBase() VReg { return e.sretBase }
 
 // ── Integer ALU ──
 

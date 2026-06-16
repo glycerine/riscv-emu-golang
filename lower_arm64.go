@@ -269,6 +269,9 @@ func lowerARM64(ctx *goasm.Ctx, b *Block, alloc *Allocation, abi arm64ABI) (*Low
 
 func (lc *lowerARM64Ctx) collectTemps() {
 	add := func(v VReg) {
+		if v >= VRegTempStart && v <= vrParamLast {
+			return
+		}
 		if v >= VRegTempStart && !lc.tempHasHostReg(v) {
 			if _, ok := lc.tempSlots[v]; !ok {
 				lc.tempSlots[v] = int64(len(lc.tempSlots)) * 8
@@ -462,7 +465,7 @@ func (lc *lowerARM64Ctx) canUseHostReg(v VReg) bool {
 	if v == VRegZero {
 		return false
 	}
-	if v >= VRegTempStart && v <= VRRegFile {
+	if v >= VRegTempStart && v <= vrParamLast {
 		return false
 	}
 	return v < 64 || v >= VRegTempStart
@@ -497,7 +500,7 @@ func (lc *lowerARM64Ctx) hostRegAt(v VReg, idx int) int16 {
 }
 
 func (lc *lowerARM64Ctx) tempHasHostReg(v VReg) bool {
-	if v < VRegTempStart || v <= VRRegFile {
+	if v < VRegTempStart || v <= vrParamLast {
 		return false
 	}
 	if lc.alloc == nil || int(v) >= len(lc.alloc.Kind) {
@@ -841,6 +844,8 @@ func (lc *lowerARM64Ctx) loadV(v VReg, dst int16) error {
 		lc.loadImm(0, dst)
 	case v == VRXBase || v == VRRegFile:
 		lc.emitRR(arm64.AMOVD, lc.xBaseReg(), dst)
+	case v == VRSRetBase:
+		lc.emitRR(arm64.AMOVD, lc.sretBase(), dst)
 	case v == VRFBase:
 		lc.emitRRI(arm64.AADD, fpRegOffset, lc.fBaseReg(), dst)
 	case v == VRMemBase:

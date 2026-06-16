@@ -17,6 +17,7 @@ JitResult jit_sandbox_call(
 	uintptr_t reg_file, uintptr_t sandbox_stack_top,
 	uintptr_t dc_base, uint64_t dc_mask,
 	uint64_t vaddr_begin, uint64_t seg_size,
+	uint64_t *resv_addr, uint64_t *resv_valid,
 	uint64_t budget)
 {
 	char *rf = (char*)reg_file;
@@ -32,15 +33,17 @@ JitResult jit_sandbox_call(
 	*(uintptr_t*)(rf + RF_MEMBASE_OFF) = mem_base;
 	*(uint64_t*)(rf + RF_MEMMASK_OFF) = mem_mask;
 
-	/* 144-byte sret buffer at top of sandbox stack. */
-	char *sret = (char*)sandbox_stack_top - 144;
-	memset(sret, 0, 144);
+	/* 160-byte sret buffer at top of sandbox stack. */
+	char *sret = (char*)sandbox_stack_top - 160;
+	memset(sret, 0, 160);
 	*(uint64_t*)(sret + 24) = budget; /* R15 remaining guest-instruction budget */
 	*(uint64_t*)(sret + 80) = reg_file + 512;
 	*(uint64_t*)(sret + 88)  = dc_base;
 	*(uint64_t*)(sret + 96)  = dc_mask;
 	*(uint64_t*)(sret + 104) = vaddr_begin;
 	*(uint64_t*)(sret + 112) = seg_size;
+	*(uint64_t*)(sret + 144) = *resv_addr;
+	*(uint64_t*)(sret + 152) = *resv_valid;
 
 	jit_trampoline_asm((void*)fn, sret, (void*)reg_file,
 		mem_base, mem_mask, sret);
@@ -51,6 +54,8 @@ JitResult jit_sandbox_call(
 	result.fault_addr        = *(uint64_t*)(sret + 16);
 	uint64_t remaining       = *(uint64_t*)(sret + 24);
 	result.ic                = remaining <= budget ? budget - remaining : 0;
+	*resv_addr               = *(uint64_t*)(sret + 144);
+	*resv_valid              = *(uint64_t*)(sret + 152);
 
 	/* Copy shadow register file → Go registers. */
 	memcpy(go_x, rf, 256);

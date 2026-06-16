@@ -11,11 +11,23 @@ func sandboxRv8Call(fn uintptr, cpu *CPU,
 	dcBase uintptr, dcMask, vBegin, segSize uint64,
 	budget uint64) jitcall.Result {
 
-	if dcBase != 0 || dcMask != 0 || vBegin != 0 || segSize != 0 {
-		return jitcall.CallAOT(fn, &cpu.x, &cpu.f, &cpu.fcsr,
-			cpu.mem.Base(), cpu.mem.Mask(),
-			dcBase, dcMask, vBegin, segSize, budget)
+	resvAddr := cpu.resvAddr
+	var resvValid uint64
+	if cpu.resvValid {
+		resvValid = 1
 	}
-	return jitcall.Call(fn, &cpu.x, &cpu.f, &cpu.fcsr,
-		cpu.mem.Base(), cpu.mem.Mask(), budget)
+	var res jitcall.Result
+	if dcBase != 0 || dcMask != 0 || vBegin != 0 || segSize != 0 {
+		res = jitcall.CallAOTResv(fn, &cpu.x, &cpu.f, &cpu.fcsr,
+			cpu.mem.Base(), cpu.mem.Mask(),
+			dcBase, dcMask, vBegin, segSize,
+			&resvAddr, &resvValid, budget)
+	} else {
+		res = jitcall.CallResv(fn, &cpu.x, &cpu.f, &cpu.fcsr,
+			cpu.mem.Base(), cpu.mem.Mask(),
+			&resvAddr, &resvValid, budget)
+	}
+	cpu.resvAddr = resvAddr
+	cpu.resvValid = resvValid != 0
+	return res
 }

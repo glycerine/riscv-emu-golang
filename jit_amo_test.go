@@ -22,6 +22,10 @@ func amoenc(funct5, funct3, rd, rs1, rs2 uint32) uint32 {
 }
 
 func runJITAMOProgram(t *testing.T, insns []uint32, setup func(*CPU, *GuestMemory)) (*CPU, *GuestMemory, *JIT, error) {
+	return runJITAMOProgramWithJIT(t, insns, setup, nil)
+}
+
+func runJITAMOProgramWithJIT(t *testing.T, insns []uint32, setup func(*CPU, *GuestMemory), configure func(*JIT)) (*CPU, *GuestMemory, *JIT, error) {
 	t.Helper()
 	const codeVA = uint64(0x10000)
 	cpu, mem := newTestCPU(t, Size1MB, codeVA, insns)
@@ -31,6 +35,9 @@ func runJITAMOProgram(t *testing.T, insns []uint32, setup func(*CPU, *GuestMemor
 		setup(cpu, mem)
 	}
 	jit := NewJIT()
+	if configure != nil {
+		configure(jit)
+	}
 	err := jit.RunJIT(cpu)
 	return cpu, mem, jit, err
 }
@@ -537,4 +544,69 @@ func TestJIT_LRSCFaultPCs(t *testing.T) {
 			t.Fatalf("fault PC = 0x%x, want SC PC 0x10004", got)
 		}
 	})
+}
+
+func TestJIT_RV8_AMOAddNative(t *testing.T) {
+	const dataVA = uint64(0x20000)
+	insns := []uint32{
+		amoenc(amoFunct5Add, amoFunct3D, 12, 10, 11),
+		instrECALL,
+	}
+	cpu, mem, jit, err := runJITAMOProgramWithJIT(t, insns, func(cpu *CPU, mem *GuestMemory) {
+		cpu.SetReg(10, dataVA)
+		cpu.SetReg(11, 7)
+		mustStore64AMO(t, mem, dataVA, 35)
+	}, func(jit *JIT) {
+		jit.SetRegPolicy(PolicyRV8)
+	})
+	defer mem.Free()
+	defer jit.Close()
+
+	if err != ErrEcall {
+		t.Fatalf("RunJIT err = %v, want ErrEcall", err)
+	}
+	requireNativeAMO(t, jit)
+	if got := cpu.Reg(12); got != 35 {
+		t.Fatalf("AMO rd = %d, want old value 35", got)
+	}
+	if got := mustLoad64AMO(t, mem, dataVA); got != 42 {
+		t.Fatalf("mem64 = %d, want 42", got)
+	}
+}
+
+func TestJIT_RV8_LRSCReservationAcrossDispatches(t *testing.T) {
+	const dataVA = uint64(0x20000)
+	insns := []uint32{
+		amoenc(amoFunct5LR, amoFunct3D, 12, 10, 0),
+		jenc(5, 8), // terminate this block; target is the SC block at +8.
+		instrECALL,
+		amoenc(amoFunct5SC, amoFunct3D, 13, 10, 11),
+		instrECALL,
+	}
+	cpu, mem, jit, err := runJITAMOProgramWithJIT(t, insns, func(cpu *CPU, mem *GuestMemory) {
+		cpu.SetReg(10, dataVA)
+		cpu.SetReg(11, 0xaabbccddeeff0011)
+		mustStore64AMO(t, mem, dataVA, 0x1122334455667788)
+	}, func(jit *JIT) {
+		jit.SetRegPolicy(PolicyRV8)
+	})
+	defer mem.Free()
+	defer jit.Close()
+
+	if err != ErrEcall {
+		t.Fatalf("RunJIT err = %v, want ErrEcall", err)
+	}
+	requireNativeAMO(t, jit)
+	if got := cpu.Reg(12); got != 0x1122334455667788 {
+		t.Fatalf("LR rd = 0x%x, want old memory value", got)
+	}
+	if got := cpu.Reg(13); got != 0 {
+		t.Fatalf("SC rd = %d, want success 0 after reservation crosses dispatch", got)
+	}
+	if got := mustLoad64AMO(t, mem, dataVA); got != 0xaabbccddeeff0011 {
+		t.Fatalf("mem64 = 0x%x, want SC source", got)
+	}
+	if cpu.resvValid {
+		t.Fatalf("SC left reservation valid")
+	}
 }

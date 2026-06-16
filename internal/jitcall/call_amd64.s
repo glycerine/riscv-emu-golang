@@ -93,6 +93,91 @@ TEXT ·Call(SB), $65536-88
 
 	RET
 
+// func CallResv(fn uintptr, x *[32]uint64, f *[32]uint64, fcsr *uint32,
+//           memBase uintptr, memMask uint64,
+//           resvAddr *uint64, resvValid *uint64, budget uint64) Result
+//
+// Same as Call, but publishes LR/SC reservation state into the RV8 sret
+// metadata slots [144..160] and copies it back after the native block returns.
+//
+// Go ABI0 stack layout:
+//   fn+0(FP)          uintptr     8 bytes
+//   x+8(FP)           *[32]uint64 8 bytes
+//   f+16(FP)          *[32]uint64 8 bytes
+//   fcsr+24(FP)       *uint32     8 bytes
+//   memBase+32(FP)    uintptr     8 bytes
+//   memMask+40(FP)    uint64      8 bytes
+//   resvAddr+48(FP)   *uint64     8 bytes
+//   resvValid+56(FP)  *uint64     8 bytes
+//   budget+64(FP)     uint64      8 bytes
+//   ret+72(FP)        Result      32 bytes
+TEXT ·CallResv(SB), $65536-104
+
+	MOVQ	BX,  32(SP)
+	MOVQ	BP,  40(SP)
+	MOVQ	R12, 48(SP)
+	MOVQ	R13, 56(SP)
+	MOVQ	R14, 64(SP)
+	MOVQ	R15, 72(SP)
+
+	MOVQ	$0,  80(SP)
+	MOVQ	$0,  88(SP)
+	MOVQ	$0,  96(SP)
+	MOVQ	$0, 104(SP)
+	MOVQ	$0, 112(SP)
+	MOVQ	$0, 120(SP)
+	MOVQ	$0, 128(SP)
+	MOVQ	$0, 136(SP)
+	MOVQ	$0, 144(SP)
+	MOVQ	$0, 152(SP)
+
+	MOVQ	fcsr+24(FP), AX
+	MOVQ	AX,  80(SP)
+
+	MOVQ	resvAddr+48(FP), AX
+	MOVQ	0(AX), AX
+	MOVQ	AX, 144(SP)
+	MOVQ	resvValid+56(FP), AX
+	MOVQ	0(AX), AX
+	MOVQ	AX, 152(SP)
+
+	LEAQ	0(SP), DI
+	MOVQ	x+8(FP), SI
+	MOVQ	f+16(FP), DX
+	MOVQ	fcsr+24(FP), CX
+	MOVQ	memBase+32(FP), R8
+	MOVQ	memMask+40(FP), R9
+	MOVQ	budget+64(FP), R15
+
+	MOVQ	fn+0(FP), AX
+	CALL	AX
+
+	MOVQ	0(SP),  CX
+	MOVQ	8(SP),  DX
+	MOVQ	16(SP), SI
+	MOVQ	budget+64(FP), AX
+	SUBQ	R15, AX
+	MOVQ	CX, ret_PC+72(FP)
+	MOVQ	DX, ret_Status+80(FP)
+	MOVQ	SI, ret_FaultAddr+88(FP)
+	MOVQ	AX, ret_Cycles+96(FP)
+
+	MOVQ	resvAddr+48(FP), DX
+	MOVQ	144(SP), AX
+	MOVQ	AX, 0(DX)
+	MOVQ	resvValid+56(FP), DX
+	MOVQ	152(SP), AX
+	MOVQ	AX, 0(DX)
+
+	MOVQ	32(SP), BX
+	MOVQ	40(SP), BP
+	MOVQ	48(SP), R12
+	MOVQ	56(SP), R13
+	MOVQ	64(SP), R14
+	MOVQ	72(SP), R15
+
+	RET
+
 // func CallAOT(fn, x, f, fcsr, memBase, memMask, dcBase, dcMask, vBegin, segSize, budget) Result
 //
 // Same as Call but also publishes four AOT-related values into the
@@ -161,6 +246,92 @@ TEXT ·CallAOT(SB), $65536-120
 	MOVQ	AX, ret_Cycles+112(FP)
 
 	// Restore callee-saved registers.
+	MOVQ	32(SP), BX
+	MOVQ	40(SP), BP
+	MOVQ	48(SP), R12
+	MOVQ	56(SP), R13
+	MOVQ	64(SP), R14
+	MOVQ	72(SP), R15
+
+	RET
+
+// func CallAOTResv(fn, x, f, fcsr, memBase, memMask, dcBase, dcMask,
+//                  vBegin, segSize, resvAddr, resvValid, budget) Result
+//
+// Same as CallAOT, plus RV8 LR/SC reservation-state copy-in/copy-out at
+// sret metadata slots [144..160].
+//
+// Go ABI0 stack layout:
+//   fn+0(FP)          uintptr        8
+//   x+8(FP)           *[32]uint64    8
+//   f+16(FP)          *[32]uint64    8
+//   fcsr+24(FP)       *uint32        8
+//   memBase+32(FP)    uintptr        8
+//   memMask+40(FP)    uint64         8
+//   dcBase+48(FP)     uintptr        8
+//   dcMask+56(FP)     uint64         8
+//   vBegin+64(FP)     uint64         8
+//   segSize+72(FP)    uint64         8
+//   resvAddr+80(FP)   *uint64        8
+//   resvValid+88(FP)  *uint64        8
+//   budget+96(FP)     uint64         8
+//   ret+104(FP)       Result         32
+TEXT ·CallAOTResv(SB), $65536-136
+
+	MOVQ	BX,  32(SP)
+	MOVQ	BP,  40(SP)
+	MOVQ	R12, 48(SP)
+	MOVQ	R13, 56(SP)
+	MOVQ	R14, 64(SP)
+	MOVQ	R15, 72(SP)
+
+	MOVQ	fcsr+24(FP), AX
+	MOVQ	AX,  80(SP)
+
+	MOVQ	dcBase+48(FP),  AX
+	MOVQ	AX,  88(SP)
+	MOVQ	dcMask+56(FP),  AX
+	MOVQ	AX,  96(SP)
+	MOVQ	vBegin+64(FP),  AX
+	MOVQ	AX, 104(SP)
+	MOVQ	segSize+72(FP), AX
+	MOVQ	AX, 112(SP)
+
+	MOVQ	resvAddr+80(FP), AX
+	MOVQ	0(AX), AX
+	MOVQ	AX, 144(SP)
+	MOVQ	resvValid+88(FP), AX
+	MOVQ	0(AX), AX
+	MOVQ	AX, 152(SP)
+
+	LEAQ	0(SP), DI
+	MOVQ	x+8(FP), SI
+	MOVQ	f+16(FP), DX
+	MOVQ	fcsr+24(FP), CX
+	MOVQ	memBase+32(FP), R8
+	MOVQ	memMask+40(FP), R9
+	MOVQ	budget+96(FP), R15
+
+	MOVQ	fn+0(FP), AX
+	CALL	AX
+
+	MOVQ	0(SP),  CX
+	MOVQ	8(SP),  DX
+	MOVQ	16(SP), SI
+	MOVQ	budget+96(FP), AX
+	SUBQ	R15, AX
+	MOVQ	CX, ret_PC+104(FP)
+	MOVQ	DX, ret_Status+112(FP)
+	MOVQ	SI, ret_FaultAddr+120(FP)
+	MOVQ	AX, ret_Cycles+128(FP)
+
+	MOVQ	resvAddr+80(FP), DX
+	MOVQ	144(SP), AX
+	MOVQ	AX, 0(DX)
+	MOVQ	resvValid+88(FP), DX
+	MOVQ	152(SP), AX
+	MOVQ	AX, 0(DX)
+
 	MOVQ	32(SP), BX
 	MOVQ	40(SP), BP
 	MOVQ	48(SP), R12

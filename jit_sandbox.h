@@ -17,6 +17,7 @@ JitResult jit_sandbox_call(
 	uintptr_t reg_file, uintptr_t sandbox_stack_top,
 	uintptr_t dc_base, uint64_t dc_mask,
 	uint64_t vaddr_begin, uint64_t seg_size,
+	uint64_t *resv_addr, uint64_t *resv_valid,
 	uint64_t budget);
 
 #endif
