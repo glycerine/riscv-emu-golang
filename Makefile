@@ -520,12 +520,15 @@ bench-cpu: guest-elf
 	        ./bench/ 2>&1
 
 lazy-bench:
-	@echo "── zygo fib(10), Jea9Linux lazy JIT ───────────────────────────"
+	@echo "── zygo fib(10), Jea9Linux lazy JIT vs Interp vs Libriscv ─────"
+	cd $(ROOT) && go test -count=1 -benchtime=1x -benchmem \
+	         -run=xxx -bench=BenchmarkCPU_ZygoFib10_Interpreter \
+	         ./bench/ 2>&1
 	cd $(ROOT) && ZYGO_ELF=$(ROOT)bench/zygo.elf \
-	    go test -count=1 -benchtime=1x -benchmem -cpuprofile pprof.cpu.out \
+	    go test -count=1 -benchtime=1x -benchmem \
 	        -run=xxx -bench=BenchmarkCPU_ZygoFib10_LazyJIT \
 	        ./bench/ 2>&1
-	go test -tags libriscv -count=1 -benchtime=1x -benchmem \
+	cd $(ROOT) && go test -tags libriscv -count=1 -benchtime=1x -benchmem \
 	         -run=xxx -bench=BenchmarkCPU_ZygoFib10_Libriscv \
 	         ./bench/ 2>&1
 
