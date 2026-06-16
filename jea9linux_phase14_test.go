@@ -205,6 +205,7 @@ func TestJea9Linux_GoReplayIdentical(t *testing.T) {
 		Options: Jea9LinuxOptions{
 			EntropySeed:      []byte("go replay seed"),
 			MonotonicStartNS: 123,
+			Trace:            true,
 		},
 	}
 	first := runJea9LinuxGoFixture(t, cfg)

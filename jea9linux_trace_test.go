@@ -32,6 +32,7 @@ func runJea9LinuxTraceFixture(t *testing.T) (*GuestMemory, *Jea9Linux, int) {
 		EntropySeed:       []byte("trace seed"),
 		MonotonicStartNS:  44,
 		InstructionBudget: 2,
+		Trace:             true,
 	})
 	code, err := RunWithJea9Linux(cpu, j)
 	if err != nil {
@@ -110,6 +111,30 @@ func TestJea9Linux_TraceSnapshotDeepCopy(t *testing.T) {
 	}
 	if again.Clock[0].NS == -1 {
 		t.Fatal("TraceSnapshot returned aliased clock records")
+	}
+}
+
+func TestJea9Linux_TraceDisabledByDefault(t *testing.T) {
+	const codeVA = uint64(0x1000)
+	insns := []uint32{
+		ienc(opOPIMM, 0, 10, 0, 0),  // a0 = exit code
+		ienc(opOPIMM, 0, 17, 0, 93), // a7 = exit
+		instrECALL,
+	}
+	cpu, mem := newTestCPU(t, Size64MB, codeVA, insns)
+	defer mem.Free()
+	j := NewJea9Linux(Jea9LinuxOptions{})
+	code, err := RunWithJea9Linux(cpu, j)
+	if err != nil {
+		t.Fatalf("RunWithJea9Linux: %v", err)
+	}
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	trace := j.TraceSnapshot()
+	if len(trace.Syscalls) != 0 || len(trace.Schedule) != 0 ||
+		len(trace.Random) != 0 || len(trace.Clock) != 0 {
+		t.Fatalf("trace enabled by default: %+v", trace)
 	}
 }
 

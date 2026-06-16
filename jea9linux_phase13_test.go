@@ -280,8 +280,9 @@ func TestJea9Linux_JITBudgetReturnPreservesState(t *testing.T) {
 
 func TestJea9Linux_JITFutexWaitWake(t *testing.T) {
 	path := "testvectors/jea9linux/elf/futex_wait_wake.elf"
-	interp := runJea9LinuxELFFixture(t, path, false, Jea9LinuxOptions{})
-	jit := runJea9LinuxELFFixture(t, path, true, Jea9LinuxOptions{})
+	opts := Jea9LinuxOptions{Trace: true}
+	interp := runJea9LinuxELFFixture(t, path, false, opts)
+	jit := runJea9LinuxELFFixture(t, path, true, opts)
 	if interp.code != 0 || jit.code != 0 {
 		t.Fatalf("exit codes interp=%d jit=%d, want both 0", interp.code, jit.code)
 	}
@@ -324,7 +325,7 @@ func TestJea9Linux_JITAllCheckedInELFFixtures(t *testing.T) {
 
 func TestJea9Linux_JITReplayMatchesInterpreterTrace(t *testing.T) {
 	path := "testvectors/jea9linux/elf/getrandom_repeat.elf"
-	opts := Jea9LinuxOptions{EntropySeed: []byte("jit replay trace")}
+	opts := Jea9LinuxOptions{EntropySeed: []byte("jit replay trace"), Trace: true}
 	interp := runJea9LinuxELFFixture(t, path, false, opts)
 	jit := runJea9LinuxELFFixture(t, path, true, opts)
 	if !reflect.DeepEqual(interp, jit) {

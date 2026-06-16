@@ -312,6 +312,8 @@ type Jea9LinuxOptions struct {
 	RealtimeOffsetNS  int64
 	NSPerInstruction  int64
 	InstructionBudget uint64
+	// Trace enables replay/debug recording. It is off by default for normal runs.
+	Trace             bool
 	Stdin             io.Reader
 	Stdout            io.Writer
 	Stderr            io.Writer
@@ -407,6 +409,7 @@ type Jea9Linux struct {
 	signalActions       map[uint64]jea9LinuxSignalAction
 	signalFrames        map[jea9LinuxSignalFrameKey]jea9LinuxSignalFrame
 	signalRestorer      uint64
+	traceEnabled        bool
 	trace               Jea9LinuxTraceSnapshot
 }
 
@@ -519,6 +522,7 @@ func NewJea9Linux(opts Jea9LinuxOptions) *Jea9Linux {
 		threadName:        "jea9linux",
 		signalActions:     make(map[uint64]jea9LinuxSignalAction),
 		signalFrames:      make(map[jea9LinuxSignalFrameKey]jea9LinuxSignalFrame),
+		traceEnabled:      opts.Trace,
 	}
 	if jos.instructionBudget == 0 {
 		jos.instructionBudget = defaultJea9LinuxInstructionBudget
@@ -708,6 +712,9 @@ func (jos *Jea9Linux) traceTID() uint64 {
 }
 
 func (jos *Jea9Linux) recordSyscallTrace(cpu *CPU, n Note, args SyscallArgs, d NoteDisposition) {
+	if !jos.traceEnabled {
+		return
+	}
 	jos.trace.Syscalls = append(jos.trace.Syscalls, Jea9LinuxSyscallTraceEntry{
 		TID: jos.traceTID(),
 		PC:  n.PC,
@@ -726,6 +733,9 @@ func (jos *Jea9Linux) recordSyscallTrace(cpu *CPU, n Note, args SyscallArgs, d N
 }
 
 func (jos *Jea9Linux) recordScheduleTrace(cpu *CPU, event string, tid, nextTID uint64) {
+	if !jos.traceEnabled {
+		return
+	}
 	jos.trace.Schedule = append(jos.trace.Schedule, Jea9LinuxScheduleTraceEntry{
 		Event:           event,
 		TID:             tid,
@@ -736,6 +746,9 @@ func (jos *Jea9Linux) recordScheduleTrace(cpu *CPU, event string, tid, nextTID u
 }
 
 func (jos *Jea9Linux) recordRandomTrace(source string, n, flags uint64, b []byte) {
+	if !jos.traceEnabled {
+		return
+	}
 	jos.trace.Random = append(jos.trace.Random, Jea9LinuxRandomTraceEntry{
 		Source: source,
 		TID:    jos.traceTID(),
@@ -746,6 +759,9 @@ func (jos *Jea9Linux) recordRandomTrace(source string, n, flags uint64, b []byte
 }
 
 func (jos *Jea9Linux) recordClockTrace(source string, clockID uint64, ns int64) {
+	if !jos.traceEnabled {
+		return
+	}
 	jos.trace.Clock = append(jos.trace.Clock, Jea9LinuxClockTraceEntry{
 		Source:  source,
 		TID:     jos.traceTID(),
@@ -1513,9 +1529,11 @@ func (jos *Jea9Linux) Handle(cpu *CPU, n Note) (disp NoteDisposition) {
 		A4:  cpu.Reg(14),
 		A5:  cpu.Reg(15),
 	}
-	defer func() {
-		jos.recordSyscallTrace(cpu, n, args, disp)
-	}()
+	if jos.traceEnabled {
+		defer func() {
+			jos.recordSyscallTrace(cpu, n, args, disp)
+		}()
+	}
 	switch args.Num {
 	case jea9LinuxSysEventfd2:
 		cpu.SetReg(10, uint64(jos.sysEventfd2(args.A0, args.A1)))
