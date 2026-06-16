@@ -427,6 +427,7 @@ type Jea9Linux struct {
 	futexWaiters        map[uint64][]uint64
 	timedFutexWaiters   int
 	timedEpollWaiters   int
+	timedNanosleepWaiters int
 	signalActions       map[uint64]jea9LinuxSignalAction
 	signalFrames        map[jea9LinuxSignalFrameKey]jea9LinuxSignalFrame
 	signalRestorer      uint64
@@ -466,6 +467,7 @@ const (
 	jea9LinuxWaitNone jea9LinuxWaitKind = iota
 	jea9LinuxWaitFutex
 	jea9LinuxWaitEpoll
+	jea9LinuxWaitNanosleep
 )
 
 func (s jea9LinuxContextState) String() string {
@@ -1058,6 +1060,15 @@ func (jos *Jea9Linux) nextRunnableAfterCurrent() (uint64, bool) {
 	return 0, false
 }
 
+func (jos *Jea9Linux) firstRunnableContext() (uint64, bool) {
+	for _, tid := range jos.contextOrder {
+		if ctx := jos.contexts[tid]; ctx != nil && ctx.state == jea9LinuxContextRunnable {
+			return tid, true
+		}
+	}
+	return 0, false
+}
+
 func (jos *Jea9Linux) hasRunnableContext() bool {
 	for _, ctx := range jos.contexts {
 		if ctx.state == jea9LinuxContextRunnable {
@@ -1065,6 +1076,53 @@ func (jos *Jea9Linux) hasRunnableContext() bool {
 		}
 	}
 	return false
+}
+
+func (jos *Jea9Linux) nextWaitDeadline() (int64, bool) {
+	var deadline int64
+	var ok bool
+	for _, ctx := range jos.contexts {
+		if ctx == nil || ctx.state != jea9LinuxContextWaiting || !ctx.waitHasDeadline {
+			continue
+		}
+		if !ok || ctx.waitDeadlineNS < deadline {
+			deadline = ctx.waitDeadlineNS
+			ok = true
+		}
+	}
+	return deadline, ok
+}
+
+func (jos *Jea9Linux) scheduleAfterCurrentBlocked(cpu *CPU) NoteDisposition {
+	if next, ok := jos.nextRunnableAfterCurrent(); ok {
+		jos.loadContext(cpu, next)
+		jos.blocked = false
+		jos.blockedHasDeadline = false
+		return NoteHandled
+	}
+	if jos.clockMode != Jea9ClockManual {
+		if deadline, ok := jos.nextWaitDeadline(); ok {
+			if deadline > jos.monotonicNS {
+				jos.monotonicNS = deadline
+			}
+			jos.refreshBlocked()
+			if next, ok := jos.firstRunnableContext(); ok {
+				jos.loadContext(cpu, next)
+				jos.blocked = false
+				jos.blockedHasDeadline = false
+				return NoteHandled
+			}
+		}
+	}
+	jos.blocked = true
+	if deadline, ok := jos.nextWaitDeadline(); ok {
+		jos.blockedUntil = deadline
+		jos.blockedHasDeadline = true
+	} else {
+		jos.blockedUntil = 0
+		jos.blockedHasDeadline = false
+	}
+	return NoteExit
 }
 
 func (jos *Jea9Linux) markRunnable(tid uint64, retval int64) {
@@ -2686,6 +2744,10 @@ func (jos *Jea9Linux) clearContextWaitFields(ctx *jea9LinuxContext) {
 			if jos.timedEpollWaiters > 0 {
 				jos.timedEpollWaiters--
 			}
+		case jea9LinuxWaitNanosleep:
+			if jos.timedNanosleepWaiters > 0 {
+				jos.timedNanosleepWaiters--
+			}
 		}
 	}
 	ctx.waitKind = jea9LinuxWaitNone
@@ -3906,6 +3968,14 @@ func (jos *Jea9Linux) refreshBlocked() {
 	if jos.timedEpollWaiters > 0 {
 		jos.refreshEpollTimeouts()
 	}
+	if jos.timedNanosleepWaiters > 0 {
+		jos.refreshNanosleepTimeouts()
+	}
+	if jos.blocked && jos.hasRunnableContext() {
+		jos.blocked = false
+		jos.blockedHasDeadline = false
+		return
+	}
 	if jos.blocked && jos.blockedHasDeadline && jos.monotonicNS >= jos.blockedUntil {
 		jos.blocked = false
 		jos.blockedHasDeadline = false
@@ -3935,6 +4005,21 @@ func (jos *Jea9Linux) refreshEpollTimeouts() {
 	}
 	for _, ctx := range jos.contexts {
 		if ctx.state != jea9LinuxContextWaiting || ctx.waitKind != jea9LinuxWaitEpoll || !ctx.waitHasDeadline {
+			continue
+		}
+		if jos.monotonicNS < ctx.waitDeadlineNS {
+			continue
+		}
+		jos.markRunnable(ctx.tid, 0)
+	}
+}
+
+func (jos *Jea9Linux) refreshNanosleepTimeouts() {
+	if len(jos.contexts) == 0 {
+		return
+	}
+	for _, ctx := range jos.contexts {
+		if ctx.state != jea9LinuxContextWaiting || ctx.waitKind != jea9LinuxWaitNanosleep || !ctx.waitHasDeadline {
 			continue
 		}
 		if jos.monotonicNS < ctx.waitDeadlineNS {
