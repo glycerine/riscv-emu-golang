@@ -1745,7 +1745,9 @@ func (lc *lowerOps) opsStopperLoad(ins *IRInstr) {
 // abjitStateICOffset is the byte offset of IC in abjit.State.
 // Must agree with abjit/abjit.go and TestStateLayout.
 const (
-	abjitStateICOffset = 600
+	abjitStateICOffset        = 600
+	abjitStateResvAddrOffset  = 608
+	abjitStateResvValidOffset = 616
 )
 
 func (lc *lowerOps) opsMemAdd(ins *IRInstr) {

@@ -62,6 +62,12 @@ func abjitDispatch(
 	s.DCMask = dcMask
 	s.VAddrBegin = vBegin
 	s.SegSize = segSize
+	s.ResvAddr = cpu.resvAddr
+	if cpu.resvValid {
+		s.ResvValid = 1
+	} else {
+		s.ResvValid = 0
+	}
 	initialBudget := budget
 	s.IC = initialBudget
 
@@ -87,6 +93,8 @@ func abjitDispatch(
 		cpu.f = s.F
 	}
 	cpu.fcsr = s.FCSR
+	cpu.resvAddr = s.ResvAddr
+	cpu.resvValid = s.ResvValid != 0
 
 	return res
 }

@@ -74,6 +74,15 @@ func TestLowerABJIT_ChainExit(t *testing.T) {
 	t.Logf("chain exit block: %d bytes", len(code))
 }
 
+func TestLowerABJIT_SetPCHighAddress(t *testing.T) {
+	e := NewEmitter(nil)
+	e.SetPC(0x24ec32000)
+	e.RetBudget()
+
+	code, _ := lowerBlockABJIT(t, e.Block)
+	t.Logf("high SetPC block: %d bytes", len(code))
+}
+
 func TestLowerABJIT_ChainEntryExists(t *testing.T) {
 	b := NewBlock()
 	b.maxVreg = MaxVReg(b)

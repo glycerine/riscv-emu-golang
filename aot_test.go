@@ -780,6 +780,84 @@ func TestAOT_MutableDecoderCachePublishesLazyBlock(t *testing.T) {
 	}
 }
 
+func TestAOT_AMO_LRSC_BlockCoverageAndRun(t *testing.T) {
+	const (
+		base   = uint64(0x10000)
+		dataVA = uint64(0x20000)
+	)
+	data := BuildELF(base, []uint32{
+		jenc(0, 8), // 0x10000: jump to AMO block
+		instrECALL, // 0x10004: filler
+		amoenc(amoFunct5Add, amoFunct3D, 12, 10, 11), // 0x10008: AMOADD.D
+		jenc(0, 4), // 0x1000c: jump to LR block
+		amoenc(amoFunct5LR, amoFunct3D, 13, 10, 0), // 0x10010: LR.D
+		jenc(0, 4), // 0x10014: jump to SC block
+		amoenc(amoFunct5SC, amoFunct3D, 14, 10, 11), // 0x10018: SC.D
+		instrECALL, // 0x1001c
+	})
+
+	mem, err := NewGuestMemory(Size1GB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mem.Free()
+	elf, err := LoadELFBytes(mem, data)
+	if err != nil {
+		t.Fatalf("LoadELFBytes: %v", err)
+	}
+	mustStore64AMO(t, mem, dataVA, 10)
+
+	j := NewJIT()
+	defer j.Close()
+	if err := j.InstallAOT(mem, data); err != nil {
+		t.Fatalf("InstallAOT: %v", err)
+	}
+	if len(j.aotSegments) != 1 {
+		t.Fatalf("len(aotSegments) = %d, want 1", len(j.aotSegments))
+	}
+	seg := j.aotSegments[0]
+	for _, pc := range []uint64{base + 8, base + 0x10, base + 0x18} {
+		blk := seg.blocks[pc]
+		if blk == nil || blk.chainEntry == 0 {
+			var chainEntry uintptr
+			if blk != nil {
+				chainEntry = blk.chainEntry
+			}
+			t.Fatalf("AOT block at pc=0x%x = %p chainEntry=0x%x, want native block",
+				pc, blk, chainEntry)
+		}
+		if got := decoderCacheEntry(seg, pc); got == 0 {
+			t.Fatalf("decoderCacheEntry(0x%x) = 0, want native entry", pc)
+		}
+	}
+
+	cpu := NewCPU(*mem)
+	cpu.SetPC(elf.Entry)
+	cpu.SetReg(10, dataVA)
+	cpu.SetReg(11, 3)
+	cpu.Notes.Push(ecallStop)
+	defer cpu.Notes.Pop()
+
+	if err := j.RunJIT(cpu); err != ErrEcall {
+		t.Fatalf("RunJIT err = %v, want ErrEcall", err)
+	}
+	if j.DispatchInterp != 0 {
+		t.Fatalf("DispatchInterp = %d, want 0 AOT AMO/LR/SC fallbacks", j.DispatchInterp)
+	}
+	if got := cpu.Reg(12); got != 10 {
+		t.Fatalf("AMO rd = %d, want old value 10", got)
+	}
+	if got := cpu.Reg(13); got != 13 {
+		t.Fatalf("LR rd = %d, want 13", got)
+	}
+	if got := cpu.Reg(14); got != 0 {
+		t.Fatalf("SC rd = %d, want success 0", got)
+	}
+	if got := mustLoad64AMO(t, mem, dataVA); got != 3 {
+		t.Fatalf("mem64 = %d, want SC store value 3", got)
+	}
+}
+
 // TestAOT_DynamicSegmentCreate simulates a LuaJIT-style guest:
 //   - ELF ships with only the `.text` segment containing a stub that
 //     jumps into a dynamically-created exec region.

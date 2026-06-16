@@ -285,6 +285,8 @@ func TestStateLayout(t *testing.T) {
 		{"SegSize", unsafe.Offsetof(s.SegSize), 584},
 		{"Cycles", unsafe.Offsetof(s.Cycles), 592},
 		{"IC", unsafe.Offsetof(s.IC), 600},
+		{"ResvAddr", unsafe.Offsetof(s.ResvAddr), 608},
+		{"ResvValid", unsafe.Offsetof(s.ResvValid), 616},
 	}
 	for _, c := range checks {
 		if c.got != c.want {

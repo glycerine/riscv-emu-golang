@@ -14,6 +14,8 @@ import "unsafe"
 //	Offset 516: (padding) — 4 bytes
 //	Offset 520: memBase   — 8 bytes
 //	Offset 528: memMask   — 8 bytes
+//	Offset 608: resvAddr  — 8 bytes
+//	Offset 616: resvValid — 8 bytes (0 or 1)
 type State struct {
 	X          [32]uint64
 	F          [32]uint64
@@ -30,6 +32,8 @@ type State struct {
 	SegSize    uint64
 	Cycles     uint64 // Reserved for future per-block instruction count (not currently populated)
 	IC         uint64 // remaining guest-instruction budget at native entry/exit
+	ResvAddr   uint64 // LR/SC reservation address for single-hart atomics
+	ResvValid  uint64 // LR/SC reservation valid flag (0 or 1 for native code)
 }
 
 //go:noinline

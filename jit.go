@@ -455,6 +455,12 @@ func (j *JIT) fallbackTraceEntry(mem *GuestMemory, pc uint64) *JITFallbackTraceE
 	if ent := j.fallbackTrace[pc]; ent != nil {
 		return ent
 	}
+	ent := newJITFallbackTraceEntry(mem, pc)
+	j.fallbackTrace[pc] = ent
+	return ent
+}
+
+func newJITFallbackTraceEntry(mem *GuestMemory, pc uint64) *JITFallbackTraceEntry {
 	ent := &JITFallbackTraceEntry{PC: pc}
 	if mem != nil {
 		if r := mem.FindExecRegion(pc); r != nil {
@@ -484,7 +490,6 @@ func (j *JIT) fallbackTraceEntry(mem *GuestMemory, pc uint64) *JITFallbackTraceE
 			}
 		}
 	}
-	j.fallbackTrace[pc] = ent
 	return ent
 }
 
@@ -498,7 +503,7 @@ func lazyCompilePanicMessage(mem *GuestMemory, pc uint64, res *emitResult, err e
 		msg += fmt.Sprintf(" numInsns=%d ir=%d", res.numInsns, irCount)
 	}
 	if mem != nil {
-		ent := (&JIT{fallbackTrace: make(map[uint64]*JITFallbackTraceEntry)}).fallbackTraceEntry(mem, pc)
+		ent := newJITFallbackTraceEntry(mem, pc)
 		if ent.InExec {
 			msg += fmt.Sprintf(" exec=[0x%x,0x%x)", ent.RegionBegin, ent.RegionEnd)
 		} else {

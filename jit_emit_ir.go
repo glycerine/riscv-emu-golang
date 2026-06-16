@@ -301,6 +301,10 @@ func (e *emitter) allowInstructionFusion() bool {
 	return true
 }
 
+func (e *emitter) nativeReservationStateAvailable() bool {
+	return e.irEm.j != nil && e.irEm.j.useABJIT
+}
+
 func (e *emitter) emitBudgetCheck() {
 	e.emitBudgetReserve(1)
 }
@@ -396,9 +400,13 @@ func (e *emitter) emitSyscall(resumePC uint64) {
 // faulting instruction's PC and the live faulting address. Mirrors the TCC
 // emitter's per-call-site `return (JITResult){pc, ic, status, addr}` pattern.
 func (e *emitter) allocFaultLabel(addr VReg, status int) Label {
+	return e.allocFaultLabelAt(e.pc, addr, status)
+}
+
+func (e *emitter) allocFaultLabelAt(pc uint64, addr VReg, status int) Label {
 	l := e.irEm.NewLabel()
 	e.deferredFaults = append(e.deferredFaults, deferredFault{
-		label: l, pc: e.pc, addrVR: addr, status: status,
+		label: l, pc: pc, addrVR: addr, status: status,
 	})
 	return l
 }
@@ -902,7 +910,7 @@ func scanUsedRegs(mem *GuestMemory, startPC, endPC uint64, used *[32]bool) {
 			}
 			// Mark rs2 for formats that use it.
 			switch opcode {
-			case 0x33, 0x3B: // OP, OP-32
+			case 0x33, 0x3B, 0x2F: // OP, OP-32, AMO
 				if rs2 != 0 {
 					used[rs2] = true
 				}
@@ -1109,7 +1117,7 @@ func (e *emitter) emit32(insn uint32) {
 	savedNumInsns := e.numInsns
 	savedBudgetExits := len(e.budgetExits)
 	e.emitLabel()
-	lateBudget := opcode == 0x17 || opcode == 0x13 || opcode == 0x1B
+	lateBudget := opcode == 0x17 || opcode == 0x13 || opcode == 0x1B || opcode == 0x2F
 	if !lateBudget {
 		e.emitBudgetCheck()
 	}
@@ -1265,6 +1273,10 @@ func (e *emitter) emit32(insn uint32) {
 		if !e.terminated {
 			e.advancePC(4)
 		}
+
+	case 0x2F: // AMO / LR / SC
+		funct5 := insn >> 27
+		e.emitAMO(rd, rs1, rs2, funct3, funct5)
 
 	case 0x07: // FP LOAD
 		e.emitFPLoad(rd, rs1, iimm, funct3)
@@ -1941,6 +1953,266 @@ func (e *emitter) emitOp32(rd, rs1, rs2, funct3, funct7 uint32) {
 	default:
 		e.terminated = true
 	}
+}
+
+// ── AMO / LR / SC ──────────────────────────────────────────────────────
+
+func amoWidth(funct3 uint32) int {
+	switch funct3 {
+	case 0b010:
+		return 4
+	case 0b011:
+		return 8
+	default:
+		return 0
+	}
+}
+
+func amoOpSupported(funct5 uint32) bool {
+	switch funct5 {
+	case 0b00000, // AMOADD
+		0b00001, // AMOSWAP
+		0b00010, // LR
+		0b00011, // SC
+		0b00100, // AMOXOR
+		0b01000, // AMOOR
+		0b01100, // AMOAND
+		0b10000, // AMOMIN
+		0b10100, // AMOMAX
+		0b11000, // AMOMINU
+		0b11100: // AMOMAXU
+		return true
+	default:
+		return false
+	}
+}
+
+func (e *emitter) emitAMO(rd, rs1, rs2, funct3, funct5 uint32) {
+	width := amoWidth(funct3)
+	if width == 0 || !amoOpSupported(funct5) || !e.nativeReservationStateAvailable() {
+		e.terminated = true
+		return
+	}
+	if funct5 == 0b00010 && e.tryEmitLRSCFusion(rd, rs1, funct3) {
+		return
+	}
+
+	e.emitBudgetCheck()
+	addr := e.irEm.Tmp()
+	e.irEm.Mov(addr, e.xreg(rs1))
+
+	switch funct5 {
+	case 0b00010: // LR.W / LR.D
+		e.emitLR(rd, addr, width)
+	case 0b00011: // SC.W / SC.D
+		e.emitSC(rd, rs2, addr, width)
+	default:
+		e.emitOrdinaryAMO(rd, rs2, addr, width, funct5)
+	}
+	if !e.terminated {
+		e.advancePC(4)
+	}
+}
+
+func (e *emitter) tryEmitLRSCFusion(lrRD, rs1, lrFunct3 uint32) bool {
+	if !e.allowInstructionFusion() || lrRD == rs1 {
+		return false
+	}
+	next, ok := e.peek32(e.pc + 4)
+	if !ok || next&0x7F != 0x2F {
+		return false
+	}
+	scRD := (next >> 7) & 0x1F
+	scFunct3 := (next >> 12) & 0x7
+	scRS1 := (next >> 15) & 0x1F
+	scRS2 := (next >> 20) & 0x1F
+	scFunct5 := next >> 27
+	if scFunct5 != 0b00011 || scFunct3 != lrFunct3 || scRS1 != rs1 {
+		return false
+	}
+	width := amoWidth(lrFunct3)
+	if width == 0 {
+		return false
+	}
+	e.emitFusedLRSC(lrRD, scRD, rs1, scRS2, width)
+	return true
+}
+
+func (e *emitter) emitFusedLRSC(lrRD, scRD, rs1, scRS2 uint32, width int) {
+	e.emitBudgetReserve(2)
+	addr := e.irEm.Tmp()
+	e.irEm.Mov(addr, e.xreg(rs1))
+
+	lrFault := e.allocFaultLabelAt(e.pc, addr, jitLoadFault)
+	lrDst := e.irEm.Tmp()
+	if lrRD != 0 {
+		lrDst = e.xregDst(lrRD)
+	}
+	e.emitAMOAlignedLoad(lrDst, addr, width, width == 4, lrFault)
+
+	storeVal := e.xreg(scRS2)
+	scFault := e.allocFaultLabelAt(e.pc+4, addr, jitStoreFault)
+	e.emitAMOAlignedStore(addr, storeVal, width, scFault)
+
+	if scRD != 0 {
+		e.irEm.Const(e.xregDst(scRD), 0)
+	}
+	e.clearReservation()
+	e.advancePC(4)
+	e.advancePC(4)
+}
+
+func (e *emitter) emitLR(rd uint32, addr VReg, width int) {
+	faultLabel := e.allocFaultLabel(addr, jitLoadFault)
+	dst := e.irEm.Tmp()
+	if rd != 0 {
+		dst = e.xregDst(rd)
+	}
+	e.emitAMOAlignedLoad(dst, addr, width, width == 4, faultLabel)
+	e.irEm.Store(e.irEm.XBase(), abjitStateResvAddrOffset, addr, I64)
+	e.setReservationValid(true)
+}
+
+func (e *emitter) emitSC(rd, rs2 uint32, addr VReg, width int) {
+	storeVal := e.xreg(rs2)
+	failLabel := e.irEm.NewLabel()
+	doneLabel := e.irEm.NewLabel()
+
+	valid := e.irEm.Tmp()
+	e.irEm.Load(valid, e.irEm.XBase(), abjitStateResvValidOffset, I64, false)
+	e.irEm.Branch(valid, VRegZero, EQ, failLabel)
+	resvAddr := e.irEm.Tmp()
+	e.irEm.Load(resvAddr, e.irEm.XBase(), abjitStateResvAddrOffset, I64, false)
+	e.irEm.Branch(resvAddr, addr, NE, failLabel)
+
+	storeFault := e.allocFaultLabel(addr, jitStoreFault)
+	e.emitAMOAlignedStore(addr, storeVal, width, storeFault)
+	if rd != 0 {
+		e.irEm.Const(e.xregDst(rd), 0)
+	}
+	e.clearReservation()
+	e.irEm.Jump(doneLabel)
+
+	e.irEm.PlaceLabel(failLabel)
+	if rd != 0 {
+		e.irEm.Const(e.xregDst(rd), 1)
+	}
+	e.clearReservation()
+	e.irEm.PlaceLabel(doneLabel)
+}
+
+func (e *emitter) emitOrdinaryAMO(rd, rs2 uint32, addr VReg, width int, funct5 uint32) {
+	loadFault := e.allocFaultLabel(addr, jitLoadFault)
+	old := e.irEm.Tmp()
+	e.emitAMOAlignedLoad(old, addr, width, false, loadFault)
+
+	src := e.xreg(rs2)
+	storeVal := e.emitAMOResultValue(old, src, width, funct5)
+	storeFault := e.allocFaultLabel(addr, jitStoreFault)
+	e.emitAMOAlignedStore(addr, storeVal, width, storeFault)
+
+	if rd != 0 {
+		dst := e.xregDst(rd)
+		if width == 4 {
+			e.irEm.Sext(dst, old, I32)
+		} else {
+			e.irEm.Mov(dst, old)
+		}
+	}
+	e.clearReservation()
+}
+
+func (e *emitter) emitAMOResultValue(old, src VReg, width int, funct5 uint32) VReg {
+	srcVal := src
+	if width == 4 {
+		srcVal = e.irEm.Tmp()
+		e.irEm.Zext(srcVal, src, I32)
+	}
+
+	dst := e.irEm.Tmp()
+	switch funct5 {
+	case 0b00001: // AMOSWAP
+		e.irEm.Mov(dst, srcVal)
+	case 0b00000: // AMOADD
+		e.irEm.Add(dst, old, srcVal)
+	case 0b00100: // AMOXOR
+		e.irEm.Xor(dst, old, srcVal)
+	case 0b01100: // AMOAND
+		e.irEm.And(dst, old, srcVal)
+	case 0b01000: // AMOOR
+		e.irEm.Or(dst, old, srcVal)
+	case 0b10000: // AMOMIN
+		if width == 4 {
+			oldS := e.irEm.Tmp()
+			srcS := e.irEm.Tmp()
+			e.irEm.Sext(oldS, old, I32)
+			e.irEm.Sext(srcS, srcVal, I32)
+			e.emitSelect(dst, oldS, srcS, LT, old, srcVal)
+		} else {
+			e.emitSelect(dst, old, srcVal, LT, old, srcVal)
+		}
+	case 0b10100: // AMOMAX
+		if width == 4 {
+			oldS := e.irEm.Tmp()
+			srcS := e.irEm.Tmp()
+			e.irEm.Sext(oldS, old, I32)
+			e.irEm.Sext(srcS, srcVal, I32)
+			e.emitSelect(dst, oldS, srcS, GT, old, srcVal)
+		} else {
+			e.emitSelect(dst, old, srcVal, GT, old, srcVal)
+		}
+	case 0b11000: // AMOMINU
+		e.emitSelect(dst, old, srcVal, LTU, old, srcVal)
+	case 0b11100: // AMOMAXU
+		e.emitSelect(dst, old, srcVal, GTU, old, srcVal)
+	default:
+		e.irEm.Mov(dst, old)
+	}
+	return dst
+}
+
+func (e *emitter) emitSelect(dst, cmpA, cmpB VReg, pred Pred, trueVal, falseVal VReg) {
+	takeTrue := e.irEm.NewLabel()
+	done := e.irEm.NewLabel()
+	e.irEm.Branch(cmpA, cmpB, pred, takeTrue)
+	e.irEm.Mov(dst, falseVal)
+	e.irEm.Jump(done)
+	e.irEm.PlaceLabel(takeTrue)
+	e.irEm.Mov(dst, trueVal)
+	e.irEm.PlaceLabel(done)
+}
+
+func (e *emitter) emitAMOAlignedLoad(dst, addr VReg, width int, signed bool, faultLabel Label) {
+	e.emitAMOAlignmentCheck(addr, width, faultLabel)
+	e.irEm.MaskedLoadAddr(dst, addr, e.irEm.MemBase(), e.irEm.MemMask(), width, signed, faultLabel)
+}
+
+func (e *emitter) emitAMOAlignedStore(addr, src VReg, width int, faultLabel Label) {
+	e.emitAMOAlignmentCheck(addr, width, faultLabel)
+	e.irEm.GuestStoreAddr(addr, e.irEm.MemBase(), e.irEm.MemMask(), src, width, faultLabel)
+}
+
+func (e *emitter) emitAMOAlignmentCheck(addr VReg, width int, faultLabel Label) {
+	if width <= 1 {
+		return
+	}
+	alignBits := e.irEm.Tmp()
+	e.irEm.AndImm(alignBits, addr, int64(width-1))
+	e.irEm.Branch(alignBits, VRegZero, NE, faultLabel)
+}
+
+func (e *emitter) setReservationValid(valid bool) {
+	v := e.irEm.Tmp()
+	if valid {
+		e.irEm.Const(v, 1)
+	} else {
+		e.irEm.Const(v, 0)
+	}
+	e.irEm.Store(e.irEm.XBase(), abjitStateResvValidOffset, v, I64)
+}
+
+func (e *emitter) clearReservation() {
+	e.setReservationValid(false)
 }
 
 // ── LOAD ───────────────────────────────────────────────────────────────

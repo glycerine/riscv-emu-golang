@@ -48,7 +48,9 @@ func init() {
 		unsafe.Offsetof(s.VAddrBegin) != abjitVAddrBeginOff ||
 		unsafe.Offsetof(s.SegSize) != abjitSegSizeOff ||
 		unsafe.Offsetof(s.Cycles) != abjitCyclesOff ||
-		unsafe.Offsetof(s.IC) != abjitStateICOffset {
+		unsafe.Offsetof(s.IC) != abjitStateICOffset ||
+		unsafe.Offsetof(s.ResvAddr) != abjitStateResvAddrOffset ||
+		unsafe.Offsetof(s.ResvValid) != abjitStateResvValidOffset {
 		panic("abjit.State layout mismatch")
 	}
 }
