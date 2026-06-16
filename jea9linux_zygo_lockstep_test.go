@@ -65,13 +65,15 @@ func TestJea9Linux_ZygoFib10_LazyJITLockstepAdaptive(t *testing.T) {
 	currentBudget := budgetPlan.coarse
 	nextProgressIC := zygoLockstepProgressIC
 	for quantum := 0; ; quantum++ {
-		nextBudget := budgetPlan.budgetForIC(jit.cpu.RiscvInstrBegun())
-		if nextBudget != currentBudget {
-			jit.os.instructionBudget = nextBudget
-			interp.os.instructionBudget = nextBudget
-			fmt.Fprintf(os.Stderr, "zygo lockstep: switching budget %d -> %d at ic=%d quantum=%d\n",
-				currentBudget, nextBudget, jit.cpu.RiscvInstrBegun(), quantum)
-			currentBudget = nextBudget
+		if false {
+			nextBudget := budgetPlan.budgetForIC(jit.cpu.RiscvInstrBegun())
+			if nextBudget != currentBudget {
+				jit.os.instructionBudget = nextBudget
+				interp.os.instructionBudget = nextBudget
+				fmt.Fprintf(os.Stderr, "zygo lockstep: switching budget %d -> %d at ic=%d quantum=%d\n",
+					currentBudget, nextBudget, jit.cpu.RiscvInstrBegun(), quantum)
+				currentBudget = nextBudget
+			}
 		}
 
 		jitBeforeIC := jit.cpu.RiscvInstrBegun()
@@ -110,6 +112,7 @@ func TestJea9Linux_ZygoFib10_LazyJITLockstepAdaptive(t *testing.T) {
 			if jit.stdout.String() != "55\n" {
 				t.Fatalf("zygo stdout = %q, want %q", jit.stdout.String(), "55\n")
 			}
+			fmt.Printf("%v\n", jit.stdout.String())
 			t.Logf("lockstep completed at quantum=%d ic=%d syscalls=%d budget_yields=%d",
 				quantum, jit.cpu.RiscvInstrBegun(), jit.os.SyscallCount(), jit.os.BudgetYields())
 			return
