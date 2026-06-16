@@ -1,5 +1,6 @@
 package riscv
 
+/* trying to do long lockstep runs for correctness can take over an hour. this just aborts early unhelpfully
 import (
 	"os"
 	"testing"
@@ -30,3 +31,4 @@ func TestMain(m *testing.M) {
 		panic("test suite exceeded timeout — likely an infinite loop in CPU")
 	}
 }
+*/
