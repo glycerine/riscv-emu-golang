@@ -1,8 +1,11 @@
 A RISC-V 64 emulator in Golang (Go)
 ==============
 
-* News 2026 June 16: v0.0.9 adds a mocked out Linux OS implementation that
+* News 2026 June 16: v0.0.9 emulates a deterministic Linux OS "personality" and thus
 gives deterministic simulation testing (DST) a proper fighting chance.
+It is not really Linux; it just implements the Linux system calls ABI that
+a compiled Go program needs to run; kind of like gvisor. It has stacked
+note handling is inspired by plan 9.
 
 We are only about 400x slower than actual hardware. The `emux` command
 line tool will run your RISCV64 ELF binary inside the DST sandbox.
@@ -10,7 +13,7 @@ It is single threaded, and all entropy and randomness and scheduling can be cont
 You could think of `emux` as "a miniature Antithesis" in one little 
 8MB command line tool. It can run compiled Go code.
 
-Also we support JIT to ARM64 now too, in addition to JIT to AMD64.
+Also we support JIT-to-ARM64 now too, in addition to JIT to AMD64.
 
 Project Summary
 ---------------
