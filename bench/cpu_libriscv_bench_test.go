@@ -25,15 +25,12 @@ func BenchmarkCPU_ZygoFib10_Libriscv(b *testing.B) {
 
 	totalInsns := uint64(0)
 	for i := 0; i < b.N; i++ {
-		b.StopTimer()
 		m := libriscvbench.NewMachineRealWriteWithArgs(elfData, memSize, args, true)
 		if m == nil {
 			b.Fatal("NewMachineRealWriteWithArgs returned nil")
 		}
 		allowLibriscvZygoZoneFiles(m)
-		b.StartTimer()
 		insns := m.RunToCompletion(insnLimit)
-		b.StopTimer()
 		code := m.ReturnValue()
 		m.Close()
 		if insns == 0 {
