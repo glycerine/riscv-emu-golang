@@ -62,7 +62,8 @@ func TestJea9Linux_ZygoFib10_LazyJITLockstepAdaptive(t *testing.T) {
 	jit := newZygoLockstepSide(t, "jit", data, true, budgetPlan.coarse)
 	defer jit.close()
 
-	currentBudget := budgetPlan.coarse
+	//currentBudget := budgetPlan.coarse
+	currentBudget := uint64(100_000) // budgetPlan.coarse
 	nextProgressIC := zygoLockstepProgressIC
 	for quantum := 0; ; quantum++ {
 		if false {
