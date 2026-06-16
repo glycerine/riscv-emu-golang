@@ -419,27 +419,27 @@ type Jea9Linux struct {
 	threadName         string
 	vm                 *jea9LinuxVM
 
-	contexts            map[uint64]*jea9LinuxContext
-	contextOrder        []uint64
-	currentTID          uint64
-	nextTID             uint64
-	loadedGuestContexts int
-	futexWaiters        map[uint64][]uint64
-	timedFutexWaiters   int
-	timedEpollWaiters   int
+	contexts              map[uint64]*jea9LinuxContext
+	contextOrder          []uint64
+	currentTID            uint64
+	nextTID               uint64
+	loadedGuestContexts   int
+	futexWaiters          map[uint64][]uint64
+	timedFutexWaiters     int
+	timedEpollWaiters     int
 	timedNanosleepWaiters int
-	signalActions       map[uint64]jea9LinuxSignalAction
-	signalFrames        map[jea9LinuxSignalFrameKey]jea9LinuxSignalFrame
-	signalRestorer      uint64
-	traceEnabled        bool
-	trace               Jea9LinuxTraceSnapshot
-	syscallCount        uint64
-	syscallCounts       [512]uint64
-	syscallCountOutside uint64
-	syscallPCCounts     map[uint64]uint64
-	nanosleepCount      uint64
-	nanosleepTotalNS    uint64
-	nanosleepMaxNS      uint64
+	signalActions         map[uint64]jea9LinuxSignalAction
+	signalFrames          map[jea9LinuxSignalFrameKey]jea9LinuxSignalFrame
+	signalRestorer        uint64
+	traceEnabled          bool
+	trace                 Jea9LinuxTraceSnapshot
+	syscallCount          uint64
+	syscallCounts         [512]uint64
+	syscallCountOutside   uint64
+	syscallPCCounts       map[uint64]uint64
+	nanosleepCount        uint64
+	nanosleepTotalNS      uint64
+	nanosleepMaxNS        uint64
 }
 
 type jea9LinuxAuxEntry struct {
@@ -1093,6 +1093,20 @@ func (jos *Jea9Linux) nextWaitDeadline() (int64, bool) {
 	return deadline, ok
 }
 
+func (jos *Jea9Linux) advanceIdleClockToNextDeadline() {
+	if jos.clockMode != Jea9ClockIdleJump {
+		return
+	}
+	deadline, ok := jos.nextWaitDeadline()
+	if !ok {
+		return
+	}
+	if deadline > jos.monotonicNS {
+		jos.monotonicNS = deadline
+	}
+	jos.refreshBlocked()
+}
+
 func (jos *Jea9Linux) scheduleAfterCurrentBlocked(cpu *CPU) NoteDisposition {
 	if next, ok := jos.nextRunnableAfterCurrent(); ok {
 		jos.loadContext(cpu, next)
@@ -1665,6 +1679,7 @@ func (jos *Jea9Linux) expireBudget(cpu *CPU) error {
 		ctx := jos.ensureScheduler(cpu)
 		ctx.state = jea9LinuxContextRunnable
 		ctx.snapshot = snapshotJea9LinuxCPU(cpu)
+		jos.advanceIdleClockToNextDeadline()
 		if next, ok := jos.nextRunnableAfterCurrent(); ok {
 			jos.loadContext(cpu, next)
 			to = next
@@ -1841,12 +1856,7 @@ func (jos *Jea9Linux) Handle(cpu *CPU, n Note) (disp NoteDisposition) {
 		cpu.SetReg(10, uint64(jos.sysPrlimit64(cpu, args.A0, args.A1, args.A2, args.A3)))
 		return NoteHandled
 	case jea9LinuxSysNanosleep:
-		ret, blocked := jos.sysNanosleep(cpu, args.A0, args.A1)
-		if blocked {
-			return NoteExit
-		}
-		cpu.SetReg(10, uint64(ret))
-		return NoteHandled
+		return jos.sysNanosleep(cpu, args.A0, args.A1)
 	case jea9LinuxSysGetrandom:
 		cpu.SetReg(10, uint64(jos.sysGetrandom(cpu, args.A0, args.A1, args.A2)))
 		return NoteHandled
@@ -2840,6 +2850,7 @@ func (jos *Jea9Linux) sysSchedYield(cpu *CPU) NoteDisposition {
 	cpu.SetReg(10, 0)
 	ctx.state = jea9LinuxContextRunnable
 	ctx.snapshot = snapshotJea9LinuxCPU(cpu)
+	jos.advanceIdleClockToNextDeadline()
 	if next, ok := jos.nextRunnableAfterCurrent(); ok {
 		jos.loadContext(cpu, next)
 		to = next
@@ -3920,20 +3931,23 @@ func (jos *Jea9Linux) sysGettimeofday(cpu *CPU, tvAddr, tzAddr uint64) int64 {
 	return 0
 }
 
-func (jos *Jea9Linux) sysNanosleep(cpu *CPU, reqAddr, remAddr uint64) (int64, bool) {
+func (jos *Jea9Linux) sysNanosleep(cpu *CPU, reqAddr, remAddr uint64) NoteDisposition {
 	_ = remAddr
 	secRaw, f := cpu.mem.Load64(reqAddr)
 	if f != nil {
-		return jea9LinuxErrEFAULT, false
+		setJea9LinuxReturn(cpu, jea9LinuxErrEFAULT)
+		return NoteHandled
 	}
 	nsecRaw, f := cpu.mem.Load64(reqAddr + 8)
 	if f != nil {
-		return jea9LinuxErrEFAULT, false
+		setJea9LinuxReturn(cpu, jea9LinuxErrEFAULT)
+		return NoteHandled
 	}
 	sec := int64(secRaw)
 	nsec := int64(nsecRaw)
 	if sec < 0 || nsec < 0 || nsec >= 1_000_000_000 {
-		return jea9LinuxErrEINVAL, false
+		setJea9LinuxReturn(cpu, jea9LinuxErrEINVAL)
+		return NoteHandled
 	}
 	delta := sec*1_000_000_000 + nsec
 	if delta >= 0 {
@@ -3944,12 +3958,6 @@ func (jos *Jea9Linux) sysNanosleep(cpu *CPU, reqAddr, remAddr uint64) (int64, bo
 			jos.nanosleepMaxNS = deltaU
 		}
 	}
-	if jos.clockMode == Jea9ClockManual && delta > 0 {
-		jos.blocked = true
-		jos.blockedUntil = jos.monotonicNS + delta
-		jos.blockedHasDeadline = true
-		return 0, true
-	}
 	advance := delta
 	if jos.nanosleepMode == Jea9NanosleepAdvanceFixed {
 		advance = jos.nanosleepFixedNS
@@ -3957,8 +3965,20 @@ func (jos *Jea9Linux) sysNanosleep(cpu *CPU, reqAddr, remAddr uint64) (int64, bo
 			advance = 0
 		}
 	}
-	jos.monotonicNS += advance
-	return 0, false
+	if advance <= 0 {
+		cpu.SetReg(10, 0)
+		return NoteHandled
+	}
+
+	ctx := jos.ensureScheduler(cpu)
+	ctx.snapshot = snapshotJea9LinuxCPU(cpu)
+	ctx.state = jea9LinuxContextWaiting
+	jos.clearContextWaitFields(ctx)
+	ctx.waitKind = jea9LinuxWaitNanosleep
+	ctx.waitDeadlineNS = jos.monotonicNS + advance
+	ctx.waitHasDeadline = true
+	jos.timedNanosleepWaiters++
+	return jos.scheduleAfterCurrentBlocked(cpu)
 }
 
 func (jos *Jea9Linux) refreshBlocked() {

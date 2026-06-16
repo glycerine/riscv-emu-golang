@@ -1,6 +1,7 @@
 package riscv
 
 import (
+	"errors"
 	"os"
 	"testing"
 	"time"
@@ -132,6 +133,99 @@ func TestJea9Linux_NanosleepIdleJumpSyscall(t *testing.T) {
 	if got := j.MonotonicNS(); got != 10_000_000 {
 		t.Fatalf("MonotonicNS() = %d, want 10000000", got)
 	}
+	if got := j.contexts[j.pid].state; got != jea9LinuxContextRunnable {
+		t.Fatalf("single-context nanosleep state = %v, want runnable after idle jump", got)
+	}
+}
+
+func TestJea9Linux_NanosleepDeschedulesCurrentContext(t *testing.T) {
+	j := NewJea9Linux(Jea9LinuxOptions{
+		ClockMode:        Jea9ClockIdleJump,
+		MonotonicStartNS: 10,
+	})
+	cpu, mem := newJea9LinuxSyscallCPU(t, j)
+	defer mem.Free()
+
+	cpu.SetPC(0x2000)
+	cpu.SetReg(5, 11)
+	child := cloneJea9LinuxThread(t, cpu, j, 0x810000, 0, 0, 0, jea9TestCloneThreadFlags)
+	j.contexts[child].snapshot.x[5] = 22
+
+	req := uint64(0x4000)
+	if f := mem.Store64(req, 0); f != nil {
+		t.Fatal(f)
+	}
+	if f := mem.Store64(req+8, 90); f != nil {
+		t.Fatal(f)
+	}
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysNanosleep, req, 0); d != NoteHandled {
+		t.Fatalf("nanosleep disposition = %v, want NoteHandled after switching to child", d)
+	}
+	requireCurrentTID(t, j, child)
+	if got := cpu.Reg(5); got != 22 {
+		t.Fatalf("after nanosleep switch x5 = %d, want child marker 22", got)
+	}
+	if got := j.MonotonicNS(); got != 10 {
+		t.Fatalf("MonotonicNS() = %d, want unchanged 10 while child is runnable", got)
+	}
+	parent := j.contexts[j.pid]
+	if parent.state != jea9LinuxContextWaiting || parent.waitKind != jea9LinuxWaitNanosleep {
+		t.Fatalf("parent wait = {%v,%v}, want waiting nanosleep", parent.state, parent.waitKind)
+	}
+	if !parent.waitHasDeadline || parent.waitDeadlineNS != 100 {
+		t.Fatalf("parent deadline = {%v,%d}, want {true,100}", parent.waitHasDeadline, parent.waitDeadlineNS)
+	}
+
+	j.SetMonotonicNS(99)
+	if parent.state != jea9LinuxContextWaiting {
+		t.Fatalf("parent woke early at ns=99 with state %v", parent.state)
+	}
+	j.SetMonotonicNS(100)
+	if parent.state != jea9LinuxContextRunnable {
+		t.Fatalf("parent state at deadline = %v, want runnable", parent.state)
+	}
+	if got := int64(parent.snapshot.x[10]); got != 0 {
+		t.Fatalf("parent nanosleep return = %d, want 0", got)
+	}
+}
+
+func TestJea9Linux_NanosleepIdleJumpWakesAtBudgetBoundary(t *testing.T) {
+	j := NewJea9Linux(Jea9LinuxOptions{
+		ClockMode:        Jea9ClockIdleJump,
+		MonotonicStartNS: 10,
+	})
+	cpu, mem := newJea9LinuxSyscallCPU(t, j)
+	defer mem.Free()
+
+	child := cloneJea9LinuxThread(t, cpu, j, 0x820000, 0, 0, 0, jea9TestCloneThreadFlags)
+	j.contexts[child].snapshot.x[5] = 77
+
+	req := uint64(0x4100)
+	if f := mem.Store64(req, 0); f != nil {
+		t.Fatal(f)
+	}
+	if f := mem.Store64(req+8, 90); f != nil {
+		t.Fatal(f)
+	}
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysNanosleep, req, 0); d != NoteHandled {
+		t.Fatalf("nanosleep disposition = %v, want NoteHandled after switching to child", d)
+	}
+	requireCurrentTID(t, j, child)
+	if got := j.MonotonicNS(); got != 10 {
+		t.Fatalf("MonotonicNS() = %d, want unchanged 10 before budget boundary", got)
+	}
+
+	if err := j.expireBudget(cpu); !errors.Is(err, ErrJea9LinuxBudget) {
+		t.Fatalf("expireBudget error = %v, want ErrJea9LinuxBudget", err)
+	}
+	requireCurrentTID(t, j, j.pid)
+	if got := j.MonotonicNS(); got != 100 {
+		t.Fatalf("MonotonicNS() = %d, want idle jump to 100 at budget boundary", got)
+	}
+	if got := j.contexts[j.pid].state; got != jea9LinuxContextRunnable {
+		t.Fatalf("parent state = %v, want runnable", got)
+	}
+	requireSyscallReturn(t, cpu, 0)
 }
 
 func TestJea9Linux_NanosleepInvalidTimespecSyscall(t *testing.T) {
@@ -168,6 +262,12 @@ func TestJea9Linux_NanosleepManualClockBlocksUntilAdvance(t *testing.T) {
 	}
 	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysNanosleep, req, 0); d != NoteExit {
 		t.Fatalf("disposition = %v, want NoteExit for blocked manual sleep", d)
+	}
+	if got := j.contexts[j.pid].state; got != jea9LinuxContextWaiting {
+		t.Fatalf("manual nanosleep context state = %v, want waiting", got)
+	}
+	if got := j.contexts[j.pid].waitKind; got != jea9LinuxWaitNanosleep {
+		t.Fatalf("manual nanosleep wait kind = %v, want nanosleep", got)
 	}
 	if !j.Blocked() {
 		t.Fatal("manual nanosleep should mark jea9linux blocked")
