@@ -657,6 +657,16 @@ func (lc *lowerARM64Ctx) emitRI(op obj.As, imm int64, dst int16) {
 }
 
 func (lc *lowerARM64Ctx) emitRRI(op obj.As, imm int64, src, dst int16) {
+	if src == goasm.REG_ARM64_ZR {
+		switch op {
+		case arm64.AADD:
+			lc.loadImm(imm, dst)
+			return
+		case arm64.ASUB:
+			lc.loadImm(-imm, dst)
+			return
+		}
+	}
 	p := lc.c.NewProg()
 	p.As = op
 	p.From.Type = obj.TYPE_CONST

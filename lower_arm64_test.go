@@ -517,6 +517,8 @@ func TestLowerARM64_ALUAddressImm_Assemble(t *testing.T) {
 	}{
 		{name: "neg", emit: func(e *Emitter) { e.Neg(e.XReg(10), e.XReg(11)) }},
 		{name: "not", emit: func(e *Emitter) { e.Not(e.XReg(10), e.XReg(11)) }},
+		{name: "add-from-zero-immediate", emit: func(e *Emitter) { e.AddImm(e.XReg(10), VRegZero, 32) }},
+		{name: "sub-from-zero-immediate", emit: func(e *Emitter) { e.SubImm(e.XReg(10), VRegZero, 32) }},
 		{name: "add-negative", emit: func(e *Emitter) { e.AddImm(e.XReg(10), e.XReg(11), -16) }},
 		{name: "sub-negative", emit: func(e *Emitter) { e.SubImm(e.XReg(10), e.XReg(11), -16) }},
 		{name: "load-negative-offset", emit: func(e *Emitter) { e.Load(e.XReg(10), e.XReg(11), -8, I64, false) }},
