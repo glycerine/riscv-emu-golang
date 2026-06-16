@@ -484,6 +484,8 @@ func (s jea9LinuxContextState) String() string {
 }
 
 type jea9LinuxCPUSnapshot struct {
+	// LR/SC reservations intentionally live on CPU, not in saved contexts:
+	// a reservation is hart state and must not be resurrected by a thread switch.
 	pc      uint64
 	x       [32]uint64
 	f       [32]uint64
