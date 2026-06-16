@@ -147,6 +147,13 @@ type GuestMemory struct {
 	// The list stays small (≤ handful of entries); linear scan is fine.
 	execRegions []ExecRegion
 
+	// loadedELFSize remembers the byte length of the most recent ELF loaded
+	// into this memory. loadedELFImageSize remembers the summed PT_LOAD
+	// in-memory footprint. The lazy native JIT sizes its single executable
+	// code arena from this metadata, avoiding per-block executable mmaps.
+	loadedELFSize      uint64
+	loadedELFImageSize uint64
+
 	// accessOverlay is an optional personality-owned permission layer.
 	// It is nil for the normal bare-metal/test/JIT paths; jea9linux installs
 	// one to model Linux brk/mmap/munmap/mprotect without changing the slab
@@ -244,15 +251,21 @@ func (m *GuestMemory) CowClone() (*GuestMemory, error) {
 		execRegionsCopy = append(execRegionsCopy, m.execRegions...)
 	}
 	return &GuestMemory{
-		base:        newBase,
-		mask:        m.mask,
-		size:        m.size,
-		execRegions: execRegionsCopy,
+		base:               newBase,
+		mask:               m.mask,
+		size:               m.size,
+		execRegions:        execRegionsCopy,
+		loadedELFSize:      m.loadedELFSize,
+		loadedELFImageSize: m.loadedELFImageSize,
 	}, nil
 }
 
 // Size returns the guest address space size in bytes.
 func (m *GuestMemory) Size() uint64 { return m.size }
+
+func (m *GuestMemory) LoadedELFSize() uint64 { return m.loadedELFSize }
+
+func (m *GuestMemory) LoadedELFImageSize() uint64 { return m.loadedELFImageSize }
 
 // Mask returns size-1. ANDing any uint64 address with Mask() produces a
 // valid in-bounds guest address by construction — the same guarantee the

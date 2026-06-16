@@ -1752,6 +1752,7 @@ const (
 	abjitStateICOffset        = 600
 	abjitStateResvAddrOffset  = 608
 	abjitStateResvValidOffset = 616
+	abjitStateChainSourceOff  = 624
 )
 
 func (lc *lowerOps) opsMemAdd(ins *IRInstr) {

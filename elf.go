@@ -12,13 +12,13 @@ import (
 const (
 	elfMagic     = "\x7fELF"
 	elfClass64   = 2
-	elfDataLE    = 1    // little-endian
-	elfTypeExec  = 2    // ET_EXEC
+	elfDataLE    = 1 // little-endian
+	elfTypeExec  = 2 // ET_EXEC
 	elfMachRISCV = 0xF3
-	ptLoad       = 1    // PT_LOAD
-	shtSymtab    = 2    // SHT_SYMTAB
-	shtStrtab    = 3    // SHT_STRTAB
-	shtProgbits  = 1    // SHT_PROGBITS
+	ptLoad       = 1 // PT_LOAD
+	shtSymtab    = 2 // SHT_SYMTAB
+	shtStrtab    = 3 // SHT_STRTAB
+	shtProgbits  = 1 // SHT_PROGBITS
 
 	// PT_LOAD permission flags (p_flags).
 	pfX = 0x1 // PF_X (executable)
@@ -136,6 +136,7 @@ func loadELFReader(mem *GuestMemory, r io.ReadSeeker, data []byte) (*ELF, error)
 
 	// ── iterate program headers ───────────────────────────────────────────
 	loaded := 0
+	var loadedImageSize uint64
 	for i := range int(hdr.PhNum) {
 		offset := int64(hdr.PhOff) + int64(i)*int64(hdr.PhEntSize)
 		if _, err := r.Seek(offset, io.SeekStart); err != nil {
@@ -151,6 +152,10 @@ func loadELFReader(mem *GuestMemory, r io.ReadSeeker, data []byte) (*ELF, error)
 		if ph.MemSz == 0 {
 			continue
 		}
+		if loadedImageSize > ^uint64(0)-ph.MemSz {
+			return nil, fmt.Errorf("elf: PT_LOAD image size overflow")
+		}
+		loadedImageSize += ph.MemSz
 
 		// Copy file bytes into guest memory.
 		if ph.FileSz > 0 {
@@ -170,7 +175,7 @@ func loadELFReader(mem *GuestMemory, r io.ReadSeeker, data []byte) (*ELF, error)
 		// Zero-fill BSS (MemSz > FileSz)
 		if ph.MemSz > ph.FileSz {
 			bssStart := ph.VAddr + ph.FileSz
-			bssSize  := ph.MemSz - ph.FileSz
+			bssSize := ph.MemSz - ph.FileSz
 			if f := mem.ZeroRange(bssStart, bssSize); f != nil {
 				return nil, fmt.Errorf("elf: zero BSS for segment %d: %v", i, f)
 			}
@@ -187,6 +192,10 @@ func loadELFReader(mem *GuestMemory, r io.ReadSeeker, data []byte) (*ELF, error)
 	if loaded == 0 {
 		return nil, errors.New("elf: no PT_LOAD segments found")
 	}
+	if data != nil {
+		mem.loadedELFSize = uint64(len(data))
+	}
+	mem.loadedELFImageSize = loadedImageSize
 
 	// ── parse section headers ─────────────────────────────────────────────
 	var shdrs []*Elf64Shdr
@@ -300,9 +309,12 @@ func (b *byteReader) Read(p []byte) (int, error) {
 func (b *byteReader) Seek(offset int64, whence int) (int64, error) {
 	var abs int64
 	switch whence {
-	case io.SeekStart:   abs = offset
-	case io.SeekCurrent: abs = b.pos + offset
-	case io.SeekEnd:     abs = int64(len(b.data)) + offset
+	case io.SeekStart:
+		abs = offset
+	case io.SeekCurrent:
+		abs = b.pos + offset
+	case io.SeekEnd:
+		abs = int64(len(b.data)) + offset
 	default:
 		return 0, errors.New("byteReader: invalid whence")
 	}
@@ -475,38 +487,38 @@ func BuildELF(codeVA uint64, code []uint32) []byte {
 	}
 
 	strtabOff := uint64(codeOff + len(codeBytes))
-	shOff      := strtabOff + strtabPad
-	total      := int(shOff) + shdrCount*shdrSize
+	shOff := strtabOff + strtabPad
+	total := int(shOff) + shdrCount*shdrSize
 
 	buf := make([]byte, total)
-	le  := binary.LittleEndian
+	le := binary.LittleEndian
 
 	// ── ELF header ───────────────────────────────────────────────────────
 	copy(buf[0:], "\x7fELF")
-	buf[4], buf[5], buf[6] = 2, 1, 1              // ELFCLASS64, ELFDATA2LSB, EV_CURRENT
-	le.PutUint16(buf[16:], 2)                      // ET_EXEC
-	le.PutUint16(buf[18:], 0xF3)                   // EM_RISCV
-	le.PutUint32(buf[20:], 1)                      // e_version
-	le.PutUint64(buf[24:], codeVA)                 // e_entry
-	le.PutUint64(buf[32:], 64)                     // e_phoff
-	le.PutUint64(buf[40:], shOff)                  // e_shoff
-	le.PutUint16(buf[52:], 64)                     // e_ehsize
-	le.PutUint16(buf[54:], 56)                     // e_phentsize
-	le.PutUint16(buf[56:], 1)                      // e_phnum
-	le.PutUint16(buf[58:], shdrSize)               // e_shentsize
-	le.PutUint16(buf[60:], shdrCount)              // e_shnum
-	le.PutUint16(buf[62:], 1)                      // e_shstrndx = section [1]
+	buf[4], buf[5], buf[6] = 2, 1, 1  // ELFCLASS64, ELFDATA2LSB, EV_CURRENT
+	le.PutUint16(buf[16:], 2)         // ET_EXEC
+	le.PutUint16(buf[18:], 0xF3)      // EM_RISCV
+	le.PutUint32(buf[20:], 1)         // e_version
+	le.PutUint64(buf[24:], codeVA)    // e_entry
+	le.PutUint64(buf[32:], 64)        // e_phoff
+	le.PutUint64(buf[40:], shOff)     // e_shoff
+	le.PutUint16(buf[52:], 64)        // e_ehsize
+	le.PutUint16(buf[54:], 56)        // e_phentsize
+	le.PutUint16(buf[56:], 1)         // e_phnum
+	le.PutUint16(buf[58:], shdrSize)  // e_shentsize
+	le.PutUint16(buf[60:], shdrCount) // e_shnum
+	le.PutUint16(buf[62:], 1)         // e_shstrndx = section [1]
 
 	// ── Program header ────────────────────────────────────────────────────
 	ph := buf[64:]
-	le.PutUint32(ph[0:], 1)                        // PT_LOAD
-	le.PutUint32(ph[4:], 5)                        // PF_R|PF_X
-	le.PutUint64(ph[8:], uint64(codeOff))          // p_offset
-	le.PutUint64(ph[16:], codeVA)                  // p_vaddr
-	le.PutUint64(ph[24:], codeVA)                  // p_paddr
-	le.PutUint64(ph[32:], uint64(len(codeBytes)))  // p_filesz
-	le.PutUint64(ph[40:], uint64(len(codeBytes)))  // p_memsz
-	le.PutUint64(ph[48:], 0x10)                    // p_align
+	le.PutUint32(ph[0:], 1)                       // PT_LOAD
+	le.PutUint32(ph[4:], 5)                       // PF_R|PF_X
+	le.PutUint64(ph[8:], uint64(codeOff))         // p_offset
+	le.PutUint64(ph[16:], codeVA)                 // p_vaddr
+	le.PutUint64(ph[24:], codeVA)                 // p_paddr
+	le.PutUint64(ph[32:], uint64(len(codeBytes))) // p_filesz
+	le.PutUint64(ph[40:], uint64(len(codeBytes))) // p_memsz
+	le.PutUint64(ph[48:], 0x10)                   // p_align
 
 	// ── Code ──────────────────────────────────────────────────────────────
 	copy(buf[codeOff:], codeBytes)
@@ -520,10 +532,10 @@ func BuildELF(codeVA uint64, code []uint32) []byte {
 	// ── Section header [1]: SHT_STRTAB (.shstrtab) ───────────────────────
 	sh1 := buf[int(shOff)+shdrSize:]
 	// sh_name=0 (points to "\0" in strtab — empty string, valid)
-	le.PutUint32(sh1[4:], 3)                       // sh_type = SHT_STRTAB
-	le.PutUint64(sh1[24:], strtabOff)              // sh_offset
-	le.PutUint64(sh1[32:], 1)                      // sh_size = 1 byte ("\0")
-	le.PutUint64(sh1[48:], 1)                      // sh_addralign
+	le.PutUint32(sh1[4:], 3)          // sh_type = SHT_STRTAB
+	le.PutUint64(sh1[24:], strtabOff) // sh_offset
+	le.PutUint64(sh1[32:], 1)         // sh_size = 1 byte ("\0")
+	le.PutUint64(sh1[48:], 1)         // sh_addralign
 
 	return buf
 }

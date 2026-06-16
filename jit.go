@@ -132,13 +132,12 @@ type compiledBlock struct {
 	// segment is the DecodedExecuteSegment whose decoder_cache should be
 	// used while running this block, or nil for pure lazy blocks outside
 	// AOT regions. AOT blocks live in segment.nativeCodeMmap; lazy
-	// additions inside an AOT region still own nativeMmap per block.
+	// additions inside an AOT region are backed by JIT.lazyCodeArena.
 	segment *DecodedExecuteSegment
 
-	// nativeMmap is the per-block code slab for lazy-compiled blocks.
-	// nil for AOT blocks (their code lives in segment.nativeCodeMmap,
-	// reclaimed when the owning segment is freed). Held here so
-	// JIT.Close can munmap lazy blocks.
+	// nativeMmap is non-nil only for legacy/debug blocks that own their own
+	// code mmap. Normal lazy blocks are backed by JIT.lazyCodeArena; AOT
+	// blocks live in segment.nativeCodeMmap.
 	nativeMmap []byte
 }
 
@@ -255,12 +254,12 @@ type JIT struct {
 	hotLazySegment  *DecodedExecuteSegment
 	soleLazySegment *DecodedExecuteSegment
 
-	// lazyBlocks holds every lazy-compiled block whose nativeMmap is
-	// non-nil. Grown via insertBlock; drained by Close(), which munmaps
-	// each block's nativeMmap. Bounded in practice by the number of
-	// distinct PCs ever lazily compiled in this JIT's lifetime; blocks
-	// remain live for chain-exit pin safety (patches in other blocks
-	// may still target their native code).
+	// lazyBlocks holds every lazy-compiled block. Grown via insertBlock;
+	// drained by Close(), which clears block entry pointers and frees the
+	// shared lazyCodeArena. Bounded in practice by the number of distinct
+	// PCs ever lazily compiled in this JIT's lifetime; blocks remain live
+	// for chain-exit pin safety (patches in other blocks may still target
+	// their native code).
 	lazyBlocks []*compiledBlock
 
 	// lazyBlockMap is the collision-safe backing store for lazy blocks.
@@ -269,6 +268,13 @@ type JIT struct {
 	// already-compiled blocks when larger guests collide in the 4096-slot
 	// direct cache.
 	lazyBlockMap map[uint64]*compiledBlock
+
+	// lazyCodeArena is the single executable slab used by lazy block
+	// compilation. It is sized once from the loaded ELF length, then every
+	// lazy block is carved out linearly. This avoids one executable mmap per
+	// compiled block.
+	lazyCodeArena []byte
+	lazyCodeOff   int
 
 	cache      [blockCacheSize]blockCacheEntry
 	noJIT      map[uint64]bool // PCs where translation failed — don't retry
@@ -307,15 +313,18 @@ type JIT struct {
 	LockstepModeBudget        int64 // max IC before forced exit (default 65536)
 
 	// Dispatch counters (for diagnostics).
-	DispatchOK       uint64 // jitOK returns to Go dispatch
-	DispatchOther    uint64 // non-OK returns (ecall, fault, etc.)
-	DispatchInterp   uint64 // no-block interpreter fallback dispatches
-	DispatchCompile  uint64 // new block compilations
-	InterpretedInsns uint64 // guest instructions retired by JIT-owned interpreter fallback
-	ChainPatched     uint64 // chain exits successfully patched
-	ChainPatchedJalr uint64 // JALR IC sites successfully patched
-	JalrICMisses     uint64 // JALR IC returns to Go (site not warm or polymorphic)
-	JalrICDeopts     uint64 // JALR IC sites that crossed the deopt threshold
+	DispatchOK         uint64 // jitOK returns to Go dispatch
+	DispatchOther      uint64 // non-OK returns (ecall, fault, etc.)
+	DispatchInterp     uint64 // no-block interpreter fallback dispatches
+	DispatchCompile    uint64 // new block compilations
+	InterpretedInsns   uint64 // guest instructions retired by JIT-owned interpreter fallback
+	ChainPatched       uint64 // chain exits successfully patched
+	ChainPatchTry      uint64 // chain exits considered for patching
+	ChainPatchNoTarget uint64 // chain patch attempts whose target block was absent
+	ChainPatchNoMatch  uint64 // chain patch attempts with no matching static exit
+	ChainPatchedJalr   uint64 // JALR IC sites successfully patched
+	JalrICMisses       uint64 // JALR IC returns to Go (site not warm or polymorphic)
+	JalrICDeopts       uint64 // JALR IC sites that crossed the deopt threshold
 
 	AOTSegmentsInstalled uint64 // AOT segments successfully installed
 	AOTBlocksInstalled   uint64 // AOT blocks in successfully installed segments
@@ -679,10 +688,9 @@ func (j *JIT) CloneConfig() *JIT {
 	return child
 }
 
-// Close releases every AOT segment owned by this JIT and munmaps
-// every lazy-compiled block's native code. Safe to call multiple
-// times; subsequent calls are no-ops. After Close, the JIT must not
-// dispatch — the native code mmaps are gone.
+// Close releases every AOT segment owned by this JIT and munmaps the
+// lazy-code arena. Safe to call multiple times; subsequent calls are
+// no-ops. After Close, the JIT must not dispatch — native code is gone.
 func (j *JIT) Close() {
 	for _, s := range j.aotSegments {
 		s.free()
@@ -701,10 +709,17 @@ func (j *JIT) Close() {
 	for _, blk := range j.lazyBlocks {
 		if len(blk.nativeMmap) > 0 {
 			_ = syscall.Munmap(blk.nativeMmap)
-			blk.nativeMmap = nil
-			blk.fn = 0
 		}
+		blk.nativeMmap = nil
+		blk.fn = 0
+		blk.chainEntry = 0
+		blk.liveChainEntry = 0
 	}
+	if len(j.lazyCodeArena) > 0 {
+		_ = syscall.Munmap(j.lazyCodeArena)
+	}
+	j.lazyCodeArena = nil
+	j.lazyCodeOff = 0
 	j.lazyBlocks = nil
 	j.lazyBlockMap = nil
 	j.abjitState = nil
@@ -989,16 +1004,16 @@ func storeDecoderCacheEntry(seg *DecodedExecuteSegment, pc uint64, chainEntry ui
 	return true
 }
 
-// insertBlock stores a compiled block in the cache. If blk owns its
-// own native-code mmap (set by the lazy-compile path), the block is
-// also registered in j.lazyBlocks so JIT.Close can munmap it. Lazy
-// blocks that land inside an AOT segment are also published into that
+// insertBlock stores a compiled block in the cache. Lazy blocks are also
+// registered in j.lazyBlocks so JIT.Close can clear their entry pointers
+// before freeing the shared lazy-code arena. Lazy blocks that land inside
+// an AOT segment are also published into that
 // segment's mutable decoder_cache so native JALR dispatch can jump to
 // them without returning to Go on the next hit.
 func (j *JIT) insertBlock(pc uint64, blk *compiledBlock) {
 	idx := cacheIdx(pc)
 	j.cache[idx] = blockCacheEntry{pc, blk}
-	if blk != nil && blk.nativeMmap != nil {
+	if blk != nil && blk.fn != 0 {
 		j.lazyBlocks = append(j.lazyBlocks, blk)
 		if j.lazyBlockMap == nil {
 			j.lazyBlockMap = make(map[uint64]*compiledBlock)
@@ -1089,8 +1104,12 @@ func (j *JIT) stepBlockWithBudget(cpu *CPU, budget uint64) (ic uint64, err error
 		switch int(res.Status) {
 		case jitOK:
 			j.DispatchOK++
-			if len(blk.chainExits) > 0 {
-				j.tryPatchChain(blk, cpu.pc)
+			sourceBlk := blk
+			if res.SourceBlock != 0 {
+				sourceBlk = (*compiledBlock)(unsafe.Pointer(res.SourceBlock))
+			}
+			if len(sourceBlk.chainExits) > 0 {
+				j.tryPatchChain(sourceBlk, cpu.pc)
 			}
 			return cpu.riscvInstrBegun, nil
 		case jitOKJalrMiss:
@@ -1260,8 +1279,12 @@ func (j *JIT) RunJIT(cpu *CPU) (err0 error) {
 				// Patch this block's chain exit to jump directly to the target.
 				// When a chain exit isn't patched, the slow stub returns here.
 				// After patching, future executions jump directly — bypassing Go.
-				if len(blk.chainExits) > 0 {
-					j.tryPatchChain(blk, cpu.pc)
+				sourceBlk := blk
+				if res.SourceBlock != 0 {
+					sourceBlk = (*compiledBlock)(unsafe.Pointer(res.SourceBlock))
+				}
+				if len(sourceBlk.chainExits) > 0 {
+					j.tryPatchChain(sourceBlk, cpu.pc)
 				}
 				continue
 
@@ -1460,8 +1483,10 @@ func liveChainCompatible(src liveChainMeta, target *compiledBlock) bool {
 // tryPatchChain patches a previous block's chain exit to jump directly
 // to the target block, bypassing the Go dispatch loop on future executions.
 func (j *JIT) tryPatchChain(blk *compiledBlock, targetPC uint64) {
+	j.ChainPatchTry++
 	target := j.lookupBlock(targetPC)
 	if target == nil || target.chainEntry == 0 {
+		j.ChainPatchNoTarget++
 		return
 	}
 	for _, ce := range blk.chainExits {
@@ -1472,9 +1497,10 @@ func (j *JIT) tryPatchChain(blk *compiledBlock, targetPC uint64) {
 				patchChainTarget(blk.fn, ce.patchOffset, target.chainEntry)
 			}
 			j.ChainPatched++
-			break
+			return
 		}
 	}
+	j.ChainPatchNoMatch++
 }
 
 // tryPatchJalrIC updates a JALR IC site with shift semantics: the

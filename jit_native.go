@@ -17,6 +17,11 @@ import (
 var jitCtx *goasm.Ctx
 var jitCtxArch goasm.Arch
 
+const (
+	lazyCodeArenaMultiplier = 5
+	lazyCodeArenaMinSize    = 500 << 20
+)
+
 func getJITCtx(arch goasm.Arch) *goasm.Ctx {
 	if jitCtx == nil || jitCtxArch != arch {
 		jitCtx = goasm.New(arch)
@@ -36,6 +41,93 @@ func (j *JIT) checkNativeBackend() error {
 		return fmt.Errorf("jit: policy %q has no patcher", j.regPolicy.Name)
 	}
 	return nil
+}
+
+func alignUpInt(n, align int) int {
+	if align <= 1 {
+		return n
+	}
+	return (n + align - 1) &^ (align - 1)
+}
+
+func lazyCodeAlignmentForArch(arch goasm.Arch) int {
+	if arch == goasm.ARM64 {
+		return 4
+	}
+	return 1
+}
+
+func lazyCodeArenaSize(mem *GuestMemory, firstCodeSize, alignment int) (int, error) {
+	var target uint64
+	if mem != nil && (mem.loadedELFSize != 0 || mem.loadedELFImageSize != 0) {
+		binarySize := mem.loadedELFSize
+		if mem.loadedELFImageSize > binarySize {
+			binarySize = mem.loadedELFImageSize
+		}
+		if binarySize > ^uint64(0)/lazyCodeArenaMultiplier {
+			return 0, fmt.Errorf("jit lazy code arena size overflow: loaded_elf=%d loaded_image=%d",
+				mem.loadedELFSize, mem.loadedELFImageSize)
+		}
+		target = binarySize * lazyCodeArenaMultiplier
+	} else if mem != nil {
+		for _, r := range mem.execRegions {
+			if r.VAddrEnd > r.VAddrBegin {
+				if target > ^uint64(0)-(r.VAddrEnd-r.VAddrBegin) {
+					return 0, fmt.Errorf("jit lazy code arena size overflow while summing exec regions")
+				}
+				target += r.VAddrEnd - r.VAddrBegin
+			}
+		}
+		if target > ^uint64(0)/lazyCodeArenaMultiplier {
+			return 0, fmt.Errorf("jit lazy code arena size overflow: exec_region_bytes=%d", target)
+		}
+		target *= lazyCodeArenaMultiplier
+	}
+	if target < lazyCodeArenaMinSize {
+		target = lazyCodeArenaMinSize
+	}
+	if first := uint64(alignUpInt(firstCodeSize, alignment)); target < first {
+		target = first
+	}
+	maxInt := uint64(^uint(0) >> 1)
+	if target > maxInt {
+		return 0, fmt.Errorf("jit lazy code arena too large: %d bytes", target)
+	}
+	return int(target), nil
+}
+
+func (j *JIT) allocLazyCode(size int, mem *GuestMemory) ([]byte, uintptr, error) {
+	if size <= 0 {
+		return nil, 0, fmt.Errorf("jit lazy code allocation: invalid size %d", size)
+	}
+	alignment := lazyCodeAlignmentForArch(j.regPolicy.Arch)
+	if j.lazyCodeArena == nil {
+		arenaSize, err := lazyCodeArenaSize(mem, size, alignment)
+		if err != nil {
+			return nil, 0, err
+		}
+		arena, err := allocExec(arenaSize)
+		if err != nil {
+			return nil, 0, err
+		}
+		j.lazyCodeArena = arena
+		j.lazyCodeOff = 0
+	}
+	off := alignUpInt(j.lazyCodeOff, alignment)
+	end := off + size
+	if off < 0 || end < off || end > len(j.lazyCodeArena) {
+		var loadedELF uint64
+		var loadedImage uint64
+		if mem != nil {
+			loadedELF = mem.loadedELFSize
+			loadedImage = mem.loadedELFImageSize
+		}
+		return nil, 0, fmt.Errorf("jit lazy code arena exhausted: need=%d used=%d cap=%d loaded_elf=%d loaded_image=%d",
+			size, j.lazyCodeOff, len(j.lazyCodeArena), loadedELF, loadedImage)
+	}
+	j.lazyCodeOff = end
+	codeMem := j.lazyCodeArena[off:end]
+	return codeMem, uintptr(unsafe.Pointer(&codeMem[0])), nil
 }
 
 // jitCompile compiles an IR block to native code and returns a compiledBlock.
@@ -72,16 +164,18 @@ func (j *JIT) jitCompile(res *emitResult, mem ...*GuestMemory) (*compiledBlock, 
 	}
 
 	// Step 5: Allocate executable memory and copy code.
-	execMem, err := allocExec(len(code))
-	if err != nil {
-		return nil, fmt.Errorf("jit mmap: %w", err)
+	var guestMem *GuestMemory
+	if len(mem) > 0 {
+		guestMem = mem[0]
 	}
-	codeBase := uintptr(unsafe.Pointer(&execMem[0]))
+	execMem, codeBase, err := j.allocLazyCode(len(code), guestMem)
+	if err != nil {
+		return nil, err
+	}
 	blk := &compiledBlock{
-		fn:         codeBase,
-		nativeMmap: execMem,
-		hasFP:      allocHasFP(alloc),
-		numInsns:   res.numInsns,
+		fn:       codeBase,
+		hasFP:    allocHasFP(alloc),
+		numInsns: res.numInsns,
 	}
 
 	var writeErr error
@@ -108,6 +202,12 @@ func (j *JIT) jitCompile(res *emitResult, mem ...*GuestMemory) (*compiledBlock, 
 				if patchErr != nil {
 					writeErr = fmt.Errorf("jit patch chain exit: %w", patchErr)
 					return
+				}
+				if ce.SourceMovProg != nil {
+					if _, patchErr := j.regPolicy.PatchImm64(execMem, ce.SourceMovProg, uint64(uintptr(unsafe.Pointer(blk)))); patchErr != nil {
+						writeErr = fmt.Errorf("jit patch chain source: %w", patchErr)
+						return
+					}
 				}
 				livePatchOff := -1
 				if ce.LiveMovProg != nil {
@@ -153,7 +253,7 @@ func (j *JIT) jitCompile(res *emitResult, mem ...*GuestMemory) (*compiledBlock, 
 			vizMem = mem[0]
 		}
 		vizJitDump(res.startPC, res.endPC, vizMem, res.block, vizProgs,
-			code, uintptr(unsafe.Pointer(&execMem[0])))
+			code, codeBase)
 	}
 
 	flushIcache(codeBase, len(code))
@@ -261,12 +361,11 @@ func (j *JIT) jitCompileDebug(res *emitResult) (*compiledBlock, *compileDebugInf
 	// Post-assembly DumpProgs so branch targets show resolved byte offsets.
 	progDump := ctx.DumpProgs()
 
-	execMem, err := allocExec(len(code))
+	execMem, codeBase, err := j.allocLazyCode(len(code), nil)
 	if err != nil {
-		return nil, nil, fmt.Errorf("jit mmap: %w", err)
+		return nil, nil, err
 	}
-	codeBase := uintptr(unsafe.Pointer(&execMem[0]))
-	blk := &compiledBlock{fn: codeBase, nativeMmap: execMem, hasFP: allocHasFP(alloc)}
+	blk := &compiledBlock{fn: codeBase, hasFP: allocHasFP(alloc)}
 
 	// Backpatch chain-exit sentinels to the slow-exit stubs and record
 	// metadata, same as jitCompile. Without this, any chain exit in
@@ -291,6 +390,12 @@ func (j *JIT) jitCompileDebug(res *emitResult) (*compiledBlock, *compileDebugInf
 				if patchErr != nil {
 					writeErr = fmt.Errorf("jit patch chain exit: %w", patchErr)
 					return
+				}
+				if ce.SourceMovProg != nil {
+					if _, patchErr := j.regPolicy.PatchImm64(execMem, ce.SourceMovProg, uint64(uintptr(unsafe.Pointer(blk)))); patchErr != nil {
+						writeErr = fmt.Errorf("jit patch chain source: %w", patchErr)
+						return
+					}
 				}
 				livePatchOff := -1
 				if ce.LiveMovProg != nil {

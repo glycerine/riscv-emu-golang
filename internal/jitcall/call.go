@@ -10,10 +10,11 @@ import (
 // The first three fields are written by assembly trampolines at fixed
 // offsets — do not reorder them.
 type Result struct {
-	PC        uint64 // next PC to execute
-	Status    uint64 // 0=ok, 1=ecall, 2=ebreak, 3=load_fault, 4=store_fault, 5=illegal, 8=budget
-	FaultAddr uint64 // guest address that faulted (when Status >= 3)
-	ICdelta   uint64 // guest instructions begun during this dispatch: initial budget - remaining R15
+	PC          uint64  // next PC to execute
+	Status      uint64  // 0=ok, 1=ecall, 2=ebreak, 3=load_fault, 4=store_fault, 5=illegal, 8=budget
+	FaultAddr   uint64  // guest address that faulted (when Status >= 3)
+	ICdelta     uint64  // guest instructions begun during this dispatch: initial budget - remaining R15
+	SourceBlock uintptr // ABJIT slow static chain-exit source block, if known
 }
 
 func statusToString(status uint64) string {

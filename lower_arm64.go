@@ -240,7 +240,7 @@ func lowerARM64(ctx *goasm.Ctx, b *Block, alloc *Allocation, abi arm64ABI) (*Low
 		return nil, fmt.Errorf("arm64 lower: %d unresolved labels", len(lc.pending))
 	}
 	for i := range lc.chainExits {
-		lc.chainExits[i].stubProg = lc.emitSlowExitStub(lc.chainExits[i].targetPC)
+		lc.chainExits[i].stubProg, lc.chainExits[i].sourceMovProg = lc.emitSlowExitStub(lc.chainExits[i].targetPC)
 	}
 	result := &LowerResult{
 		ChainEntryProg:     lc.chainEntryProg,
@@ -249,11 +249,12 @@ func lowerARM64(ctx *goasm.Ctx, b *Block, alloc *Allocation, abi arm64ABI) (*Low
 	}
 	for i := range lc.chainExits {
 		result.ChainExits = append(result.ChainExits, ChainExitDesc{
-			TargetPC:    lc.chainExits[i].targetPC,
-			MovProg:     lc.chainExits[i].movProg,
-			LiveMovProg: lc.chainExits[i].liveMovProg,
-			LiveChain:   lc.chainExits[i].liveChain,
-			StubProg:    lc.chainExits[i].stubProg,
+			TargetPC:      lc.chainExits[i].targetPC,
+			MovProg:       lc.chainExits[i].movProg,
+			SourceMovProg: lc.chainExits[i].sourceMovProg,
+			LiveMovProg:   lc.chainExits[i].liveMovProg,
+			LiveChain:     lc.chainExits[i].liveChain,
+			StubProg:      lc.chainExits[i].stubProg,
 		})
 	}
 	for i := range lc.jalrICs {
@@ -2495,15 +2496,20 @@ func (lc *lowerARM64Ctx) emitChainExit(targetPC uint64) {
 	})
 }
 
-func (lc *lowerARM64Ctx) emitSlowExitStub(targetPC uint64) *obj.Prog {
+func (lc *lowerARM64Ctx) emitSlowExitStub(targetPC uint64) (*obj.Prog, *obj.Prog) {
 	first := lc.c.NewProg()
 	first.As = obj.ANOP
 	lc.c.Append(first)
 
 	lc.loadImm(0, a64A)
 	lc.emitResultImm(int64(targetPC), jitOK, a64A)
+	var sourceMov *obj.Prog
+	if lc.abi == arm64ABJIT {
+		sourceMov = lc.emitPatchableLiteralLoad(a64C, nativePatchSentinel)
+		lc.emitStore(arm64.AMOVD, a64C, lc.sretBase(), abjitStateChainSourceOff)
+	}
 	lc.emitReturnFrameFreed()
-	return first
+	return first, sourceMov
 }
 
 func (lc *lowerARM64Ctx) emitReturn() {

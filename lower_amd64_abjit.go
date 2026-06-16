@@ -50,7 +50,8 @@ func init() {
 		unsafe.Offsetof(s.Cycles) != abjitCyclesOff ||
 		unsafe.Offsetof(s.IC) != abjitStateICOffset ||
 		unsafe.Offsetof(s.ResvAddr) != abjitStateResvAddrOffset ||
-		unsafe.Offsetof(s.ResvValid) != abjitStateResvValidOffset {
+		unsafe.Offsetof(s.ResvValid) != abjitStateResvValidOffset ||
+		unsafe.Offsetof(s.ChainSource) != abjitStateChainSourceOff {
 		panic("abjit.State layout mismatch")
 	}
 }
@@ -138,7 +139,7 @@ func LowerAMD64_ABJIT(ctx *goasm.Ctx, b *Block, alloc *Allocation) (*LowerResult
 	}
 
 	for i := range lc.chainExits {
-		lc.chainExits[i].stubProg = lc.emitSlowExitStub(lc.chainExits[i].targetPC)
+		lc.chainExits[i].stubProg, lc.chainExits[i].sourceMovProg = lc.emitSlowExitStub(lc.chainExits[i].targetPC)
 	}
 
 	lc.emitExitThunk()
@@ -146,9 +147,10 @@ func LowerAMD64_ABJIT(ctx *goasm.Ctx, b *Block, alloc *Allocation) (*LowerResult
 	result := &LowerResult{ChainEntryProg: lc.chainEntryProg}
 	for i := range lc.chainExits {
 		result.ChainExits = append(result.ChainExits, ChainExitDesc{
-			TargetPC: lc.chainExits[i].targetPC,
-			MovProg:  lc.chainExits[i].movProg,
-			StubProg: lc.chainExits[i].stubProg,
+			TargetPC:      lc.chainExits[i].targetPC,
+			MovProg:       lc.chainExits[i].movProg,
+			SourceMovProg: lc.chainExits[i].sourceMovProg,
+			StubProg:      lc.chainExits[i].stubProg,
 		})
 	}
 	for i := range lc.jalrICs {
@@ -395,7 +397,7 @@ func (lc *lowerCtxABJIT) abjitChainExit(ins *IRInstr) {
 	lc.c.Append(jp)
 }
 
-func (lc *lowerCtxABJIT) emitSlowExitStub(targetPC uint64) *obj.Prog {
+func (lc *lowerCtxABJIT) emitSlowExitStub(targetPC uint64) (*obj.Prog, *obj.Prog) {
 	first := lc.c.NewProg()
 	first.As = obj.ANOP
 	lc.c.Append(first)
@@ -406,13 +408,23 @@ func (lc *lowerCtxABJIT) emitSlowExitStub(targetPC uint64) *obj.Prog {
 	lc.emitMI(x86.AMOVQ, 0, goasm.REG_AMD64_BP, abjitStatusOff)
 	lc.emitMI(x86.AMOVQ, 0, goasm.REG_AMD64_BP, abjitFaultAddrOff)
 
+	const sourceSentinel = int64(0x7BADC0DE7BADC0DE)
+	sourceMov := lc.c.NewProg()
+	sourceMov.As = x86.AMOVQ
+	sourceMov.From.Type = obj.TYPE_CONST
+	sourceMov.From.Offset = sourceSentinel
+	sourceMov.To.Type = obj.TYPE_REG
+	sourceMov.To.Reg = stgB
+	lc.c.Append(sourceMov)
+	lc.emitMR(x86.AMOVQ, stgB, goasm.REG_AMD64_BP, abjitStateChainSourceOff)
+
 	jp := lc.c.NewProg()
 	jp.As = obj.AJMP
 	jp.To.Type = obj.TYPE_BRANCH
 	jp.To.SetTarget(lc.exitThunk)
 	lc.c.Append(jp)
 
-	return first
+	return first, sourceMov
 }
 
 // ── Syscall ──

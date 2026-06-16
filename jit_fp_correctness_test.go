@@ -1,9 +1,6 @@
 package riscv
 
-import (
-	"syscall"
-	"testing"
-)
+import "testing"
 
 // jit_fp_correctness_test.go — exercises the JIT's native-code FP
 // path. Each test runs a tiny program through jit.StepBlock, asserts
@@ -60,9 +57,7 @@ func runJITFP(t *testing.T, code []uint32, fregs map[uint8]uint64) *CPU {
 				detail = err.Error()
 			} else {
 				detail = "recompile unexpectedly succeeded"
-				if blk != nil && blk.nativeMmap != nil {
-					_ = syscall.Munmap(blk.nativeMmap)
-				}
+				_ = blk
 			}
 		}
 		t.Fatalf("JIT failed to compile entry block at pc=0x%x: %s", va, detail)

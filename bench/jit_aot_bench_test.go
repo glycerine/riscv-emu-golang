@@ -91,6 +91,10 @@ type jitBenchStats struct {
 	dispatchOK             uint64
 	dispatchCompile        uint64
 	dispatchInterp         uint64
+	chainPatched           uint64
+	chainPatchTry          uint64
+	chainPatchNoTarget     uint64
+	chainPatchNoMatch      uint64
 	chainPatchedJalr       uint64
 	jalrICMisses           uint64
 	jalrICDeopts           uint64
@@ -107,6 +111,10 @@ func (s *jitBenchStats) add(jit *riscv.JIT) {
 	s.dispatchOK += jit.DispatchOK
 	s.dispatchCompile += jit.DispatchCompile
 	s.dispatchInterp += jit.DispatchInterp
+	s.chainPatched += jit.ChainPatched
+	s.chainPatchTry += jit.ChainPatchTry
+	s.chainPatchNoTarget += jit.ChainPatchNoTarget
+	s.chainPatchNoMatch += jit.ChainPatchNoMatch
 	s.chainPatchedJalr += jit.ChainPatchedJalr
 	s.jalrICMisses += jit.JalrICMisses
 	s.jalrICDeopts += jit.JalrICDeopts
@@ -129,6 +137,10 @@ func (s jitBenchStats) report(b *testing.B) {
 		b.ReportMetric(float64(s.dispatchOK)/n, "dispatch_ok/op")
 		b.ReportMetric(float64(s.dispatchCompile)/n, "compile/op")
 		b.ReportMetric(float64(s.dispatchInterp)/n, "interp_fallback/op")
+		b.ReportMetric(float64(s.chainPatched)/n, "chain_patch/op")
+		b.ReportMetric(float64(s.chainPatchTry)/n, "chain_try/op")
+		b.ReportMetric(float64(s.chainPatchNoTarget)/n, "chain_notarget/op")
+		b.ReportMetric(float64(s.chainPatchNoMatch)/n, "chain_nomatch/op")
 		b.ReportMetric(float64(s.chainPatchedJalr)/n, "jalr_patch/op")
 		b.ReportMetric(float64(s.jalrICMisses)/n, "jalr_miss/op")
 		b.ReportMetric(float64(s.jalrICDeopts)/n, "jalr_deopt/op")

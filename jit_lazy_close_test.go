@@ -5,12 +5,11 @@ import (
 	"testing"
 )
 
-// TestJIT_Close_FreesLazyMmaps verifies the Phase 2c lazy-mmap
-// cleanup on JIT.Close. Running a tiny guest through the lazy JIT
-// path compiles one or more blocks whose mmaps are tracked in
-// j.lazyBlocks; Close munmaps them and zeros the fn/nativeMmap
-// fields. A second Close is a no-op.
-func TestJIT_Close_FreesLazyMmaps(t *testing.T) {
+// TestJIT_Close_FreesLazyArena verifies lazy-code cleanup on JIT.Close.
+// Running a tiny guest through the lazy JIT path compiles one or more
+// blocks into j.lazyCodeArena; Close munmaps the arena and zeros block
+// entry pointers. A second Close is a no-op.
+func TestJIT_Close_FreesLazyArena(t *testing.T) {
 	const va = uint64(0x10000)
 	// ADDI a7, x0, 93 ; ECALL — minimal "exit" stub.
 	code := []uint32{
@@ -42,6 +41,9 @@ func TestJIT_Close_FreesLazyMmaps(t *testing.T) {
 	if len(j.lazyBlocks) == 0 {
 		t.Fatalf("lazyBlocks empty after StepBlock; expected ≥1 lazy compile")
 	}
+	if len(j.lazyCodeArena) == 0 {
+		t.Fatalf("lazyCodeArena empty after StepBlock; expected shared arena allocation")
+	}
 
 	// Snapshot the block pointers + their fn values pre-Close.
 	snap := make([]*compiledBlock, len(j.lazyBlocks))
@@ -50,8 +52,8 @@ func TestJIT_Close_FreesLazyMmaps(t *testing.T) {
 		if blk.fn == 0 {
 			t.Fatalf("lazyBlocks[%d].fn == 0 pre-Close", i)
 		}
-		if blk.nativeMmap == nil {
-			t.Fatalf("lazyBlocks[%d].nativeMmap nil pre-Close", i)
+		if blk.nativeMmap != nil {
+			t.Fatalf("lazyBlocks[%d].nativeMmap non-nil pre-Close; lazy code should use shared arena", i)
 		}
 	}
 
@@ -59,6 +61,9 @@ func TestJIT_Close_FreesLazyMmaps(t *testing.T) {
 
 	if j.lazyBlocks != nil {
 		t.Errorf("j.lazyBlocks not nil after Close: %v", j.lazyBlocks)
+	}
+	if j.lazyCodeArena != nil {
+		t.Errorf("j.lazyCodeArena not nil after Close")
 	}
 	for i, blk := range snap {
 		if blk.nativeMmap != nil {

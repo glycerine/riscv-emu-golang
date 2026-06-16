@@ -70,6 +70,7 @@ func abjitDispatch(
 	}
 	initialBudget := budget
 	s.IC = initialBudget
+	s.ChainSource = 0
 
 	abjit.CallJIT(blk.fn, s.RegFileBase())
 
@@ -80,10 +81,11 @@ func abjitDispatch(
 	cpu.riscvInstrBegun += icDelta
 
 	res := jitcall.Result{
-		PC:        s.PC,
-		ICdelta:   icDelta,
-		Status:    s.Status,
-		FaultAddr: s.FaultAddr,
+		PC:          s.PC,
+		ICdelta:     icDelta,
+		Status:      s.Status,
+		FaultAddr:   s.FaultAddr,
+		SourceBlock: uintptr(s.ChainSource),
 	}
 
 	//vv("back from abjit.CallJIT, the call to the assembly trampoline. res = '%v'", &res)

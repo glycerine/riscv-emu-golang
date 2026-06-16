@@ -14,26 +14,37 @@ import "unsafe"
 //	Offset 516: (padding) — 4 bytes
 //	Offset 520: memBase   — 8 bytes
 //	Offset 528: memMask   — 8 bytes
+//	Offset 536: pc        — 8 bytes
+//	Offset 544: status    — 8 bytes
+//	Offset 552: faultAddr — 8 bytes
+//	Offset 560: dcBase    — 8 bytes
+//	Offset 568: dcMask    — 8 bytes
+//	Offset 576: vaddrBegin — 8 bytes
+//	Offset 584: segSize   — 8 bytes
+//	Offset 592: cycles    — 8 bytes
+//	Offset 600: ic        — 8 bytes
 //	Offset 608: resvAddr  — 8 bytes
 //	Offset 616: resvValid — 8 bytes (0 or 1)
+//	Offset 624: chainSource — 8 bytes (compiledBlock pointer for slow chain exits)
 type State struct {
-	X          [32]uint64
-	F          [32]uint64
-	FCSR       uint32
-	_          uint32
-	MemBase    uintptr
-	MemMask    uint64
-	PC         uint64
-	Status     uint64
-	FaultAddr  uint64
-	DCBase     uintptr
-	DCMask     uint64
-	VAddrBegin uint64
-	SegSize    uint64
-	Cycles     uint64 // Reserved for future per-block instruction count (not currently populated)
-	IC         uint64 // remaining guest-instruction budget at native entry/exit
-	ResvAddr   uint64 // LR/SC reservation address for single-hart atomics
-	ResvValid  uint64 // LR/SC reservation valid flag (0 or 1 for native code)
+	X           [32]uint64
+	F           [32]uint64
+	FCSR        uint32
+	_           uint32
+	MemBase     uintptr
+	MemMask     uint64
+	PC          uint64
+	Status      uint64
+	FaultAddr   uint64
+	DCBase      uintptr
+	DCMask      uint64
+	VAddrBegin  uint64
+	SegSize     uint64
+	Cycles      uint64 // Reserved for future per-block instruction count (not currently populated)
+	IC          uint64 // remaining guest-instruction budget at native entry/exit
+	ResvAddr    uint64 // LR/SC reservation address for single-hart atomics
+	ResvValid   uint64 // LR/SC reservation valid flag (0 or 1 for native code)
+	ChainSource uint64 // source compiledBlock pointer for slow static chain exits
 }
 
 //go:noinline

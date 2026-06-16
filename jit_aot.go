@@ -150,6 +150,12 @@ func (j *JIT) jitCompileAOTSegment(
 					writeErr = fmt.Errorf("jitCompileAOTSegment: patch chain exit: %w", patchErr)
 					return
 				}
+				if ce.SourceMovProg != nil {
+					if _, patchErr := j.regPolicy.PatchImm64(execMem[bc.baseOffset:], ce.SourceMovProg, uint64(uintptr(unsafe.Pointer(bc.blk)))); patchErr != nil {
+						writeErr = fmt.Errorf("jitCompileAOTSegment: patch chain source: %w", patchErr)
+						return
+					}
+				}
 				livePatchOff := -1
 				if ce.LiveMovProg != nil {
 					liveOff, patchErr := j.regPolicy.PatchImm64(execMem[bc.baseOffset:], ce.LiveMovProg, 0)

@@ -201,6 +201,51 @@ func TestChaining_PatchedJumpReachesChainEntry(t *testing.T) {
 	}
 }
 
+func TestChaining_SlowExitPatchesActualChainedSource(t *testing.T) {
+	const base = uint64(0x1000)
+	insns := []uint32{
+		/* 0x1000 */ jenc(0, 4), // A: JAL x0, B
+		/* 0x1004 */ jenc(0, 4), // B: JAL x0, C
+		/* 0x1008 */ instrECALL, // C: compiled target
+	}
+	cpu, mem := newTestCPU(t, Size64MB, base, insns)
+	defer mem.Free()
+	jit := NewJIT()
+
+	// Compile B first while C is absent, so B's chain exit remains on its
+	// slow stub. Then compile C, and compile+patch A to B.
+	cpu.SetPC(base + 4)
+	if _, err := jit.StepBlock(cpu); err != nil {
+		t.Fatalf("compile/run B: %v", err)
+	}
+	cpu.SetPC(base + 8)
+	if _, err := jit.StepBlock(cpu); err != ErrEcall {
+		t.Fatalf("compile/run C err = %v, want ErrEcall", err)
+	}
+	cpu.SetPC(base)
+	if _, err := jit.StepBlock(cpu); err != nil {
+		t.Fatalf("compile/patch A: %v", err)
+	}
+
+	patchesBefore := jit.ChainPatched
+	noMatchBefore := jit.ChainPatchNoMatch
+
+	// Enter A again. A is patched to B, so B's slow exit is the one that
+	// returns to Go. The dispatcher must patch B->C, not look for A->C.
+	cpu.SetPC(base)
+	if _, err := jit.StepBlock(cpu); err != nil {
+		t.Fatalf("run chained A->B slow exit: %v", err)
+	}
+	if jit.ChainPatchNoMatch != noMatchBefore {
+		t.Fatalf("ChainPatchNoMatch changed from %d to %d; dispatcher patched the wrong source block",
+			noMatchBefore, jit.ChainPatchNoMatch)
+	}
+	if jit.ChainPatched != patchesBefore+1 {
+		t.Fatalf("ChainPatched = %d, want %d after B->C source patch",
+			jit.ChainPatched, patchesBefore+1)
+	}
+}
+
 // broken by lack of fine grain inline IC (instruction counter)
 // at the moment. So we comment it out.
 /*
