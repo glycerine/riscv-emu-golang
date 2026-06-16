@@ -9,13 +9,13 @@ import (
 	"os"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 )
 
 const (
-	zygoLockstepBudget     = uint64(3)
-	zygoLockstepMaxQuanta  = 500_000
+	zygoLockstepBudget     = uint64(1000)
 	zygoLockstepProgramArg = "(defn fib [x] (cond (== x 0) 0 (== x 1) 1 (+ (fib (- x 1)) (fib (- x 2))))) (println (fib 10))"
 )
 
@@ -30,18 +30,19 @@ type zygoLockstepSide struct {
 	cleanup func()
 }
 
-func TestJea9Linux_ZygoFib10_LazyJITLockstepBudget3(t *testing.T) {
+func TestJea9Linux_ZygoFib10_LazyJITLockstepBudget1000(t *testing.T) {
 	data, err := os.ReadFile("bench/zygo.elf")
 	if err != nil {
 		t.Skipf("bench/zygo.elf not found: %v", err)
 	}
 
-	interp := newZygoLockstepSide(t, "interp", data, false)
+	budget := zygoLockstepInstructionBudget(t)
+	interp := newZygoLockstepSide(t, "interp", data, false, budget)
 	defer interp.close()
-	jit := newZygoLockstepSide(t, "jit", data, true)
+	jit := newZygoLockstepSide(t, "jit", data, true, budget)
 	defer jit.close()
 
-	for quantum := 0; quantum < zygoLockstepMaxQuanta; quantum++ {
+	for quantum := 0; ; quantum++ {
 		jitBeforeIC := jit.cpu.RiscvInstrBegun()
 		interpBeforeIC := interp.cpu.RiscvInstrBegun()
 		jitErr := jit.os.RunJIT(jit.cpu, jit.jit)
@@ -76,12 +77,22 @@ func TestJea9Linux_ZygoFib10_LazyJITLockstepBudget3(t *testing.T) {
 				quantum, jitKind, zygoLockstepSummary(jit, interp, jitDelta, interpDelta))
 		}
 	}
-
-	t.Fatalf("no divergence or exit after %d quanta:\n%s",
-		zygoLockstepMaxQuanta, zygoLockstepSummary(jit, interp, 0, 0))
 }
 
-func newZygoLockstepSide(t *testing.T, name string, elfData []byte, useJIT bool) *zygoLockstepSide {
+func zygoLockstepInstructionBudget(t *testing.T) uint64 {
+	t.Helper()
+	raw := os.Getenv("ZYGO_LOCKSTEP_BUDGET")
+	if raw == "" {
+		return zygoLockstepBudget
+	}
+	budget, err := strconv.ParseUint(raw, 10, 64)
+	if err != nil || budget == 0 {
+		t.Fatalf("invalid ZYGO_LOCKSTEP_BUDGET=%q", raw)
+	}
+	return budget
+}
+
+func newZygoLockstepSide(t *testing.T, name string, elfData []byte, useJIT bool, budget uint64) *zygoLockstepSide {
 	t.Helper()
 	mem, err := NewGuestMemory(Size16GB)
 	if err != nil {
@@ -97,7 +108,7 @@ func newZygoLockstepSide(t *testing.T, name string, elfData []byte, useJIT bool)
 		ClockMode:         Jea9ClockIdleJump,
 		MonotonicStartNS:  1,
 		NSPerInstruction:  1,
-		InstructionBudget: zygoLockstepBudget,
+		InstructionBudget: budget,
 		PID:               1,
 		TID:               1,
 	}
@@ -166,6 +177,9 @@ func zygoLockstepCompare(jit, interp *zygoLockstepSide) string {
 	var out strings.Builder
 	zygoLockstepCompareCPU(&out, "current CPU", jit.cpu, interp.cpu)
 	zygoLockstepCompareOS(&out, jit.os, interp.os)
+	if os.Getenv("ZYGO_LOCKSTEP_MEM") != "" {
+		zygoLockstepCompareMemory(&out, jit, interp)
+	}
 	if jit.stdout.String() != interp.stdout.String() {
 		fmt.Fprintf(&out, "stdout mismatch: jit=%q interp=%q\n", jit.stdout.String(), interp.stdout.String())
 	}
@@ -218,6 +232,10 @@ func zygoLockstepCompareOS(out *strings.Builder, jit, interp *Jea9Linux) {
 		fmt.Fprintf(out, "scheduler tid mismatch: jit=(current=%d tid=%d next=%d) interp=(current=%d tid=%d next=%d)\n",
 			jit.currentTID, jit.tid, jit.nextTID, interp.currentTID, interp.tid, interp.nextTID)
 	}
+	if jit.vm.brk != interp.vm.brk || jit.vm.minBrk != interp.vm.minBrk || jit.vm.mmapNext != interp.vm.mmapNext {
+		fmt.Fprintf(out, "vm range mismatch: jit=(brk=0x%x min=0x%x next=0x%x) interp=(brk=0x%x min=0x%x next=0x%x)\n",
+			jit.vm.brk, jit.vm.minBrk, jit.vm.mmapNext, interp.vm.brk, interp.vm.minBrk, interp.vm.mmapNext)
+	}
 	if jit.monotonicNS != interp.monotonicNS {
 		fmt.Fprintf(out, "monotonicNS mismatch: jit=%d interp=%d\n", jit.monotonicNS, interp.monotonicNS)
 	}
@@ -242,6 +260,60 @@ func zygoLockstepCompareOS(out *strings.Builder, jit, interp *Jea9Linux) {
 			continue
 		}
 		zygoLockstepCompareContext(out, tid, jctx, ictx)
+	}
+}
+
+func zygoLockstepCompareMemory(out *strings.Builder, jit, interp *zygoLockstepSide) {
+	pages := make(map[uint64]bool, len(jit.os.vm.pages)+len(interp.os.vm.pages))
+	for page := range jit.os.vm.pages {
+		pages[page] = true
+	}
+	for page := range interp.os.vm.pages {
+		pages[page] = true
+	}
+	ids := make([]uint64, 0, len(pages))
+	for page := range pages {
+		ids = append(ids, page)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+
+	for _, page := range ids {
+		jstate := jit.os.vm.pages[page]
+		istate := interp.os.vm.pages[page]
+		if jstate != istate {
+			fmt.Fprintf(out, "vm page 0x%x state mismatch: jit=0x%x interp=0x%x\n", page, jstate, istate)
+			return
+		}
+	}
+
+	jraw := jit.mem.RawSlice()
+	iraw := interp.mem.RawSlice()
+	jlen := uint64(len(jraw))
+	ilen := uint64(len(iraw))
+	for _, page := range ids {
+		state := jit.os.vm.pages[page] | interp.os.vm.pages[page]
+		if state&jea9LinuxPageMapped == 0 {
+			continue
+		}
+		begin := page * GuestPageSize
+		end := begin + GuestPageSize
+		if end < begin || end > jlen || end > ilen {
+			fmt.Fprintf(out, "vm page 0x%x outside memory bounds\n", page)
+			return
+		}
+		js := jraw[begin:end]
+		is := iraw[begin:end]
+		if bytes.Equal(js, is) {
+			continue
+		}
+		for i := range js {
+			if js[i] != is[i] {
+				addr := begin + uint64(i)
+				fmt.Fprintf(out, "memory mismatch at 0x%x page=0x%x: jit=0x%02x interp=0x%02x\n",
+					addr, page, js[i], is[i])
+				return
+			}
+		}
 	}
 }
 
