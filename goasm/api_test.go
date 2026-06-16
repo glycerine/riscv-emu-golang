@@ -80,6 +80,66 @@ func memStoreImm(c *goasm.Ctx, as obj.As, imm int64, base int16, disp int64) *ob
 	return p
 }
 
+func TestAssembleInto_AliasesDestinationAMD64(t *testing.T) {
+	c := amd64Ctx(t)
+	c.Append(immReg(c, x86.AMOVQ, 0x12345678, x86.REG_AX))
+	c.Append(c.NewRET())
+	want, err := c.Assemble()
+	if err != nil {
+		t.Fatalf("Assemble: %v", err)
+	}
+
+	c = amd64Ctx(t)
+	c.Append(immReg(c, x86.AMOVQ, 0x12345678, x86.REG_AX))
+	c.Append(c.NewRET())
+	buf := make([]byte, len(want)+16)
+	got, err := c.AssembleInto(buf)
+	if err != nil {
+		t.Fatalf("AssembleInto: %v", err)
+	}
+	if len(got) == 0 {
+		t.Fatal("AssembleInto produced empty output")
+	}
+	if &got[0] != &buf[0] {
+		t.Fatal("AssembleInto output does not alias destination")
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("AssembleInto bytes mismatch:\n got % X\nwant % X", got, want)
+	}
+}
+
+func TestAssembleInto_SmallBufferErrorsAMD64(t *testing.T) {
+	c := amd64Ctx(t)
+	c.Append(immReg(c, x86.AMOVQ, 0x12345678, x86.REG_AX))
+	c.Append(c.NewRET())
+	_, err := c.AssembleInto(make([]byte, 0, 1))
+	if err == nil {
+		t.Fatal("AssembleInto succeeded with too-small buffer")
+	}
+	if !strings.Contains(err.Error(), "fixed output buffer too small") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestAssembleInto_SmallBufferErrorsARM64(t *testing.T) {
+	c := arm64Ctx(t)
+	p := c.NewProg()
+	p.As = arm64.AMOVD
+	p.From.Type = obj.TYPE_CONST
+	p.From.Offset = 0x1234
+	p.To.Type = obj.TYPE_REG
+	p.To.Reg = arm64.REG_R0
+	c.Append(p)
+	c.Append(c.NewRET())
+	_, err := c.AssembleInto(make([]byte, 0, 1))
+	if err == nil {
+		t.Fatal("AssembleInto succeeded with too-small buffer")
+	}
+	if !strings.Contains(err.Error(), "fixed output buffer too small") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func hexFmt(b []byte) string {
 	if len(b) == 0 {
 		return "<empty>"

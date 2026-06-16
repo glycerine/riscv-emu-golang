@@ -12,21 +12,23 @@ package riscv
 import (
 	"encoding/binary"
 	"fmt"
+	"syscall"
 	"unsafe"
 
 	"github.com/glycerine/riscv-emu-golang/goasm"
 )
 
 // aotBlockCompile is the per-block working state carried between
-// the lower+assemble pass and the copy+backpatch pass.
+// the size pass and the final assemble+backpatch pass.
 type aotBlockCompile struct {
 	startPC     uint64
 	endPC       uint64
-	bytes       []byte
+	codeSize    int
 	lowerResult *LowerResult
 	baseOffset  int // offset of this block within the unified mmap
 	blk         *compiledBlock
-	block       *Block // retained for VizJit dump (nil when VizJit disabled)
+	block       *Block
+	alloc       *Allocation
 	progs       string // goasm Prog listing (empty when VizJit disabled)
 	hasFP       bool
 }
@@ -47,7 +49,7 @@ func (j *JIT) jitCompileAOTSegment(
 		return nil, err
 	}
 
-	// ── Pass 1: lower + assemble each range; accumulate byte lengths ──
+	// ── Pass 1: lower + assemble each range only far enough to measure exact byte lengths ──
 	compiles := make([]*aotBlockCompile, 0, len(ranges))
 	totalSize := 0
 	for _, r := range ranges {
@@ -64,34 +66,23 @@ func (j *JIT) jitCompileAOTSegment(
 
 		ctx := goasm.New(j.regPolicy.Arch)
 		ctx.Append(ctx.NewATEXT())
-		lowerResult, lowerErr := j.regPolicy.Lower(ctx, res.block, alloc)
-		if lowerErr != nil {
+		if _, lowerErr := j.regPolicy.Lower(ctx, res.block, alloc); lowerErr != nil {
 			continue // lowering failed — skip
 		}
 
-		code, err := ctx.Assemble()
+		code, err := ctx.AssembleView()
 		if err != nil || len(code) == 0 {
 			continue
 		}
 
-		// Capture Prog listing after Assemble so branch targets show
-		// resolved byte offsets instead of 0.
-		var progs string
-		var vizBlock *Block
-		if _, on := vizJitEnabled(); on {
-			progs = ctx.DumpProgs()
-			vizBlock = res.block
-		}
-
 		compiles = append(compiles, &aotBlockCompile{
-			startPC:     r.startPC,
-			endPC:       r.endPC,
-			bytes:       code,
-			lowerResult: lowerResult,
-			baseOffset:  totalSize,
-			block:       vizBlock,
-			progs:       progs,
-			hasFP:       allocHasFP(alloc),
+			startPC:    r.startPC,
+			endPC:      r.endPC,
+			codeSize:   len(code),
+			baseOffset: totalSize,
+			block:      res.block,
+			alloc:      alloc,
+			hasFP:      allocHasFP(alloc),
 		})
 		totalSize += len(code)
 	}
@@ -100,7 +91,7 @@ func (j *JIT) jitCompileAOTSegment(
 		return nil, fmt.Errorf("jitCompileAOTSegment: no blocks translated")
 	}
 
-	// ── Pass 2: allocate one big exec mmap and copy each block ──
+	// ── Pass 2: allocate one big exec mmap and assemble each block directly into it ──
 	execMem, err := allocExec(totalSize)
 	if err != nil {
 		return nil, fmt.Errorf("allocExec: %w", err)
@@ -112,7 +103,28 @@ func (j *JIT) jitCompileAOTSegment(
 	var writeErr error
 	withExecWrite(func() {
 		for _, bc := range compiles {
-			copy(execMem[bc.baseOffset:bc.baseOffset+len(bc.bytes)], bc.bytes)
+			ctx := goasm.New(j.regPolicy.Arch)
+			ctx.Append(ctx.NewATEXT())
+			lowerResult, lowerErr := j.regPolicy.Lower(ctx, bc.block, bc.alloc)
+			if lowerErr != nil {
+				writeErr = fmt.Errorf("jitCompileAOTSegment: lower final block 0x%x: %w", bc.startPC, lowerErr)
+				return
+			}
+			out := execMem[bc.baseOffset : bc.baseOffset : bc.baseOffset+bc.codeSize]
+			code, assembleErr := ctx.AssembleInto(out)
+			if assembleErr != nil {
+				writeErr = fmt.Errorf("jitCompileAOTSegment: assemble final block 0x%x: %w", bc.startPC, assembleErr)
+				return
+			}
+			if len(code) != bc.codeSize {
+				writeErr = fmt.Errorf("jitCompileAOTSegment: final block 0x%x size drift: got %d want %d",
+					bc.startPC, len(code), bc.codeSize)
+				return
+			}
+			bc.lowerResult = lowerResult
+			if _, on := vizJitEnabled(); on {
+				bc.progs = ctx.DumpProgs()
+			}
 
 			blockBase := codeBase + uintptr(bc.baseOffset)
 			bc.blk = &compiledBlock{fn: blockBase, hasFP: bc.hasFP}
@@ -218,6 +230,7 @@ func (j *JIT) jitCompileAOTSegment(
 		}
 	})
 	if writeErr != nil {
+		_ = syscall.Munmap(execMem)
 		return nil, writeErr
 	}
 	flushIcache(codeBase, totalSize)
@@ -234,6 +247,7 @@ func (j *JIT) jitCompileAOTSegment(
 	}
 	cacheMmap, err := allocRWAnon(int(cacheSize))
 	if err != nil {
+		_ = syscall.Munmap(execMem)
 		return nil, fmt.Errorf("allocRWAnon (decoder_cache): %w", err)
 	}
 	for _, bc := range compiles {
@@ -276,17 +290,14 @@ func (j *JIT) jitCompileAOTSegment(
 	}
 
 	// VizJit: dump per-block assembly/IR after codeBase is known.
-	// No-op when VizJit is disabled (field block is nil, progs empty).
 	if _, on := vizJitEnabled(); on {
 		var indexLines []string
 		indexLines = append(indexLines, fmt.Sprintf("# AOT segment 0x%x..0x%x, %d blocks",
 			vaddrBegin, vaddrEnd, len(compiles)))
 		for _, bc := range compiles {
-			if bc.block == nil {
-				continue
-			}
 			blockBase := codeBase + uintptr(bc.baseOffset)
-			vizJitDump(bc.startPC, bc.endPC, mem, bc.block, bc.progs, bc.bytes, blockBase)
+			code := execMem[bc.baseOffset : bc.baseOffset+bc.codeSize]
+			vizJitDump(bc.startPC, bc.endPC, mem, bc.block, bc.progs, code, blockBase)
 			indexLines = append(indexLines,
 				fmt.Sprintf("0x%08x  %s.gocpu.asm.pc_0x%08x.asm", bc.startPC, getVizJitTag(), bc.startPC))
 		}

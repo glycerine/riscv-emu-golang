@@ -2046,7 +2046,7 @@ func span6(ctxt *obj.Link, s *obj.LSym, newprog obj.ProgAlloc) {
 
 	pjc := makePjcCtx(ctxt)
 
-	if s.P != nil {
+	if s.P != nil && !s.FixedP {
 		return
 	}
 
@@ -2168,6 +2168,19 @@ func span6(ctxt *obj.Link, s *obj.LSym, newprog obj.ProgAlloc) {
 			p.Rel = nil
 
 			p.Pc = int64(c)
+			directOut := false
+			if s.FixedP {
+				pc := int(p.Pc)
+				out := s.P[:cap(s.P)][pc:]
+				if len(out) >= len(ab.buf) {
+					ab.SetOutput(out)
+					directOut = true
+				} else {
+					ab.SetOutput(nil)
+				}
+			} else {
+				ab.SetOutput(nil)
+			}
 			ab.asmins(ctxt, s, p)
 			m := ab.Len()
 			if int(p.Isize) != m {
@@ -2180,7 +2193,9 @@ func span6(ctxt *obj.Link, s *obj.LSym, newprog obj.ProgAlloc) {
 			}
 
 			s.Grow(p.Pc + int64(m))
-			copy(s.P[p.Pc:], ab.Bytes())
+			if !directOut {
+				ab.CopyTo(s.P[p.Pc:])
+			}
 			// If there was padding, remember it.
 			if pPrev != nil && !ctxt.IsAsm && c > c0 {
 				nops = append(nops, nopPad{p: pPrev, n: c - c0})
@@ -3194,6 +3209,7 @@ func oclass(ctxt *obj.Link, p *obj.Prog, a *obj.Addr) int {
 // and hold assembly state.
 type AsmBuf struct {
 	buf      [100]byte
+	out      []byte
 	off      int
 	rexflag  int
 	vexflag  bool // Per inst: true for VEX-encoded
@@ -3205,68 +3221,130 @@ type AsmBuf struct {
 	evex evexBits // Initialized when evexflag is true
 }
 
+func (ab *AsmBuf) SetOutput(dst []byte) {
+	ab.out = dst
+}
+
+func (ab *AsmBuf) byteAt(off int) byte {
+	if ab.out != nil {
+		return ab.out[off]
+	}
+	return ab.buf[off]
+}
+
 // Put1 appends one byte to the end of the buffer.
 func (ab *AsmBuf) Put1(x byte) {
-	ab.buf[ab.off] = x
+	if ab.out != nil {
+		ab.out[ab.off] = x
+	} else {
+		ab.buf[ab.off] = x
+	}
 	ab.off++
 }
 
 // Put2 appends two bytes to the end of the buffer.
 func (ab *AsmBuf) Put2(x, y byte) {
-	ab.buf[ab.off+0] = x
-	ab.buf[ab.off+1] = y
+	if ab.out != nil {
+		ab.out[ab.off+0] = x
+		ab.out[ab.off+1] = y
+	} else {
+		ab.buf[ab.off+0] = x
+		ab.buf[ab.off+1] = y
+	}
 	ab.off += 2
 }
 
 // Put3 appends three bytes to the end of the buffer.
 func (ab *AsmBuf) Put3(x, y, z byte) {
-	ab.buf[ab.off+0] = x
-	ab.buf[ab.off+1] = y
-	ab.buf[ab.off+2] = z
+	if ab.out != nil {
+		ab.out[ab.off+0] = x
+		ab.out[ab.off+1] = y
+		ab.out[ab.off+2] = z
+	} else {
+		ab.buf[ab.off+0] = x
+		ab.buf[ab.off+1] = y
+		ab.buf[ab.off+2] = z
+	}
 	ab.off += 3
 }
 
 // Put4 appends four bytes to the end of the buffer.
 func (ab *AsmBuf) Put4(x, y, z, w byte) {
-	ab.buf[ab.off+0] = x
-	ab.buf[ab.off+1] = y
-	ab.buf[ab.off+2] = z
-	ab.buf[ab.off+3] = w
+	if ab.out != nil {
+		ab.out[ab.off+0] = x
+		ab.out[ab.off+1] = y
+		ab.out[ab.off+2] = z
+		ab.out[ab.off+3] = w
+	} else {
+		ab.buf[ab.off+0] = x
+		ab.buf[ab.off+1] = y
+		ab.buf[ab.off+2] = z
+		ab.buf[ab.off+3] = w
+	}
 	ab.off += 4
 }
 
 // PutInt16 writes v into the buffer using little-endian encoding.
 func (ab *AsmBuf) PutInt16(v int16) {
-	ab.buf[ab.off+0] = byte(v)
-	ab.buf[ab.off+1] = byte(v >> 8)
+	if ab.out != nil {
+		ab.out[ab.off+0] = byte(v)
+		ab.out[ab.off+1] = byte(v >> 8)
+	} else {
+		ab.buf[ab.off+0] = byte(v)
+		ab.buf[ab.off+1] = byte(v >> 8)
+	}
 	ab.off += 2
 }
 
 // PutInt32 writes v into the buffer using little-endian encoding.
 func (ab *AsmBuf) PutInt32(v int32) {
-	ab.buf[ab.off+0] = byte(v)
-	ab.buf[ab.off+1] = byte(v >> 8)
-	ab.buf[ab.off+2] = byte(v >> 16)
-	ab.buf[ab.off+3] = byte(v >> 24)
+	if ab.out != nil {
+		ab.out[ab.off+0] = byte(v)
+		ab.out[ab.off+1] = byte(v >> 8)
+		ab.out[ab.off+2] = byte(v >> 16)
+		ab.out[ab.off+3] = byte(v >> 24)
+	} else {
+		ab.buf[ab.off+0] = byte(v)
+		ab.buf[ab.off+1] = byte(v >> 8)
+		ab.buf[ab.off+2] = byte(v >> 16)
+		ab.buf[ab.off+3] = byte(v >> 24)
+	}
 	ab.off += 4
 }
 
 // PutInt64 writes v into the buffer using little-endian encoding.
 func (ab *AsmBuf) PutInt64(v int64) {
-	ab.buf[ab.off+0] = byte(v)
-	ab.buf[ab.off+1] = byte(v >> 8)
-	ab.buf[ab.off+2] = byte(v >> 16)
-	ab.buf[ab.off+3] = byte(v >> 24)
-	ab.buf[ab.off+4] = byte(v >> 32)
-	ab.buf[ab.off+5] = byte(v >> 40)
-	ab.buf[ab.off+6] = byte(v >> 48)
-	ab.buf[ab.off+7] = byte(v >> 56)
+	if ab.out != nil {
+		ab.out[ab.off+0] = byte(v)
+		ab.out[ab.off+1] = byte(v >> 8)
+		ab.out[ab.off+2] = byte(v >> 16)
+		ab.out[ab.off+3] = byte(v >> 24)
+		ab.out[ab.off+4] = byte(v >> 32)
+		ab.out[ab.off+5] = byte(v >> 40)
+		ab.out[ab.off+6] = byte(v >> 48)
+		ab.out[ab.off+7] = byte(v >> 56)
+	} else {
+		ab.buf[ab.off+0] = byte(v)
+		ab.buf[ab.off+1] = byte(v >> 8)
+		ab.buf[ab.off+2] = byte(v >> 16)
+		ab.buf[ab.off+3] = byte(v >> 24)
+		ab.buf[ab.off+4] = byte(v >> 32)
+		ab.buf[ab.off+5] = byte(v >> 40)
+		ab.buf[ab.off+6] = byte(v >> 48)
+		ab.buf[ab.off+7] = byte(v >> 56)
+	}
 	ab.off += 8
 }
 
 // Put copies b into the buffer.
 func (ab *AsmBuf) Put(b []byte) {
-	copy(ab.buf[ab.off:], b)
+	if ab.out != nil {
+		for i, x := range b {
+			ab.out[ab.off+i] = x
+		}
+	} else {
+		copy(ab.buf[ab.off:], b)
+	}
 	ab.off += len(b)
 }
 
@@ -3286,24 +3364,48 @@ func (ab *AsmBuf) PutOpBytesLit(offset int, op *opBytes) {
 // Insert inserts b at offset i.
 func (ab *AsmBuf) Insert(i int, b byte) {
 	ab.off++
+	if ab.out != nil {
+		for j := ab.off - 1; j > i; j-- {
+			ab.out[j] = ab.out[j-1]
+		}
+		ab.out[i] = b
+		return
+	}
 	copy(ab.buf[i+1:ab.off], ab.buf[i:ab.off-1])
 	ab.buf[i] = b
 }
 
 // Last returns the byte at the end of the buffer.
-func (ab *AsmBuf) Last() byte { return ab.buf[ab.off-1] }
+func (ab *AsmBuf) Last() byte { return ab.byteAt(ab.off - 1) }
 
 // Len returns the length of the buffer.
 func (ab *AsmBuf) Len() int { return ab.off }
 
 // Bytes returns the contents of the buffer.
-func (ab *AsmBuf) Bytes() []byte { return ab.buf[:ab.off] }
+func (ab *AsmBuf) Bytes() []byte {
+	if ab.out != nil {
+		return ab.out[:ab.off]
+	}
+	return ab.buf[:ab.off]
+}
+
+// CopyTo copies the encoded instruction bytes into dst without calling
+// runtime.memmove for the tiny copies on x86's hot assembly path.
+func (ab *AsmBuf) CopyTo(dst []byte) {
+	if ab.off == 0 {
+		return
+	}
+	_ = dst[ab.off-1]
+	for i := 0; i < ab.off; i++ {
+		dst[i] = ab.byteAt(i)
+	}
+}
 
 // Reset empties the buffer.
 func (ab *AsmBuf) Reset() { ab.off = 0 }
 
 // At returns the byte at offset i.
-func (ab *AsmBuf) At(i int) byte { return ab.buf[i] }
+func (ab *AsmBuf) At(i int) byte { return ab.byteAt(i) }
 
 // asmidx emits SIB byte.
 func (ab *AsmBuf) asmidx(ctxt *obj.Link, scale int, index int, base int) {

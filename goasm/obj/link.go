@@ -461,6 +461,7 @@ type LSym struct {
 	Size   int64
 	Gotype *LSym
 	P      []byte
+	FixedP bool // P points at caller-owned storage and must not grow past cap(P)
 	R      []Reloc
 
 	Extra *any // *FuncInfo, *VarInfo, *FileInfo, *TypeInfo, or *ItabInfo, if present

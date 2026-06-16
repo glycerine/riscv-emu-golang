@@ -32,11 +32,23 @@
 package obj
 
 import (
+	"fmt"
 	"log"
 	"math"
 
 	"github.com/glycerine/riscv-emu-golang/goasm/objabi"
 )
+
+// FixedBufferTooSmall is raised when an LSym with FixedP set cannot fit
+// emitted bytes in its caller-owned P buffer.
+type FixedBufferTooSmall struct {
+	Need     int
+	Capacity int
+}
+
+func (e *FixedBufferTooSmall) Error() string {
+	return fmt.Sprintf("goasm fixed output buffer too small: need=%d cap=%d", e.Need, e.Capacity)
+}
 
 // Grow increases the length of s.P to lsiz.
 func (s *LSym) Grow(lsiz int64) {
@@ -47,12 +59,22 @@ func (s *LSym) Grow(lsiz int64) {
 	if len(s.P) >= siz {
 		return
 	}
+	if s.FixedP {
+		if cap(s.P) < siz {
+			panic(&FixedBufferTooSmall{Need: siz, Capacity: cap(s.P)})
+		}
+		s.P = s.P[:siz]
+		return
+	}
 	s.P = append(s.P, make([]byte, siz-len(s.P))...)
 }
 
 // GrowCap increases the capacity of s.P to c.
 func (s *LSym) GrowCap(c int64) {
 	if int64(cap(s.P)) >= c {
+		return
+	}
+	if s.FixedP {
 		return
 	}
 	if s.P == nil {

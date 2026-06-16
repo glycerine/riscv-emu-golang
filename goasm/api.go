@@ -183,14 +183,42 @@ func (c *Ctx) Append(p *obj.Prog) {
 	c.last = p
 }
 
-// Assemble encodes the Prog chain to native machine-code bytes.
-// Returns an error if any diagnostic was emitted during assembly or if
-// the encoder hit a fatal path (which we convert from log.Fatalf to a
-// normal error via DiagFlush+recover).
+// Assemble encodes the Prog chain to native machine-code bytes and returns
+// a detached heap-owned byte slice.
+// Returns an error if any diagnostic was emitted during assembly or if the
+// encoder hit a fatal path (which we convert from log.Fatalf to a normal
+// error via DiagFlush+recover).
 //
-// One-shot: a Ctx may be assembled exactly once. To assemble another
-// block, call Reset first.
+// One-shot: a Ctx may be assembled exactly once. To assemble another block,
+// call Reset first.
 func (c *Ctx) Assemble() (out []byte, err error) {
+	out, err = c.AssembleView()
+	if err != nil {
+		return nil, err
+	}
+	detached := make([]byte, len(out))
+	copy(detached, out)
+	return detached, nil
+}
+
+// AssembleView encodes the Prog chain to native machine-code bytes and returns
+// goasm-owned storage. The returned slice is valid until the Ctx is Reset or
+// discarded. Callers that need to keep the bytes should use Assemble instead.
+func (c *Ctx) AssembleView() (out []byte, err error) {
+	return c.assembleInto(nil)
+}
+
+// AssembleInto encodes the Prog chain directly into dst and returns the used
+// prefix. The returned slice aliases dst. If dst is too small, AssembleInto
+// returns an error instead of allocating replacement storage.
+func (c *Ctx) AssembleInto(dst []byte) (out []byte, err error) {
+	if cap(dst) == 0 {
+		return nil, fmt.Errorf("goasm: AssembleInto requires non-empty output capacity")
+	}
+	return c.assembleInto(dst[:0])
+}
+
+func (c *Ctx) assembleInto(dst []byte) (out []byte, err error) {
 	if c.firstProg == nil {
 		return nil, fmt.Errorf("goasm: empty prog list")
 	}
@@ -206,8 +234,13 @@ func (c *Ctx) Assemble() (out []byte, err error) {
 	// non-goasmFatal panic is a real bug — re-raise so it surfaces.
 	defer func() {
 		if r := recover(); r != nil {
-			if gf, ok := r.(*goasmFatal); ok {
-				err = gf
+			switch x := r.(type) {
+			case *goasmFatal:
+				err = x
+				out = nil
+				return
+			case *obj.FixedBufferTooSmall:
+				err = x
 				out = nil
 				return
 			}
@@ -228,15 +261,18 @@ func (c *Ctx) Assemble() (out []byte, err error) {
 	// leaving sym.P empty.
 	c.sym.Func().Text = c.firstProg
 
+	if dst != nil {
+		c.sym.P = dst[:0]
+		c.sym.FixedP = true
+	}
+
 	// Run the stripped assembly pipeline (no DWARF, no PCLN).
 	obj.AssembleBlock(c.ctxt, c.sym, c.ctxt.NewProg)
 
 	if len(c.errors) > 0 {
 		return nil, fmt.Errorf("goasm: assembly errors: %v", c.errors)
 	}
-	out = make([]byte, len(c.sym.P))
-	copy(out, c.sym.P)
-	return out, nil
+	return c.sym.P, nil
 }
 
 // DumpProgs returns a human-readable listing of all appended Progs.

@@ -96,22 +96,63 @@ func lazyCodeArenaSize(mem *GuestMemory, firstCodeSize, alignment int) (int, err
 	return int(target), nil
 }
 
+func (j *JIT) ensureLazyCodeArena(firstCodeSize int, mem *GuestMemory, alignment int) error {
+	if j.lazyCodeArena == nil {
+		arenaSize, err := lazyCodeArenaSize(mem, firstCodeSize, alignment)
+		if err != nil {
+			return err
+		}
+		arena, err := allocExec(arenaSize)
+		if err != nil {
+			return err
+		}
+		j.lazyCodeArena = arena
+		j.lazyCodeOff = 0
+	}
+	return nil
+}
+
+func (j *JIT) reserveLazyCode(mem *GuestMemory) ([]byte, uintptr, int, error) {
+	alignment := lazyCodeAlignmentForArch(j.regPolicy.Arch)
+	if err := j.ensureLazyCodeArena(1, mem, alignment); err != nil {
+		return nil, 0, 0, err
+	}
+	off := alignUpInt(j.lazyCodeOff, alignment)
+	if off < 0 || off >= len(j.lazyCodeArena) {
+		var loadedELF uint64
+		var loadedImage uint64
+		if mem != nil {
+			loadedELF = mem.loadedELFSize
+			loadedImage = mem.loadedELFImageSize
+		}
+		return nil, 0, 0, fmt.Errorf("jit lazy code arena exhausted: used=%d cap=%d loaded_elf=%d loaded_image=%d",
+			j.lazyCodeOff, len(j.lazyCodeArena), loadedELF, loadedImage)
+	}
+	codeMem := j.lazyCodeArena[off:]
+	return codeMem, uintptr(unsafe.Pointer(&codeMem[0])), off, nil
+}
+
+func (j *JIT) commitLazyCode(off, size int) ([]byte, uintptr, error) {
+	if size <= 0 {
+		return nil, 0, fmt.Errorf("jit lazy code allocation: invalid size %d", size)
+	}
+	end := off + size
+	if off < 0 || end < off || end > len(j.lazyCodeArena) {
+		return nil, 0, fmt.Errorf("jit lazy code arena exhausted: need=%d used=%d cap=%d",
+			size, j.lazyCodeOff, len(j.lazyCodeArena))
+	}
+	j.lazyCodeOff = end
+	codeMem := j.lazyCodeArena[off:end:end]
+	return codeMem, uintptr(unsafe.Pointer(&codeMem[0])), nil
+}
+
 func (j *JIT) allocLazyCode(size int, mem *GuestMemory) ([]byte, uintptr, error) {
 	if size <= 0 {
 		return nil, 0, fmt.Errorf("jit lazy code allocation: invalid size %d", size)
 	}
 	alignment := lazyCodeAlignmentForArch(j.regPolicy.Arch)
-	if j.lazyCodeArena == nil {
-		arenaSize, err := lazyCodeArenaSize(mem, size, alignment)
-		if err != nil {
-			return nil, 0, err
-		}
-		arena, err := allocExec(arenaSize)
-		if err != nil {
-			return nil, 0, err
-		}
-		j.lazyCodeArena = arena
-		j.lazyCodeOff = 0
+	if err := j.ensureLazyCodeArena(size, mem, alignment); err != nil {
+		return nil, 0, err
 	}
 	off := alignUpInt(j.lazyCodeOff, alignment)
 	end := off + size
@@ -126,7 +167,7 @@ func (j *JIT) allocLazyCode(size int, mem *GuestMemory) ([]byte, uintptr, error)
 			size, j.lazyCodeOff, len(j.lazyCodeArena), loadedELF, loadedImage)
 	}
 	j.lazyCodeOff = end
-	codeMem := j.lazyCodeArena[off:end]
+	codeMem := j.lazyCodeArena[off:end:end]
 	return codeMem, uintptr(unsafe.Pointer(&codeMem[0])), nil
 }
 
@@ -154,35 +195,43 @@ func (j *JIT) jitCompile(res *emitResult, mem ...*GuestMemory) (*compiledBlock, 
 		return nil, fmt.Errorf("jit lower: %w", lowerErr)
 	}
 
-	// Step 4: Assemble to native bytes.
-	code, err := ctx.Assemble()
-	if err != nil {
-		return nil, fmt.Errorf("jit assemble: %w", err)
-	}
-	if len(code) == 0 {
-		return nil, fmt.Errorf("jit: assembler produced empty output")
-	}
-
-	// Step 5: Allocate executable memory and copy code.
+	// Step 4: Reserve executable memory and assemble directly into it.
 	var guestMem *GuestMemory
 	if len(mem) > 0 {
 		guestMem = mem[0]
 	}
-	execMem, codeBase, err := j.allocLazyCode(len(code), guestMem)
+	execReserve, codeBase, codeOff, err := j.reserveLazyCode(guestMem)
 	if err != nil {
 		return nil, err
 	}
-	blk := &compiledBlock{
-		fn:       codeBase,
-		hasFP:    allocHasFP(alloc),
-		numInsns: res.numInsns,
-	}
 
 	var writeErr error
+	var code []byte
+	var blk *compiledBlock
 	withExecWrite(func() {
-		copy(execMem, code)
+		code, writeErr = ctx.AssembleInto(execReserve)
+		if writeErr != nil {
+			writeErr = fmt.Errorf("jit assemble: %w", writeErr)
+			return
+		}
+		if len(code) == 0 {
+			writeErr = fmt.Errorf("jit: assembler produced empty output")
+			return
+		}
+		execMem, committedBase, err := j.commitLazyCode(codeOff, len(code))
+		if err != nil {
+			writeErr = err
+			return
+		}
+		codeBase = committedBase
+		code = execMem
+		blk = &compiledBlock{
+			fn:       codeBase,
+			hasFP:    allocHasFP(alloc),
+			numInsns: res.numInsns,
+		}
 
-		// Step 6: Block chaining setup — backpatch MOVABS sentinels and record metadata.
+		// Step 5: Block chaining setup — backpatch MOVABS sentinels and record metadata.
 		if lowerResult != nil && lowerResult.ChainEntryProg != nil {
 			blk.chainEntry = codeBase + uintptr(lowerResult.ChainEntryProg.Pc)
 			if lowerResult.LiveChainEntryProg != nil {
@@ -350,22 +399,12 @@ func (j *JIT) jitCompileDebug(res *emitResult) (*compiledBlock, *compileDebugInf
 		return nil, nil, fmt.Errorf("jit lower: %w", lowerErr)
 	}
 
-	code, err := ctx.Assemble()
-	if err != nil {
-		return nil, nil, fmt.Errorf("jit assemble: %w", err)
-	}
-	if len(code) == 0 {
-		return nil, nil, fmt.Errorf("jit: assembler produced empty output")
-	}
-
-	// Post-assembly DumpProgs so branch targets show resolved byte offsets.
-	progDump := ctx.DumpProgs()
-
-	execMem, codeBase, err := j.allocLazyCode(len(code), nil)
+	execReserve, codeBase, codeOff, err := j.reserveLazyCode(nil)
 	if err != nil {
 		return nil, nil, err
 	}
-	blk := &compiledBlock{fn: codeBase, hasFP: allocHasFP(alloc)}
+	var code []byte
+	var blk *compiledBlock
 
 	// Backpatch chain-exit sentinels to the slow-exit stubs and record
 	// metadata, same as jitCompile. Without this, any chain exit in
@@ -373,7 +412,23 @@ func (j *JIT) jitCompileDebug(res *emitResult) (*compiledBlock, *compileDebugInf
 	// segfault when executed.
 	var writeErr error
 	withExecWrite(func() {
-		copy(execMem, code)
+		code, writeErr = ctx.AssembleInto(execReserve)
+		if writeErr != nil {
+			writeErr = fmt.Errorf("jit assemble: %w", writeErr)
+			return
+		}
+		if len(code) == 0 {
+			writeErr = fmt.Errorf("jit: assembler produced empty output")
+			return
+		}
+		execMem, committedBase, err := j.commitLazyCode(codeOff, len(code))
+		if err != nil {
+			writeErr = err
+			return
+		}
+		codeBase = committedBase
+		code = execMem
+		blk = &compiledBlock{fn: codeBase, hasFP: allocHasFP(alloc)}
 		if lowerResult != nil && lowerResult.ChainEntryProg != nil {
 			blk.chainEntry = codeBase + uintptr(lowerResult.ChainEntryProg.Pc)
 			if lowerResult.LiveChainEntryProg != nil {
@@ -422,6 +477,9 @@ func (j *JIT) jitCompileDebug(res *emitResult) (*compiledBlock, *compileDebugInf
 	if writeErr != nil {
 		return nil, nil, writeErr
 	}
+
+	// Post-assembly DumpProgs so branch targets show resolved byte offsets.
+	progDump := ctx.DumpProgs()
 	flushIcache(codeBase, len(code))
 
 	dbg := &compileDebugInfo{code: code, progs: progDump}

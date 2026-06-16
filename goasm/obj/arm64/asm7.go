@@ -1158,7 +1158,7 @@ func span7(ctxt *obj.Link, cursym *obj.LSym, newprog obj.ProgAlloc) {
 	/*
 	 * lay out the code, emitting code and data relocations.
 	 */
-	buf := codeBuffer{&c.cursym.P}
+	buf := codeBuffer{data: &c.cursym.P, fixed: c.cursym.FixedP}
 
 	for p := c.cursym.Func().Text.Link; p != nil; p = p.Link {
 		c.pc = p.Pc
@@ -1198,11 +1198,25 @@ func span7(ctxt *obj.Link, cursym *obj.LSym, newprog obj.ProgAlloc) {
 }
 
 type codeBuffer struct {
-	data *[]byte
+	data  *[]byte
+	fixed bool
 }
 
 // Write a sequence of opcodes into the code buffer.
 func (cb *codeBuffer) emit(op ...uint32) {
+	if cb.fixed {
+		oldLen := len(*cb.data)
+		newLen := oldLen + 4*len(op)
+		if cap(*cb.data) < newLen {
+			panic(&obj.FixedBufferTooSmall{Need: newLen, Capacity: cap(*cb.data)})
+		}
+		out := (*cb.data)[:newLen]
+		for i, o := range op {
+			binary.LittleEndian.PutUint32(out[oldLen+i*4:], o)
+		}
+		*cb.data = out
+		return
+	}
 	for _, o := range op {
 		*cb.data = binary.LittleEndian.AppendUint32(*cb.data, o)
 	}
@@ -1211,6 +1225,21 @@ func (cb *codeBuffer) emit(op ...uint32) {
 // Completes the code buffer for the function by padding the buffer to function alignment
 // with zero values.
 func (cb *codeBuffer) finish() {
+	if cb.fixed {
+		if rem := len(*cb.data) % funcAlign; rem > 0 {
+			newLen := len(*cb.data) + funcAlign - rem
+			if cap(*cb.data) < newLen {
+				panic(&obj.FixedBufferTooSmall{Need: newLen, Capacity: cap(*cb.data)})
+			}
+			oldLen := len(*cb.data)
+			out := (*cb.data)[:newLen]
+			for i := oldLen; i < newLen; i++ {
+				out[i] = 0
+			}
+			*cb.data = out
+		}
+		return
+	}
 	for len(*cb.data)%funcAlign > 0 {
 		*cb.data = append(*cb.data, 0)
 	}

@@ -523,7 +523,7 @@ bench-cpu: guest-elf
 lazy-bench:
 	@echo "── zygo fib(10), Jea9Linux lazy JIT ───────────────────────────"
 	cd $(ROOT) && ZYGO_ELF=$(ROOT)bench/zygo.elf \
-	    $(GO) test -count=1 -benchtime=1x -benchmem \
+	    $(GO) test -count=1 -benchtime=1x -benchmem -cpuprofile pprof.cpu.out \
 	        -run='^$$' -bench='^BenchmarkCPU_ZygoFib10_LazyJIT$$' \
 	        ./bench/ 2>&1
 
