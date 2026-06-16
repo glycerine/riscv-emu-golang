@@ -272,13 +272,15 @@ func zygoLockstepSnapshotDiff(label string, jit, interp jea9LinuxCPUSnapshot) st
 	}
 	for i := 0; i < 32; i++ {
 		if jit.x[i] != interp.x[i] {
-			fmt.Fprintf(&out, "%s x[%d] mismatch: jit=0x%x interp=0x%x\n", label, i, jit.x[i], interp.x[i])
+			fmt.Fprintf(&out, "%s x[%d] mismatch at pc=0x%x: jit=0x%x interp=0x%x\n",
+				label, i, jit.pc, jit.x[i], interp.x[i])
 			break
 		}
 	}
 	for i := 0; i < 32; i++ {
 		if jit.f[i] != interp.f[i] {
-			fmt.Fprintf(&out, "%s f[%d] mismatch: jit=0x%x interp=0x%x\n", label, i, jit.f[i], interp.f[i])
+			fmt.Fprintf(&out, "%s f[%d] mismatch at pc=0x%x: jit=0x%x interp=0x%x\n",
+				label, i, jit.pc, jit.f[i], interp.f[i])
 			break
 		}
 	}

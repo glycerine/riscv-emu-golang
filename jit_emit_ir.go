@@ -1164,12 +1164,15 @@ func (e *emitter) emit32(insn uint32) {
 					return
 
 				case nextOp == 0x67 && nextRs1 == rd:
-					// AUIPC+JALR → direct call with known target.
+					// AUIPC+JALR: preserve AUIPC's architectural
+					// destination, then let emitJALR apply the JALR link
+					// write for nextRd. This matters for linker trampolines
+					// like "auipc t6; jalr x0, imm(t6)", where t6 must
+					// keep the AUIPC result after the jump.
 					e.emitBudgetReserve(2)
-					target := addr + nextImm
-					e.irEm.Const(e.xregDst(rd), int64(e.pc)+4)
+					e.irEm.Const(e.xregDst(rd), addr)
 					e.advancePC(4)
-					e.emitJALR(nextRd, rd, target-int64(e.pc), 4)
+					e.emitJALR(nextRd, rd, nextImm, 4)
 					return
 
 				case nextOp == 0x03 && nextRs1 == rd && nextRd == rd:

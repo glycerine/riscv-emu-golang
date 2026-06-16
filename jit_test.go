@@ -963,6 +963,25 @@ func TestJIT_JALR_IndirectJump(t *testing.T) {
 	}
 }
 
+func TestJIT_AUIPCJALRFusionPreservesAUIPCDestWhenJALRDoesNotLink(t *testing.T) {
+	const entryPC = uint64(0x1000)
+	cpu, mem := newTestCPU(t, Size64MB, entryPC, []uint32{
+		uenc(opAUIPC, 31, 0),       // 0x1000: AUIPC t6, 0 -> t6 = 0x1000
+		ienc(opJALR, 0, 0, 31, 12), // 0x1004: JALR x0, 12(t6) -> 0x100c
+		ienc(opOPIMM, 0, 31, 0, 7), // 0x1008: skipped
+		instrECALL,                 // 0x100c
+	})
+	defer mem.Free()
+	cpu.Notes.Push(ecallStop)
+
+	jit := NewJIT()
+	_ = jit.RunJIT(cpu)
+
+	if got := cpu.Reg(31); got != entryPC {
+		t.Fatalf("t6 after fused AUIPC+JALR = 0x%x, want AUIPC result 0x%x", got, entryPC)
+	}
+}
+
 // ── Test 11: Translation failure and noJIT fallback ──────────────────────
 
 func TestJIT_TranslationFailure(t *testing.T) {
