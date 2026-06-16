@@ -15,6 +15,11 @@ package libriscv_bench
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+#include <sys/time.h>
+
+#if defined(__APPLE__)
+#include <mach/mach_time.h>
+#endif
 
 // ── silent callbacks ───────────────────────────────────────────────────────
 
@@ -34,6 +39,94 @@ static void real_write_stdout(void *o, const char *m, unsigned n) {
     (void)o;
     ssize_t w = write(1, m, n);
     (void)w;
+}
+
+// ── portable Linux clock_gettime shim ─────────────────────────────────────
+
+typedef struct {
+    int64_t tv_sec;
+    int64_t tv_nsec;
+} LinuxTimespec64;
+
+static int portable_linux_clock_gettime(int clkid, LinuxTimespec64 *out) {
+    // Linux clock IDs, as seen by a riscv64 Linux guest.
+    enum {
+        LINUX_CLOCK_REALTIME = 0,
+        LINUX_CLOCK_MONOTONIC = 1,
+        LINUX_CLOCK_PROCESS_CPUTIME_ID = 2,
+        LINUX_CLOCK_THREAD_CPUTIME_ID = 3,
+        LINUX_CLOCK_MONOTONIC_RAW = 4,
+        LINUX_CLOCK_REALTIME_COARSE = 5,
+        LINUX_CLOCK_MONOTONIC_COARSE = 6,
+        LINUX_CLOCK_BOOTTIME = 7
+    };
+
+    switch (clkid) {
+    case LINUX_CLOCK_REALTIME:
+    case LINUX_CLOCK_REALTIME_COARSE: {
+        struct timeval tv;
+        if (gettimeofday(&tv, NULL) != 0) return -1;
+        out->tv_sec = (int64_t)tv.tv_sec;
+        out->tv_nsec = (int64_t)tv.tv_usec * 1000;
+        return 0;
+    }
+    case LINUX_CLOCK_MONOTONIC:
+    case LINUX_CLOCK_MONOTONIC_RAW:
+    case LINUX_CLOCK_MONOTONIC_COARSE:
+    case LINUX_CLOCK_BOOTTIME:
+#if defined(__APPLE__)
+    {
+        uint64_t now = mach_absolute_time();
+        mach_timebase_info_data_t timebase;
+        mach_timebase_info(&timebase);
+        uint64_t ns = (uint64_t)((long double)now * (long double)timebase.numer / (long double)timebase.denom);
+        if (ns == 0) ns = 1;
+        out->tv_sec = (int64_t)(ns / 1000000000ULL);
+        out->tv_nsec = (int64_t)(ns % 1000000000ULL);
+        return 0;
+    }
+#else
+    {
+        struct timespec ts;
+        clockid_t host_clock = CLOCK_MONOTONIC;
+#ifdef CLOCK_MONOTONIC_RAW
+        if (clkid == LINUX_CLOCK_MONOTONIC_RAW) host_clock = CLOCK_MONOTONIC_RAW;
+#endif
+#ifdef CLOCK_BOOTTIME
+        if (clkid == LINUX_CLOCK_BOOTTIME) host_clock = CLOCK_BOOTTIME;
+#endif
+        if (clock_gettime(host_clock, &ts) != 0) return -1;
+        out->tv_sec = (int64_t)ts.tv_sec;
+        out->tv_nsec = (int64_t)ts.tv_nsec;
+        return 0;
+    }
+#endif
+    case LINUX_CLOCK_PROCESS_CPUTIME_ID:
+    case LINUX_CLOCK_THREAD_CPUTIME_ID:
+    default:
+        return -1;
+    }
+}
+
+static void portable_clock_gettime_syscall(RISCVMachine *m) {
+    RISCVRegisters *regs = libriscv_get_registers(m);
+    int clkid = (int)regs->r[10];
+    uint64_t buffer = regs->r[11];
+    LinuxTimespec64 ts;
+    if (portable_linux_clock_gettime(clkid, &ts) != 0) {
+        regs->r[10] = (uint64_t)-22; // EINVAL
+        return;
+    }
+    if (libriscv_copy_to_guest(m, buffer, &ts, sizeof(ts)) != 0) {
+        regs->r[10] = (uint64_t)-14; // EFAULT
+        return;
+    }
+    regs->r[10] = 0;
+}
+
+static void install_portable_clock_handlers(void) {
+    libriscv_set_syscall_handler(113, portable_clock_gettime_syscall);
+    libriscv_set_syscall_handler(403, portable_clock_gettime_syscall);
 }
 
 // ── capturing stdout callback ──────────────────────────────────────────────
@@ -136,6 +229,24 @@ static RISCVMachine *new_real_write_machine(const void *elf, size_t elf_size,
     opts.error          = null_error;
     opts.output         = real_write_stdout;
     return libriscv_new(elf, (unsigned)elf_size, &opts);
+}
+
+static RISCVMachine *new_real_write_machine_with_args(const void *elf, size_t elf_size,
+                                                       uint64_t memory_bytes,
+                                                       unsigned argc,
+                                                       const char **argv,
+                                                       int allow_host_files) {
+    RISCVOptions opts;
+    libriscv_set_defaults(&opts);
+    opts.max_memory     = memory_bytes;
+    opts.strict_sandbox = allow_host_files ? 0 : 1;
+    opts.argc           = argc;
+    opts.argv           = argv;
+    opts.error          = null_error;
+    opts.output         = real_write_stdout;
+    RISCVMachine *m = libriscv_new(elf, (unsigned)elf_size, &opts);
+    if (m != NULL) install_portable_clock_handlers();
+    return m;
 }
 
 static void delete_machine(RISCVMachine *m) {
@@ -247,6 +358,44 @@ func NewMachineRealWrite(elf []byte, memBytes uint64) *Machine {
 	return &Machine{m: m}
 }
 
+// NewMachineRealWriteWithArgs creates a libriscv machine with explicit Linux
+// argv, with guest fd=1/2 forwarded through the host write(2) syscall.
+func NewMachineRealWriteWithArgs(elf []byte, memBytes uint64, args []string, allowHostFiles bool) *Machine {
+	if len(elf) == 0 {
+		return nil
+	}
+	cargs := make([]*C.char, len(args))
+	for i, arg := range args {
+		cargs[i] = C.CString(arg)
+	}
+	defer func() {
+		for _, arg := range cargs {
+			C.free(unsafe.Pointer(arg))
+		}
+	}()
+
+	var argv **C.char
+	if len(cargs) > 0 {
+		argv = (**C.char)(unsafe.Pointer(&cargs[0]))
+	}
+	allow := C.int(0)
+	if allowHostFiles {
+		allow = 1
+	}
+	m := C.new_real_write_machine_with_args(
+		unsafe.Pointer(&elf[0]),
+		C.size_t(len(elf)),
+		C.uint64_t(memBytes),
+		C.unsigned(len(cargs)),
+		(**C.char)(argv),
+		allow,
+	)
+	if m == nil {
+		return nil
+	}
+	return &Machine{m: m}
+}
+
 // CapturingMachine is a libriscv machine that accumulates guest
 // stdout/stderr writes into a C-side buffer. Use CapturedOutput to
 // retrieve the bytes and Close to free everything.
@@ -314,9 +463,25 @@ func (m *Machine) Close() {
 	}
 }
 
+// AllowFile permits a single exact host path to be opened by the guest when
+// the machine was created with host filesystem access enabled.
+func (m *Machine) AllowFile(path string) {
+	if m == nil || m.m == nil || path == "" {
+		return
+	}
+	cpath := C.CString(path)
+	defer C.free(unsafe.Pointer(cpath))
+	C.libriscv_allow_file(m.m, cpath)
+}
+
 // RunToCompletion runs the guest until it calls exit or insnLimit is reached.
 func (m *Machine) RunToCompletion(insnLimit uint64) uint64 {
 	return uint64(C.run_to_completion(m.m, C.uint64_t(insnLimit)))
+}
+
+// ReturnValue returns the current value in the guest A0 register.
+func (m *Machine) ReturnValue() int64 {
+	return int64(C.libriscv_return_value(m.m))
 }
 
 // MemWriteReadPairs benchmarks copy_to_guest+copy_from_guest pairs in C.
