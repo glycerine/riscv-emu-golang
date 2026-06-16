@@ -8,7 +8,7 @@ We are only about 400x slower than actual hardware. The `emux` command
 line tool will run your RISCV64 ELF binary inside the DST sandbox.
 It is single threaded, and all entropy and randomness and scheduling can be controlled.
 You could think of `emux` as "a miniature Antithesis" in one little 
-command line tool. It can run compiled Go code.
+8MB command line tool. It can run compiled Go code.
 
 Project Summary
 ---------------
