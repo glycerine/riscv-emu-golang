@@ -1,7 +1,9 @@
 A RISC-V 64 emulator in Golang (Go)
 ==============
 
-* News 2026 June 16: v0.0.9 emulates a deterministic Linux OS "personality" and thus
+* News 2026 June 16: 
+
+v0.1.0 and beyond emulate a deterministic Linux OS "personality" and thus
 gives deterministic simulation testing (DST) a proper fighting chance.
 It is not really Linux; it just implements the Linux system calls ABI that
 a compiled Go program needs to run; kind of like gvisor. It has stacked
