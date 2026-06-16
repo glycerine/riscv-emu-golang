@@ -190,7 +190,7 @@ func RunDefaultBudget(cpu *CPU, nc *NoteChain, budget uint64) (RunBudgetResult, 
 	cache := NewDecoderCache(base, 256<<10)
 	res, err := runCachedBudget(cpu, cache, nc, budget)
 	if _, ok := err.(*ExitError); ok {
-		return RunBudgetExit, nil
+		return RunBudgetExit, err
 	}
 	return res, err
 }

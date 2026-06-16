@@ -126,8 +126,9 @@ func TestRunDefaultBudget_ZeroBudgetUsesUnboundedRun(t *testing.T) {
 	defer cleanup()
 
 	res, err := RunDefaultBudget(cpu, &cpu.Notes, 0)
-	if err != nil {
-		t.Fatalf("RunDefaultBudget: %v", err)
+	var ex *ExitError
+	if !errors.As(err, &ex) || ex.Code != 0 {
+		t.Fatalf("RunDefaultBudget error = %v, want exit status 0", err)
 	}
 	if res != RunBudgetExit {
 		t.Fatalf("RunDefaultBudget result = %v, want RunBudgetExit", res)
