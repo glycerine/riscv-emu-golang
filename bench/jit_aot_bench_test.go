@@ -91,6 +91,18 @@ type jitBenchStats struct {
 	dispatchOK             uint64
 	dispatchCompile        uint64
 	dispatchInterp         uint64
+	dispatchBudget         uint64
+	dispatchEcall          uint64
+	dispatchEcallReal      uint64
+	dispatchEcallStale     uint64
+	dispatchFault          uint64
+	icDeltaOK              uint64
+	icDeltaBudget          uint64
+	icDeltaJalrMiss        uint64
+	icDeltaEcall           uint64
+	icDeltaFault           uint64
+	icDeltaOther           uint64
+	icDeltaMax             uint64
 	chainPatched           uint64
 	chainPatchTry          uint64
 	chainPatchNoTarget     uint64
@@ -111,6 +123,20 @@ func (s *jitBenchStats) add(jit *riscv.JIT) {
 	s.dispatchOK += jit.DispatchOK
 	s.dispatchCompile += jit.DispatchCompile
 	s.dispatchInterp += jit.DispatchInterp
+	s.dispatchBudget += jit.DispatchBudget
+	s.dispatchEcall += jit.DispatchEcall
+	s.dispatchEcallReal += jit.DispatchEcallReal
+	s.dispatchEcallStale += jit.DispatchEcallStale
+	s.dispatchFault += jit.DispatchFault
+	s.icDeltaOK += jit.ICDeltaOK
+	s.icDeltaBudget += jit.ICDeltaBudget
+	s.icDeltaJalrMiss += jit.ICDeltaJalrMiss
+	s.icDeltaEcall += jit.ICDeltaEcall
+	s.icDeltaFault += jit.ICDeltaFault
+	s.icDeltaOther += jit.ICDeltaOther
+	if jit.ICDeltaMax > s.icDeltaMax {
+		s.icDeltaMax = jit.ICDeltaMax
+	}
 	s.chainPatched += jit.ChainPatched
 	s.chainPatchTry += jit.ChainPatchTry
 	s.chainPatchNoTarget += jit.ChainPatchNoTarget
@@ -137,6 +163,18 @@ func (s jitBenchStats) report(b *testing.B) {
 		b.ReportMetric(float64(s.dispatchOK)/n, "dispatch_ok/op")
 		b.ReportMetric(float64(s.dispatchCompile)/n, "compile/op")
 		b.ReportMetric(float64(s.dispatchInterp)/n, "interp_fallback/op")
+		b.ReportMetric(float64(s.dispatchBudget)/n, "dispatch_budget/op")
+		b.ReportMetric(float64(s.dispatchEcall)/n, "dispatch_ecall/op")
+		b.ReportMetric(float64(s.dispatchEcallReal)/n, "ecall_real/op")
+		b.ReportMetric(float64(s.dispatchEcallStale)/n, "ecall_stale/op")
+		b.ReportMetric(float64(s.dispatchFault)/n, "dispatch_fault/op")
+		b.ReportMetric(float64(s.icDeltaOK)/n, "ic_ok/op")
+		b.ReportMetric(float64(s.icDeltaBudget)/n, "ic_budget/op")
+		b.ReportMetric(float64(s.icDeltaJalrMiss)/n, "ic_jalr_miss/op")
+		b.ReportMetric(float64(s.icDeltaEcall)/n, "ic_ecall/op")
+		b.ReportMetric(float64(s.icDeltaFault)/n, "ic_fault/op")
+		b.ReportMetric(float64(s.icDeltaOther)/n, "ic_other/op")
+		b.ReportMetric(float64(s.icDeltaMax), "ic_max")
 		b.ReportMetric(float64(s.chainPatched)/n, "chain_patch/op")
 		b.ReportMetric(float64(s.chainPatchTry)/n, "chain_try/op")
 		b.ReportMetric(float64(s.chainPatchNoTarget)/n, "chain_notarget/op")

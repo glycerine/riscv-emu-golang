@@ -317,7 +317,19 @@ type JIT struct {
 	DispatchOther      uint64 // non-OK returns (ecall, fault, etc.)
 	DispatchInterp     uint64 // no-block interpreter fallback dispatches
 	DispatchCompile    uint64 // new block compilations
+	DispatchBudget     uint64 // jitBudget returns to Go dispatch
+	DispatchEcall      uint64 // jitEcall returns to Go dispatch
+	DispatchEcallReal  uint64 // jitEcall returns whose resumePC-4 is an ECALL instruction
+	DispatchEcallStale uint64 // jitEcall returns whose resumePC-4 is not an ECALL instruction
+	DispatchFault      uint64 // native fault/misalignment/illegal returns to Go dispatch
 	InterpretedInsns   uint64 // guest instructions retired by JIT-owned interpreter fallback
+	ICDeltaOK          uint64 // retired-instruction delta reported by jitOK returns
+	ICDeltaBudget      uint64 // retired-instruction delta reported by jitBudget returns
+	ICDeltaJalrMiss    uint64 // retired-instruction delta reported by jitOKJalrMiss returns
+	ICDeltaEcall       uint64 // retired-instruction delta reported by jitEcall returns
+	ICDeltaFault       uint64 // retired-instruction delta reported by native fault returns
+	ICDeltaOther       uint64 // retired-instruction delta reported by other native returns
+	ICDeltaMax         uint64 // largest retired-instruction delta from one native dispatch
 	ChainPatched       uint64 // chain exits successfully patched
 	ChainPatchTry      uint64 // chain exits considered for patching
 	ChainPatchNoTarget uint64 // chain patch attempts whose target block was absent
@@ -973,6 +985,42 @@ func (j *JIT) countAOTDecoderCacheProbe(seg *DecodedExecuteSegment, pc uint64) {
 	}
 }
 
+func (j *JIT) recordNativeICDelta(status uint64, delta uint64) {
+	if delta > j.ICDeltaMax {
+		j.ICDeltaMax = delta
+	}
+	switch int(status) {
+	case jitOK:
+		j.ICDeltaOK += delta
+	case jitBudget:
+		j.DispatchBudget++
+		j.ICDeltaBudget += delta
+	case jitOKJalrMiss:
+		j.ICDeltaJalrMiss += delta
+	case jitEcall:
+		j.DispatchEcall++
+		j.ICDeltaEcall += delta
+	case jitLoadFault, jitStoreFault, jitMisalign, jitIllegal, jitEbreak:
+		j.DispatchFault++
+		j.ICDeltaFault += delta
+	default:
+		j.ICDeltaOther += delta
+	}
+}
+
+func (j *JIT) recordEcallReturnPC(cpu *CPU, resumePC uint64) {
+	if cpu == nil || resumePC < 4 {
+		j.DispatchEcallStale++
+		return
+	}
+	insn, fault := (&cpu.mem).Fetch32(resumePC - 4)
+	if fault == nil && insn == 0x00000073 {
+		j.DispatchEcallReal++
+	} else {
+		j.DispatchEcallStale++
+	}
+}
+
 func decoderCacheEntry(seg *DecodedExecuteSegment, pc uint64) uintptr {
 	slot := decoderCacheSlot(seg, pc)
 	if slot == nil {
@@ -1100,6 +1148,7 @@ func (j *JIT) stepBlockWithBudget(cpu *CPU, budget uint64) (ic uint64, err error
 				pc, res.PC, res.Status)
 		}
 		cpu.pc = res.PC
+		j.recordNativeICDelta(res.Status, res.ICdelta)
 
 		switch int(res.Status) {
 		case jitOK:
@@ -1109,7 +1158,11 @@ func (j *JIT) stepBlockWithBudget(cpu *CPU, budget uint64) (ic uint64, err error
 				sourceBlk = (*compiledBlock)(unsafe.Pointer(res.SourceBlock))
 			}
 			if len(sourceBlk.chainExits) > 0 {
-				j.tryPatchChain(sourceBlk, cpu.pc)
+				if exitIdx, ok := chainExitIndexFromResult(res); ok {
+					j.tryPatchChainExit(sourceBlk, exitIdx, cpu.pc)
+				} else {
+					j.tryPatchChain(sourceBlk, cpu.pc)
+				}
 			}
 			return cpu.riscvInstrBegun, nil
 		case jitOKJalrMiss:
@@ -1129,6 +1182,7 @@ func (j *JIT) stepBlockWithBudget(cpu *CPU, budget uint64) (ic uint64, err error
 			}
 			return cpu.riscvInstrBegun, nil
 		case jitEcall:
+			j.recordEcallReturnPC(cpu, cpu.pc)
 			if cpu.mtvec != 0 {
 				cpu.mepc = cpu.pc
 				cpu.mcause = 8
@@ -1272,6 +1326,7 @@ func (j *JIT) RunJIT(cpu *CPU) (err0 error) {
 				cpu.riscvInstrBegun += res.ICdelta
 			}
 			cpu.pc = res.PC
+			j.recordNativeICDelta(res.Status, res.ICdelta)
 
 			switch int(res.Status) {
 			case jitOK:
@@ -1284,7 +1339,11 @@ func (j *JIT) RunJIT(cpu *CPU) (err0 error) {
 					sourceBlk = (*compiledBlock)(unsafe.Pointer(res.SourceBlock))
 				}
 				if len(sourceBlk.chainExits) > 0 {
-					j.tryPatchChain(sourceBlk, cpu.pc)
+					if exitIdx, ok := chainExitIndexFromResult(res); ok {
+						j.tryPatchChainExit(sourceBlk, exitIdx, cpu.pc)
+					} else {
+						j.tryPatchChain(sourceBlk, cpu.pc)
+					}
 				}
 				continue
 
@@ -1315,6 +1374,7 @@ func (j *JIT) RunJIT(cpu *CPU) (err0 error) {
 				continue
 
 			case jitEcall:
+				j.recordEcallReturnPC(cpu, cpu.pc)
 				if cpu.mtvec != 0 {
 					cpu.mepc = cpu.pc
 					cpu.mcause = 8
@@ -1478,6 +1538,41 @@ func liveChainCompatible(src liveChainMeta, target *compiledBlock) bool {
 		}
 	}
 	return true
+}
+
+func chainExitIndexFromResult(res jitcall.Result) (int, bool) {
+	if res.FaultAddr == 0 {
+		return 0, false
+	}
+	idx := res.FaultAddr - 1
+	if idx > uint64(int(^uint(0)>>1)) {
+		return 0, false
+	}
+	return int(idx), true
+}
+
+func (j *JIT) tryPatchChainExit(blk *compiledBlock, exitIdx int, targetPC uint64) {
+	j.ChainPatchTry++
+	if blk == nil || exitIdx < 0 || exitIdx >= len(blk.chainExits) {
+		j.ChainPatchNoMatch++
+		return
+	}
+	ce := &blk.chainExits[exitIdx]
+	if ce.targetPC != targetPC {
+		j.ChainPatchNoMatch++
+		return
+	}
+	target := j.lookupBlock(targetPC)
+	if target == nil || target.chainEntry == 0 {
+		j.ChainPatchNoTarget++
+		return
+	}
+	if ce.livePatchOffset >= 0 && liveChainCompatible(ce.liveChain, target) {
+		patchChainTarget(blk.fn, ce.livePatchOffset, target.liveChainEntry)
+	} else {
+		patchChainTarget(blk.fn, ce.patchOffset, target.chainEntry)
+	}
+	j.ChainPatched++
 }
 
 // tryPatchChain patches a previous block's chain exit to jump directly

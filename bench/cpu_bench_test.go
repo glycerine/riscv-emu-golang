@@ -3,6 +3,7 @@ package bench
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"testing"
 
 	"github.com/glycerine/riscv-emu-golang"
@@ -198,6 +199,50 @@ func loadELFFrom(tb testing.TB, envVar, defaultPath string) []byte {
 
 const zygoFib10Program = "(defn fib [x] (cond (== x 0) 0 (== x 1) 1 (+ (fib (- x 1)) (fib (- x 2))))) (println (fib 10))"
 
+func zygoClockMode(tb testing.TB) riscv.Jea9LinuxClockMode {
+	tb.Helper()
+	switch raw := os.Getenv("ZYGO_CLOCK_MODE"); raw {
+	case "", "idle", "idlejump", "idle-jump":
+		return riscv.Jea9ClockIdleJump
+	case "ictick", "ic-tick", "tick":
+		return riscv.Jea9ClockICTick
+	case "manual":
+		return riscv.Jea9ClockManual
+	default:
+		tb.Fatalf("invalid ZYGO_CLOCK_MODE %q; want idle-jump, ic-tick, or manual", raw)
+		return riscv.Jea9ClockIdleJump
+	}
+}
+
+func zygoNSPerInstruction(tb testing.TB) int64 {
+	tb.Helper()
+	raw := os.Getenv("ZYGO_NS_PER_INSN")
+	if raw == "" {
+		return 1
+	}
+	parsed, err := strconv.ParseInt(raw, 0, 64)
+	if err != nil {
+		tb.Fatalf("invalid ZYGO_NS_PER_INSN %q: %v", raw, err)
+	}
+	return parsed
+}
+
+func zygoNanosleepAdvance(tb testing.TB) (riscv.Jea9LinuxNanosleepAdvanceMode, int64) {
+	tb.Helper()
+	raw := os.Getenv("ZYGO_NANOSLEEP_ADVANCE_NS")
+	switch raw {
+	case "", "requested", "default":
+		return riscv.Jea9NanosleepAdvanceRequested, 0
+	case "none":
+		return riscv.Jea9NanosleepAdvanceFixed, 0
+	}
+	parsed, err := strconv.ParseInt(raw, 0, 64)
+	if err != nil {
+		tb.Fatalf("invalid ZYGO_NANOSLEEP_ADVANCE_NS %q: %v", raw, err)
+	}
+	return riscv.Jea9NanosleepAdvanceFixed, parsed
+}
+
 func newZygoJea9LinuxCPU(tb testing.TB, elfData []byte) (*riscv.CPU, *riscv.GuestMemory, *riscv.Jea9Linux) {
 	tb.Helper()
 	mem, err := riscv.NewGuestMemory(riscv.Size16GB)
@@ -210,11 +255,23 @@ func newZygoJea9LinuxCPU(tb testing.TB, elfData []byte) (*riscv.CPU, *riscv.Gues
 		tb.Fatal(err)
 	}
 	cpu := riscv.NewCPU(*mem)
+	budget := uint64(1 << 20)
+	if raw := os.Getenv("ZYGO_BUDGET"); raw != "" {
+		parsed, err := strconv.ParseUint(raw, 0, 64)
+		if err != nil {
+			mem.Free()
+			tb.Fatalf("invalid ZYGO_BUDGET %q: %v", raw, err)
+		}
+		budget = parsed
+	}
+	nanosleepMode, nanosleepFixedNS := zygoNanosleepAdvance(tb)
 	jlinux := riscv.NewJea9Linux(riscv.Jea9LinuxOptions{
-		ClockMode:         riscv.Jea9ClockIdleJump,
+		ClockMode:         zygoClockMode(tb),
 		MonotonicStartNS:  1,
-		NSPerInstruction:  1,
-		InstructionBudget: 1 << 20,
+		NSPerInstruction:  zygoNSPerInstruction(tb),
+		NanosleepMode:     nanosleepMode,
+		NanosleepFixedNS:  nanosleepFixedNS,
+		InstructionBudget: budget,
 		Stdin:             os.Stdin,
 		Stdout:            os.Stdout,
 		Stderr:            os.Stderr,
@@ -238,6 +295,14 @@ func BenchmarkCPU_ZygoFib10_LazyJIT(b *testing.B) {
 	b.ResetTimer()
 
 	totalInsns := uint64(0)
+	var totalSyscalls uint64
+	var totalNanosleeps uint64
+	var totalNanosleepNS uint64
+	var maxNanosleepNS uint64
+	var totalBudgetYields uint64
+	var totalMonotonicNS int64
+	var syscallCounts [512]uint64
+	syscallPCCounts := make(map[uint64]uint64)
 	var totalStats jitBenchStats
 	for i := 0; i < b.N; i++ {
 		cpu, mem, jlinux := newZygoJea9LinuxCPU(b, elfData)
@@ -249,6 +314,17 @@ func BenchmarkCPU_ZygoFib10_LazyJIT(b *testing.B) {
 		code, err := riscv.RunWithJea9LinuxJIT(cpu, jit, jlinux)
 		insns := cpu.RiscvInstrBegun()
 		totalInsns += insns
+		totalSyscalls += jlinux.SyscallCount()
+		nanoCount, nanoTotal, nanoMax := jlinux.NanosleepStats()
+		totalNanosleeps += nanoCount
+		totalNanosleepNS += nanoTotal
+		if nanoMax > maxNanosleepNS {
+			maxNanosleepNS = nanoMax
+		}
+		totalBudgetYields += jlinux.BudgetYields()
+		totalMonotonicNS += jlinux.MonotonicNS()
+		addJea9SyscallCounts(&syscallCounts, jlinux)
+		addJea9SyscallPCCounts(syscallPCCounts, jlinux)
 		totalStats.add(jit)
 		if traceFallbacks {
 			dumpJITFallbackTrace(b, jit, 32)
@@ -268,7 +344,142 @@ func BenchmarkCPU_ZygoFib10_LazyJIT(b *testing.B) {
 	if elapsed > 0 && totalInsns > 0 {
 		b.ReportMetric(float64(totalInsns)/elapsed/1e6, "MIPS")
 	}
+	if b.N > 0 {
+		b.ReportMetric(float64(totalInsns)/float64(b.N), "insns/op")
+		b.ReportMetric(float64(totalSyscalls)/float64(b.N), "syscalls/op")
+		b.ReportMetric(float64(totalNanosleeps)/float64(b.N), "nanosleep/op")
+		b.ReportMetric(float64(totalNanosleepNS)/float64(b.N), "nanosleep_ns/op")
+		b.ReportMetric(float64(maxNanosleepNS), "nanosleep_max_ns")
+		b.ReportMetric(float64(totalBudgetYields)/float64(b.N), "budget_yield/op")
+		b.ReportMetric(float64(totalMonotonicNS)/float64(b.N), "monotonic_ns/op")
+		reportJea9SyscallCounts(b, "sys", syscallCounts)
+		reportJea9SyscallPCCounts(b, "sys_pc", syscallPCCounts)
+	}
 	totalStats.report(b)
+}
+
+func BenchmarkCPU_ZygoFib10_Interpreter(b *testing.B) {
+	elfData := loadELFFrom(b, "ZYGO_ELF", "zygo.elf")
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	totalInsns := uint64(0)
+	var totalSyscalls uint64
+	var totalNanosleeps uint64
+	var totalNanosleepNS uint64
+	var maxNanosleepNS uint64
+	var totalBudgetYields uint64
+	var totalMonotonicNS int64
+	var syscallCounts [512]uint64
+	syscallPCCounts := make(map[uint64]uint64)
+	for i := 0; i < b.N; i++ {
+		cpu, mem, jlinux := newZygoJea9LinuxCPU(b, elfData)
+		code, err := riscv.RunWithJea9Linux(cpu, jlinux)
+		insns := cpu.RiscvInstrBegun()
+		totalInsns += insns
+		totalSyscalls += jlinux.SyscallCount()
+		nanoCount, nanoTotal, nanoMax := jlinux.NanosleepStats()
+		totalNanosleeps += nanoCount
+		totalNanosleepNS += nanoTotal
+		if nanoMax > maxNanosleepNS {
+			maxNanosleepNS = nanoMax
+		}
+		totalBudgetYields += jlinux.BudgetYields()
+		totalMonotonicNS += jlinux.MonotonicNS()
+		addJea9SyscallCounts(&syscallCounts, jlinux)
+		addJea9SyscallPCCounts(syscallPCCounts, jlinux)
+		mem.Free()
+		if err != nil {
+			b.Fatalf("RunWithJea9Linux: %v", err)
+		}
+		if code != 0 {
+			b.Fatalf("zygo exited with code %d, want 0", code)
+		}
+	}
+
+	b.StopTimer()
+	elapsed := b.Elapsed().Seconds()
+	if elapsed > 0 && totalInsns > 0 {
+		b.ReportMetric(float64(totalInsns)/elapsed/1e6, "MIPS")
+	}
+	if b.N > 0 {
+		b.ReportMetric(float64(totalInsns)/float64(b.N), "insns/op")
+		b.ReportMetric(float64(totalSyscalls)/float64(b.N), "syscalls/op")
+		b.ReportMetric(float64(totalNanosleeps)/float64(b.N), "nanosleep/op")
+		b.ReportMetric(float64(totalNanosleepNS)/float64(b.N), "nanosleep_ns/op")
+		b.ReportMetric(float64(maxNanosleepNS), "nanosleep_max_ns")
+		b.ReportMetric(float64(totalBudgetYields)/float64(b.N), "budget_yield/op")
+		b.ReportMetric(float64(totalMonotonicNS)/float64(b.N), "monotonic_ns/op")
+		reportJea9SyscallCounts(b, "sys", syscallCounts)
+		reportJea9SyscallPCCounts(b, "sys_pc", syscallPCCounts)
+	}
+}
+
+func addJea9SyscallCounts(dst *[512]uint64, jlinux *riscv.Jea9Linux) {
+	if dst == nil || jlinux == nil {
+		return
+	}
+	for i := range dst {
+		dst[i] += jlinux.SyscallCountByNumber(uint64(i))
+	}
+}
+
+func reportJea9SyscallCounts(b *testing.B, prefix string, counts [512]uint64) {
+	b.Helper()
+	if b.N == 0 {
+		return
+	}
+	used := make([]bool, len(counts))
+	for rank := 0; rank < 5; rank++ {
+		var bestNum int
+		var bestCount uint64
+		for num, count := range counts {
+			if used[num] || count <= bestCount {
+				continue
+			}
+			bestNum = num
+			bestCount = count
+		}
+		if bestCount == 0 {
+			return
+		}
+		used[bestNum] = true
+		b.ReportMetric(float64(bestCount)/float64(b.N), fmt.Sprintf("%s_%d/op", prefix, bestNum))
+	}
+}
+
+func addJea9SyscallPCCounts(dst map[uint64]uint64, jlinux *riscv.Jea9Linux) {
+	if dst == nil || jlinux == nil {
+		return
+	}
+	for _, ent := range jlinux.TopSyscallPCCounts(16) {
+		dst[ent.PC] += ent.Count
+	}
+}
+
+func reportJea9SyscallPCCounts(b *testing.B, prefix string, counts map[uint64]uint64) {
+	b.Helper()
+	if b.N == 0 || len(counts) == 0 {
+		return
+	}
+	used := make(map[uint64]bool, 5)
+	for rank := 0; rank < 5; rank++ {
+		var bestPC uint64
+		var bestCount uint64
+		for pc, count := range counts {
+			if used[pc] || count <= bestCount {
+				continue
+			}
+			bestPC = pc
+			bestCount = count
+		}
+		if bestCount == 0 {
+			return
+		}
+		used[bestPC] = true
+		b.ReportMetric(float64(bestCount)/float64(b.N), fmt.Sprintf("%s_%x/op", prefix, bestPC))
+	}
 }
 
 func dumpJITFallbackTrace(tb testing.TB, jit *riscv.JIT, limit int) {

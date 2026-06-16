@@ -22,6 +22,13 @@ const (
 	Jea9ClockManual
 )
 
+type Jea9LinuxNanosleepAdvanceMode uint8
+
+const (
+	Jea9NanosleepAdvanceRequested Jea9LinuxNanosleepAdvanceMode = iota
+	Jea9NanosleepAdvanceFixed
+)
+
 const (
 	defaultJea9LinuxInstructionBudget = uint64(65536)
 	defaultJea9LinuxStackReserve      = uint64(8 * Size1MB)
@@ -311,6 +318,8 @@ type Jea9LinuxOptions struct {
 	MonotonicStartNS  int64
 	RealtimeOffsetNS  int64
 	NSPerInstruction  int64
+	NanosleepMode     Jea9LinuxNanosleepAdvanceMode
+	NanosleepFixedNS  int64
 	InstructionBudget uint64
 	// Trace enables replay/debug recording. It is off by default for normal runs.
 	Trace             bool
@@ -362,6 +371,16 @@ type Jea9LinuxClockTraceEntry struct {
 	NS      int64
 }
 
+type Jea9LinuxSyscallCount struct {
+	Num   uint64
+	Count uint64
+}
+
+type Jea9LinuxSyscallPCCount struct {
+	PC    uint64
+	Count uint64
+}
+
 type Jea9LinuxTraceSnapshot struct {
 	Syscalls []Jea9LinuxSyscallTraceEntry
 	Schedule []Jea9LinuxScheduleTraceEntry
@@ -374,6 +393,8 @@ type Jea9Linux struct {
 	monotonicNS       int64
 	realtimeOffsetNS  int64
 	nsPerInstruction  int64
+	nanosleepMode     Jea9LinuxNanosleepAdvanceMode
+	nanosleepFixedNS  int64
 	instructionBudget uint64
 
 	stdin             io.Reader
@@ -411,6 +432,13 @@ type Jea9Linux struct {
 	signalRestorer      uint64
 	traceEnabled        bool
 	trace               Jea9LinuxTraceSnapshot
+	syscallCount        uint64
+	syscallCounts       [512]uint64
+	syscallCountOutside uint64
+	syscallPCCounts     map[uint64]uint64
+	nanosleepCount      uint64
+	nanosleepTotalNS    uint64
+	nanosleepMaxNS      uint64
 }
 
 type jea9LinuxAuxEntry struct {
@@ -509,6 +537,8 @@ func NewJea9Linux(opts Jea9LinuxOptions) *Jea9Linux {
 		monotonicNS:       opts.MonotonicStartNS,
 		realtimeOffsetNS:  opts.RealtimeOffsetNS,
 		nsPerInstruction:  opts.NSPerInstruction,
+		nanosleepMode:     opts.NanosleepMode,
+		nanosleepFixedNS:  opts.NanosleepFixedNS,
 		instructionBudget: opts.InstructionBudget,
 		stdin:             opts.Stdin,
 		stdout:            opts.Stdout,
@@ -699,6 +729,86 @@ func (jos *Jea9Linux) TraceSnapshot() Jea9LinuxTraceSnapshot {
 		}
 	}
 	return out
+}
+
+func (jos *Jea9Linux) SyscallCount() uint64 {
+	if jos == nil {
+		return 0
+	}
+	return jos.syscallCount
+}
+
+func (jos *Jea9Linux) SyscallCountByNumber(num uint64) uint64 {
+	if jos == nil {
+		return 0
+	}
+	if num < uint64(len(jos.syscallCounts)) {
+		return jos.syscallCounts[num]
+	}
+	if num == ^uint64(0) {
+		return jos.syscallCountOutside
+	}
+	return 0
+}
+
+func (jos *Jea9Linux) TopSyscallCounts(limit int) []Jea9LinuxSyscallCount {
+	if jos == nil || limit <= 0 {
+		return nil
+	}
+	counts := make([]Jea9LinuxSyscallCount, 0, limit)
+	used := make([]bool, len(jos.syscallCounts))
+	for len(counts) < limit {
+		var bestNum uint64
+		var bestCount uint64
+		for i, count := range jos.syscallCounts {
+			if used[i] || count <= bestCount {
+				continue
+			}
+			bestNum = uint64(i)
+			bestCount = count
+		}
+		if bestCount == 0 {
+			break
+		}
+		used[bestNum] = true
+		counts = append(counts, Jea9LinuxSyscallCount{Num: bestNum, Count: bestCount})
+	}
+	if jos.syscallCountOutside != 0 && len(counts) < limit {
+		counts = append(counts, Jea9LinuxSyscallCount{Num: ^uint64(0), Count: jos.syscallCountOutside})
+	}
+	return counts
+}
+
+func (jos *Jea9Linux) TopSyscallPCCounts(limit int) []Jea9LinuxSyscallPCCount {
+	if jos == nil || limit <= 0 || len(jos.syscallPCCounts) == 0 {
+		return nil
+	}
+	counts := make([]Jea9LinuxSyscallPCCount, 0, limit)
+	used := make(map[uint64]bool, limit)
+	for len(counts) < limit {
+		var bestPC uint64
+		var bestCount uint64
+		for pc, count := range jos.syscallPCCounts {
+			if used[pc] || count <= bestCount {
+				continue
+			}
+			bestPC = pc
+			bestCount = count
+		}
+		if bestCount == 0 {
+			break
+		}
+		used[bestPC] = true
+		counts = append(counts, Jea9LinuxSyscallPCCount{PC: bestPC, Count: bestCount})
+	}
+	return counts
+}
+
+func (jos *Jea9Linux) NanosleepStats() (count, totalNS, maxNS uint64) {
+	if jos == nil {
+		return 0, 0, 0
+	}
+	return jos.nanosleepCount, jos.nanosleepTotalNS, jos.nanosleepMaxNS
 }
 
 func (jos *Jea9Linux) traceTID() uint64 {
@@ -1529,6 +1639,16 @@ func (jos *Jea9Linux) Handle(cpu *CPU, n Note) (disp NoteDisposition) {
 		A4:  cpu.Reg(14),
 		A5:  cpu.Reg(15),
 	}
+	jos.syscallCount++
+	if args.Num < uint64(len(jos.syscallCounts)) {
+		jos.syscallCounts[args.Num]++
+	} else {
+		jos.syscallCountOutside++
+	}
+	if jos.syscallPCCounts == nil {
+		jos.syscallPCCounts = make(map[uint64]uint64)
+	}
+	jos.syscallPCCounts[n.PC]++
 	if jos.traceEnabled {
 		defer func() {
 			jos.recordSyscallTrace(cpu, n, args, disp)
@@ -3754,13 +3874,28 @@ func (jos *Jea9Linux) sysNanosleep(cpu *CPU, reqAddr, remAddr uint64) (int64, bo
 		return jea9LinuxErrEINVAL, false
 	}
 	delta := sec*1_000_000_000 + nsec
+	if delta >= 0 {
+		deltaU := uint64(delta)
+		jos.nanosleepCount++
+		jos.nanosleepTotalNS += deltaU
+		if deltaU > jos.nanosleepMaxNS {
+			jos.nanosleepMaxNS = deltaU
+		}
+	}
 	if jos.clockMode == Jea9ClockManual && delta > 0 {
 		jos.blocked = true
 		jos.blockedUntil = jos.monotonicNS + delta
 		jos.blockedHasDeadline = true
 		return 0, true
 	}
-	jos.monotonicNS += delta
+	advance := delta
+	if jos.nanosleepMode == Jea9NanosleepAdvanceFixed {
+		advance = jos.nanosleepFixedNS
+		if advance < 0 {
+			advance = 0
+		}
+	}
+	jos.monotonicNS += advance
 	return 0, false
 }
 

@@ -101,7 +101,7 @@ func LowerAMD64_RV8(ctx *goasm.Ctx, b *Block, alloc *Allocation) (*LowerResult, 
 
 	// Emit slow exit stubs for chain exits that aren't resolved at link time.
 	for i := range lc.chainExits {
-		lc.chainExits[i].stubProg = lc.emitSlowExitStub(lc.chainExits[i].targetPC)
+		lc.chainExits[i].stubProg = lc.emitSlowExitStub(lc.chainExits[i].targetPC, i)
 	}
 
 	result := &LowerResult{ChainEntryProg: lc.chainEntryProg}
@@ -380,7 +380,7 @@ func (lc *lowerCtxRV8) rv8ChainExit(ins *IRInstr) {
 // emitSlowExitStub emits a fallback stub for chain exits that can't be
 // resolved at link time. The stub stores regs back, writes the target PC
 // to the sret result, and returns to the trampoline.
-func (lc *lowerCtxRV8) emitSlowExitStub(targetPC uint64) *obj.Prog {
+func (lc *lowerCtxRV8) emitSlowExitStub(targetPC uint64, exitIdx int) *obj.Prog {
 	first := lc.c.NewProg()
 	first.As = obj.ANOP
 	lc.c.Append(first)
@@ -396,8 +396,9 @@ func (lc *lowerCtxRV8) emitSlowExitStub(targetPC uint64) *obj.Prog {
 	// Result.Status = 0
 	lc.emitMI(x86.AMOVQ, 0, stgA, 8)
 
-	// Result.FaultAddr = 0
-	lc.emitMI(x86.AMOVQ, 0, stgA, 16)
+	// Result.FaultAddr carries chain-exit index + 1 for exact patching.
+	lc.loadImm(int64(exitIdx+1), stgB)
+	lc.emitMR(x86.AMOVQ, stgB, stgA, 16)
 
 	p := lc.c.NewProg()
 	p.As = obj.ARET

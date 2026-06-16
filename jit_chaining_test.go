@@ -3,6 +3,7 @@ package riscv
 import (
 	"encoding/binary"
 	"runtime"
+	"syscall"
 	"testing"
 	"unsafe"
 )
@@ -243,6 +244,45 @@ func TestChaining_SlowExitPatchesActualChainedSource(t *testing.T) {
 	if jit.ChainPatched != patchesBefore+1 {
 		t.Fatalf("ChainPatched = %d, want %d after B->C source patch",
 			jit.ChainPatched, patchesBefore+1)
+	}
+}
+
+func TestChaining_SlowExitPatchesExactDuplicateTargetExit(t *testing.T) {
+	code, err := allocExec(32)
+	if err != nil {
+		t.Fatalf("allocExec: %v", err)
+	}
+	t.Cleanup(func() { _ = syscall.Munmap(code) })
+	sourceBase := uintptr(unsafe.Pointer(&code[0]))
+	const targetPC = 0x2000
+	const targetEntry = 0xABCDEF0123456789
+
+	binary.LittleEndian.PutUint64(code[0:], 0x1111111111111111)
+	binary.LittleEndian.PutUint64(code[8:], 0x2222222222222222)
+
+	jit := NewJIT()
+	target := &compiledBlock{chainEntry: targetEntry}
+	jit.insertBlock(targetPC, target)
+
+	source := &compiledBlock{
+		fn: sourceBase,
+		chainExits: []chainPatchInfo{
+			{targetPC: targetPC, patchOffset: 0, livePatchOffset: -1},
+			{targetPC: targetPC, patchOffset: 8, livePatchOffset: -1},
+		},
+	}
+
+	jit.tryPatchChainExit(source, 1, targetPC)
+
+	if jit.ChainPatchTry != 1 || jit.ChainPatched != 1 || jit.ChainPatchNoMatch != 0 || jit.ChainPatchNoTarget != 0 {
+		t.Fatalf("patch counters: try=%d patched=%d nomatch=%d notarget=%d; want 1,1,0,0",
+			jit.ChainPatchTry, jit.ChainPatched, jit.ChainPatchNoMatch, jit.ChainPatchNoTarget)
+	}
+	if got := binary.LittleEndian.Uint64(code[0:]); got != 0x1111111111111111 {
+		t.Fatalf("first duplicate exit was patched: got 0x%x", got)
+	}
+	if got := binary.LittleEndian.Uint64(code[8:]); got != targetEntry {
+		t.Fatalf("second duplicate exit patch = 0x%x, want 0x%x", got, uint64(targetEntry))
 	}
 }
 

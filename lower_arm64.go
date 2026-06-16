@@ -240,7 +240,7 @@ func lowerARM64(ctx *goasm.Ctx, b *Block, alloc *Allocation, abi arm64ABI) (*Low
 		return nil, fmt.Errorf("arm64 lower: %d unresolved labels", len(lc.pending))
 	}
 	for i := range lc.chainExits {
-		lc.chainExits[i].stubProg, lc.chainExits[i].sourceMovProg = lc.emitSlowExitStub(lc.chainExits[i].targetPC)
+		lc.chainExits[i].stubProg, lc.chainExits[i].sourceMovProg = lc.emitSlowExitStub(lc.chainExits[i].targetPC, i)
 	}
 	result := &LowerResult{
 		ChainEntryProg:     lc.chainEntryProg,
@@ -2496,12 +2496,12 @@ func (lc *lowerARM64Ctx) emitChainExit(targetPC uint64) {
 	})
 }
 
-func (lc *lowerARM64Ctx) emitSlowExitStub(targetPC uint64) (*obj.Prog, *obj.Prog) {
+func (lc *lowerARM64Ctx) emitSlowExitStub(targetPC uint64, exitIdx int) (*obj.Prog, *obj.Prog) {
 	first := lc.c.NewProg()
 	first.As = obj.ANOP
 	lc.c.Append(first)
 
-	lc.loadImm(0, a64A)
+	lc.loadImm(int64(exitIdx+1), a64A)
 	lc.emitResultImm(int64(targetPC), jitOK, a64A)
 	var sourceMov *obj.Prog
 	if lc.abi == arm64ABJIT {

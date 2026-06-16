@@ -139,7 +139,7 @@ func LowerAMD64_ABJIT(ctx *goasm.Ctx, b *Block, alloc *Allocation) (*LowerResult
 	}
 
 	for i := range lc.chainExits {
-		lc.chainExits[i].stubProg, lc.chainExits[i].sourceMovProg = lc.emitSlowExitStub(lc.chainExits[i].targetPC)
+		lc.chainExits[i].stubProg, lc.chainExits[i].sourceMovProg = lc.emitSlowExitStub(lc.chainExits[i].targetPC, i)
 	}
 
 	lc.emitExitThunk()
@@ -397,7 +397,7 @@ func (lc *lowerCtxABJIT) abjitChainExit(ins *IRInstr) {
 	lc.c.Append(jp)
 }
 
-func (lc *lowerCtxABJIT) emitSlowExitStub(targetPC uint64) (*obj.Prog, *obj.Prog) {
+func (lc *lowerCtxABJIT) emitSlowExitStub(targetPC uint64, exitIdx int) (*obj.Prog, *obj.Prog) {
 	first := lc.c.NewProg()
 	first.As = obj.ANOP
 	lc.c.Append(first)
@@ -406,7 +406,8 @@ func (lc *lowerCtxABJIT) emitSlowExitStub(targetPC uint64) (*obj.Prog, *obj.Prog
 	lc.emitMR(x86.AMOVQ, stgB, goasm.REG_AMD64_BP, abjitPCOff)
 
 	lc.emitMI(x86.AMOVQ, 0, goasm.REG_AMD64_BP, abjitStatusOff)
-	lc.emitMI(x86.AMOVQ, 0, goasm.REG_AMD64_BP, abjitFaultAddrOff)
+	lc.loadImm(int64(exitIdx+1), stgB)
+	lc.emitMR(x86.AMOVQ, stgB, goasm.REG_AMD64_BP, abjitFaultAddrOff)
 
 	const sourceSentinel = int64(0x7BADC0DE7BADC0DE)
 	sourceMov := lc.c.NewProg()
