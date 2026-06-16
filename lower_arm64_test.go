@@ -534,6 +534,40 @@ func TestLowerARM64_LiveChainSlot_Assemble(t *testing.T) {
 	}
 }
 
+func TestLowerARM64_LiveChainEntry_DisabledForFrame(t *testing.T) {
+	e := NewEmitter(nil)
+	tmp := e.Tmp()
+	e.Const(tmp, 1)
+	e.ChainExit(0x2000, 0)
+	MaxVReg(e.Block)
+
+	ctx := goasm.New(goasm.ARM64)
+	ctx.Append(ctx.NewATEXT())
+	res, err := LowerARM64_ABJIT(ctx, e.Block, nil)
+	if err != nil {
+		t.Fatalf("lower: %v", err)
+	}
+	if res.LiveChainEntryProg != nil {
+		t.Fatal("frame-backed ARM64 block must not expose a live-chain entry")
+	}
+	if res.LiveChain.Enabled {
+		t.Fatal("frame-backed ARM64 block must not expose live-chain metadata")
+	}
+	if len(res.ChainExits) != 1 {
+		t.Fatalf("ChainExits len = %d, want 1", len(res.ChainExits))
+	}
+	if res.ChainExits[0].LiveMovProg == nil {
+		t.Fatal("source live-chain patch slot should still be emitted")
+	}
+	code, err := ctx.Assemble()
+	if err != nil {
+		t.Fatalf("Assemble: %v", err)
+	}
+	if len(code) == 0 {
+		t.Fatal("expected non-empty code")
+	}
+}
+
 func TestLowerARM64_ALUAddressImm_Assemble(t *testing.T) {
 	tests := []struct {
 		name string

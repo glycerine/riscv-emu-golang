@@ -242,10 +242,18 @@ func lowerARM64(ctx *goasm.Ctx, b *Block, alloc *Allocation, abi arm64ABI) (*Low
 	for i := range lc.chainExits {
 		lc.chainExits[i].stubProg, lc.chainExits[i].sourceMovProg = lc.emitSlowExitStub(lc.chainExits[i].targetPC, i)
 	}
+	liveEntryProg := lc.liveEntryProg
+	liveChain := lc.buildLiveChainMeta()
+	if lc.frame.frameSize != 0 {
+		// Live-chain jumps enter this label directly, so they may only skip
+		// the target prologue when there is no target frame to allocate.
+		liveEntryProg = nil
+		liveChain = liveChainMeta{}
+	}
 	result := &LowerResult{
 		ChainEntryProg:     lc.chainEntryProg,
-		LiveChainEntryProg: lc.liveEntryProg,
-		LiveChain:          lc.buildLiveChainMeta(),
+		LiveChainEntryProg: liveEntryProg,
+		LiveChain:          liveChain,
 	}
 	for i := range lc.chainExits {
 		result.ChainExits = append(result.ChainExits, ChainExitDesc{
