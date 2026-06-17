@@ -158,14 +158,6 @@ func TestEmuConfigDefaultsPreserveExplicitZeroClock(t *testing.T) {
 	if budget != defaultEmuInstructionBudget {
 		t.Fatalf("schedulerBudget = %d, want %d", budget, defaultEmuInstructionBudget)
 	}
-	if cfg.MonotonicStartNS != defaultEmuMonotonicStartNS {
-		t.Fatalf("MonotonicStartNS = %d, want %d", cfg.MonotonicStartNS, defaultEmuMonotonicStartNS)
-	}
-
-	explicitZero := EmuConfig{MonotonicStartSet: true}.withDefaults()
-	if explicitZero.MonotonicStartNS != 0 {
-		t.Fatalf("explicit MonotonicStartNS = %d, want zero preserved", explicitZero.MonotonicStartNS)
-	}
 }
 
 func TestParseEmuJITModeFlags(t *testing.T) {
@@ -314,11 +306,6 @@ func parseEmuConfigForTest(t *testing.T, args ...string) (EmuConfig, *bytes.Buff
 	if err := fs.Parse(args); err != nil {
 		t.Fatalf("parse flags: %v; output=%q", err, flagErrors.String())
 	}
-	fs.Visit(func(f *flag.Flag) {
-		if f.Name == "monotonic-ns" {
-			cfg.MonotonicStartSet = true
-		}
-	})
 	if err := cfg.ValidateConfig(); err != nil {
 		t.Fatalf("validate flags: %v", err)
 	}

@@ -20,7 +20,7 @@ const (
 	defaultEmuMemorySize        = riscv.Size16GB
 	defaultEmuBudget            = "5ms"
 	defaultEmuInstructionBudget = uint64(5 * time.Millisecond)
-	defaultEmuMonotonicStartNS  = int64(946684800000000000) // 2000-01-01T00:00:00Z
+	defaultEmuRealtimeStartNS   = int64(946684800000000000) // 2000-01-01T00:00:00Z
 	emuPRNGMinBudget            = uint64(1 * time.Millisecond)
 	emuPRNGMaxBudget            = uint64(500 * time.Millisecond)
 )
@@ -37,8 +37,6 @@ type EmuConfig struct {
 	Deadlock          bool
 	PRNG              bool
 	Chaos             bool
-	MonotonicStartNS  int64
-	MonotonicStartSet bool
 	RealtimeOffsetNS  int64
 	Args              []string
 	Env               []string
@@ -103,8 +101,7 @@ func (c *EmuConfig) DefineFlags(fs *flag.FlagSet) {
 	fs.BoolVar(&c.Deadlock, "deadlock", false, "run each thread until it blocks before scheduling another thread (at most one of -deadlock -prng or -chaos may be given; if none the default is a fixed quantum of -budget duration)")
 	fs.BoolVar(&c.PRNG, "prng", false, "use deterministic PRNG scheduling quantum and clock advancement")
 	fs.BoolVar(&c.Chaos, "chaos", false, "use deterministic chaos scheduling")
-	fs.Int64Var(&c.MonotonicStartNS, "init", defaultEmuMonotonicStartNS, "initial monotonic clock value in nanoseconds since Unix epoch; default is 2000-01-01T00:00:00Z")
-	fs.Int64Var(&c.RealtimeOffsetNS, "realtime-offset-ns", 0, "realtime clock offset from monotonic time in nanoseconds")
+	fs.Int64Var(&c.RealtimeOffsetNS, "init", defaultEmuRealtimeStartNS, "initial realtime clock value in nanoseconds since Unix epoch; default is 2000-01-01T00:00:00Z")
 }
 
 func (c *EmuConfig) ValidateConfig() error {
@@ -143,11 +140,6 @@ func main() {
 		fmt.Fprintf(os.Stderr, "%s command line flag parse error: '%v'\n", ProgramName, err)
 		os.Exit(1)
 	}
-	myflags.Visit(func(f *flag.Flag) {
-		if f.Name == "monotonic-ns" {
-			cfg.MonotonicStartSet = true
-		}
-	})
 	err = cfg.ValidateConfig()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
@@ -200,7 +192,7 @@ func runEmu(cfg EmuConfig) (int, error) {
 		EntropySeed:       seedBytes(cfg.Seed),
 		ClockMode:         riscv.Jea9ClockIdleJump,
 		ClockPolicy:       clockPolicy,
-		MonotonicStartNS:  cfg.MonotonicStartNS,
+		MonotonicStartNS:  0,
 		RealtimeOffsetNS:  cfg.RealtimeOffsetNS,
 		InstructionBudget: instructionBudget,
 		Scheduler:         cfg.schedulerConfig(budget),
@@ -267,9 +259,6 @@ func (c EmuConfig) withDefaults() EmuConfig {
 	}
 	if c.Budget == "" && c.InstructionBudget == 0 {
 		c.Budget = defaultEmuBudget
-	}
-	if c.MonotonicStartNS == 0 && !c.MonotonicStartSet {
-		c.MonotonicStartNS = defaultEmuMonotonicStartNS
 	}
 	if c.Stdin == nil {
 		c.Stdin = os.Stdin
