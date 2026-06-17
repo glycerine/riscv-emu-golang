@@ -28,6 +28,7 @@ type EmuxConfig struct {
 	InstructionBudget uint64
 	JITLazy           bool
 	JITAOT            bool
+	Chaos             bool
 	AllowAllHostFiles bool
 	ClockMode         string
 	MonotonicStartNS  int64
@@ -93,6 +94,7 @@ func (c *EmuxConfig) DefineFlags(fs *flag.FlagSet) {
 	fs.Uint64Var(&c.InstructionBudget, "budget", defaultEmuxInstructionBudget, "jea9linux instruction budget per scheduler slice")
 	fs.BoolVar(&c.JITLazy, "jitlazy", false, "run with the native lazy JIT instead of the interpreter")
 	fs.BoolVar(&c.JITAOT, "jitaot", false, "run with explicit AOT JIT instead of the interpreter")
+	fs.BoolVar(&c.Chaos, "chaos", false, "run with deterministic chaos scheduling")
 	fs.BoolVar(&c.AllowAllHostFiles, "allhost", false, "allow guest file syscalls to pass through to the host filesystem")
 	fs.StringVar(&c.ClockMode, "clock", defaultEmuxClockMode, "clock mode: idle-jump or ic-tick")
 	fs.Int64Var(&c.MonotonicStartNS, "monotonic-ns", defaultEmuxMonotonicStartNS, "initial monotonic clock value in nanoseconds")
@@ -185,6 +187,7 @@ func runEmux(cfg EmuxConfig) (int, error) {
 		RealtimeOffsetNS:  cfg.RealtimeOffsetNS,
 		NSPerInstruction:  cfg.NSPerInstruction,
 		InstructionBudget: cfg.InstructionBudget,
+		Scheduler:         cfg.schedulerConfig(),
 		Stdin:             cfg.Stdin,
 		Stdout:            cfg.Stdout,
 		Stderr:            cfg.Stderr,
@@ -268,6 +271,13 @@ func (c EmuxConfig) withDefaults() EmuxConfig {
 		c.Stderr = os.Stderr
 	}
 	return c
+}
+
+func (c EmuxConfig) schedulerConfig() riscv.Jea9LinuxSchedulerConfig {
+	if c.Chaos {
+		return riscv.Jea9LinuxSchedulerConfig{Mode: riscv.Jea9SchedulerChaos}
+	}
+	return riscv.Jea9LinuxSchedulerConfig{}
 }
 
 func parseClockMode(name string) (riscv.Jea9LinuxClockMode, error) {
