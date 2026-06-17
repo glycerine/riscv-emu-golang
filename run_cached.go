@@ -331,7 +331,7 @@ func runCachedDualBudget(cpu *CPU, cache *DecoderCache, nc *NoteChain, attemptBu
 
 			case opLD:
 				addr := cpu.x[slot.rs1] + uint64(int64(slot.imm))
-				if cpu.mem.accessOverlay == nil && addr&7 == 0 && (addr|(addr+7))&^cpu.mem.mask == 0 {
+				if cpu.mem.accessOverlay == nil && cpu.mem.mmio == nil && addr&7 == 0 && (addr|(addr+7))&^cpu.mem.mask == 0 {
 					cpu.x[slot.rd] = *(*uint64)(unsafe.Add(cpu.mem.base, addr&cpu.mem.mask))
 				} else {
 					v, f := (&cpu.mem).Load64U(addr)
@@ -498,7 +498,7 @@ func runCachedDualBudget(cpu *CPU, cache *DecoderCache, nc *NoteChain, attemptBu
 
 			case opSD:
 				addr := cpu.x[slot.rs1] + uint64(int64(slot.imm))
-				if cpu.mem.accessOverlay == nil && addr&7 == 0 && (addr|(addr+7))&^cpu.mem.mask == 0 {
+				if cpu.mem.accessOverlay == nil && cpu.mem.mmio == nil && addr&7 == 0 && (addr|(addr+7))&^cpu.mem.mask == 0 {
 					*(*uint64)(unsafe.Add(cpu.mem.base, addr&cpu.mem.mask)) = cpu.x[slot.rs2]
 				} else {
 					if f := (&cpu.mem).Store64U(addr, cpu.x[slot.rs2]); f != nil {
@@ -772,7 +772,7 @@ func runCachedDualBudget(cpu *CPU, cache *DecoderCache, nc *NoteChain, attemptBu
 
 			case opC_LD:
 				addr := cpu.x[slot.rs1] + uint64(slot.imm)
-				if cpu.mem.accessOverlay == nil && addr&7 == 0 && (addr|(addr+7))&^cpu.mem.mask == 0 {
+				if cpu.mem.accessOverlay == nil && cpu.mem.mmio == nil && addr&7 == 0 && (addr|(addr+7))&^cpu.mem.mask == 0 {
 					cpu.x[slot.rd] = *(*uint64)(unsafe.Add(cpu.mem.base, addr&cpu.mem.mask))
 				} else {
 					v, f := (&cpu.mem).Load64U(addr)
@@ -793,7 +793,7 @@ func runCachedDualBudget(cpu *CPU, cache *DecoderCache, nc *NoteChain, attemptBu
 
 			case opC_SD:
 				addr := cpu.x[slot.rs1] + uint64(slot.imm)
-				if cpu.mem.accessOverlay == nil && addr&7 == 0 && (addr|(addr+7))&^cpu.mem.mask == 0 {
+				if cpu.mem.accessOverlay == nil && cpu.mem.mmio == nil && addr&7 == 0 && (addr|(addr+7))&^cpu.mem.mask == 0 {
 					*(*uint64)(unsafe.Add(cpu.mem.base, addr&cpu.mem.mask)) = cpu.x[slot.rs2]
 				} else {
 					if f := (&cpu.mem).Store64U(addr, cpu.x[slot.rs2]); f != nil {
@@ -909,7 +909,7 @@ func runCachedDualBudget(cpu *CPU, cache *DecoderCache, nc *NoteChain, attemptBu
 					break inner
 				}
 				addr := cpu.x[2] + uint64(slot.imm)
-				if cpu.mem.accessOverlay == nil && addr&7 == 0 && (addr|(addr+7))&^cpu.mem.mask == 0 {
+				if cpu.mem.accessOverlay == nil && cpu.mem.mmio == nil && addr&7 == 0 && (addr|(addr+7))&^cpu.mem.mask == 0 {
 					cpu.x[slot.rd] = *(*uint64)(unsafe.Add(cpu.mem.base, addr&cpu.mem.mask))
 				} else {
 					v, f := (&cpu.mem).Load64U(addr)
@@ -950,7 +950,7 @@ func runCachedDualBudget(cpu *CPU, cache *DecoderCache, nc *NoteChain, attemptBu
 
 			case opC_SDSP:
 				addr := cpu.x[2] + uint64(slot.imm)
-				if cpu.mem.accessOverlay == nil && addr&7 == 0 && (addr|(addr+7))&^cpu.mem.mask == 0 {
+				if cpu.mem.accessOverlay == nil && cpu.mem.mmio == nil && addr&7 == 0 && (addr|(addr+7))&^cpu.mem.mask == 0 {
 					*(*uint64)(unsafe.Add(cpu.mem.base, addr&cpu.mem.mask)) = cpu.x[slot.rs2]
 				} else {
 					if f := (&cpu.mem).Store64U(addr, cpu.x[slot.rs2]); f != nil {

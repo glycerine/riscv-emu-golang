@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -28,6 +29,12 @@ const (
 	virtRAMBase           = uint64(0x80000000)
 	virtCPUIntcPH         = uint32(1)
 	virtPLICPH            = uint32(2)
+	biosUARTBase          = uint64(0x10000000)
+	biosUARTSize          = uint64(0x100)
+	biosCLINTBase         = uint64(0x02000000)
+	biosCLINTSize         = uint64(0x00010000)
+	biosPLICBase          = uint64(0x0c000000)
+	biosPLICSize          = uint64(0x04000000)
 )
 
 type biosGuest struct {
@@ -132,6 +139,7 @@ func prepareBiosGuest(cfg EmuConfig) (*biosGuest, error) {
 		}
 	}
 
+	mem.SetMMIO(newBiosMMIO(cfg.Stdout))
 	cpu := riscv.NewCPU(*mem)
 	cpu.SetPC(elf.Entry)
 	cpu.SetReg(10, 0)       // a0: boot hart id
@@ -247,11 +255,22 @@ func loadBiosFDT(cfg EmuConfig, initrd biosBlob) ([]byte, bool, error) {
 	}
 	fdt, err := buildVirtFDT(cfg.MemorySize, virtFDTOptions{
 		Machine:     cfg.machine(),
-		BootArgs:    cfg.Append,
+		BootArgs:    cfg.biosBootArgs(),
 		InitrdStart: initrd.addr,
 		InitrdEnd:   initrd.end,
 	})
 	return fdt, false, err
+}
+
+func (c EmuConfig) biosBootArgs() string {
+	var parts []string
+	if appendArgs := strings.TrimSpace(c.Append); appendArgs != "" {
+		parts = append(parts, appendArgs)
+	}
+	if c.BiosPath != "" && len(c.Args) > 1 {
+		parts = append(parts, c.Args[1:]...)
+	}
+	return strings.Join(parts, " ")
 }
 
 func chooseBiosFDTAddr(memSize uint64, fdtLen int, initrd biosBlob) (uint64, error) {

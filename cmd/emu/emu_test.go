@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"flag"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -369,6 +370,78 @@ func TestRunEmuBiosFWDynamicLinuxSmoke(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("runEmu fw_dynamic linux smoke exit code = %d, want 0; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
+}
+
+func TestRunEmuBiosFWDynamicLinuxBootsInitramfs(t *testing.T) {
+	const biosPath = "../../xendor/opensbi/build/platform/generic/firmware/fw_dynamic.elf"
+	const kernelPath = "../../xendor/linux/boot/vmlinuz-6.17.0-35-generic"
+	const initrdPath = "../../xendor/linux/initramfs.cpio.gz"
+	for _, path := range []string{biosPath, kernelPath, initrdPath} {
+		if !fileExists(path) {
+			t.Skipf("Linux BIOS boot fixture not present: %s", path)
+		}
+	}
+
+	var stdout, stderr bytes.Buffer
+	booted, err := runBiosUntilOutput(EmuConfig{
+		BiosPath:   biosPath,
+		KernelPath: kernelPath,
+		InitrdPath: initrdPath,
+		Append:     "console=hvc0 rdinit=/init",
+		MemorySize: riscv.Size16GB,
+		Stdin:      strings.NewReader(""),
+		Stdout:     &stdout,
+		Stderr:     &stderr,
+	}, "=== RISC-V initramfs booted ===", 100_000_000)
+	if err != nil {
+		t.Fatalf("Linux boot run failed: %v\nstdout tail:\n%s\nstderr:\n%s", err, tailString(stdout.String(), 4096), stderr.String())
+	}
+	if !booted {
+		t.Fatalf("Linux did not reach initramfs marker\nstdout tail:\n%s\nstderr:\n%s", tailString(stdout.String(), 4096), stderr.String())
+	}
+}
+
+func runBiosUntilOutput(cfg EmuConfig, marker string, maxInstructions uint64) (bool, error) {
+	guest, err := prepareBiosGuest(cfg.withDefaults())
+	if err != nil {
+		return false, err
+	}
+	defer guest.mem.Free()
+
+	const chunk = uint64(100_000)
+	var used uint64
+	for used < maxInstructions {
+		step := chunk
+		if rem := maxInstructions - used; rem < step {
+			step = rem
+		}
+		res, err := riscv.RunDefaultBudget(guest.cpu, &guest.cpu.Notes, step)
+		used += step
+		if strings.Contains(writerString(cfg.Stdout), marker) {
+			return true, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		if res == riscv.RunBudgetExit {
+			return strings.Contains(writerString(cfg.Stdout), marker), nil
+		}
+	}
+	return false, fmt.Errorf("%w after %d instructions", errBiosBudgetExpired, maxInstructions)
+}
+
+func writerString(w interface{}) string {
+	if s, ok := w.(interface{ String() string }); ok {
+		return s.String()
+	}
+	return ""
+}
+
+func tailString(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return s[len(s)-max:]
 }
 
 func TestRunEmuBiosOpenSBIFwJumpGetsFDT(t *testing.T) {

@@ -160,6 +160,11 @@ type GuestMemory struct {
 	// containment invariant.
 	accessOverlay guestMemoryAccessOverlay
 
+	// mmio is an optional bare-machine device hook. It stays nil for normal
+	// process/personality workloads; BIOS machine boot installs it for devices
+	// described in the generated FDT.
+	mmio GuestMemoryMMIO
+
 	// TohostAddr is the address of the "tohost" symbol found during ELF
 	// loading. Non-zero means the loaded binary uses the HTIF tohost
 	// protocol and the JIT must be configured with a matching watchAddr.
@@ -168,6 +173,13 @@ type GuestMemory struct {
 
 type guestMemoryAccessOverlay interface {
 	CheckGuestAccess(addr, width uint64, kind FaultKind, size uint64) *MemFault
+}
+
+// GuestMemoryMMIO handles memory-mapped device accesses. Return ok=false to
+// let the access fall through to regular guest RAM.
+type GuestMemoryMMIO interface {
+	Load(addr, width uint64) (value uint64, ok bool, fault *MemFault)
+	Store(addr, width, value uint64) (ok bool, fault *MemFault)
 }
 
 // NewGuestMemory allocates a guest address space of the given size.
@@ -283,6 +295,16 @@ func (m *GuestMemory) clearAccessOverlay(o guestMemoryAccessOverlay) {
 	}
 }
 
+func (m *GuestMemory) SetMMIO(mmio GuestMemoryMMIO) {
+	m.mmio = mmio
+}
+
+func (m *GuestMemory) ClearMMIO(mmio GuestMemoryMMIO) {
+	if m.mmio == mmio {
+		m.mmio = nil
+	}
+}
+
 func (m *GuestMemory) RegFileBase() uintptr { return uintptr(m.base) + uintptr(m.size) - GuestPageSize }
 func (m *GuestMemory) StackTop() uintptr    { return uintptr(m.base) + uintptr(m.size) - 2*GuestPageSize }
 
@@ -387,6 +409,11 @@ func (m *GuestMemory) Load8(addr uint64) (uint8, *MemFault) {
 	if f := m.checkAccessOverlay(addr, 1, FaultLoad); f != nil {
 		return 0, f
 	}
+	if m.mmio != nil {
+		if v, ok, f := m.mmio.Load(addr, 1); ok || f != nil {
+			return uint8(v), f
+		}
+	}
 	if m.check(addr, 1) != 0 {
 		return 0, m.fault(addr, 1, FaultLoad)
 	}
@@ -402,6 +429,11 @@ func (m *GuestMemory) Load16(addr uint64) (uint16, *MemFault) {
 	}
 	if f := m.checkAccessOverlay(addr, 2, FaultLoad); f != nil {
 		return 0, f
+	}
+	if m.mmio != nil {
+		if v, ok, f := m.mmio.Load(addr, 2); ok || f != nil {
+			return uint16(v), f
+		}
 	}
 	if m.check(addr, 2) != 0 {
 		return 0, m.fault(addr, 2, FaultLoad)
@@ -419,6 +451,11 @@ func (m *GuestMemory) Load32(addr uint64) (uint32, *MemFault) {
 	if f := m.checkAccessOverlay(addr, 4, FaultLoad); f != nil {
 		return 0, f
 	}
+	if m.mmio != nil {
+		if v, ok, f := m.mmio.Load(addr, 4); ok || f != nil {
+			return uint32(v), f
+		}
+	}
 	if m.check(addr, 4) != 0 {
 		return 0, m.fault(addr, 4, FaultLoad)
 	}
@@ -434,6 +471,11 @@ func (m *GuestMemory) Load64(addr uint64) (uint64, *MemFault) {
 	}
 	if f := m.checkAccessOverlay(addr, 8, FaultLoad); f != nil {
 		return 0, f
+	}
+	if m.mmio != nil {
+		if v, ok, f := m.mmio.Load(addr, 8); ok || f != nil {
+			return v, f
+		}
 	}
 	if m.check(addr, 8) != 0 {
 		return 0, m.fault(addr, 8, FaultLoad)
@@ -455,6 +497,11 @@ func (m *GuestMemory) Store8(addr uint64, v uint8) *MemFault {
 	if f := m.checkAccessOverlay(addr, 1, FaultStore); f != nil {
 		return f
 	}
+	if m.mmio != nil {
+		if ok, f := m.mmio.Store(addr, 1, uint64(v)); ok || f != nil {
+			return f
+		}
+	}
 	if m.check(addr, 1) != 0 {
 		return m.fault(addr, 1, FaultStore)
 	}
@@ -471,6 +518,11 @@ func (m *GuestMemory) Store16(addr uint64, v uint16) *MemFault {
 	}
 	if f := m.checkAccessOverlay(addr, 2, FaultStore); f != nil {
 		return f
+	}
+	if m.mmio != nil {
+		if ok, f := m.mmio.Store(addr, 2, uint64(v)); ok || f != nil {
+			return f
+		}
 	}
 	if m.check(addr, 2) != 0 {
 		return m.fault(addr, 2, FaultStore)
@@ -489,6 +541,11 @@ func (m *GuestMemory) Store32(addr uint64, v uint32) *MemFault {
 	if f := m.checkAccessOverlay(addr, 4, FaultStore); f != nil {
 		return f
 	}
+	if m.mmio != nil {
+		if ok, f := m.mmio.Store(addr, 4, uint64(v)); ok || f != nil {
+			return f
+		}
+	}
 	if m.check(addr, 4) != 0 {
 		return m.fault(addr, 4, FaultStore)
 	}
@@ -505,6 +562,11 @@ func (m *GuestMemory) Store64(addr uint64, v uint64) *MemFault {
 	}
 	if f := m.checkAccessOverlay(addr, 8, FaultStore); f != nil {
 		return f
+	}
+	if m.mmio != nil {
+		if ok, f := m.mmio.Store(addr, 8, v); ok || f != nil {
+			return f
+		}
 	}
 	if m.check(addr, 8) != 0 {
 		return m.fault(addr, 8, FaultStore)
