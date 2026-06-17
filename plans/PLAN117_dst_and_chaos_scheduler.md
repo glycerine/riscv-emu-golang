@@ -210,9 +210,11 @@ type Jea9LinuxSchedulerConfig struct {
 }
 ```
 
-`RoundRobin` keeps the old deterministic simple behavior as the default.
-`DST` enables seeded quanta/priorities without starvation windows.
-`Chaos` enables starvation windows.
+`RoundRobin` remains the default deterministic simple policy, but it is now a
+semantic scheduler mode: it rotates only at retired-instruction scheduler
+quantum boundaries or explicit guest-visible scheduling events. It must not
+rotate on host poll budget expiry. `DST` enables seeded quanta/priorities
+without starvation windows. `Chaos` enables starvation windows.
 
 ## Clock Policy Configuration
 
@@ -310,10 +312,27 @@ exceptions such as ECALL and EBREAK do not retire in RISC-V. Faulting attempts
 also do not retire. Scheduling on retired instructions is closer to the
 architectural model and avoids counting retried attempts as progress.
 
-Important implementation note: current run-budget plumbing is largely based on
-attempt counts. Before scheduler quanta can be exact, interpreter and JIT paths
-need a way to stop at a retired-instruction deadline, or a carefully tested
-bridge that never lets scheduler decisions depend on host budget size.
+Implementation decision: keep host poll budgets and retired scheduler deadlines
+as separate first-class APIs. Existing `RunDefaultBudget` and
+`JIT.StepBlockBudget` remain attempt/countdown budget APIs for host polling and
+low-level countdown tests. Scheduler deadlines use retired-budget APIs:
+
+```go
+RunDefaultRetiredBudget(cpu, notes, retiredBudget)
+JIT.StepBlockRetiredBudget(cpu, retiredBudget)
+RunDefaultDualBudget(cpu, notes, attemptBudget, retiredBudget)
+JIT.StepBlockDualBudget(cpu, attemptBudget, retiredBudget)
+```
+
+These APIs expire only after the requested number of RISC-V instructions have
+retired. Non-retiring ECALL/EBREAK/fault attempts may be begun and handled
+inside the call, but do not consume the retired budget.
+
+`RunDefaultDualBudget` and `JIT.StepBlockDualBudget` report which budget limit
+expired. Jea9Linux uses that result to keep host polling and semantic
+scheduling independent: an attempt-budget expiry returns to the host without a
+scheduler event, while a retired-budget expiry performs exactly one scheduler
+event.
 
 ## Host Budget vs Scheduler Deadline
 
@@ -355,7 +374,8 @@ Thread selection must be stable:
 - iterate `contextOrder`, never maps;
 - skip exited/waiting contexts;
 - during chaos windows, skip low-priority contexts;
-- preserve old round-robin behavior when scheduler mode is `RoundRobin`;
+- preserve round-robin order when scheduler mode is `RoundRobin`, while keeping
+  host poll expiry non-semantic;
 - record event ID, from TID, to TID, priorities, quantum, and PRNG draw count.
 
 When chaos is active and only low-priority contexts are runnable:
@@ -603,7 +623,8 @@ Implementation:
 - centralize thread choice into one scheduler helper;
 - remove ad hoc `nextRunnableAfterCurrent` calls from semantic paths where
   policy matters;
-- keep old helper or behavior for default round-robin mode until fully replaced.
+- default round-robin mode is now a semantic scheduler mode too; it preserves
+  stable context order but does not depend on host-budget expiration.
 
 ### 8. Clock Policy Tests
 
@@ -636,6 +657,11 @@ Implementation:
 - add clock policy config/state;
 - implement a single `advanceVirtualClockForSchedulerEvent` helper;
 - route deadlock, PRNG, and fixed advancement through that helper;
+- route timeout/deadline fast-forwards through a deadline helper instead of
+  assigning `monotonicNS` directly from syscall paths;
+- deadline fast-forwards refresh waiters and chaos state, but do not leave
+  pending schedule-trace clock metadata unless they occur inside a scheduler
+  event;
 - ensure all PRNG clock draws go through scheduler RNG wrappers.
 
 ### 9. Chaos Window Tests
@@ -726,14 +752,19 @@ Tests:
 - host budget does not change TID, event ID, draw count, or PRNG snapshot.
 - old budget tests updated to expect no scheduler decision on budget alone.
 
-### Phase 4: Add Retired-Deadline Execution Support
+### Phase 4: Add First-Class Retired-Budget Execution Support
 
-- Add interpreter support for running to a retired-instruction deadline.
-- Add lazy JIT support for the same deadline.
+- Add interpreter support via `RunDefaultRetiredBudget`.
+- Add lazy JIT support via `JIT.StepBlockRetiredBudget`.
+- Add dual-budget support via `RunDefaultDualBudget` and
+  `JIT.StepBlockDualBudget` so Jea9Linux can run with both host-poll and
+  scheduler-retired limits at once.
+- Preserve existing attempt/countdown budget APIs for host polling.
 - Verify non-retired ECALL/EBREAK/fault behavior.
 
 Tests:
 
+- direct retired-budget API tests for interpreter and lazy JIT;
 - retired deadline tests for interpreter and lazy JIT.
 - JIT/interpreter accounting equivalence.
 
@@ -742,7 +773,13 @@ Tests:
 - Add scheduler quantum config and state.
 - Draw quantum only on scheduler events.
 - Install `nextScheduleAtRetired`.
-- Run engines to min(host poll budget, scheduler retired deadline).
+- Run engines with host poll and scheduler retired deadlines as independent
+  limits.
+- If host poll expires first, snapshot and return with no scheduling.
+- If scheduler retired budget expires first, perform exactly one scheduler
+  event.
+- Do not infer retired deadlines from attempts-used deltas; use the first-class
+  retired-budget result from the execution engine.
 
 Tests:
 
@@ -807,9 +844,12 @@ Tests:
 ### Phase 10: Integrate With Zygo Lockstep and Benchmarks
 
 - Add scheduler state to lockstep comparison.
-- Run Zygo interpreter/lazy lockstep under multiple host budgets.
+- Run Zygo interpreter/lazy lockstep under multiple host budgets, including
+  tagged Zygo tests that compare real scheduler traces.
 - Run with chaos mode seed and record trace.
-- Keep normal benchmarks using default round-robin unless explicitly configured.
+- Keep normal benchmarks on deterministic round-robin unless chaos/DST is
+  explicitly configured, but round-robin still uses semantic retired quanta and
+  never host-budget scheduling.
 
 Tests:
 
@@ -821,9 +861,11 @@ Tests:
 
 ### Retired Deadline Support
 
-Current host budget mechanisms may not stop exactly on retired-instruction
-boundaries. This is the main technical risk. Do not enable scheduler quanta on
-retired counts until interpreter and JIT both pass exact retired-deadline tests.
+Scheduler quanta must never depend on host poll budget size. The retired-budget
+APIs are the contract for this. It is acceptable for the JIT implementation to
+use native countdown dispatch internally, but the exported retired-budget API
+must not report expiration until retired instructions, not attempts, reach the
+requested deadline.
 
 ### ECALL and Retired Count
 
@@ -843,8 +885,9 @@ Full PRNG state in every schedule trace entry can be noisy. Gate it behind
 
 ### Backwards Compatibility
 
-Default round-robin mode should preserve existing behavior as much as possible,
-except for the intentional host-budget independence fix.
+Default round-robin mode preserves stable round-robin order, but intentionally
+does not preserve the old host-budget scheduling side effect. Host poll expiry
+is an implementation detail in every scheduler mode.
 
 ## Success Criteria
 

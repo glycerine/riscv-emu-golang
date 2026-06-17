@@ -610,6 +610,56 @@ func (j *JIT) StepBlockBudget(cpu *CPU, budget uint64) (RunBudgetResult, error) 
 	return RunBudgetContinue, nil
 }
 
+func (j *JIT) StepBlockRetiredBudget(cpu *CPU, retiredBudget uint64) (RunBudgetResult, error) {
+	res, _, err := j.StepBlockDualBudget(cpu, 0, retiredBudget)
+	return res, err
+}
+
+func (j *JIT) StepBlockDualBudget(cpu *CPU, attemptBudget, retiredBudget uint64) (RunBudgetResult, RunBudgetLimit, error) {
+	if attemptBudget == 0 && retiredBudget == 0 {
+		return RunBudgetExpired, RunBudgetLimitNone, nil
+	}
+	attemptBase := cpu.RiscvInstrBegun()
+	retiredBase := cpu.RiscvInstrRetired()
+	for {
+		attemptsUsed := cpu.RiscvInstrBegun() - attemptBase
+		retiredUsed := cpu.RiscvInstrRetired() - retiredBase
+		if retiredBudget != 0 && retiredUsed >= retiredBudget {
+			return RunBudgetExpired, RunBudgetLimitRetired, nil
+		}
+		if attemptBudget != 0 && attemptsUsed >= attemptBudget {
+			return RunBudgetExpired, RunBudgetLimitAttempt, nil
+		}
+		dispatchBudget := jitMaxBudget
+		if attemptBudget != 0 {
+			remaining := attemptBudget - attemptsUsed
+			if remaining < dispatchBudget {
+				dispatchBudget = remaining
+			}
+		}
+		if retiredBudget != 0 {
+			remaining := retiredBudget - retiredUsed
+			if remaining < dispatchBudget {
+				dispatchBudget = remaining
+			}
+		}
+		if dispatchBudget == 0 {
+			if retiredBudget != 0 && retiredUsed >= retiredBudget {
+				return RunBudgetExpired, RunBudgetLimitRetired, nil
+			}
+			return RunBudgetExpired, RunBudgetLimitAttempt, nil
+		}
+		beforeAttempts := cpu.RiscvInstrBegun()
+		_, err := j.stepBlockWithBudget(cpu, dispatchBudget)
+		if err != nil {
+			return RunBudgetContinue, RunBudgetLimitNone, err
+		}
+		if cpu.RiscvInstrBegun() == beforeAttempts {
+			return RunBudgetContinue, RunBudgetLimitNone, nil
+		}
+	}
+}
+
 // InstallAOT runs the whole-program AOT translator on the ELF bytes.
 // For every PT_LOAD segment with PF_X set, it registers an ExecRegion
 // on the guest memory, linearly scans the range to enumerate basic-

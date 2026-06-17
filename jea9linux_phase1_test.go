@@ -180,6 +180,60 @@ func TestRunDefaultBudget_ZeroBudgetUsesUnboundedRun(t *testing.T) {
 	}
 }
 
+func TestRunDefaultRetiredBudget_IgnoresNonRetiredECALL(t *testing.T) {
+	cpu, mem := newTestCPU(t, Size64MB, 0x1000, []uint32{
+		ienc(opOPIMM, 0, 1, 1, 1), // ADDI x1, x1, 1; retired
+		instrECALL,                // getpid; synchronous exception, not retired
+		ienc(opOPIMM, 0, 1, 1, 1), // ADDI x1, x1, 1; retired
+		jenc(0, -4),               // would retire if the retired budget counted ECALL
+	})
+	defer mem.Free()
+	cleanup := InstallJea9Linux(cpu, NewJea9Linux(Jea9LinuxOptions{}))
+	defer cleanup()
+	cpu.SetReg(17, jea9LinuxSysGetpid)
+
+	res, err := RunDefaultRetiredBudget(cpu, &cpu.Notes, 2)
+	if err != nil {
+		t.Fatalf("RunDefaultRetiredBudget: %v", err)
+	}
+	if res != RunBudgetExpired {
+		t.Fatalf("RunDefaultRetiredBudget result = %v, want RunBudgetExpired", res)
+	}
+	if got := cpu.RiscvInstrRetired(); got != 2 {
+		t.Fatalf("RiscvInstrRetired = %d, want 2", got)
+	}
+	if got := cpu.RiscvInstrBegun(); got != 3 {
+		t.Fatalf("RiscvInstrBegun = %d, want 3 including ECALL attempt", got)
+	}
+	if got := cpu.Reg(1); got != 2 {
+		t.Fatalf("x1 = %d, want both retired ADDIs", got)
+	}
+	if got := cpu.PC(); got != 0x100c {
+		t.Fatalf("PC = 0x%x, want 0x100c", got)
+	}
+}
+
+func TestRunDefaultDualBudget_ReportsRetiredLimit(t *testing.T) {
+	cpu, mem := newTestCPU(t, Size64MB, 0x1000, []uint32{
+		ienc(opOPIMM, 0, 1, 1, 1),
+		instrECALL,
+		ienc(opOPIMM, 0, 1, 1, 1),
+		jenc(0, -4),
+	})
+	defer mem.Free()
+	cleanup := InstallJea9Linux(cpu, NewJea9Linux(Jea9LinuxOptions{}))
+	defer cleanup()
+	cpu.SetReg(17, jea9LinuxSysGetpid)
+
+	res, limit, err := RunDefaultDualBudget(cpu, &cpu.Notes, 100, 2)
+	if err != nil {
+		t.Fatalf("RunDefaultDualBudget: %v", err)
+	}
+	if res != RunBudgetExpired || limit != RunBudgetLimitRetired {
+		t.Fatalf("RunDefaultDualBudget = (%v, %v), want (%v, %v)", res, limit, RunBudgetExpired, RunBudgetLimitRetired)
+	}
+}
+
 func TestJea9Linux_RunBudgetLoopReturnsBudget(t *testing.T) {
 	cpu, mem, os := testLoopCPU(t, 7)
 	defer mem.Free()
@@ -360,6 +414,56 @@ func TestJITStepBlockBudget_ExpiresAtExactInstructionCount(t *testing.T) {
 	}
 	if got := cpu.PC(); got != 0x1004 {
 		t.Fatalf("PC = 0x%x, want 0x1004", got)
+	}
+}
+
+func TestJITStepBlockRetiredBudget_ExpiresAtRetiredCount(t *testing.T) {
+	cpu, mem, _ := testLoopCPU(t, 0)
+	defer mem.Free()
+
+	j := NewJIT()
+	defer j.Close()
+
+	res, err := j.StepBlockRetiredBudget(cpu, 5)
+	if err != nil {
+		t.Fatalf("StepBlockRetiredBudget: %v", err)
+	}
+	if res != RunBudgetExpired {
+		t.Fatalf("StepBlockRetiredBudget result = %v, want RunBudgetExpired", res)
+	}
+	if got := cpu.RiscvInstrRetired(); got != 5 {
+		t.Fatalf("RiscvInstrRetired = %d, want 5", got)
+	}
+	if got := cpu.RiscvInstrBegun(); got != 5 {
+		t.Fatalf("RiscvInstrBegun = %d, want 5", got)
+	}
+	if got := cpu.Reg(1); got != 3 {
+		t.Fatalf("x1 = %d, want 3", got)
+	}
+	if got := cpu.PC(); got != 0x1004 {
+		t.Fatalf("PC = 0x%x, want 0x1004", got)
+	}
+}
+
+func TestJITStepBlockDualBudget_ReportsAttemptLimit(t *testing.T) {
+	cpu, mem, _ := testLoopCPU(t, 0)
+	defer mem.Free()
+
+	j := NewJIT()
+	defer j.Close()
+
+	res, limit, err := j.StepBlockDualBudget(cpu, 3, 5)
+	if err != nil {
+		t.Fatalf("StepBlockDualBudget: %v", err)
+	}
+	if res != RunBudgetExpired || limit != RunBudgetLimitAttempt {
+		t.Fatalf("StepBlockDualBudget = (%v, %v), want (%v, %v)", res, limit, RunBudgetExpired, RunBudgetLimitAttempt)
+	}
+	if got := cpu.RiscvInstrBegun(); got != 3 {
+		t.Fatalf("RiscvInstrBegun = %d, want 3", got)
+	}
+	if got := cpu.RiscvInstrRetired(); got != 3 {
+		t.Fatalf("RiscvInstrRetired = %d, want 3", got)
 	}
 }
 

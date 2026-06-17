@@ -27,6 +27,14 @@ const (
 	RunBudgetExit
 )
 
+type RunBudgetLimit uint8
+
+const (
+	RunBudgetLimitNone RunBudgetLimit = iota
+	RunBudgetLimitAttempt
+	RunBudgetLimitRetired
+)
+
 // Flat dispatch opcodes for the runCached megaswitch. Each constant
 // uniquely identifies one instruction handler. Assigned at decode time
 // by flattenSlotOp so the megaswitch is a single-level jump table —
@@ -178,36 +186,65 @@ func RunDefault(cpu *CPU, nc *NoteChain) error {
 }
 
 func runCached(cpu *CPU, cache *DecoderCache, nc *NoteChain) error {
-	_, err := runCachedBudget(cpu, cache, nc, 0)
+	_, _, err := runCachedDualBudget(cpu, cache, nc, 0, 0)
 	return err
 }
 
 func RunDefaultBudget(cpu *CPU, nc *NoteChain, budget uint64) (RunBudgetResult, error) {
+	res, _, err := RunDefaultDualBudget(cpu, nc, budget, 0)
+	return res, err
+}
+
+func RunDefaultRetiredBudget(cpu *CPU, nc *NoteChain, retiredBudget uint64) (RunBudgetResult, error) {
+	res, _, err := RunDefaultDualBudget(cpu, nc, 0, retiredBudget)
+	return res, err
+}
+
+func RunDefaultDualBudget(cpu *CPU, nc *NoteChain, attemptBudget, retiredBudget uint64) (RunBudgetResult, RunBudgetLimit, error) {
 	base := cpu.pc &^ uint64(0xFFF)
 	if base > 0x1000 {
 		base -= 0x1000
 	}
 	cache := NewDecoderCache(base, 256<<10)
-	res, err := runCachedBudget(cpu, cache, nc, budget)
+	res, limit, err := runCachedDualBudget(cpu, cache, nc, attemptBudget, retiredBudget)
 	if _, ok := err.(*ExitError); ok {
-		return RunBudgetExit, err
+		return RunBudgetExit, RunBudgetLimitNone, err
 	}
-	return res, err
+	return res, limit, err
 }
 
 func runCachedBudget(cpu *CPU, cache *DecoderCache, nc *NoteChain, budget uint64) (RunBudgetResult, error) {
+	res, _, err := runCachedDualBudget(cpu, cache, nc, budget, 0)
+	return res, err
+}
+
+func runCachedDualBudget(cpu *CPU, cache *DecoderCache, nc *NoteChain, attemptBudget, retiredBudget uint64) (RunBudgetResult, RunBudgetLimit, error) {
 	// pc stays in a local across the inner loop; cpu.pc is only written when
 	// we exit the inner loop (watchAddr / note delivery) or when a delegate
 	// / slow-path callee needs it (they read/write c.pc for fault context).
 	pc := cpu.pc
-	var budgetUsed uint64
+	var attemptsUsed uint64
+	retiredBase := cpu.riscvInstrRetired
+	var retiredUsed uint64
 	for {
 		var err error
 		var instrBegun uint64
 		var instrRetired uint64
 		countdown := pollBatch
-		if budget != 0 {
-			remaining := budget - budgetUsed
+		if retiredBudget != 0 && retiredUsed >= retiredBudget {
+			return RunBudgetExpired, RunBudgetLimitRetired, nil
+		}
+		if attemptBudget != 0 && attemptsUsed >= attemptBudget {
+			return RunBudgetExpired, RunBudgetLimitAttempt, nil
+		}
+		if attemptBudget != 0 {
+			remaining := attemptBudget - attemptsUsed
+			if remaining < uint64(countdown) {
+				countdown = int(remaining)
+			}
+		}
+		if retiredBudget != 0 {
+			remaining := retiredBudget - retiredUsed
 			if remaining < uint64(countdown) {
 				countdown = int(remaining)
 			}
@@ -929,8 +966,14 @@ func runCachedBudget(cpu *CPU, cache *DecoderCache, nc *NoteChain, budget uint64
 			if err == nil && inlineRetired {
 				instrRetired++
 			}
-			if budget != 0 {
-				budgetUsed++
+			if attemptBudget != 0 {
+				attemptsUsed++
+			}
+			if retiredBudget != 0 {
+				retiredNow := cpu.riscvInstrRetired + instrRetired
+				if retiredNow >= retiredBase {
+					retiredUsed = retiredNow - retiredBase
+				}
 			}
 			countdown--
 			if err != nil || countdown == 0 {
@@ -951,12 +994,15 @@ func runCachedBudget(cpu *CPU, cache *DecoderCache, nc *NoteChain, budget uint64
 
 		if cpu.watchAddr != 0 {
 			if v, _ := (&cpu.mem).Load64(cpu.watchAddr); v != 0 {
-				return RunBudgetExit, &ExitError{Code: tohostExitCode(v)}
+				return RunBudgetExit, RunBudgetLimitNone, &ExitError{Code: tohostExitCode(v)}
 			}
 		}
 		if err == nil {
-			if budget != 0 && budgetUsed >= budget {
-				return RunBudgetExpired, nil
+			if retiredBudget != 0 && retiredUsed >= retiredBudget {
+				return RunBudgetExpired, RunBudgetLimitRetired, nil
+			}
+			if attemptBudget != 0 && attemptsUsed >= attemptBudget {
+				return RunBudgetExpired, RunBudgetLimitAttempt, nil
 			}
 			continue
 		}
@@ -966,14 +1012,17 @@ func runCachedBudget(cpu *CPU, cache *DecoderCache, nc *NoteChain, budget uint64
 			// Handlers may select a new resume PC. Reload so the inner
 			// loop resumes from the architectural state they left behind.
 			pc = cpu.pc
-			if budget != 0 && budgetUsed >= budget {
-				return RunBudgetExpired, nil
+			if retiredBudget != 0 && retiredUsed >= retiredBudget {
+				return RunBudgetExpired, RunBudgetLimitRetired, nil
+			}
+			if attemptBudget != 0 && attemptsUsed >= attemptBudget {
+				return RunBudgetExpired, RunBudgetLimitAttempt, nil
 			}
 			continue
 		case NoteExit:
-			return RunBudgetExit, &ExitError{Code: cpu.ExitCode}
+			return RunBudgetExit, RunBudgetLimitNone, &ExitError{Code: cpu.ExitCode}
 		default:
-			return RunBudgetContinue, err
+			return RunBudgetContinue, RunBudgetLimitNone, err
 		}
 	}
 }

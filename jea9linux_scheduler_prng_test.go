@@ -3,6 +3,7 @@ package riscv
 import (
 	"bytes"
 	"errors"
+	"reflect"
 	"testing"
 )
 
@@ -443,6 +444,68 @@ func TestJea9Linux_ChaosWindowStartSameSeedSameState(t *testing.T) {
 	if !bytes.Equal(first.SchedulerPRNGState(), second.SchedulerPRNGState()) {
 		t.Fatal("same seed chaos start produced different PRNG states")
 	}
+}
+
+func TestJea9Linux_ChaosSameSeedSameTrace(t *testing.T) {
+	first := runChaosReplayTrace(t, []byte("chaos trace replay seed"))
+	second := runChaosReplayTrace(t, []byte("chaos trace replay seed"))
+	if !reflect.DeepEqual(first, second) {
+		t.Fatalf("same seed chaos traces differ:\nfirst  %+v\nsecond %+v", first, second)
+	}
+	if len(first) == 0 {
+		t.Fatal("chaos replay trace is empty")
+	}
+	if !first[0].ChaosActive {
+		t.Fatalf("first trace did not record an active chaos window: %+v", first[0])
+	}
+}
+
+func runChaosReplayTrace(t *testing.T, seed []byte) []Jea9LinuxScheduleTraceEntry {
+	t.Helper()
+	cpu, mem := newTestCPU(t, Size64MB, 0x1000, []uint32{
+		ienc(opOPIMM, 0, 1, 1, 1),
+		jenc(0, -4),
+	})
+	defer mem.Free()
+	j := NewJea9Linux(Jea9LinuxOptions{
+		EntropySeed:       seed,
+		InstructionBudget: 100,
+		Trace:             true,
+		MonotonicStartNS:  1000,
+		Scheduler: Jea9LinuxSchedulerConfig{
+			Mode:                       Jea9SchedulerChaos,
+			MinQuantumRetired:          2,
+			MaxQuantumRetired:          2,
+			LowPriorityNumerator:       0,
+			LowPriorityDenominator:     10,
+			PriorityShuffleMinRetired:  4,
+			PriorityShuffleMaxRetired:  4,
+			ChaosWindowProbNumerator:   1,
+			ChaosWindowProbDenominator: 1,
+			ChaosWindowMaxNS:           50,
+			ChaosBudgetNumerator:       1,
+			ChaosBudgetDenominator:     5,
+		},
+	})
+	parent := j.ensureScheduler(cpu)
+	for i := uint64(1); i <= 2; i++ {
+		tid := parent.tid + i
+		j.contexts[tid] = &jea9LinuxContext{
+			tid:   tid,
+			state: jea9LinuxContextRunnable,
+			snapshot: jea9LinuxCPUSnapshot{
+				pc: 0x1000,
+			},
+		}
+		j.contextOrder = append(j.contextOrder, tid)
+	}
+	for len(j.TraceSnapshot().Schedule) < 6 {
+		if err := j.Run(cpu); !errors.Is(err, ErrJea9LinuxBudget) {
+			t.Fatalf("Run error = %v, want ErrJea9LinuxBudget", err)
+		}
+	}
+	trace := j.TraceSnapshot().Schedule
+	return append([]Jea9LinuxScheduleTraceEntry(nil), trace...)
 }
 
 func newClockPolicyCPU(t *testing.T) (*CPU, *GuestMemory) {

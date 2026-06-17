@@ -130,6 +130,70 @@ func TestJea9Linux_ZygoFib10_LazyJITLockstepAdaptive(t *testing.T) {
 	}
 }
 
+func TestJea9Linux_ZygoLockstep_SchedulerIndependentOfBudget(t *testing.T) {
+	data, err := os.ReadFile("bench/zygo.elf")
+	if err != nil {
+		t.Skipf("bench/zygo.elf not found: %v", err)
+	}
+	events := zygoLockstepEnvUint(t, "ZYGO_LOCKSTEP_SCHED_EVENTS", 4)
+	if events == 0 {
+		t.Fatalf("invalid ZYGO_LOCKSTEP_SCHED_EVENTS=0")
+	}
+	cfg := Jea9LinuxSchedulerConfig{
+		MinQuantumRetired: 1000,
+		MaxQuantumRetired: 1000,
+	}
+
+	interpWant := zygoLockstepScheduleTrace(t, data, false, 5000, events, cfg)
+	for _, budget := range []uint64{3, 97, 1000} {
+		got := zygoLockstepScheduleTrace(t, data, false, budget, events, cfg)
+		if !reflect.DeepEqual(got, interpWant) {
+			t.Fatalf("zygo interpreter schedule trace differs for host budget %d:\ngot  %+v\nwant %+v", budget, got, interpWant)
+		}
+	}
+
+	jitWant := zygoLockstepScheduleTrace(t, data, true, 5000, events, cfg)
+	for _, budget := range []uint64{3, 97, 1000} {
+		got := zygoLockstepScheduleTrace(t, data, true, budget, events, cfg)
+		if !reflect.DeepEqual(got, jitWant) {
+			t.Fatalf("zygo lazy JIT schedule trace differs for host budget %d:\ngot  %+v\nwant %+v", budget, got, jitWant)
+		}
+	}
+	if !reflect.DeepEqual(jitWant, interpWant) {
+		t.Fatalf("zygo lazy JIT schedule trace differs from interpreter:\njit    %+v\ninterp %+v", jitWant, interpWant)
+	}
+}
+
+func TestJea9Linux_ZygoLockstep_ChaosReplay(t *testing.T) {
+	data, err := os.ReadFile("bench/zygo.elf")
+	if err != nil {
+		t.Skipf("bench/zygo.elf not found: %v", err)
+	}
+	events := zygoLockstepEnvUint(t, "ZYGO_LOCKSTEP_CHAOS_EVENTS", 4)
+	if events == 0 {
+		t.Fatalf("invalid ZYGO_LOCKSTEP_CHAOS_EVENTS=0")
+	}
+	cfg := Jea9LinuxSchedulerConfig{
+		Mode:                       Jea9SchedulerChaos,
+		MinQuantumRetired:          1000,
+		MaxQuantumRetired:          1000,
+		LowPriorityNumerator:       0,
+		LowPriorityDenominator:     10,
+		PriorityShuffleMinRetired:  2000,
+		PriorityShuffleMaxRetired:  2000,
+		ChaosWindowProbNumerator:   1,
+		ChaosWindowProbDenominator: 1,
+		ChaosWindowMaxNS:           50_000,
+		ChaosBudgetNumerator:       1,
+		ChaosBudgetDenominator:     5,
+	}
+	first := zygoLockstepScheduleTrace(t, data, true, 5000, events, cfg)
+	second := zygoLockstepScheduleTrace(t, data, true, 97, events, cfg)
+	if !reflect.DeepEqual(first, second) {
+		t.Fatalf("zygo chaos replay schedule traces differ:\nfirst  %+v\nsecond %+v", first, second)
+	}
+}
+
 func zygoLockstepInstructionBudgetPlan(t *testing.T) zygoLockstepBudgetPlan {
 	t.Helper()
 	if raw := os.Getenv("ZYGO_LOCKSTEP_BUDGET"); raw != "" {
@@ -214,6 +278,39 @@ func zygoLockstepParseUint(t *testing.T, key, raw string) uint64 {
 		t.Fatalf("invalid %s=%q", key, raw)
 	}
 	return v
+}
+
+func zygoLockstepScheduleTrace(t *testing.T, elfData []byte, useJIT bool, budget, events uint64, cfg Jea9LinuxSchedulerConfig) []Jea9LinuxScheduleTraceEntry {
+	t.Helper()
+	side := newZygoLockstepSide(t, "sched-trace", elfData, useJIT, budget)
+	defer side.close()
+	side.os.traceEnabled = true
+	side.os.schedulerConfig = cfg
+	side.os.normalizeSchedulerConfig()
+	side.os.nextScheduleAtRetired = 0
+	side.os.currentQuantumRetired = 0
+	side.os.nextPriorityShuffleRetired = 0
+	side.os.monotonicNS = 1000
+	side.os.installNextSchedulerQuantum(side.cpu)
+
+	for uint64(len(side.os.TraceSnapshot().Schedule)) < events {
+		var err error
+		if useJIT {
+			err = side.os.RunJIT(side.cpu, side.jit)
+		} else {
+			err = side.os.Run(side.cpu)
+		}
+		switch zygoLockstepErrKind(err) {
+		case "budget":
+			continue
+		case "exit:0":
+			t.Fatalf("zygo exited before %d schedule events; got %d", events, len(side.os.TraceSnapshot().Schedule))
+		default:
+			t.Fatalf("zygo schedule trace run useJIT=%v budget=%d err=%v", useJIT, budget, err)
+		}
+	}
+	trace := side.os.TraceSnapshot().Schedule
+	return append([]Jea9LinuxScheduleTraceEntry(nil), trace[:events]...)
 }
 
 func newZygoLockstepSide(t *testing.T, name string, elfData []byte, useJIT bool, budget uint64) *zygoLockstepSide {

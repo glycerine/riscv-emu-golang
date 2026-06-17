@@ -1702,6 +1702,17 @@ func (jos *Jea9Linux) advanceVirtualClockWhenNoRunnableCandidate(cpu *CPU, reaso
 	return jos.monotonicNS - before, true
 }
 
+func (jos *Jea9Linux) advanceVirtualClockToDeadline(deadline int64) (int64, bool) {
+	before := jos.monotonicNS
+	if deadline <= before {
+		return 0, false
+	}
+	jos.monotonicNS = deadline
+	jos.refreshChaosWindow()
+	jos.refreshBlocked()
+	return jos.monotonicNS - before, true
+}
+
 func (jos *Jea9Linux) scheduleAfterCurrentBlocked(cpu *CPU) NoteDisposition {
 	if next, ok := jos.nextRunnableByPolicyAfterCurrent(); ok {
 		jos.loadContext(cpu, next)
@@ -2188,24 +2199,23 @@ func (jos *Jea9Linux) Run(cpu *CPU) error {
 	budget := jos.instructionBudget
 	var used uint64
 	for {
-		remaining := budget
+		attemptRemaining := budget
 		if budget != 0 {
 			if used >= budget {
 				return jos.expireBudget(cpu)
 			}
-			remaining = budget - used
+			attemptRemaining = budget - used
 		}
+		var retiredRemaining uint64
 		if schedRemaining, ok := jos.schedulerRemainingRetired(cpu); ok {
 			if schedRemaining == 0 {
 				return jos.expireSchedulerQuantum(cpu)
 			}
-			if remaining == 0 || schedRemaining < remaining {
-				remaining = schedRemaining
-			}
+			retiredRemaining = schedRemaining
 		}
 
 		attemptsBefore := cpu.RiscvInstrBegun()
-		res, err := RunDefaultBudget(cpu, &cpu.Notes, remaining)
+		res, limit, err := RunDefaultDualBudget(cpu, &cpu.Notes, attemptRemaining, retiredRemaining)
 		attemptDelta := cpu.RiscvInstrBegun() - attemptsBefore
 		used += attemptDelta
 		jos.accountInsAttempts(attemptDelta)
@@ -2217,10 +2227,10 @@ func (jos *Jea9Linux) Run(cpu *CPU) error {
 		}
 		switch res {
 		case RunBudgetExpired:
-			if jos.schedulerActive() && cpu.RiscvInstrRetired() >= jos.nextScheduleAtRetired {
+			if limit == RunBudgetLimitRetired {
 				return jos.expireSchedulerQuantum(cpu)
 			}
-			if budget != 0 && used >= budget {
+			if limit == RunBudgetLimitAttempt || (budget != 0 && used >= budget) {
 				return jos.expireBudget(cpu)
 			}
 			if attemptDelta == 0 {
@@ -2242,24 +2252,23 @@ func (jos *Jea9Linux) RunJIT(cpu *CPU, jit *JIT) error {
 	budget := jos.instructionBudget
 	var used uint64
 	for {
-		remaining := budget
+		attemptRemaining := budget
 		if budget != 0 {
 			if used >= budget {
 				return jos.expireBudget(cpu)
 			}
-			remaining = budget - used
+			attemptRemaining = budget - used
 		}
+		var retiredRemaining uint64
 		if schedRemaining, ok := jos.schedulerRemainingRetired(cpu); ok {
 			if schedRemaining == 0 {
 				return jos.expireSchedulerQuantum(cpu)
 			}
-			if remaining == 0 || schedRemaining < remaining {
-				remaining = schedRemaining
-			}
+			retiredRemaining = schedRemaining
 		}
 
 		attemptsBefore := cpu.RiscvInstrBegun()
-		res, err := jit.StepBlockBudget(cpu, remaining)
+		res, limit, err := jit.StepBlockDualBudget(cpu, attemptRemaining, retiredRemaining)
 		attemptDelta := cpu.RiscvInstrBegun() - attemptsBefore
 		used += attemptDelta
 		jos.accountInsAttempts(attemptDelta)
@@ -2294,10 +2303,10 @@ func (jos *Jea9Linux) RunJIT(cpu *CPU, jit *JIT) error {
 
 		switch res {
 		case RunBudgetExpired:
-			if jos.schedulerActive() && cpu.RiscvInstrRetired() >= jos.nextScheduleAtRetired {
+			if limit == RunBudgetLimitRetired {
 				return jos.expireSchedulerQuantum(cpu)
 			}
-			if budget != 0 && used >= budget {
+			if limit == RunBudgetLimitAttempt || (budget != 0 && used >= budget) {
 				return jos.expireBudget(cpu)
 			}
 			if attemptDelta == 0 {
@@ -2672,7 +2681,7 @@ func (jos *Jea9Linux) sysEpollPwait(cpu *CPU, epfdRaw, eventsAddr, maxEvents, ti
 	}
 	if hasDeadline {
 		if _, ok := jos.nextRunnableByPolicyAfterCurrent(); !ok {
-			jos.monotonicNS = deadline
+			jos.advanceVirtualClockToDeadline(deadline)
 			cpu.SetReg(10, 0)
 			ctx.snapshot = snapshotJea9LinuxCPU(cpu)
 			return NoteHandled
@@ -2821,7 +2830,7 @@ func (jos *Jea9Linux) sysPselect6(cpu *CPU, nfds, readfds, writefds, exceptfds, 
 		return errno
 	}
 	if hasDeadline && deadline > jos.monotonicNS {
-		jos.monotonicNS = deadline
+		jos.advanceVirtualClockToDeadline(deadline)
 	}
 	return 0
 }
@@ -3654,7 +3663,7 @@ func (jos *Jea9Linux) futexWait(cpu *CPU, ctx *jea9LinuxContext, addr uint64, ex
 	}
 	if hasDeadline {
 		if _, ok := jos.nextRunnableByPolicyAfterCurrent(); !ok {
-			jos.monotonicNS = deadline
+			jos.advanceVirtualClockToDeadline(deadline)
 			return jea9LinuxErrETIMEDOUT, false
 		}
 	}
