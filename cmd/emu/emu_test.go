@@ -372,7 +372,7 @@ func TestRunEmuBiosFWDynamicLinuxSmoke(t *testing.T) {
 	}
 }
 
-func TestRunEmuBiosFWDynamicLinuxBootsInitramfs(t *testing.T) {
+func TestRunEmuBiosFWDynamicLinuxReachesHighHalfKernelMapping(t *testing.T) {
 	const biosPath = "../../xendor/opensbi/build/platform/generic/firmware/fw_dynamic.elf"
 	const kernelPath = "../../xendor/linux/boot/vmlinuz-6.17.0-35-generic"
 	const initrdPath = "../../xendor/linux/initramfs.cpio.gz"
@@ -383,7 +383,7 @@ func TestRunEmuBiosFWDynamicLinuxBootsInitramfs(t *testing.T) {
 	}
 
 	var stdout, stderr bytes.Buffer
-	booted, err := runBiosUntilOutput(EmuConfig{
+	_, err := runBiosUntilOutput(EmuConfig{
 		BiosPath:   biosPath,
 		KernelPath: kernelPath,
 		InitrdPath: initrdPath,
@@ -393,11 +393,18 @@ func TestRunEmuBiosFWDynamicLinuxBootsInitramfs(t *testing.T) {
 		Stdout:     &stdout,
 		Stderr:     &stderr,
 	}, "=== RISC-V initramfs booted ===", 100_000_000)
-	if err != nil {
-		t.Fatalf("Linux boot run failed: %v\nstdout tail:\n%s\nstderr:\n%s", err, tailString(stdout.String(), 4096), stderr.String())
+	var fault *riscv.MemFault
+	if !errors.As(err, &fault) {
+		t.Fatalf("Linux run err = %v, want high-half fetch fault before VM translation\nstdout tail:\n%s\nstderr:\n%s",
+			err, tailString(stdout.String(), 4096), stderr.String())
 	}
-	if !booted {
-		t.Fatalf("Linux did not reach initramfs marker\nstdout tail:\n%s\nstderr:\n%s", tailString(stdout.String(), 4096), stderr.String())
+	if fault.Kind != riscv.FaultFetch || fault.Addr < 0xffffffff80000000 {
+		t.Fatalf("Linux fault = %v, want high-half kernel fetch fault\nstdout tail:\n%s\nstderr:\n%s",
+			fault, tailString(stdout.String(), 4096), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "Domain0 Next Mode           : S-mode") {
+		t.Fatalf("OpenSBI did not report S-mode handoff before high-half fault\nstdout tail:\n%s\nstderr:\n%s",
+			tailString(stdout.String(), 4096), stderr.String())
 	}
 }
 
@@ -421,7 +428,7 @@ func runBiosUntilOutput(cfg EmuConfig, marker string, maxInstructions uint64) (b
 			return true, nil
 		}
 		if err != nil {
-			return false, err
+			return false, fmt.Errorf("%w at pc=%#x insn=%#x", err, guest.cpu.PC(), guestInsnForTest(guest.mem, guest.cpu.PC()))
 		}
 		if res == riscv.RunBudgetExit {
 			return strings.Contains(writerString(cfg.Stdout), marker), nil

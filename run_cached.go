@@ -929,8 +929,13 @@ func runCachedDualBudget(cpu *CPU, cache *DecoderCache, nc *NoteChain, attemptBu
 				pc += 2
 
 			case opC_EBREAK:
-				err = ErrEbreak
-				cpu.setTrap(CauseBreakpoint, 2)
+				if cpu.priv != PrivUser && cpu.trapToPrivilegedAt(pc, CauseBreakpoint, 0, 2) {
+					pc = cpu.pc
+					inlineRetired = false
+				} else {
+					cpu.setTrap(CauseBreakpoint, 2)
+					err = ErrEbreak
+				}
 
 			case opC_JALR: // rd != 0 by decode
 				target := cpu.x[slot.rd] &^ 1

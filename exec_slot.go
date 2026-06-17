@@ -166,6 +166,9 @@ func (c *CPU) execRVCSlot(slot *DecodedInsn, pc uint64) (uint64, error) {
 		return target, nil
 
 	case opC_EBREAK:
+		if c.priv != PrivUser && c.trapToPrivilegedAt(pc, CauseBreakpoint, 0, 2) {
+			return c.pc, nil
+		}
 		c.setTrap(CauseBreakpoint, 2)
 		return pc, ErrEbreak
 

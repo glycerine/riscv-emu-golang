@@ -25,6 +25,31 @@ var ErrEcall = errors.New("ecall")
 var ErrEbreak = errors.New("ebreak")
 var ErrIllegalInstruction = errors.New("illegal instruction")
 
+type PrivilegeMode uint8
+
+const (
+	PrivUser       PrivilegeMode = 0
+	PrivSupervisor PrivilegeMode = 1
+	PrivMachine    PrivilegeMode = 3
+)
+
+const (
+	statusSIE  = uint64(1) << 1
+	statusMIE  = uint64(1) << 3
+	statusSPIE = uint64(1) << 5
+	statusMPIE = uint64(1) << 7
+	statusSPP  = uint64(1) << 8
+	statusMPP  = uint64(3) << 11
+	statusFS   = uint64(3) << 13
+	statusXS   = uint64(3) << 15
+	statusMPRV = uint64(1) << 17
+	statusSUM  = uint64(1) << 18
+	statusMXR  = uint64(1) << 19
+	statusUXL  = uint64(3) << 32
+
+	sstatusMask = statusSIE | statusSPIE | statusSPP | statusFS | statusXS | statusSUM | statusMXR | statusUXL
+)
+
 // CPU is a single RV64I hart.
 // mem is inline and first for cache locality — touched on every instruction.
 type CPU struct {
@@ -37,6 +62,7 @@ type CPU struct {
 	riscvInstrRetired uint64     // RISC-V instret-style retired instructions
 	lastTrapCause     uint64
 	lastTrapInsnLen   uint8
+	priv              PrivilegeMode
 	Notes             NoteChain // exception delivery chain; handlers installed by OS layer
 	// LR/SC reservation
 	resvAddr  uint64
@@ -49,11 +75,26 @@ type CPU struct {
 	// M-mode trap CSRs — minimal support for riscv-tests.
 	// When mtvec != 0, ECALL traps through the guest's own handler
 	// instead of returning ErrEcall to the NoteChain.
-	mtvec   uint64 // 0x305: trap vector base address
-	mepc    uint64 // 0x341: exception program counter
-	mcause  uint64 // 0x342: trap cause code
-	mstatus uint64 // 0x300: machine status
-	mtval   uint64 // 0x343: trap value
+	mtvec      uint64 // 0x305: trap vector base address
+	mscratch   uint64 // 0x340: machine scratch
+	mepc       uint64 // 0x341: exception program counter
+	mcause     uint64 // 0x342: trap cause code
+	mstatus    uint64 // 0x300: machine status
+	mtval      uint64 // 0x343: trap value
+	satp       uint64 // 0x180: supervisor address translation/protection
+	stvec      uint64 // 0x105: supervisor trap vector
+	sscratch   uint64 // 0x140: supervisor scratch
+	sepc       uint64 // 0x141: supervisor exception program counter
+	scause     uint64 // 0x142: supervisor trap cause
+	stval      uint64 // 0x143: supervisor trap value
+	medeleg    uint64 // 0x302: machine exception delegation
+	mideleg    uint64 // 0x303: machine interrupt delegation
+	mie        uint64 // 0x304: machine interrupt enable
+	mip        uint64 // 0x344: machine interrupt pending
+	sie        uint64 // 0x104: supervisor interrupt enable
+	sip        uint64 // 0x144: supervisor interrupt pending
+	mcounteren uint64 // 0x306: machine counter enable
+	scounteren uint64 // 0x106: supervisor counter enable
 }
 
 // ── Performance footgun: don't call runCached from this file ─────────────
@@ -99,6 +140,10 @@ func NewCPU(mem GuestMemory) *CPU { return &CPU{mem: mem} }
 
 func (c *CPU) SetPC(addr uint64) { c.pc = addr }
 func (c *CPU) PC() uint64        { return c.pc }
+func (c *CPU) SetPrivilegeMode(mode PrivilegeMode) {
+	c.priv = mode
+}
+func (c *CPU) PrivilegeMode() PrivilegeMode { return c.priv }
 
 // SetReg writes a GPR. Uses the "always write, always zero x[0]" trick to
 // avoid a conditional branch. The trailing `c.x[0] = 0` preserves the RISC-V
@@ -121,6 +166,64 @@ func (c *CPU) WatchAddr() uint64         { return c.watchAddr }
 func (c *CPU) setTrap(cause uint64, insnLen uint8) {
 	c.lastTrapCause = cause
 	c.lastTrapInsnLen = insnLen
+}
+
+func (c *CPU) trapToPrivilegedAt(pc, cause, tval uint64, insnLen uint8) bool {
+	c.setTrap(cause, insnLen)
+	if c.shouldDelegateException(cause) {
+		c.trapToSupervisorAt(pc, cause, tval)
+		return true
+	}
+	return c.trapToMachineAt(pc, cause, tval)
+}
+
+func (c *CPU) shouldDelegateException(cause uint64) bool {
+	return c.priv != PrivMachine && cause < 64 && (c.medeleg&(uint64(1)<<cause)) != 0
+}
+
+func (c *CPU) trapToSupervisorAt(pc, cause, tval uint64) {
+	sie := (c.mstatus & statusSIE) != 0
+	c.mstatus &^= statusSIE | statusSPIE | statusSPP
+	if sie {
+		c.mstatus |= statusSPIE
+	}
+	if c.priv == PrivSupervisor {
+		c.mstatus |= statusSPP
+	}
+	c.sepc = pc
+	c.scause = cause
+	c.stval = tval
+	c.pc = c.stvec &^ 3
+	c.priv = PrivSupervisor
+}
+
+func (c *CPU) trapToMachineAt(pc, cause, tval uint64) bool {
+	if c.mtvec == 0 {
+		return false
+	}
+	mie := c.mstatus & statusMIE
+	c.mstatus &^= statusMIE | statusMPIE | statusMPP
+	if mie != 0 {
+		c.mstatus |= statusMPIE
+	}
+	c.mstatus |= uint64(c.priv&3) << 11
+	c.mepc = pc
+	c.mcause = cause
+	c.mtval = tval
+	c.pc = c.mtvec &^ 3
+	c.priv = PrivMachine
+	return true
+}
+
+func (c *CPU) ecallCause() uint64 {
+	switch c.priv {
+	case PrivSupervisor:
+		return CauseEcallS
+	case PrivMachine:
+		return CauseEcallM
+	default:
+		return CauseEcallU
+	}
 }
 
 func (c *CPU) setEbreakTrapAtPC() {
@@ -890,20 +993,45 @@ func (c *CPU) stepFromInsn(insn uint32) error {
 		csrAddr := insn >> 20
 		switch {
 		case insn == 0x00100073: // EBREAK
+			if c.priv != PrivUser && c.trapToPrivilegedAt(c.pc, CauseBreakpoint, 0, 4) {
+				return nil
+			}
 			c.setTrap(CauseBreakpoint, 4)
 			return ErrEbreak
 		case insn == 0x00000073: // ECALL
-			c.setTrap(CauseEcallU, 4)
-			if c.mtvec != 0 {
-				c.mepc = c.pc // save PC of ECALL instruction
-				c.mcause = 8  // CauseEcallU
-				c.mtval = 0
-				c.pc = c.mtvec // trap to handler
+			if c.trapToPrivilegedAt(c.pc, c.ecallCause(), 0, 4) {
 				return nil
 			}
 			return ErrEcall
 		case insn == 0x30200073: // MRET
+			nextPriv := PrivilegeMode((c.mstatus >> 11) & 3)
+			if nextPriv == 2 {
+				nextPriv = PrivUser
+			}
+			mpie := (c.mstatus >> 7) & 1
+			c.mstatus &^= (uint64(1) << 3) | (uint64(3) << 11)
+			c.mstatus |= mpie << 3
+			c.mstatus |= uint64(1) << 7
+			c.priv = nextPriv
 			c.pc = c.mepc
+			c.retireInsn()
+			return nil
+		case insn == 0x10200073: // SRET
+			if c.priv == PrivUser {
+				return ErrIllegalInstruction
+			}
+			nextPriv := PrivUser
+			if c.mstatus&statusSPP != 0 {
+				nextPriv = PrivSupervisor
+			}
+			spie := c.mstatus & statusSPIE
+			c.mstatus &^= statusSIE | statusSPIE | statusSPP
+			if spie != 0 {
+				c.mstatus |= statusSIE
+			}
+			c.mstatus |= statusSPIE
+			c.priv = nextPriv
+			c.pc = c.sepc
 			c.retireInsn()
 			return nil
 		case insn == 0x10500073: // WFI — no-op in user-mode emulation
@@ -911,7 +1039,6 @@ func (c *CPU) stepFromInsn(insn uint32) error {
 		case funct3 >= 1 && funct3 <= 7 && funct3 != 4: // Zicsr
 			// Read old CSR value
 			old := c.readCSR(csrAddr)
-			c.SetReg(rd, old)
 			// Compute new value and write if applicable
 			var src uint64
 			if funct3 >= 5 { // immediate forms (funct3=5/6/7)
@@ -919,6 +1046,7 @@ func (c *CPU) stepFromInsn(insn uint32) error {
 			} else {
 				src = c.Reg(rs1)
 			}
+			c.SetReg(rd, old)
 			var newVal uint64
 			switch funct3 {
 			case 1, 5:
@@ -1514,6 +1642,9 @@ func (c *CPU) stepRVC(insn uint16) error {
 				c.SetReg(rd, c.Reg(rs2))
 			} else {
 				if rd == 0 && rs2 == 0 { // C.EBREAK
+					if c.priv != PrivUser && c.trapToPrivilegedAt(c.pc, CauseBreakpoint, 0, 2) {
+						return nil
+					}
 					c.setTrap(CauseBreakpoint, 2)
 					return ErrEbreak
 				}
@@ -1557,6 +1688,12 @@ func (c *CPU) stepRVC(insn uint16) error {
 	return nil
 }
 
+func misaRV64IMAFDCSU() uint64 {
+	const mxlRV64 = uint64(2) << 62
+	const extIMAFDCSU = uint64(1<<0 | 1<<2 | 1<<3 | 1<<5 | 1<<8 | 1<<12 | 1<<18 | 1<<20)
+	return mxlRV64 | extIMAFDCSU
+}
+
 // readCSR reads a CSR value. Returns 0 for unknown CSRs.
 func (c *CPU) readCSR(addr uint32) uint64 {
 	switch addr {
@@ -1566,16 +1703,50 @@ func (c *CPU) readCSR(addr uint32) uint64 {
 		return uint64((c.fcsr >> 5) & 0x7) // frm
 	case 0x003:
 		return uint64(c.fcsr & 0xFF) // fcsr
+	case 0x100:
+		return c.mstatus & sstatusMask // sstatus
+	case 0x104:
+		return c.sie // sie
+	case 0x105:
+		return c.stvec // stvec
+	case 0x106:
+		return c.scounteren // scounteren
+	case 0x140:
+		return c.sscratch // sscratch
+	case 0x141:
+		return c.sepc // sepc
+	case 0x142:
+		return c.scause // scause
+	case 0x143:
+		return c.stval // stval
+	case 0x144:
+		return c.sip // sip
+	case 0x180:
+		return c.satp // satp
 	case 0x300:
 		return c.mstatus // mstatus
+	case 0x301:
+		return misaRV64IMAFDCSU()
+	case 0x302:
+		return c.medeleg // medeleg
+	case 0x303:
+		return c.mideleg // mideleg
+	case 0x304:
+		return c.mie // mie
 	case 0x305:
 		return c.mtvec // mtvec
+	case 0x306:
+		return c.mcounteren // mcounteren
+	case 0x340:
+		return c.mscratch // mscratch
 	case 0x341:
 		return c.mepc // mepc
 	case 0x342:
 		return c.mcause // mcause
 	case 0x343:
 		return c.mtval // mtval
+	case 0x344:
+		return c.mip // mip
 	case 0xC00:
 		return c.riscvInstrBegun // cycle approximation tracks instruction attempts
 	case 0xC02:
@@ -1597,23 +1768,50 @@ func (c *CPU) writeCSR(addr uint32, val uint64) {
 		c.fcsr = (c.fcsr &^ 0xE0) | uint32((val&0x7)<<5) // frm
 	case 0x003:
 		c.fcsr = uint32(val & 0xFF) // fcsr
+	case 0x100:
+		c.mstatus = (c.mstatus &^ sstatusMask) | (val & sstatusMask) // sstatus
+	case 0x104:
+		c.sie = val // sie
+	case 0x105:
+		c.stvec = val // stvec
+	case 0x106:
+		c.scounteren = val // scounteren
+	case 0x140:
+		c.sscratch = val // sscratch
+	case 0x141:
+		c.sepc = val // sepc
+	case 0x142:
+		c.scause = val // scause
+	case 0x143:
+		c.stval = val // stval
+	case 0x144:
+		c.sip = val // sip
+	case 0x180:
+		c.satp = val // satp; address translation is intentionally not implemented here
 	// M-mode trap CSRs
 	case 0x300:
 		c.mstatus = val // mstatus
+	case 0x302:
+		c.medeleg = val // medeleg
+	case 0x303:
+		c.mideleg = val // mideleg
+	case 0x304:
+		c.mie = val // mie
 	case 0x305:
 		c.mtvec = val // mtvec
+	case 0x306:
+		c.mcounteren = val // mcounteren
+	case 0x340:
+		c.mscratch = val // mscratch
 	case 0x341:
 		c.mepc = val // mepc
 	case 0x342:
 		c.mcause = val // mcause
 	case 0x343:
 		c.mtval = val // mtval
+	case 0x344:
+		c.mip = val // mip
 	// CSRs written by riscv-tests reset_vector — accept silently
-	case 0x105: // stvec
-	case 0x180: // satp
-	case 0x302: // medeleg
-	case 0x303: // mideleg
-	case 0x304: // mie
 	case 0x3A0: // pmpcfg0
 	case 0x3B0: // pmpaddr0
 	case 0x744: // mnstatus (non-standard)

@@ -141,6 +141,7 @@ func prepareBiosGuest(cfg EmuConfig) (*biosGuest, error) {
 
 	mem.SetMMIO(newBiosMMIO(cfg.Stdout))
 	cpu := riscv.NewCPU(*mem)
+	cpu.SetPrivilegeMode(riscv.PrivMachine)
 	cpu.SetPC(elf.Entry)
 	cpu.SetReg(10, 0)       // a0: boot hart id
 	cpu.SetReg(11, fdtAddr) // a1: flattened device tree pointer
@@ -351,8 +352,9 @@ func (m *biosMMIO) storeUART(off, width, value uint64) {
 	for i := uint64(0); i < width; i++ {
 		b := byte(value >> (8 * i))
 		idx := off + i
+		dlab := m.uart[3]&0x80 != 0
 		m.uart[idx] = b
-		if idx == 0 {
+		if idx == 0 && !dlab {
 			_, _ = m.stdout.Write([]byte{b})
 		}
 	}
@@ -597,8 +599,9 @@ func buildVirtFDT(memSize uint64, opts virtFDTOptions) ([]byte, error) {
 	b.beginNode("interrupt-controller@c000000")
 	b.propEmpty("interrupt-controller")
 	b.propCells("#interrupt-cells", 1)
-	b.propString("compatible", "riscv,plic0")
+	b.propStringList("compatible", "sifive,plic-1.0.0", "riscv,plic0")
 	b.propCells64("reg", 0x0c000000, 0x04000000)
+	b.propCells("interrupts-extended", virtCPUIntcPH, 11, virtCPUIntcPH, 9)
 	b.propCells("riscv,ndev", 0x35)
 	b.propCells("phandle", virtPLICPH)
 	b.endNode()

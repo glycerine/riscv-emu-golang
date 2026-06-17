@@ -417,6 +417,7 @@ func csrr(rd uint8, csr uint32) uint32  { return csrrs(rd, csr, 0) }
 func csrw(csr uint32, rs1 uint8) uint32 { return csrrw(0, csr, rs1) }
 
 const mretInsn = uint32(0x30200073)
+const sretInsn = uint32(0x10200073)
 
 // newTestCPUSimple creates a CPU with memSize bytes and the given
 // instructions loaded at codeVA. Returns the CPU (with PC set) and
@@ -579,6 +580,152 @@ func TestMRET_JumpsToMepc(t *testing.T) {
 	}
 	if cpu.Reg(7) != 0x42 {
 		t.Errorf("x7 should be 0x42 (mret landed at target), got 0x%x", cpu.Reg(7))
+	}
+}
+
+func TestPrivilegeMode_ECALLCauseFollowsCurrentMode(t *testing.T) {
+	const codeVA = uint64(0x10000)
+	tests := []struct {
+		name string
+		mode PrivilegeMode
+		want uint64
+	}{
+		{"user", PrivUser, CauseEcallU},
+		{"supervisor", PrivSupervisor, CauseEcallS},
+		{"machine", PrivMachine, CauseEcallM},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cpu, mem := newTestCPUSimple(t, 128*1024, codeVA, []uint32{ecallInsn})
+			defer mem.Free()
+			cpu.SetPrivilegeMode(tc.mode)
+
+			err := cpu.Step()
+			if err != ErrEcall {
+				t.Fatalf("Step err = %v, want ErrEcall", err)
+			}
+			n := noteFromCPUError(cpu, err)
+			if n.Cause != tc.want {
+				t.Fatalf("ECALL cause = %d, want %d", n.Cause, tc.want)
+			}
+			if cpu.PrivilegeMode() != tc.mode {
+				t.Fatalf("privilege mode changed to %v, want %v", cpu.PrivilegeMode(), tc.mode)
+			}
+		})
+	}
+}
+
+func TestPrivilegeMode_ECALLTrapToMachineCapturesPreviousMode(t *testing.T) {
+	const codeVA = uint64(0x10000)
+	const handlerVA = uint64(0x10100)
+	cpu, mem := newTestCPUSimple(t, 128*1024, codeVA, []uint32{ecallInsn})
+	defer mem.Free()
+	cpu.SetPrivilegeMode(PrivSupervisor)
+	cpu.mtvec = handlerVA
+	cpu.mstatus = statusMIE
+
+	if err := cpu.Step(); err != nil {
+		t.Fatalf("Step: %v", err)
+	}
+	if cpu.PC() != handlerVA {
+		t.Fatalf("PC = 0x%x, want handler 0x%x", cpu.PC(), handlerVA)
+	}
+	if cpu.PrivilegeMode() != PrivMachine {
+		t.Fatalf("privilege mode = %v, want machine", cpu.PrivilegeMode())
+	}
+	if cpu.mepc != codeVA || cpu.mcause != CauseEcallS || cpu.mtval != 0 {
+		t.Fatalf("trap CSRs mepc=0x%x mcause=%d mtval=0x%x", cpu.mepc, cpu.mcause, cpu.mtval)
+	}
+	if got := (cpu.mstatus & statusMPP) >> 11; got != uint64(PrivSupervisor) {
+		t.Fatalf("mstatus.MPP = %d, want supervisor", got)
+	}
+	if cpu.mstatus&statusMPIE == 0 || cpu.mstatus&statusMIE != 0 {
+		t.Fatalf("mstatus interrupt bits = 0x%x, want MPIE set and MIE clear", cpu.mstatus)
+	}
+}
+
+func TestPrivilegeMode_DelegatedECALLTrapEntersSupervisor(t *testing.T) {
+	const codeVA = uint64(0x10000)
+	const handlerVA = uint64(0x10100)
+	cpu, mem := newTestCPUSimple(t, 128*1024, codeVA, []uint32{ecallInsn})
+	defer mem.Free()
+	cpu.SetPrivilegeMode(PrivUser)
+	cpu.medeleg = uint64(1) << CauseEcallU
+	cpu.stvec = handlerVA
+	cpu.mstatus = statusSIE
+
+	if err := cpu.Step(); err != nil {
+		t.Fatalf("Step: %v", err)
+	}
+	if cpu.PC() != handlerVA {
+		t.Fatalf("PC = 0x%x, want handler 0x%x", cpu.PC(), handlerVA)
+	}
+	if cpu.PrivilegeMode() != PrivSupervisor {
+		t.Fatalf("privilege mode = %v, want supervisor", cpu.PrivilegeMode())
+	}
+	if cpu.sepc != codeVA || cpu.scause != CauseEcallU || cpu.stval != 0 {
+		t.Fatalf("supervisor trap CSRs sepc=0x%x scause=%d stval=0x%x", cpu.sepc, cpu.scause, cpu.stval)
+	}
+	if cpu.mstatus&statusSPP != 0 || cpu.mstatus&statusSIE != 0 || cpu.mstatus&statusSPIE == 0 {
+		t.Fatalf("sstatus bits in mstatus = 0x%x, want SPP/SIE clear and SPIE set", cpu.mstatus)
+	}
+}
+
+func TestPrivilegeMode_MRETUpdatesModeAndMstatus(t *testing.T) {
+	const codeVA = uint64(0x10000)
+	const targetVA = uint64(0x10100)
+	cpu, mem := newTestCPUSimple(t, 128*1024, codeVA, []uint32{mretInsn})
+	defer mem.Free()
+	cpu.SetPrivilegeMode(PrivMachine)
+	cpu.mepc = targetVA
+	cpu.mstatus = statusMPIE | (uint64(PrivSupervisor) << 11)
+
+	if err := cpu.Step(); err != nil {
+		t.Fatalf("Step: %v", err)
+	}
+	if cpu.PC() != targetVA {
+		t.Fatalf("PC = 0x%x, want 0x%x", cpu.PC(), targetVA)
+	}
+	if cpu.PrivilegeMode() != PrivSupervisor {
+		t.Fatalf("privilege mode = %v, want supervisor", cpu.PrivilegeMode())
+	}
+	if cpu.mstatus&statusMIE == 0 || cpu.mstatus&statusMPIE == 0 || cpu.mstatus&statusMPP != 0 {
+		t.Fatalf("mstatus after MRET = 0x%x, want MIE/MPIE set and MPP clear", cpu.mstatus)
+	}
+}
+
+func TestPrivilegeMode_SRETUpdatesModeAndSstatus(t *testing.T) {
+	const codeVA = uint64(0x10000)
+	const targetVA = uint64(0x10100)
+	tests := []struct {
+		name     string
+		initial  uint64
+		wantMode PrivilegeMode
+	}{
+		{"return-user", statusSPIE, PrivUser},
+		{"return-supervisor", statusSPP | statusSPIE, PrivSupervisor},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cpu, mem := newTestCPUSimple(t, 128*1024, codeVA, []uint32{sretInsn})
+			defer mem.Free()
+			cpu.SetPrivilegeMode(PrivSupervisor)
+			cpu.sepc = targetVA
+			cpu.mstatus = tc.initial
+
+			if err := cpu.Step(); err != nil {
+				t.Fatalf("Step: %v", err)
+			}
+			if cpu.PC() != targetVA {
+				t.Fatalf("PC = 0x%x, want 0x%x", cpu.PC(), targetVA)
+			}
+			if cpu.PrivilegeMode() != tc.wantMode {
+				t.Fatalf("privilege mode = %v, want %v", cpu.PrivilegeMode(), tc.wantMode)
+			}
+			if cpu.mstatus&statusSIE == 0 || cpu.mstatus&statusSPIE == 0 || cpu.mstatus&statusSPP != 0 {
+				t.Fatalf("mstatus after SRET = 0x%x, want SIE/SPIE set and SPP clear", cpu.mstatus)
+			}
+		})
 	}
 }
 
