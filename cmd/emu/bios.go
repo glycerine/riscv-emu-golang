@@ -273,6 +273,134 @@ func (c EmuConfig) biosBootArgs() string {
 	return strings.Join(parts, " ")
 }
 
+type biosMMIO struct {
+	stdout io.Writer
+	uart   [0x100]byte
+	clint  [0x10000]byte
+	mtime  uint64
+}
+
+func newBiosMMIO(stdout io.Writer) *biosMMIO {
+	if stdout == nil {
+		stdout = io.Discard
+	}
+	m := &biosMMIO{stdout: stdout}
+	m.uart[2] = 0x01 // IIR: no interrupt pending
+	m.uart[5] = 0x60 // LSR: transmitter holding register empty, idle
+	return m
+}
+
+func (m *biosMMIO) Load(addr, width uint64) (uint64, bool, *riscv.MemFault) {
+	if off, ok := mmioRangeOffset(addr, width, biosUARTBase, biosUARTSize); ok {
+		return m.loadUART(off, width), true, nil
+	}
+	if off, ok := mmioRangeOffset(addr, width, biosCLINTBase, biosCLINTSize); ok {
+		return m.loadCLINT(off, width), true, nil
+	}
+	if _, ok := mmioRangeOffset(addr, width, biosPLICBase, biosPLICSize); ok {
+		return 0, true, nil
+	}
+	if mmioRangeTouches(addr, width, biosUARTBase, biosUARTSize) ||
+		mmioRangeTouches(addr, width, biosCLINTBase, biosCLINTSize) ||
+		mmioRangeTouches(addr, width, biosPLICBase, biosPLICSize) {
+		return 0, true, &riscv.MemFault{Addr: addr, Width: width, Kind: riscv.FaultLoad}
+	}
+	return 0, false, nil
+}
+
+func (m *biosMMIO) Store(addr, width, value uint64) (bool, *riscv.MemFault) {
+	if off, ok := mmioRangeOffset(addr, width, biosUARTBase, biosUARTSize); ok {
+		m.storeUART(off, width, value)
+		return true, nil
+	}
+	if off, ok := mmioRangeOffset(addr, width, biosCLINTBase, biosCLINTSize); ok {
+		storeLittleEndian(m.clint[:], off, width, value)
+		return true, nil
+	}
+	if _, ok := mmioRangeOffset(addr, width, biosPLICBase, biosPLICSize); ok {
+		return true, nil
+	}
+	if mmioRangeTouches(addr, width, biosUARTBase, biosUARTSize) ||
+		mmioRangeTouches(addr, width, biosCLINTBase, biosCLINTSize) ||
+		mmioRangeTouches(addr, width, biosPLICBase, biosPLICSize) {
+		return true, &riscv.MemFault{Addr: addr, Width: width, Kind: riscv.FaultStore}
+	}
+	return false, nil
+}
+
+func (m *biosMMIO) loadUART(off, width uint64) uint64 {
+	var value uint64
+	for i := uint64(0); i < width; i++ {
+		value |= uint64(m.uartByte(off+i)) << (8 * i)
+	}
+	return value
+}
+
+func (m *biosMMIO) uartByte(off uint64) byte {
+	switch off {
+	case 2:
+		return 0x01
+	case 5:
+		return 0x60
+	default:
+		return m.uart[off]
+	}
+}
+
+func (m *biosMMIO) storeUART(off, width, value uint64) {
+	for i := uint64(0); i < width; i++ {
+		b := byte(value >> (8 * i))
+		idx := off + i
+		m.uart[idx] = b
+		if idx == 0 {
+			_, _ = m.stdout.Write([]byte{b})
+		}
+	}
+	m.uart[2] = 0x01
+	m.uart[5] = 0x60
+}
+
+func (m *biosMMIO) loadCLINT(off, width uint64) uint64 {
+	m.mtime += 1000
+	for i := uint64(0); i < 8; i++ {
+		m.clint[0xbff8+i] = byte(m.mtime >> (8 * i))
+	}
+	return loadLittleEndian(m.clint[:], off, width)
+}
+
+func mmioRangeOffset(addr, width, base, size uint64) (uint64, bool) {
+	if width == 0 || addr < base {
+		return 0, false
+	}
+	off := addr - base
+	if off >= size || width > size-off {
+		return 0, false
+	}
+	return off, true
+}
+
+func mmioRangeTouches(addr, width, base, size uint64) bool {
+	if width == 0 || addr < base {
+		return false
+	}
+	off := addr - base
+	return off < size
+}
+
+func loadLittleEndian(buf []byte, off, width uint64) uint64 {
+	var value uint64
+	for i := uint64(0); i < width; i++ {
+		value |= uint64(buf[off+i]) << (8 * i)
+	}
+	return value
+}
+
+func storeLittleEndian(buf []byte, off, width, value uint64) {
+	for i := uint64(0); i < width; i++ {
+		buf[off+i] = byte(value >> (8 * i))
+	}
+}
+
 func chooseBiosFDTAddr(memSize uint64, fdtLen int, initrd biosBlob) (uint64, error) {
 	addr := defaultBiosFDTAddr
 	if initrd.loaded && rangesOverlap(addr, addr+uint64(fdtLen), initrd.addr, initrd.end) {

@@ -427,7 +427,7 @@ func runBiosUntilOutput(cfg EmuConfig, marker string, maxInstructions uint64) (b
 			return strings.Contains(writerString(cfg.Stdout), marker), nil
 		}
 	}
-	return false, fmt.Errorf("%w after %d instructions", errBiosBudgetExpired, maxInstructions)
+	return false, fmt.Errorf("%w after %d instructions at pc=%#x insn=%#x", errBiosBudgetExpired, maxInstructions, guest.cpu.PC(), guestInsnForTest(guest.mem, guest.cpu.PC()))
 }
 
 func writerString(w interface{}) string {
@@ -442,6 +442,14 @@ func tailString(s string, max int) string {
 		return s
 	}
 	return s[len(s)-max:]
+}
+
+func guestInsnForTest(mem *riscv.GuestMemory, pc uint64) uint32 {
+	insn, fault := mem.Load32(pc)
+	if fault != nil {
+		return 0
+	}
+	return insn
 }
 
 func TestRunEmuBiosOpenSBIFwJumpGetsFDT(t *testing.T) {
