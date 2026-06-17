@@ -192,8 +192,8 @@ func runEmu(cfg EmuConfig) (int, error) {
 		EntropySeed:       seedBytes(cfg.Seed),
 		ClockMode:         riscv.Jea9ClockIdleJump,
 		ClockPolicy:       clockPolicy,
-		MonotonicStartNS:  1,
-		RealtimeOffsetNS:  cfg.RealtimeOffsetNS,
+		MonotonicStartNS:  1,                        // cannot be 0, crashes Go runtime.
+		RealtimeOffsetNS:  cfg.RealtimeOffsetNS - 1, // because MonotonicStartNS must start at 1.
 		InstructionBudget: instructionBudget,
 		Scheduler:         cfg.schedulerConfig(budget),
 		Stdin:             cfg.Stdin,
