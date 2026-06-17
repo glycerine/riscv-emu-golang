@@ -94,7 +94,7 @@ func (c *EmuxConfig) DefineFlags(fs *flag.FlagSet) {
 	fs.BoolVar(&c.JITLazy, "jitlazy", false, "run with the native lazy JIT instead of the interpreter")
 	fs.BoolVar(&c.JITAOT, "jitaot", false, "run with explicit AOT JIT instead of the interpreter")
 	fs.BoolVar(&c.AllowAllHostFiles, "allhost", false, "allow guest file syscalls to pass through to the host filesystem")
-	fs.StringVar(&c.ClockMode, "clock", defaultEmuxClockMode, "clock mode: idle-jump, ic-tick, or manual")
+	fs.StringVar(&c.ClockMode, "clock", defaultEmuxClockMode, "clock mode: idle-jump or ic-tick")
 	fs.Int64Var(&c.MonotonicStartNS, "monotonic-ns", defaultEmuxMonotonicStartNS, "initial monotonic clock value in nanoseconds")
 	fs.Int64Var(&c.RealtimeOffsetNS, "realtime-offset-ns", 0, "realtime clock offset from monotonic time in nanoseconds")
 	fs.Int64Var(&c.NSPerInstruction, "ns-per-instruction", defaultEmuxNSPerInstruction, "nanoseconds advanced per instruction attempt in ic-tick mode")
@@ -276,10 +276,8 @@ func parseClockMode(name string) (riscv.Jea9LinuxClockMode, error) {
 		return riscv.Jea9ClockIdleJump, nil
 	case "ic-tick", "ictick":
 		return riscv.Jea9ClockICTick, nil
-	case "manual":
-		return riscv.Jea9ClockManual, nil
 	default:
-		return 0, fmt.Errorf("-clock must be idle-jump, ic-tick, or manual, got %q", name)
+		return 0, fmt.Errorf("-clock must be idle-jump or ic-tick, got %q", name)
 	}
 }
 

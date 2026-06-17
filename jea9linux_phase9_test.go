@@ -467,54 +467,6 @@ func TestJea9Linux_FutexTimeoutIdleJump(t *testing.T) {
 	}
 }
 
-func TestJea9Linux_FutexTimeoutManualClock(t *testing.T) {
-	j := NewJea9Linux(Jea9LinuxOptions{
-		ClockMode:        Jea9ClockManual,
-		MonotonicStartNS: 20,
-	})
-	cpu, mem := newJea9LinuxSyscallCPU(t, j)
-	defer mem.Free()
-
-	addr := uint64(0xc000)
-	timeout := uint64(0xc100)
-	if f := mem.Store32(addr, 1); f != nil {
-		t.Fatal(f)
-	}
-	if f := mem.Store64(timeout, 0); f != nil {
-		t.Fatal(f)
-	}
-	if f := mem.Store64(timeout+8, 80); f != nil {
-		t.Fatal(f)
-	}
-	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysFutex, addr, jea9TestFutexWait, 1, timeout); d != NoteExit {
-		t.Fatalf("manual futex wait disposition = %v, want NoteExit while no contexts are runnable", d)
-	}
-	if got := j.contexts[j.pid].state; got != jea9LinuxContextWaiting {
-		t.Fatalf("context state = %v, want waiting", got)
-	}
-	if !j.Blocked() {
-		t.Fatal("Blocked() = false, want true while manual futex wait has no runnable context")
-	}
-
-	j.SetMonotonicNS(99)
-	if got := j.contexts[j.pid].state; got != jea9LinuxContextWaiting {
-		t.Fatalf("context woke early at ns=99 with state %v", got)
-	}
-	if !j.Blocked() {
-		t.Fatal("Blocked() = false at ns=99, want true before futex deadline")
-	}
-	j.SetMonotonicNS(100)
-	if got := j.contexts[j.pid].state; got != jea9LinuxContextRunnable {
-		t.Fatalf("context state at deadline = %v, want runnable", got)
-	}
-	if j.Blocked() {
-		t.Fatal("Blocked() = true at futex deadline, want false after timeout wake")
-	}
-	if got := j.contexts[j.pid].snapshot.x[10]; int64(got) != -110 {
-		t.Fatalf("timed-out context a0 = %d, want -110", int64(got))
-	}
-}
-
 func TestJea9Linux_SetTidAddressClearOnThreadExit(t *testing.T) {
 	j := NewJea9Linux(Jea9LinuxOptions{})
 	cpu, mem := newJea9LinuxSyscallCPU(t, j)

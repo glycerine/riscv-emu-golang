@@ -4,7 +4,6 @@ import (
 	"errors"
 	"os"
 	"testing"
-	"time"
 )
 
 const (
@@ -245,43 +244,6 @@ func TestJea9Linux_NanosleepInvalidTimespecSyscall(t *testing.T) {
 	}
 	if got := int64(cpu.Reg(10)); got != -22 {
 		t.Fatalf("nanosleep invalid return = %d, want -EINVAL", got)
-	}
-}
-
-func TestJea9Linux_NanosleepManualClockBlocksUntilAdvance(t *testing.T) {
-	j := NewJea9Linux(Jea9LinuxOptions{ClockMode: Jea9ClockManual})
-	cpu, mem := newJea9LinuxSyscallCPU(t, j)
-	defer mem.Free()
-
-	req := uint64(0x4000)
-	if f := mem.Store64(req, 0); f != nil {
-		t.Fatal(f)
-	}
-	if f := mem.Store64(req+8, 10_000_000); f != nil {
-		t.Fatal(f)
-	}
-	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysNanosleep, req, 0); d != NoteExit {
-		t.Fatalf("disposition = %v, want NoteExit for blocked manual sleep", d)
-	}
-	if got := j.contexts[j.pid].state; got != jea9LinuxContextWaiting {
-		t.Fatalf("manual nanosleep context state = %v, want waiting", got)
-	}
-	if got := j.contexts[j.pid].waitKind; got != jea9LinuxWaitNanosleep {
-		t.Fatalf("manual nanosleep wait kind = %v, want nanosleep", got)
-	}
-	if !j.Blocked() {
-		t.Fatal("manual nanosleep should mark jea9linux blocked")
-	}
-	if got := j.MonotonicNS(); got != 0 {
-		t.Fatalf("MonotonicNS() = %d, want 0 before explicit advance", got)
-	}
-	j.AdvanceTime(5 * time.Millisecond)
-	if !j.Blocked() {
-		t.Fatal("manual nanosleep unblocked before deadline")
-	}
-	j.AdvanceTime(5 * time.Millisecond)
-	if j.Blocked() {
-		t.Fatal("manual nanosleep still blocked after deadline")
 	}
 }
 

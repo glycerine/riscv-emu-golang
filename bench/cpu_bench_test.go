@@ -206,10 +206,8 @@ func zygoClockMode(tb testing.TB) riscv.Jea9LinuxClockMode {
 		return riscv.Jea9ClockIdleJump
 	case "ictick", "ic-tick", "tick":
 		return riscv.Jea9ClockICTick
-	case "manual":
-		return riscv.Jea9ClockManual
 	default:
-		tb.Fatalf("invalid ZYGO_CLOCK_MODE %q; want idle-jump, ic-tick, or manual", raw)
+		tb.Fatalf("invalid ZYGO_CLOCK_MODE %q; want idle-jump or ic-tick", raw)
 		return riscv.Jea9ClockIdleJump
 	}
 }

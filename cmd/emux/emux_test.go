@@ -285,7 +285,6 @@ func TestParseClockModeAndSeedBytes(t *testing.T) {
 		{name: "idlejump", want: riscv.Jea9ClockIdleJump},
 		{name: "ic-tick", want: riscv.Jea9ClockICTick},
 		{name: "ictick", want: riscv.Jea9ClockICTick},
-		{name: "manual", want: riscv.Jea9ClockManual},
 	} {
 		got, err := parseClockMode(tc.name)
 		if err != nil {
@@ -297,6 +296,9 @@ func TestParseClockModeAndSeedBytes(t *testing.T) {
 	}
 	if _, err := parseClockMode("host-time"); err == nil {
 		t.Fatal("parseClockMode(host-time) returned nil error")
+	}
+	if _, err := parseClockMode("manual"); err == nil {
+		t.Fatal("parseClockMode(manual) returned nil error")
 	}
 
 	const seed = uint64(0x0102030405060708)

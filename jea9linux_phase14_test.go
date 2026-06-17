@@ -2,12 +2,10 @@ package riscv
 
 import (
 	"bytes"
-	"errors"
 	"os"
 	"reflect"
 	"strings"
 	"testing"
-	"time"
 )
 
 const jea9LinuxGoMemorySize = Size16GB
@@ -150,53 +148,6 @@ func TestJea9Linux_GoMathRandStartupUnaffectedByHost(t *testing.T) {
 	if first.stdout != second.stdout {
 		t.Fatalf("math/rand startup output is not replay deterministic: %q != %q", first.stdout, second.stdout)
 	}
-}
-
-func TestJea9Linux_GoManualClockTimerBlocksUntilAdvance(t *testing.T) {
-	t.Skip("pending: Go manual-clock timers need resumable sleep/futex scheduling beyond the current blocked-deadline model")
-
-	m := newJea9LinuxGoMachine(t, jea9LinuxGoRunConfig{
-		Name: "timerselect",
-		Options: Jea9LinuxOptions{
-			ClockMode:        Jea9ClockManual,
-			MonotonicStartNS: 1_000_000,
-		},
-	})
-	defer m.mem.Free()
-	cleanup := InstallJea9Linux(m.cpu, m.os)
-	defer cleanup()
-
-	blockedCount := 0
-	for steps := 0; steps < 200; steps++ {
-		err := m.os.Run(m.cpu)
-		switch {
-		case errors.Is(err, ErrJea9LinuxBudget):
-			continue
-		case errors.Is(err, ErrJea9LinuxBlocked):
-			blockedCount++
-			if blockedCount > 50 {
-				t.Fatalf("guest blocked too many times under manual clock; stdout=%q stderr=%q", m.stdout.String(), m.stderr.String())
-			}
-			if !m.os.blockedHasDeadline {
-				t.Fatalf("guest blocked without a deadline under manual clock; stdout=%q stderr=%q", m.stdout.String(), m.stderr.String())
-			}
-			m.os.SetMonotonicNS(m.os.blockedUntil + int64(10*time.Millisecond))
-			continue
-		case err != nil:
-			t.Fatalf("manual clock run: %v; pc=0x%x insn=%s stdout=%q stderr=%q", err, m.cpu.PC(), disasmGuestInsn(t, &m.cpu.mem, m.cpu.PC()), m.stdout.String(), m.stderr.String())
-		default:
-			if blockedCount == 0 {
-				t.Fatal("Go timer exited without blocking under manual clock")
-			}
-			result := jea9LinuxGoRunResult{code: m.cpu.ExitCode, stdout: m.stdout.String(), stderr: m.stderr.String()}
-			requireJea9LinuxGoExit(t, result, 0)
-			if !strings.HasPrefix(result.stdout, "elapsed_ms=") {
-				t.Fatalf("stdout = %q, want elapsed_ms prefix", result.stdout)
-			}
-			return
-		}
-	}
-	t.Fatalf("manual clock timer did not exit; blockedCount=%d stdout=%q stderr=%q", blockedCount, m.stdout.String(), m.stderr.String())
 }
 
 func TestJea9Linux_GoReplayIdentical(t *testing.T) {

@@ -11,7 +11,6 @@ import (
 	"strings"
 	"sync"
 	"syscall"
-	"time"
 )
 
 type Jea9LinuxClockMode uint8
@@ -19,7 +18,6 @@ type Jea9LinuxClockMode uint8
 const (
 	Jea9ClockIdleJump Jea9LinuxClockMode = iota
 	Jea9ClockICTick
-	Jea9ClockManual
 )
 
 type Jea9LinuxNanosleepAdvanceMode uint8
@@ -714,11 +712,6 @@ func (jos *Jea9Linux) SetNSPerInstruction(ns int64) {
 	jos.nsPerInstruction = ns
 }
 
-func (jos *Jea9Linux) AdvanceTime(d time.Duration) {
-	jos.monotonicNS += int64(d)
-	jos.refreshBlocked()
-}
-
 func (jos *Jea9Linux) SetMonotonicNS(ns int64) {
 	jos.monotonicNS = ns
 	jos.refreshBlocked()
@@ -1197,18 +1190,16 @@ func (jos *Jea9Linux) scheduleAfterCurrentBlocked(cpu *CPU) NoteDisposition {
 		jos.blockedHasDeadline = false
 		return NoteHandled
 	}
-	if jos.clockMode != Jea9ClockManual {
-		if deadline, ok := jos.nextWaitDeadline(); ok {
-			if deadline > jos.monotonicNS {
-				jos.monotonicNS = deadline
-			}
-			jos.refreshBlocked()
-			if next, ok := jos.firstRunnableContext(); ok {
-				jos.loadContext(cpu, next)
-				jos.blocked = false
-				jos.blockedHasDeadline = false
-				return NoteHandled
-			}
+	if deadline, ok := jos.nextWaitDeadline(); ok {
+		if deadline > jos.monotonicNS {
+			jos.monotonicNS = deadline
+		}
+		jos.refreshBlocked()
+		if next, ok := jos.firstRunnableContext(); ok {
+			jos.loadContext(cpu, next)
+			jos.blocked = false
+			jos.blockedHasDeadline = false
+			return NoteHandled
 		}
 	}
 	jos.blocked = true
@@ -2099,7 +2090,7 @@ func (jos *Jea9Linux) sysEpollPwait(cpu *CPU, epfdRaw, eventsAddr, maxEvents, ti
 		ctx.snapshot = snapshotJea9LinuxCPU(cpu)
 		return NoteHandled
 	}
-	if hasDeadline && jos.clockMode != Jea9ClockManual {
+	if hasDeadline {
 		if _, ok := jos.nextRunnableAfterCurrent(); !ok {
 			jos.monotonicNS = deadline
 			cpu.SetReg(10, 0)
@@ -3081,7 +3072,7 @@ func (jos *Jea9Linux) futexWait(cpu *CPU, ctx *jea9LinuxContext, addr uint64, ex
 	if hasDeadline && deadline <= jos.monotonicNS {
 		return jea9LinuxErrETIMEDOUT, false
 	}
-	if hasDeadline && jos.clockMode != Jea9ClockManual {
+	if hasDeadline {
 		if _, ok := jos.nextRunnableAfterCurrent(); !ok {
 			jos.monotonicNS = deadline
 			return jea9LinuxErrETIMEDOUT, false

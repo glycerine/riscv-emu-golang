@@ -5,7 +5,6 @@ import (
 	"errors"
 	"io"
 	"testing"
-	"time"
 )
 
 func testLoopCPU(t *testing.T, budget uint64) (*CPU, *GuestMemory, *Jea9Linux) {
@@ -437,22 +436,6 @@ func TestJITStepBlockBudget_FusedTripleRunsWhenBudgetFits(t *testing.T) {
 	}
 	if got := cpu.Reg(10); got != 6 {
 		t.Fatalf("x10 = %d, want 6", got)
-	}
-}
-
-func TestJea9Linux_ManualClockAdvance(t *testing.T) {
-	os := NewJea9Linux(Jea9LinuxOptions{
-		ClockMode:        Jea9ClockManual,
-		MonotonicStartNS: 10,
-	})
-
-	os.AdvanceTime(15 * time.Nanosecond)
-	if got := os.MonotonicNS(); got != 25 {
-		t.Fatalf("MonotonicNS() = %d, want 25", got)
-	}
-	os.SetMonotonicNS(100)
-	if got := os.MonotonicNS(); got != 100 {
-		t.Fatalf("MonotonicNS() after set = %d, want 100", got)
 	}
 }
 

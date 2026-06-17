@@ -24,7 +24,7 @@ func TestJea9Linux_HandledEcallResumesFromTrapframe(t *testing.T) {
 }
 
 func TestJea9Linux_BlockingEcallKeepsTrapframeUntilWake(t *testing.T) {
-	j := NewJea9Linux(Jea9LinuxOptions{ClockMode: Jea9ClockManual})
+	j := NewJea9Linux(Jea9LinuxOptions{ClockMode: Jea9ClockIdleJump})
 	cpu, mem := newJea9LinuxSyscallCPU(t, j)
 	defer mem.Free()
 
@@ -32,6 +32,17 @@ func TestJea9Linux_BlockingEcallKeepsTrapframeUntilWake(t *testing.T) {
 		trapPC  = uint64(0x6000)
 		reqAddr = uint64(0x7000)
 	)
+	parent := j.ensureScheduler(cpu)
+	childTID := parent.tid + 1
+	j.contexts[childTID] = &jea9LinuxContext{
+		tid:   childTID,
+		state: jea9LinuxContextRunnable,
+		snapshot: jea9LinuxCPUSnapshot{
+			pc: 0x8000,
+		},
+	}
+	j.contextOrder = append(j.contextOrder, childTID)
+
 	if f := mem.Store64(reqAddr, 0); f != nil {
 		t.Fatal(f)
 	}
@@ -43,13 +54,13 @@ func TestJea9Linux_BlockingEcallKeepsTrapframeUntilWake(t *testing.T) {
 	cpu.SetReg(10, reqAddr)
 
 	d := j.Handle(cpu, Note{Cause: CauseEcallU, PC: trapPC, InsnLen: 4})
-	if d != NoteExit {
-		t.Fatalf("Handle disposition = %v, want NoteExit while all contexts are blocked", d)
+	if d != NoteHandled {
+		t.Fatalf("Handle disposition = %v, want NoteHandled after switching to runnable child", d)
 	}
-	ctx := j.contexts[j.currentTID]
-	if ctx == nil {
-		t.Fatal("current context was not created")
+	if j.currentTID != childTID {
+		t.Fatalf("current tid = %d, want child tid %d", j.currentTID, childTID)
 	}
+	ctx := parent
 	if ctx.state != jea9LinuxContextWaiting || ctx.waitKind != jea9LinuxWaitNanosleep {
 		t.Fatalf("context state=%v waitKind=%d, want waiting nanosleep", ctx.state, ctx.waitKind)
 	}
