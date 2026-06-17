@@ -5,6 +5,8 @@ import (
 	"encoding/binary"
 	"errors"
 	"flag"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -120,6 +122,248 @@ func TestEmuBiosFlagIsSeparateFromRun(t *testing.T) {
 	}
 }
 
+func TestEmuBiosBootFlagsParse(t *testing.T) {
+	dir := t.TempDir()
+	kernelPath := filepath.Join(dir, "Image")
+	initrdPath := filepath.Join(dir, "rootfs.cpio")
+	dumpDTBPath := filepath.Join(dir, "virt.dtb")
+	if err := os.WriteFile(kernelPath, []byte("kernel"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(initrdPath, []byte("initrd"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, _, _ := parseEmuConfigForTest(t,
+		"-bios", "../../testvectors/jea9linux/elf/write_stdout.elf",
+		"-kernel", kernelPath,
+		"-kernel-addr", "0x80400000",
+		"-initrd", initrdPath,
+		"-append", "console=hvc0 root=/dev/ram0",
+		"-dump-dtb", dumpDTBPath,
+		"-machine", "virt",
+	)
+	if cfg.BiosPath == "" || cfg.RunPath != "" {
+		t.Fatalf("parsed BiosPath=%q RunPath=%q", cfg.BiosPath, cfg.RunPath)
+	}
+	if cfg.KernelPath != kernelPath || cfg.KernelAddr != 0x80400000 {
+		t.Fatalf("parsed kernel path/addr = %q/%#x", cfg.KernelPath, cfg.KernelAddr)
+	}
+	if cfg.InitrdPath != initrdPath {
+		t.Fatalf("InitrdPath = %q, want %q", cfg.InitrdPath, initrdPath)
+	}
+	if cfg.Append != "console=hvc0 root=/dev/ram0" {
+		t.Fatalf("Append = %q", cfg.Append)
+	}
+	if cfg.DumpDTBPath != dumpDTBPath {
+		t.Fatalf("DumpDTBPath = %q, want %q", cfg.DumpDTBPath, dumpDTBPath)
+	}
+	if cfg.machine() != "virt" {
+		t.Fatalf("machine = %q, want virt", cfg.machine())
+	}
+
+	runWithKernel := EmuConfig{
+		RunPath:    "../../testvectors/jea9linux/elf/write_stdout.elf",
+		KernelPath: kernelPath,
+	}
+	if err := runWithKernel.ValidateConfig(); err == nil {
+		t.Fatal("ValidateConfig accepted -kernel with -run")
+	}
+}
+
+func TestPrepareBiosGuestLoadsKernelInitrdAndBootArgs(t *testing.T) {
+	dir := t.TempDir()
+	kernelPath := filepath.Join(dir, "Image")
+	initrdPath := filepath.Join(dir, "rootfs.cpio")
+	dumpDTBPath := filepath.Join(dir, "virt.dtb")
+	kernel := []byte{0xaa, 0xbb, 0xcc, 0xdd}
+	initrd := []byte("initrd-data")
+	if err := os.WriteFile(kernelPath, kernel, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(initrdPath, initrd, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	guest, err := prepareBiosGuest(EmuConfig{
+		BiosPath:    "../../testvectors/jea9linux/elf/write_stdout.elf",
+		KernelPath:  kernelPath,
+		KernelAddr:  0x80400000,
+		InitrdPath:  initrdPath,
+		Append:      "console=hvc0 root=/dev/ram0",
+		DumpDTBPath: dumpDTBPath,
+		MemorySize:  riscv.Size16GB,
+		Stdin:       strings.NewReader(""),
+		Stdout:      &bytes.Buffer{},
+		Stderr:      &bytes.Buffer{},
+	}.withDefaults())
+	if err != nil {
+		t.Fatalf("prepareBiosGuest: %v", err)
+	}
+	defer guest.mem.Free()
+
+	if got := guestMemoryBytes(t, guest.mem, guest.kernel.addr, len(kernel)); !bytes.Equal(got, kernel) {
+		t.Fatalf("kernel bytes at %#x = %x, want %x", guest.kernel.addr, got, kernel)
+	}
+	if got := guestMemoryBytes(t, guest.mem, guest.initrd.addr, len(initrd)); !bytes.Equal(got, initrd) {
+		t.Fatalf("initrd bytes at %#x = %x, want %x", guest.initrd.addr, got, initrd)
+	}
+	if !bytes.Contains(guest.fdt, []byte("console=hvc0 root=/dev/ram0\x00")) {
+		t.Fatalf("generated FDT does not contain bootargs: %x", guest.fdt)
+	}
+	if !bytes.Contains(guest.fdt, fdtU64(guest.initrd.addr)) || !bytes.Contains(guest.fdt, fdtU64(guest.initrd.end)) {
+		t.Fatalf("generated FDT does not contain initrd range %#x..%#x", guest.initrd.addr, guest.initrd.end)
+	}
+	dumped, err := os.ReadFile(dumpDTBPath)
+	if err != nil {
+		t.Fatalf("read dumped dtb: %v", err)
+	}
+	if !bytes.Equal(dumped, guest.fdt) {
+		t.Fatalf("dumped DTB differs from guest FDT")
+	}
+}
+
+func TestPrepareBiosGuestUsesExternalDTB(t *testing.T) {
+	dir := t.TempDir()
+	dtbPath := filepath.Join(dir, "external.dtb")
+	dumpDTBPath := filepath.Join(dir, "dumped.dtb")
+	fdt, err := buildVirtFDT(riscv.Size16GB, virtFDTOptions{BootArgs: "from-external-dtb"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dtbPath, fdt, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	guest, err := prepareBiosGuest(EmuConfig{
+		BiosPath:    "../../testvectors/jea9linux/elf/write_stdout.elf",
+		DTBPath:     dtbPath,
+		DumpDTBPath: dumpDTBPath,
+		MemorySize:  riscv.Size16GB,
+		Stdin:       strings.NewReader(""),
+		Stdout:      &bytes.Buffer{},
+		Stderr:      &bytes.Buffer{},
+	}.withDefaults())
+	if err != nil {
+		t.Fatalf("prepareBiosGuest: %v", err)
+	}
+	defer guest.mem.Free()
+
+	if !guest.externalDTB {
+		t.Fatal("prepareBiosGuest did not mark external DTB")
+	}
+	if !bytes.Equal(guest.fdt, fdt) {
+		t.Fatalf("guest FDT differs from external DTB")
+	}
+	dumped, err := os.ReadFile(dumpDTBPath)
+	if err != nil {
+		t.Fatalf("read dumped dtb: %v", err)
+	}
+	if !bytes.Equal(dumped, fdt) {
+		t.Fatalf("dumped external DTB differs from input")
+	}
+}
+
+func TestPrepareBiosGuestRejectsFwJumpFDTKernelOverlap(t *testing.T) {
+	const biosPath = "../../xendor/opensbi/build/platform/generic/firmware/fw_jump.elf"
+	if !fileExists(biosPath) {
+		t.Skipf("OpenSBI fw_jump fixture not present: %s", biosPath)
+	}
+	dir := t.TempDir()
+	kernelPath := filepath.Join(dir, "Image")
+	if err := os.WriteFile(kernelPath, bytes.Repeat([]byte{0x6f}, 8192), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := prepareBiosGuest(EmuConfig{
+		BiosPath:   biosPath,
+		KernelPath: kernelPath,
+		KernelAddr: fwJumpGenericFDTAddr - 4096,
+		MemorySize: riscv.Size16GB,
+		Stdin:      strings.NewReader(""),
+		Stdout:     &bytes.Buffer{},
+		Stderr:     &bytes.Buffer{},
+	}.withDefaults())
+	if err == nil {
+		t.Fatal("prepareBiosGuest accepted a fw_jump FDT/kernel overlap")
+	}
+	if !strings.Contains(err.Error(), "fw_dynamic.elf") {
+		t.Fatalf("overlap error = %v, want fw_dynamic guidance", err)
+	}
+}
+
+func TestPrepareBiosGuestFWDynamicSetsInfoBlock(t *testing.T) {
+	const biosPath = "../../xendor/opensbi/build/platform/generic/firmware/fw_dynamic.elf"
+	if !fileExists(biosPath) {
+		t.Skipf("OpenSBI fw_dynamic fixture not present: %s", biosPath)
+	}
+	dir := t.TempDir()
+	kernelPath := filepath.Join(dir, "Image")
+	kernel := []byte{0x4d, 0x5a, 0x6f, 0x10}
+	if err := os.WriteFile(kernelPath, kernel, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	guest, err := prepareBiosGuest(EmuConfig{
+		BiosPath:   biosPath,
+		KernelPath: kernelPath,
+		MemorySize: riscv.Size16GB,
+		Stdin:      strings.NewReader(""),
+		Stdout:     &bytes.Buffer{},
+		Stderr:     &bytes.Buffer{},
+	}.withDefaults())
+	if err != nil {
+		t.Fatalf("prepareBiosGuest: %v", err)
+	}
+	defer guest.mem.Free()
+
+	if guest.dynamicAddr == 0 {
+		t.Fatal("fw_dynamic info block address is zero")
+	}
+	if got := guest.cpu.Reg(12); got != guest.dynamicAddr {
+		t.Fatalf("a2 = %#x, want dynamic info addr %#x", got, guest.dynamicAddr)
+	}
+	if got := loadLittleEndianU64(t, guest.mem, guest.dynamicAddr); got != fwDynamicInfoMagic {
+		t.Fatalf("dynamic magic = %#x, want %#x", got, fwDynamicInfoMagic)
+	}
+	if got := loadLittleEndianU64(t, guest.mem, guest.dynamicAddr+16); got != guest.nextAddr {
+		t.Fatalf("dynamic next_addr = %#x, want %#x", got, guest.nextAddr)
+	}
+	if got := loadLittleEndianU64(t, guest.mem, guest.dynamicAddr+24); got != fwDynamicNextModeS {
+		t.Fatalf("dynamic next_mode = %#x, want S-mode %#x", got, fwDynamicNextModeS)
+	}
+}
+
+func TestRunEmuBiosFWDynamicLinuxSmoke(t *testing.T) {
+	const biosPath = "../../xendor/opensbi/build/platform/generic/firmware/fw_dynamic.elf"
+	const kernelPath = "../../xendor/linux/boot/vmlinuz-6.17.0-35-generic"
+	const initrdPath = "../../xendor/linux/initramfs.cpio.gz"
+	for _, path := range []string{biosPath, kernelPath, initrdPath} {
+		if !fileExists(path) {
+			t.Skipf("Linux BIOS smoke fixture not present: %s", path)
+		}
+	}
+
+	var stdout, stderr bytes.Buffer
+	code, err := runEmu(EmuConfig{
+		BiosPath:   biosPath,
+		KernelPath: kernelPath,
+		InitrdPath: initrdPath,
+		Append:     "console=hvc0 rdinit=/init",
+		MemorySize: riscv.Size16GB,
+		Budget:     "100000",
+		Stdin:      strings.NewReader(""),
+		Stdout:     &stdout,
+		Stderr:     &stderr,
+	})
+	if err != nil {
+		t.Fatalf("runEmu fw_dynamic linux smoke: %v; stderr=%q", err, stderr.String())
+	}
+	if code != 0 {
+		t.Fatalf("runEmu fw_dynamic linux smoke exit code = %d, want 0; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+}
+
 func TestRunEmuBiosOpenSBIFwJumpGetsFDT(t *testing.T) {
 	const path = "../../xendor/opensbi/build/platform/generic/firmware/fw_jump.elf"
 	if !fileExists(path) {
@@ -188,6 +432,39 @@ func loadBigEndianU32(mem *riscv.GuestMemory, addr uint64) (uint32, *riscv.MemFa
 		raw[i] = v
 	}
 	return binary.BigEndian.Uint32(raw[:]), nil
+}
+
+func guestMemoryBytes(t *testing.T, mem *riscv.GuestMemory, addr uint64, n int) []byte {
+	t.Helper()
+	out := make([]byte, n)
+	for i := range out {
+		v, fault := mem.Load8(addr + uint64(i))
+		if fault != nil {
+			t.Fatalf("Load8 at %#x: %v", addr+uint64(i), fault)
+		}
+		out[i] = v
+	}
+	return out
+}
+
+func loadLittleEndianU64(t *testing.T, mem *riscv.GuestMemory, addr uint64) uint64 {
+	t.Helper()
+	var raw [8]byte
+	for i := range raw {
+		v, fault := mem.Load8(addr + uint64(i))
+		if fault != nil {
+			t.Fatalf("Load8 at %#x: %v", addr+uint64(i), fault)
+		}
+		raw[i] = v
+	}
+	return binary.LittleEndian.Uint64(raw[:])
+}
+
+func fdtU64(v uint64) []byte {
+	var out [8]byte
+	binary.BigEndian.PutUint32(out[0:4], uint32(v>>32))
+	binary.BigEndian.PutUint32(out[4:8], uint32(v))
+	return out[:]
 }
 
 func isNullFDTFault(err error) bool {

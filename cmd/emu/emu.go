@@ -33,7 +33,7 @@ type EmuConfig struct {
 	InitrdPath        string
 	Append            string
 	DTBPath           string
-	DumpDTBPath        string
+	DumpDTBPath       string
 	Machine           string
 	Seed              uint64
 	MemorySize        uint64
