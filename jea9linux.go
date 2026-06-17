@@ -3436,7 +3436,7 @@ func loadJea9LinuxSigaltstack(cpu *CPU, addr uint64) (sp, flags, size uint64, er
 	if f != nil {
 		return 0, 0, 0, jea9LinuxErrEFAULT
 	}
-	flags, f = cpu.mem.Load64(addr + 8)
+	flags32, f := cpu.mem.Load32(addr + 8)
 	if f != nil {
 		return 0, 0, 0, jea9LinuxErrEFAULT
 	}
@@ -3444,14 +3444,17 @@ func loadJea9LinuxSigaltstack(cpu *CPU, addr uint64) (sp, flags, size uint64, er
 	if f != nil {
 		return 0, 0, 0, jea9LinuxErrEFAULT
 	}
-	return sp, flags, size, 0
+	return sp, uint64(flags32), size, 0
 }
 
 func storeJea9LinuxSigaltstack(cpu *CPU, addr, sp, flags, size uint64) int64 {
 	if f := cpu.mem.Store64(addr, sp); f != nil {
 		return jea9LinuxErrEFAULT
 	}
-	if f := cpu.mem.Store64(addr+8, flags); f != nil {
+	if f := cpu.mem.Store32(addr+8, uint32(flags)); f != nil {
+		return jea9LinuxErrEFAULT
+	}
+	if f := cpu.mem.Store32(addr+12, 0); f != nil {
 		return jea9LinuxErrEFAULT
 	}
 	if f := cpu.mem.Store64(addr+16, size); f != nil {

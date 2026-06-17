@@ -329,6 +329,26 @@ func TestJea9Linux_SigaltstackAcceptsAutoDisarm(t *testing.T) {
 	}
 }
 
+func TestJea9Linux_SigaltstackIgnoresPadding(t *testing.T) {
+	j := NewJea9Linux(Jea9LinuxOptions{})
+	cpu, mem := newJea9LinuxSyscallCPU(t, j)
+	defer mem.Free()
+
+	stack := uint64(0x7000)
+	writeGuest64(t, mem, stack, 0x9000)
+	if f := mem.Store32(stack+8, 0); f != nil {
+		t.Fatal(f)
+	}
+	if f := mem.Store32(stack+12, 0xdeadbeef); f != nil {
+		t.Fatal(f)
+	}
+	writeGuest64(t, mem, stack+16, 0x2000)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysSigaltstack, stack, 0); d != NoteHandled {
+		t.Fatalf("sigaltstack dirty padding disposition = %v, want NoteHandled", d)
+	}
+	requireSyscallReturn(t, cpu, 0)
+}
+
 func TestJea9Linux_TgkillTargetsTidAndKillTargetsProcess(t *testing.T) {
 	j := NewJea9Linux(Jea9LinuxOptions{})
 	cpu, mem := newJea9LinuxSyscallCPU(t, j)
