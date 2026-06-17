@@ -163,6 +163,7 @@ const (
 	jea9LinuxSysEpollPwait       = uint64(22)
 	jea9LinuxSysFcntl            = uint64(25)
 	jea9LinuxSysIoctl            = uint64(29)
+	jea9LinuxSysMkdirat          = uint64(34)
 	jea9LinuxSysOpenat           = uint64(56)
 	jea9LinuxSysClose            = uint64(57)
 	jea9LinuxSysPipe2            = uint64(59)
@@ -284,6 +285,7 @@ const (
 
 	jea9LinuxFDNonblock = uint64(0x800)
 	jea9LinuxFDCloexec  = uint64(0x80000)
+	jea9LinuxATFDCWD    = ^uint64(99) // -100
 
 	jea9LinuxOAccmode = uint64(0x3)
 	jea9LinuxOWronly  = uint64(0x1)
@@ -2559,6 +2561,9 @@ func (jos *Jea9Linux) Handle(cpu *CPU, n Note) (disp NoteDisposition) {
 	case jea9LinuxSysIoctl:
 		cpu.SetReg(10, uint64(jos.sysIoctl(cpu, args.A0, args.A1, args.A2)))
 		return NoteHandled
+	case jea9LinuxSysMkdirat:
+		cpu.SetReg(10, uint64(jos.sysMkdirat(cpu, args.A0, args.A1, args.A2)))
+		return NoteHandled
 	case jea9LinuxSysOpenat:
 		cpu.SetReg(10, uint64(jos.sysOpenat(cpu, args.A0, args.A1, args.A2, args.A3)))
 		return NoteHandled
@@ -3889,8 +3894,7 @@ func (jos *Jea9Linux) sysGetrandom(cpu *CPU, bufAddr, n, flags uint64) int64 {
 }
 
 func (jos *Jea9Linux) sysOpenat(cpu *CPU, dirfd, pathAddr, flags, mode uint64) int64 {
-	_ = dirfd
-	path, errno := readLinuxCString(cpu, pathAddr, 4096)
+	path, errno := jos.readLinuxAtPath(cpu, dirfd, pathAddr)
 	if errno != 0 {
 		return errno
 	}
@@ -3914,6 +3918,50 @@ func (jos *Jea9Linux) sysOpenat(cpu *CPU, dirfd, pathAddr, flags, mode uint64) i
 		}
 		return jea9LinuxErrENOENT
 	}
+}
+
+func (jos *Jea9Linux) sysMkdirat(cpu *CPU, dirfd, pathAddr, mode uint64) int64 {
+	path, errno := jos.readLinuxAtPath(cpu, dirfd, pathAddr)
+	if errno != 0 {
+		return errno
+	}
+	if !jos.allowAllHostFiles {
+		return jea9LinuxErrENOENT
+	}
+	if err := os.Mkdir(path, os.FileMode(mode&0o777)); err != nil {
+		return jea9LinuxErrnoFromHost(err)
+	}
+	return 0
+}
+
+func (jos *Jea9Linux) readLinuxAtPath(cpu *CPU, dirfd, pathAddr uint64) (string, int64) {
+	path, errno := readLinuxCString(cpu, pathAddr, 4096)
+	if errno != 0 {
+		return "", errno
+	}
+	return jos.resolveLinuxAtPath(dirfd, path)
+}
+
+func (jos *Jea9Linux) resolveLinuxAtPath(dirfd uint64, path string) (string, int64) {
+	if path == "" || filepath.IsAbs(path) || dirfd == jea9LinuxATFDCWD {
+		return path, 0
+	}
+	fd := int(int64(dirfd))
+	f, ok := jos.fds[fd]
+	if !ok {
+		return "", jea9LinuxErrEBADF
+	}
+	if f.kind != jea9LinuxFDHostFile || f.hostFile == nil {
+		return "", jea9LinuxErrENOTDIR
+	}
+	info, err := f.hostFile.Stat()
+	if err != nil {
+		return "", jea9LinuxErrnoFromHost(err)
+	}
+	if !info.IsDir() {
+		return "", jea9LinuxErrENOTDIR
+	}
+	return filepath.Join(f.hostFile.Name(), path), 0
 }
 
 func (jos *Jea9Linux) sysOpenHostFile(path string, flags, mode uint64) int64 {

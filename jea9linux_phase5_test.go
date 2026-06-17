@@ -10,6 +10,7 @@ import (
 
 const (
 	jea9TestSysIoctl     = uint64(29)
+	jea9TestSysMkdirat   = uint64(34)
 	jea9TestSysFcntl     = uint64(25)
 	jea9TestSysLseek     = uint64(62)
 	jea9TestSysWrite     = uint64(64)
@@ -401,6 +402,118 @@ func TestJea9Linux_HostFilePassthroughWriteCreateTruncate(t *testing.T) {
 	if string(got) != "guest wrote host file" {
 		t.Fatalf("host output = %q", string(got))
 	}
+}
+
+func TestJea9Linux_MkdiratHostPassthroughDisabledByDefault(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "blocked-dir")
+	j := NewJea9Linux(Jea9LinuxOptions{})
+	cpu, mem := newJea9LinuxSyscallCPU(t, j)
+	defer mem.Free()
+
+	writeGuestCString(t, mem, 0x5000, path)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysMkdirat, jea9TestATFDCWD, 0x5000, 0o700); d != NoteHandled {
+		t.Fatalf("mkdirat host path disposition = %v", d)
+	}
+	requireSyscallReturn(t, cpu, jea9LinuxErrENOENT)
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("disabled mkdirat created %q or returned unexpected stat error: %v", path, err)
+	}
+}
+
+func TestJea9Linux_MkdiratHostPassthroughCreatesDirectory(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "created-dir")
+	j := NewJea9Linux(Jea9LinuxOptions{AllowAllHostFiles: true})
+	cpu, mem := newJea9LinuxSyscallCPU(t, j)
+	defer mem.Free()
+
+	writeGuestCString(t, mem, 0x5000, path)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysMkdirat, jea9TestATFDCWD, 0x5000, 0o700); d != NoteHandled {
+		t.Fatalf("mkdirat host path disposition = %v", d)
+	}
+	requireSyscallReturn(t, cpu, 0)
+	if info, err := os.Stat(path); err != nil || !info.IsDir() {
+		t.Fatalf("mkdirat(%q) stat = {%v,%v}, want directory", path, info, err)
+	}
+
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysMkdirat, jea9TestATFDCWD, 0x5000, 0o700); d != NoteHandled {
+		t.Fatalf("second mkdirat host path disposition = %v", d)
+	}
+	requireSyscallReturn(t, cpu, jea9LinuxErrEEXIST)
+}
+
+func TestJea9Linux_OpenatAndMkdiratDirfd(t *testing.T) {
+	parent := filepath.Join(t.TempDir(), "parent")
+	if err := os.Mkdir(parent, 0o755); err != nil {
+		t.Fatalf("Mkdir(%q): %v", parent, err)
+	}
+	if err := os.WriteFile(filepath.Join(parent, "data.txt"), []byte("dirfd data"), 0o644); err != nil {
+		t.Fatalf("WriteFile data.txt: %v", err)
+	}
+	j := NewJea9Linux(Jea9LinuxOptions{AllowAllHostFiles: true})
+	cpu, mem := newJea9LinuxSyscallCPU(t, j)
+	defer mem.Free()
+
+	writeGuestCString(t, mem, 0x5000, parent)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysOpenat, jea9TestATFDCWD, 0x5000, 0, 0); d != NoteHandled {
+		t.Fatalf("openat parent disposition = %v", d)
+	}
+	dirfd := cpu.Reg(10)
+	if int64(dirfd) < 3 {
+		t.Fatalf("parent dirfd = %d, want >= 3", dirfd)
+	}
+
+	writeGuestCString(t, mem, 0x5000, "data.txt")
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysOpenat, dirfd, 0x5000, 0, 0); d != NoteHandled {
+		t.Fatalf("openat dirfd relative file disposition = %v", d)
+	}
+	fd := cpu.Reg(10)
+	if int64(fd) < 3 {
+		t.Fatalf("relative file fd = %d, want >= 3", fd)
+	}
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysRead, fd, 0x6000, 32); d != NoteHandled {
+		t.Fatalf("read relative file disposition = %v", d)
+	}
+	requireSyscallReturn(t, cpu, 10)
+	if got := string(readGuestBytes(t, mem, 0x6000, 10)); got != "dirfd data" {
+		t.Fatalf("relative file read = %q", got)
+	}
+
+	writeGuestCString(t, mem, 0x5000, "created")
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysMkdirat, dirfd, 0x5000, 0o700); d != NoteHandled {
+		t.Fatalf("mkdirat dirfd relative disposition = %v", d)
+	}
+	requireSyscallReturn(t, cpu, 0)
+	if info, err := os.Stat(filepath.Join(parent, "created")); err != nil || !info.IsDir() {
+		t.Fatalf("mkdirat dirfd child stat = {%v,%v}, want directory", info, err)
+	}
+}
+
+func TestJea9Linux_MkdiratDirfdErrorEdges(t *testing.T) {
+	parent := t.TempDir()
+	hostFile := filepath.Join(parent, "file.txt")
+	if err := os.WriteFile(hostFile, []byte("not a dir"), 0o644); err != nil {
+		t.Fatalf("WriteFile(%q): %v", hostFile, err)
+	}
+	j := NewJea9Linux(Jea9LinuxOptions{AllowAllHostFiles: true})
+	cpu, mem := newJea9LinuxSyscallCPU(t, j)
+	defer mem.Free()
+
+	writeGuestCString(t, mem, 0x5000, "child")
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysMkdirat, 99, 0x5000, 0o700); d != NoteHandled {
+		t.Fatalf("mkdirat bad dirfd disposition = %v", d)
+	}
+	requireSyscallReturn(t, cpu, jea9LinuxErrEBADF)
+
+	writeGuestCString(t, mem, 0x5000, hostFile)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysOpenat, jea9TestATFDCWD, 0x5000, 0, 0); d != NoteHandled {
+		t.Fatalf("openat host file disposition = %v", d)
+	}
+	fd := cpu.Reg(10)
+	writeGuestCString(t, mem, 0x5000, "child")
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysMkdirat, fd, 0x5000, 0o700); d != NoteHandled {
+		t.Fatalf("mkdirat nondir fd disposition = %v", d)
+	}
+	requireSyscallReturn(t, cpu, jea9LinuxErrENOTDIR)
 }
 
 func TestJea9Linux_ConfiguredReadOnlyFileReadSeekPreadAndFcntl(t *testing.T) {
