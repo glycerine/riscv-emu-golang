@@ -28,6 +28,13 @@ const (
 type EmuConfig struct {
 	RunPath           string
 	BiosPath          string
+	KernelPath        string
+	KernelAddr        uint64
+	InitrdPath        string
+	Append            string
+	DTBPath           string
+	DumpDTBPath        string
+	Machine           string
 	Seed              uint64
 	MemorySize        uint64
 	Budget            string
@@ -94,6 +101,13 @@ type EmuJITStats struct {
 func (c *EmuConfig) DefineFlags(fs *flag.FlagSet) {
 	fs.StringVar(&c.RunPath, "run", "", "path to RISCV ELF binary to run")
 	fs.StringVar(&c.BiosPath, "bios", "", "path to RISCV machine-mode BIOS/firmware ELF to boot")
+	fs.StringVar(&c.KernelPath, "kernel", "", "path to kernel or next-stage payload to load with -bios")
+	fs.Uint64Var(&c.KernelAddr, "kernel-addr", 0, "guest physical address for raw -kernel payloads; default 0x80200000")
+	fs.StringVar(&c.InitrdPath, "initrd", "", "path to initrd image to load and advertise in the BIOS FDT")
+	fs.StringVar(&c.Append, "append", "", "kernel command line for generated BIOS FDT bootargs")
+	fs.StringVar(&c.DTBPath, "dtb", "", "path to external flattened device tree blob for -bios")
+	fs.StringVar(&c.DumpDTBPath, "dump-dtb", "", "write the BIOS FDT blob to this path before boot")
+	fs.StringVar(&c.Machine, "machine", "virt", "machine model for -bios; currently only virt")
 	fs.Uint64Var(&c.Seed, "seed", 0, "pseudo random number generator seed")
 	fs.Uint64Var(&c.MemorySize, "mem", defaultEmuMemorySize, "guest memory size in bytes")
 	fs.StringVar(&c.Budget, "budget", defaultEmuBudget, "scheduler budget as an instruction count or duration; 1ns == 1 instruction")
@@ -113,6 +127,9 @@ func (c *EmuConfig) ValidateConfig() error {
 	if c.RunPath != "" && c.BiosPath != "" {
 		return fmt.Errorf("-run and -bios are mutually exclusive")
 	}
+	if c.machine() != "virt" {
+		return fmt.Errorf("-machine %q is not supported; only \"virt\" is available", c.machine())
+	}
 	pathFlag := "-run"
 	path := c.RunPath
 	if c.BiosPath != "" {
@@ -121,6 +138,37 @@ func (c *EmuConfig) ValidateConfig() error {
 	}
 	if !fileExists(path) {
 		return fmt.Errorf("%s path '%v' does not exist", pathFlag, path)
+	}
+	if c.RunPath != "" {
+		switch {
+		case c.KernelPath != "":
+			return fmt.Errorf("-kernel requires -bios")
+		case c.KernelAddr != 0:
+			return fmt.Errorf("-kernel-addr requires -bios")
+		case c.InitrdPath != "":
+			return fmt.Errorf("-initrd requires -bios")
+		case c.Append != "":
+			return fmt.Errorf("-append requires -bios")
+		case c.DTBPath != "":
+			return fmt.Errorf("-dtb requires -bios")
+		case c.DumpDTBPath != "":
+			return fmt.Errorf("-dump-dtb requires -bios")
+		}
+	}
+	if c.KernelPath != "" && !fileExists(c.KernelPath) {
+		return fmt.Errorf("-kernel path '%v' does not exist", c.KernelPath)
+	}
+	if c.InitrdPath != "" && !fileExists(c.InitrdPath) {
+		return fmt.Errorf("-initrd path '%v' does not exist", c.InitrdPath)
+	}
+	if c.DTBPath != "" && !fileExists(c.DTBPath) {
+		return fmt.Errorf("-dtb path '%v' does not exist", c.DTBPath)
+	}
+	if c.DTBPath != "" && c.InitrdPath != "" {
+		return fmt.Errorf("-dtb and -initrd cannot be combined yet; provide initrd properties in the external DTB")
+	}
+	if c.DTBPath != "" && c.Append != "" {
+		return fmt.Errorf("-dtb and -append cannot be combined yet; provide bootargs in the external DTB")
 	}
 	if c.MemorySize == 0 || c.MemorySize&(c.MemorySize-1) != 0 {
 		return fmt.Errorf("-mem must be a non-zero power of two, got %d", c.MemorySize)
@@ -239,6 +287,13 @@ func (c EmuConfig) programPath() string {
 		return c.BiosPath
 	}
 	return c.RunPath
+}
+
+func (c EmuConfig) machine() string {
+	if c.Machine == "" {
+		return "virt"
+	}
+	return c.Machine
 }
 
 func runEmuJIT(cpu *riscv.CPU, mem *riscv.GuestMemory, jlinux *riscv.Jea9Linux, aot bool, stats *EmuJITStats) (int, error) {
