@@ -214,6 +214,19 @@ func loadELFReader(mem *GuestMemory, r io.ReadSeeker, data []byte) (*ELF, error)
 	}
 	mem.loadedELFImageSize = loadedImageSize
 
+	// ── apply RELA relocations for static-pie ELFs ────────────────────────
+	// Static-pie ELFs (ET_DYN) contain a .rela.dyn section with
+	// R_RISCV_RELATIVE entries that patch internal pointers at load time.
+	// A normal dynamic linker would do this; we do it here since the emulator
+	// has no dynamic linker. Each entry is 24 bytes: r_offset (8), r_info (8),
+	// r_addend (8). For R_RISCV_RELATIVE (type 3):
+	//   *( pieBase + r_offset ) = pieBase + r_addend
+	if pieBase != 0 && data != nil {
+		if err := applyRelaRelocations(mem, data, pieBase); err != nil {
+			return nil, fmt.Errorf("elf: RELA relocations: %w", err)
+		}
+	}
+
 	// ── parse section headers ─────────────────────────────────────────────
 	var shdrs []*Elf64Shdr
 	if hdr.ShOff != 0 && hdr.ShNum != 0 && hdr.ShEntSize >= 64 && data != nil {
@@ -244,6 +257,131 @@ func loadELFReader(mem *GuestMemory, r io.ReadSeeker, data []byte) (*ELF, error)
 	}
 
 	return ef, nil
+}
+
+// applyRelaRelocations processes the RELA relocation table for a static-pie
+// ELF. It scans the program headers for PT_DYNAMIC, reads the RELA/RELASZ
+// entries to locate the relocation table in the file, then applies each
+// R_RISCV_RELATIVE entry into guest memory.
+//
+// Only R_RISCV_RELATIVE (type 3) is handled. Any other relocation type causes
+// an error — static-pie firmware should never have symbol-dependent relocations.
+func applyRelaRelocations(mem *GuestMemory, data []byte, pieBase uint64) error {
+	le := binary.LittleEndian
+
+	if len(data) < 64 {
+		return nil
+	}
+
+	phOff := le.Uint64(data[32:])
+	phEntSize := le.Uint16(data[54:])
+	phNum := le.Uint16(data[56:])
+
+	if phOff == 0 || phNum == 0 || phEntSize < 56 {
+		return nil
+	}
+
+	// Walk program headers to find PT_DYNAMIC (type 2).
+	const ptDynamic = 2
+	var dynOffset, dynFileSz uint64
+	for i := 0; i < int(phNum); i++ {
+		off := int(phOff) + i*int(phEntSize)
+		if off+56 > len(data) {
+			break
+		}
+		phType := le.Uint32(data[off:])
+		if phType != ptDynamic {
+			continue
+		}
+		dynOffset = le.Uint64(data[off+8:])  // p_offset (file offset)
+		dynFileSz = le.Uint64(data[off+32:]) // p_filesz
+		break
+	}
+	if dynOffset == 0 {
+		return nil // no DYNAMIC segment, nothing to do
+	}
+
+	// Parse DYNAMIC entries to find DT_RELA, DT_RELASZ.
+	// Each dynamic entry is 16 bytes: d_tag (8) + d_val (8).
+	const (
+		dtRela      = 7
+		dtRelasz    = 8
+		dtRelaent   = 9
+		dtRelacount = 0x6ffffff9
+		dtNull      = 0
+	)
+	var relaVAddr, relaSz uint64
+	relaEnt := uint64(24) // default RELA entry size
+	for pos := dynOffset; pos+16 <= dynOffset+dynFileSz && pos+16 <= uint64(len(data)); pos += 16 {
+		tag := le.Uint64(data[pos:])
+		val := le.Uint64(data[pos+8:])
+		switch tag {
+		case dtRela:
+			relaVAddr = val
+		case dtRelasz:
+			relaSz = val
+		case dtRelaent:
+			relaEnt = val
+		case dtNull:
+			goto doneDyn
+		}
+	}
+doneDyn:
+	if relaVAddr == 0 || relaSz == 0 || relaEnt == 0 {
+		return nil // no RELA table
+	}
+
+	// relaVAddr is a vaddr relative to zero (pre-slide). We need to find its
+	// file offset by scanning PT_LOAD segments for the one that contains it.
+	relaFileOffset := uint64(0)
+	for i := 0; i < int(phNum); i++ {
+		off := int(phOff) + i*int(phEntSize)
+		if off+56 > len(data) {
+			break
+		}
+		if le.Uint32(data[off:]) != 1 { // PT_LOAD
+			continue
+		}
+		segVAddr := le.Uint64(data[off+16:])
+		segFileSz := le.Uint64(data[off+32:])
+		segOffset := le.Uint64(data[off+8:])
+		if relaVAddr >= segVAddr && relaVAddr < segVAddr+segFileSz {
+			relaFileOffset = segOffset + (relaVAddr - segVAddr)
+			break
+		}
+	}
+	if relaFileOffset == 0 {
+		return fmt.Errorf("cannot find file offset for RELA vaddr 0x%x", relaVAddr)
+	}
+
+	// Apply relocations. Each RELA entry: r_offset(8) r_info(8) r_addend(8).
+	const rRISCVRelative = 3
+	nRela := relaSz / relaEnt
+	for i := uint64(0); i < nRela; i++ {
+		pos := relaFileOffset + i*relaEnt
+		if pos+24 > uint64(len(data)) {
+			return fmt.Errorf("RELA entry %d out of bounds", i)
+		}
+		rOffset := le.Uint64(data[pos:])
+		rInfo := le.Uint64(data[pos+8:])
+		rAddend := le.Uint64(data[pos+16:]) // treated as int64 for signed addends
+
+		relocType := rInfo & 0xffffffff
+		if relocType != rRISCVRelative {
+			return fmt.Errorf("unsupported relocation type %d at entry %d", relocType, i)
+		}
+
+		// *( pieBase + r_offset ) = pieBase + r_addend
+		target := pieBase + rOffset
+		value := pieBase + rAddend // int64 addend; pieBase dominates for firmware
+
+		var buf [8]byte
+		le.PutUint64(buf[:], value)
+		if f := mem.WriteBytes(target, buf[:]); f != nil {
+			return fmt.Errorf("write reloc %d to 0x%x: %v", i, target, f)
+		}
+	}
+	return nil
 }
 
 // FindSymbolAddr looks up a symbol by name in the ELF symbol table.
