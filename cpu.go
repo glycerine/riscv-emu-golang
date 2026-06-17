@@ -135,6 +135,11 @@ func (c *CPU) retireInsn() {
 	c.riscvInstrRetired++
 }
 
+func (c *CPU) clearReservation() {
+	c.resvAddr = 0
+	c.resvValid = false
+}
+
 // Run executes the guest until an unhandled note or fatal exception.
 // Exceptions are delivered through cpu.Notes; see NoteChain and RunWithChain.
 //

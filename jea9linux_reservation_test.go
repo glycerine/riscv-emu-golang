@@ -51,6 +51,9 @@ func TestJea9Linux_LRSCReservationIsHartStateAcrossContextSwitch(t *testing.T) {
 	if !jos.loadContext(cpu, ctxB.tid) {
 		t.Fatalf("load context B failed")
 	}
+	if cpu.resvValid {
+		t.Fatalf("context switch to B kept context A reservation {addr:0x%x}; reservation must be cleared by OS return", cpu.resvAddr)
+	}
 	if err := cpu.stepFromInsn(amoenc(amoFunct5LR, amoFunct3W, 14, 10, 0)); err != nil {
 		t.Fatalf("context B LR.W: %v", err)
 	}
@@ -82,6 +85,29 @@ func TestJea9Linux_LRSCReservationIsHartStateAcrossContextSwitch(t *testing.T) {
 	}
 	if got := mustLoad32AMO(t, mem, dataVA); got != 0x22222222 {
 		t.Errorf("memory after stale context A SC.W = 0x%x, want context B value 0x22222222", got)
+	}
+}
+
+func TestJea9Linux_HandledEcallClearsHartReservation(t *testing.T) {
+	j := NewJea9Linux(Jea9LinuxOptions{PID: 123, TID: 123})
+	cpu, mem := newJea9LinuxSyscallCPU(t, j)
+	defer mem.Free()
+
+	const trapPC = uint64(0x5000)
+	cpu.SetPC(trapPC)
+	cpu.SetReg(17, jea9LinuxSysGetpid)
+	cpu.resvAddr = 0x20000
+	cpu.resvValid = true
+
+	d := j.Handle(cpu, Note{Cause: CauseEcallU, PC: trapPC, InsnLen: 4})
+	if d != NoteHandled {
+		t.Fatalf("Handle disposition = %v, want NoteHandled", d)
+	}
+	if got := cpu.PC(); got != trapPC+4 {
+		t.Fatalf("cpu.PC() = 0x%x, want resume PC 0x%x", got, trapPC+4)
+	}
+	if cpu.resvValid {
+		t.Fatalf("handled ECALL return kept reservation {addr:0x%x}; trap return must clear it", cpu.resvAddr)
 	}
 }
 
@@ -169,6 +195,9 @@ func runJITLRSCReservationContextSwitch(t *testing.T, configure func(*JIT)) {
 
 	if !jos.loadContext(cpu, ctxB.tid) {
 		t.Fatalf("load context B failed")
+	}
+	if cpu.resvValid {
+		t.Fatalf("context switch to B kept context A reservation {addr:0x%x}; reservation must be cleared by OS return", cpu.resvAddr)
 	}
 	if res, err := jit.StepBlockBudget(cpu, 3); err != nil || res != RunBudgetExpired {
 		t.Fatalf("context B LR.W/SC.W budget step = (%v,%v), want (%v,nil)", res, err, RunBudgetExpired)

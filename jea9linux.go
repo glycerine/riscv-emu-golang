@@ -1088,7 +1088,10 @@ func (jos *Jea9Linux) finishHandledEcall(cpu *CPU, startTID uint64, trap jea9Lin
 	}
 	if ctx == nil || (jos.currentTID == startTID && ctx.state == jea9LinuxContextRunnable) {
 		if cpu.PC() == trap.trapPC {
+			cpu.clearReservation()
 			cpu.SetPC(trap.resumePC)
+		} else if cpu.PC() == trap.resumePC {
+			cpu.clearReservation()
 		}
 	}
 }
@@ -1100,6 +1103,7 @@ func (jos *Jea9Linux) loadContext(cpu *CPU, tid uint64) bool {
 	}
 	jos.completeContextEcallTrap(ctx)
 	restoreJea9LinuxCPU(cpu, ctx.snapshot)
+	cpu.clearReservation()
 	jos.currentTID = tid
 	jos.tid = tid
 	jos.loadedGuestContexts = 1
