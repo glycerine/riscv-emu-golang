@@ -22,6 +22,7 @@ const (
 
 	jea9TestEpollIn  = uint32(0x001)
 	jea9TestEpollOut = uint32(0x004)
+	jea9TestEpollET  = uint32(0x80000000)
 )
 
 func writeGuest64(t *testing.T, mem *GuestMemory, addr, value uint64) {
@@ -260,6 +261,45 @@ func TestJea9Linux_EpollPwaitReadyImmediate(t *testing.T) {
 	if got := j.MonotonicNS(); got != 0 {
 		t.Fatalf("monotonic advanced to %d for immediate readiness", got)
 	}
+}
+
+func TestJea9Linux_EpollEdgeTriggeredReportsReadinessOnce(t *testing.T) {
+	j := NewJea9Linux(Jea9LinuxOptions{})
+	cpu, mem := newJea9LinuxSyscallCPU(t, j)
+	defer mem.Free()
+
+	eventfd := newEventfd(t, cpu, 1, 0)
+	epfd := newEpoll(t, cpu)
+	event := uint64(0x6000)
+	out := uint64(0x7000)
+	writeEpollEvent(t, mem, event, jea9TestEpollIn|jea9TestEpollET, 0x1234)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysEpollCtl, epfd, jea9TestEpollCtlAdd, eventfd, event); d != NoteHandled {
+		t.Fatalf("epoll add disposition = %v, want NoteHandled", d)
+	}
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysEpollPwait, epfd, out, 4, 0, 0, 0); d != NoteHandled {
+		t.Fatalf("first epoll wait disposition = %v, want NoteHandled", d)
+	}
+	requireSyscallReturn(t, cpu, 1)
+	requireEpollEvent(t, mem, out, jea9TestEpollIn, 0x1234)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysEpollPwait, epfd, out, 4, 0, 0, 0); d != NoteHandled {
+		t.Fatalf("second epoll wait disposition = %v, want NoteHandled", d)
+	}
+	requireSyscallReturn(t, cpu, 0)
+
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysRead, eventfd, 0x8000, 8); d != NoteHandled {
+		t.Fatalf("eventfd read disposition = %v, want NoteHandled", d)
+	}
+	requireSyscallReturn(t, cpu, 8)
+	writeGuest64(t, mem, 0x8000, 1)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysWrite, eventfd, 0x8000, 8); d != NoteHandled {
+		t.Fatalf("eventfd write disposition = %v, want NoteHandled", d)
+	}
+	requireSyscallReturn(t, cpu, 8)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysEpollPwait, epfd, out, 4, 0, 0, 0); d != NoteHandled {
+		t.Fatalf("third epoll wait disposition = %v, want NoteHandled", d)
+	}
+	requireSyscallReturn(t, cpu, 1)
+	requireEpollEvent(t, mem, out, jea9TestEpollIn, 0x1234)
 }
 
 func TestJea9Linux_EpollPwaitBlocksUntilEvent(t *testing.T) {

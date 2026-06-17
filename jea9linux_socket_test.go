@@ -169,6 +169,49 @@ func TestJea9Linux_TCPSocketEpollNoDataDoesNotBlock(t *testing.T) {
 	}
 }
 
+func TestJea9Linux_TCPSocketEpollOutEdgeDoesNotSpin(t *testing.T) {
+	j := NewJea9Linux(Jea9LinuxOptions{AllowAllHostFiles: true})
+	cpu, mem := newJea9LinuxSyscallCPU(t, j)
+	defer mem.Free()
+	defer j.closeAllFDs()
+
+	server := newGuestTCPSocket(t, cpu)
+	writeGuestSockaddrInet4(t, mem, 0x5000, [4]byte{127, 0, 0, 1}, 0)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysBind, server, 0x5000, 16); d != NoteHandled {
+		t.Fatalf("server bind disposition = %v", d)
+	}
+	requireSyscallReturn(t, cpu, 0)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysListen, server, 16); d != NoteHandled {
+		t.Fatalf("server listen disposition = %v", d)
+	}
+	requireSyscallReturn(t, cpu, 0)
+	port := guestTCPListenPort(t, cpu, mem, server)
+
+	client := newGuestTCPSocket(t, cpu)
+	writeGuestSockaddrInet4(t, mem, 0x6000, [4]byte{127, 0, 0, 1}, port)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysConnect, client, 0x6000, 16); d != NoteHandled {
+		t.Fatalf("client connect disposition = %v", d)
+	}
+	requireSyscallReturn(t, cpu, 0)
+	_ = acceptGuestTCP(t, cpu, mem, server)
+
+	epfd := newEpoll(t, cpu)
+	writeEpollEvent(t, mem, 0x7000, jea9TestEpollOut|jea9TestEpollET, 0xbeef)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysEpollCtl, epfd, jea9TestEpollCtlAdd, client, 0x7000); d != NoteHandled {
+		t.Fatalf("epoll add client socket disposition = %v", d)
+	}
+	requireSyscallReturn(t, cpu, 0)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysEpollPwait, epfd, 0x8000, 1, 0, 0, 0); d != NoteHandled {
+		t.Fatalf("first epoll wait disposition = %v", d)
+	}
+	requireSyscallReturn(t, cpu, 1)
+	requireEpollEvent(t, mem, 0x8000, jea9TestEpollOut, 0xbeef)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysEpollPwait, epfd, 0x8000, 1, 0, 0, 0); d != NoteHandled {
+		t.Fatalf("second epoll wait disposition = %v", d)
+	}
+	requireSyscallReturn(t, cpu, 0)
+}
+
 func newGuestTCPSocket(t *testing.T, cpu *CPU) uint64 {
 	t.Helper()
 	flags := jea9TestSockStream | jea9TestSockNonblock | jea9TestSockCloexec
