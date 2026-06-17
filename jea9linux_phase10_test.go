@@ -356,6 +356,45 @@ func TestJea9Linux_EpollPwaitTimeoutIdleJump(t *testing.T) {
 	}
 }
 
+func TestJea9Linux_EpollPwaitIndefiniteHonorsOtherDeadline(t *testing.T) {
+	j := NewJea9Linux(Jea9LinuxOptions{
+		ClockMode:        Jea9ClockIdleJump,
+		MonotonicStartNS: 10,
+	})
+	cpu, mem := newJea9LinuxSyscallCPU(t, j)
+	defer mem.Free()
+
+	child := cloneJea9LinuxThread(t, cpu, j, 0x890000, 0, 0, 0, jea9TestCloneThreadFlags)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysSchedYield); d != NoteHandled {
+		t.Fatalf("yield to child disposition = %v, want NoteHandled", d)
+	}
+	requireCurrentTID(t, j, child)
+
+	req := uint64(0x5000)
+	writeGuest64(t, mem, req, 0)
+	writeGuest64(t, mem, req+8, 90)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysNanosleep, req, 0); d != NoteHandled {
+		t.Fatalf("child nanosleep disposition = %v, want NoteHandled", d)
+	}
+	requireCurrentTID(t, j, j.pid)
+
+	epfd := newEpoll(t, cpu)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysEpollPwait, epfd, 0x7000, 1, ^uint64(0), 0, 0); d != NoteHandled {
+		t.Fatalf("indefinite epoll disposition = %v, want NoteHandled after deadline advance", d)
+	}
+	requireCurrentTID(t, j, child)
+	if got := j.MonotonicNS(); got != 100 {
+		t.Fatalf("monotonic ns = %d, want child nanosleep deadline 100", got)
+	}
+	if got := j.contexts[j.pid].state; got != jea9LinuxContextWaiting {
+		t.Fatalf("parent state = %v, want waiting in epoll", got)
+	}
+	if got := j.contexts[child].state; got != jea9LinuxContextRunnable {
+		t.Fatalf("child state = %v, want runnable after nanosleep deadline", got)
+	}
+	requireSyscallReturn(t, cpu, 0)
+}
+
 func TestJea9Linux_EpollPwaitReadyOrder(t *testing.T) {
 	j := NewJea9Linux(Jea9LinuxOptions{})
 	cpu, mem := newJea9LinuxSyscallCPU(t, j)
