@@ -161,6 +161,13 @@ func TestEmuBiosBootFlagsParse(t *testing.T) {
 	if cfg.machine() != "virt" {
 		t.Fatalf("machine = %q, want virt", cfg.machine())
 	}
+	budget, err := cfg.schedulerBudget()
+	if err != nil {
+		t.Fatalf("schedulerBudget: %v", err)
+	}
+	if budget != ^uint64(0) {
+		t.Fatalf("BIOS default schedulerBudget = %d, want max", budget)
+	}
 
 	runWithKernel := EmuConfig{
 		RunPath:    "../../testvectors/jea9linux/elf/write_stdout.elf",
@@ -356,8 +363,8 @@ func TestRunEmuBiosFWDynamicLinuxSmoke(t *testing.T) {
 		Stdout:     &stdout,
 		Stderr:     &stderr,
 	})
-	if err != nil {
-		t.Fatalf("runEmu fw_dynamic linux smoke: %v; stderr=%q", err, stderr.String())
+	if !errors.Is(err, errBiosBudgetExpired) {
+		t.Fatalf("runEmu fw_dynamic linux smoke err = %v, want errBiosBudgetExpired; stderr=%q", err, stderr.String())
 	}
 	if code != 0 {
 		t.Fatalf("runEmu fw_dynamic linux smoke exit code = %d, want 0; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
@@ -414,8 +421,8 @@ func TestRunEmuBiosOpenSBIFwJumpGetsFDT(t *testing.T) {
 		Stdout:     &stdout,
 		Stderr:     &stderr,
 	})
-	if err != nil {
-		t.Fatalf("runEmu -bios: %v; stderr=%q", err, stderr.String())
+	if !errors.Is(err, errBiosBudgetExpired) {
+		t.Fatalf("runEmu -bios err = %v, want errBiosBudgetExpired; stderr=%q", err, stderr.String())
 	}
 	if code != 0 {
 		t.Fatalf("runEmu -bios exit code = %d, want 0; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
@@ -576,6 +583,18 @@ func TestEmuConfigDefaultsPreserveExplicitZeroClock(t *testing.T) {
 	if budget != defaultEmuInstructionBudget {
 		t.Fatalf("schedulerBudget = %d, want %d", budget, defaultEmuInstructionBudget)
 	}
+
+	bios := EmuConfig{BiosPath: "../../testvectors/jea9linux/elf/write_stdout.elf"}.withDefaults()
+	if bios.Budget != defaultEmuBiosBudget {
+		t.Fatalf("BIOS Budget = %q, want %q", bios.Budget, defaultEmuBiosBudget)
+	}
+	biosBudget, err := bios.schedulerBudget()
+	if err != nil {
+		t.Fatalf("BIOS schedulerBudget default: %v", err)
+	}
+	if biosBudget != ^uint64(0) {
+		t.Fatalf("BIOS schedulerBudget = %d, want max", biosBudget)
+	}
 }
 
 func TestParseEmuJITModeFlags(t *testing.T) {
@@ -692,6 +711,8 @@ func TestParseEmuBudgetAndSeedBytes(t *testing.T) {
 		{name: "1e6", want: 1_000_000},
 		{name: "1_000_000", want: 1_000_000},
 		{name: "1000000", want: 1_000_000},
+		{name: "max", want: ^uint64(0)},
+		{name: "^uint64(0)", want: ^uint64(0)},
 	} {
 		got, err := parseEmuBudget(tc.name)
 		if err != nil {

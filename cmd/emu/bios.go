@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,6 +11,8 @@ import (
 
 	riscv "github.com/glycerine/riscv-emu-golang"
 )
+
+var errBiosBudgetExpired = errors.New("bios instruction budget expired")
 
 const (
 	defaultBiosFDTAddr    = uint64(0x88000000)
@@ -56,6 +59,9 @@ func runEmuBios(cfg EmuConfig, budget uint64) (int, error) {
 	}
 	if res == riscv.RunBudgetExit {
 		return guest.cpu.ExitCode, nil
+	}
+	if res == riscv.RunBudgetExpired {
+		return 0, fmt.Errorf("%w after %d instructions", errBiosBudgetExpired, budget)
 	}
 	return 0, nil
 }

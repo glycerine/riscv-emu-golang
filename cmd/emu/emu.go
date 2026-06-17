@@ -19,6 +19,7 @@ var ProgramName = "emu"
 const (
 	defaultEmuMemorySize        = riscv.Size16GB
 	defaultEmuBudget            = "5ms"
+	defaultEmuBiosBudget        = "max"
 	defaultEmuInstructionBudget = uint64(5 * time.Millisecond)
 	defaultEmuRealtimeStartNS   = int64(946684800000000000) // 2000-01-01T00:00:00Z
 	emuPRNGMinBudget            = uint64(1 * time.Millisecond)
@@ -110,7 +111,7 @@ func (c *EmuConfig) DefineFlags(fs *flag.FlagSet) {
 	fs.StringVar(&c.Machine, "machine", "virt", "machine model for -bios; currently only virt")
 	fs.Uint64Var(&c.Seed, "seed", 0, "pseudo random number generator seed")
 	fs.Uint64Var(&c.MemorySize, "mem", defaultEmuMemorySize, "guest memory size in bytes")
-	fs.StringVar(&c.Budget, "budget", defaultEmuBudget, "scheduler budget as an instruction count or duration; 1ns == 1 instruction")
+	fs.StringVar(&c.Budget, "budget", "", "scheduler/run budget as an instruction count, duration, or max; defaults to 5ms for -run and max for -bios")
 	fs.BoolVar(&c.JITLazy, "jitlazy", false, "run with the native lazy JIT instead of the interpreter")
 	fs.BoolVar(&c.JITAOT, "jitaot", false, "run with explicit AOT JIT instead of the interpreter")
 	fs.BoolVar(&c.Hermit, "hermit", false, "disable host filesystem passthrough")
@@ -334,7 +335,11 @@ func (c EmuConfig) withDefaults() EmuConfig {
 		c.MemorySize = defaultEmuMemorySize
 	}
 	if c.Budget == "" && c.InstructionBudget == 0 {
-		c.Budget = defaultEmuBudget
+		if c.BiosPath != "" {
+			c.Budget = defaultEmuBiosBudget
+		} else {
+			c.Budget = defaultEmuBudget
+		}
 	}
 	if c.Stdin == nil {
 		c.Stdin = os.Stdin
@@ -460,6 +465,9 @@ func (c EmuConfig) schedulerBudget() (uint64, error) {
 		if c.InstructionBudget != 0 {
 			return c.InstructionBudget, nil
 		}
+		if c.BiosPath != "" {
+			return ^uint64(0), nil
+		}
 		return parseEmuBudget(defaultEmuBudget)
 	}
 	return parseEmuBudget(c.Budget)
@@ -469,6 +477,10 @@ func parseEmuBudget(raw string) (uint64, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return 0, fmt.Errorf("-budget must not be empty")
+	}
+	switch strings.ToLower(raw) {
+	case "max", "maxuint64", "uint64max", "^uint64(0)":
+		return ^uint64(0), nil
 	}
 	if d, err := time.ParseDuration(raw); err == nil {
 		if d <= 0 {
