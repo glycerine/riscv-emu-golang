@@ -449,6 +449,10 @@ func TestRunEmuBiosFWDynamicLinuxBootsWith512MBRAM(t *testing.T) {
 		t.Fatalf("OpenSBI did not report S-mode handoff\nstdout tail:\n%s\nstderr:\n%s",
 			tailString(stdout.String(), 4096), stderr.String())
 	}
+	if !strings.Contains(stdout.String(), "Boot HART ISA Extensions    : sstc") {
+		t.Fatalf("OpenSBI did not report Sstc support\nstdout tail:\n%s\nstderr:\n%s",
+			tailString(stdout.String(), 4096), stderr.String())
+	}
 	if !strings.Contains(stdout.String(), "Booting Linux on hartid 0") {
 		t.Fatalf("Linux kernel banner missing\nstdout tail:\n%s\nstderr:\n%s",
 			tailString(stdout.String(), 4096), stderr.String())
