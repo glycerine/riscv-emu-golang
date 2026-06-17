@@ -527,7 +527,7 @@ func TestCSR_UnknownCSR_SilentIgnore(t *testing.T) {
 	insns := li32(5, 0xFF)
 	insns = append(insns, csrw(0x3A0, 5)) // csrw pmpcfg0, x5 (unknown)
 	insns = append(insns, csrw(0x3B0, 5)) // csrw pmpaddr0, x5 (unknown)
-	insns = append(insns, csrw(0x180, 5)) // csrw satp, x5 (unknown)
+	insns = append(insns, csrw(0x180, 5)) // csrw satp, x5 (stored but no translation yet)
 	insns = append(insns, csrw(0x744, 5)) // csrw mnstatus, x5 (non-standard)
 	insns = append(insns, csrr(6, 0x3A0)) // csrr x6, pmpcfg0 → 0
 	insns = append(insns, 0x00100073)     // ebreak
@@ -746,6 +746,7 @@ func TestECALL_TrapsToMtvec_WhenSet(t *testing.T) {
 	}
 	insns = append(insns, csrr(7, 0x342)) // handler: csrr x7, mcause
 	insns = append(insns, csrr(8, 0x341)) // csrr x8, mepc
+	insns = append(insns, csrw(0x305, 0)) // clear mtvec so ebreak stops the host test
 	insns = append(insns, 0x00100073)     // ebreak
 
 	ecallPC := codeVA + uint64(ecallIdx)*4
