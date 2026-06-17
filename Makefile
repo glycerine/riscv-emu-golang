@@ -980,4 +980,4 @@ standard:
 
 linux:
 	go install ./cmd/emu	
-	emu -mem 512MB -bios xendor/opensbi/build/platform/generic/firmware/fw_dynamic.elf -kernel xendor/linux/boot/vmlinuz-6.17.0-35-generic -initrd xendor/linux/initramfs.cpio.gz -append "console=ttyS0,115200 earlycon=uart8250,mmio,0x10000000 rdinit=/init"
+	emu -mem 512MB -bios xendor/opensbi/build/platform/generic/firmware/fw_dynamic.elf -kernel xendor/linux/boot/vmlinuz-6.17.0-35-generic -initrd xendor/linux/initramfs.cpio.gz -append "console=ttyS0,115200 earlycon=uart8250,mmio,0x10000000 rdinit=/init panic=1 reboot=t"

@@ -265,6 +265,11 @@ func TestPrepareBiosGuestLoadsKernelInitrdAndBootArgs(t *testing.T) {
 		!bytes.Contains(guest.fdt, []byte("rv64imafdcsu_zicsr_zifencei_sstc\x00")) {
 		t.Fatalf("generated FDT does not advertise Sstc")
 	}
+	if !bytes.Contains(guest.fdt, []byte("syscon-reboot\x00")) ||
+		!bytes.Contains(guest.fdt, []byte("syscon\x00")) ||
+		!bytes.Contains(guest.fdt, fdtU64(biosSysconBase)) {
+		t.Fatalf("generated FDT does not advertise BIOS syscon reset")
+	}
 	dumped, err := os.ReadFile(dumpDTBPath)
 	if err != nil {
 		t.Fatalf("read dumped dtb: %v", err)
@@ -317,7 +322,7 @@ func TestPrepareBiosGuestUsesExternalDTB(t *testing.T) {
 
 func TestBiosUARTTransmitInterruptThroughPLIC(t *testing.T) {
 	var stdout bytes.Buffer
-	m := newBiosMMIO(strings.NewReader(""), &stdout)
+	m := newBiosMMIO(strings.NewReader(""), &stdout, nil)
 
 	m.storePLIC(4*uint64(biosUARTIRQ), 4, 1)
 	m.storePLIC(0x2000+0x80*uint64(plicSContext), 4, uint64(1)<<biosUARTIRQ)
@@ -352,7 +357,7 @@ func TestBiosUARTTransmitInterruptThroughPLIC(t *testing.T) {
 }
 
 func TestBiosUARTReceiveInterruptThroughPLIC(t *testing.T) {
-	m := newBiosMMIO(nil, io.Discard)
+	m := newBiosMMIO(nil, io.Discard, nil)
 	m.uartRX = append(m.uartRX, "ls\n"...)
 
 	m.storePLIC(4*uint64(biosUARTIRQ), 4, 1)
@@ -391,7 +396,7 @@ func TestBiosUARTReceiveInterruptThroughPLIC(t *testing.T) {
 }
 
 func TestBiosUARTInputReaderFeedsReceiveFIFO(t *testing.T) {
-	m := newBiosMMIO(strings.NewReader("x\n"), io.Discard)
+	m := newBiosMMIO(strings.NewReader("x\n"), io.Discard, nil)
 	deadline := time.Now().Add(time.Second)
 	for len(m.uartRX) < 2 && time.Now().Before(deadline) {
 		m.drainUARTInput()
@@ -407,6 +412,26 @@ func TestBiosUARTInputReaderFeedsReceiveFIFO(t *testing.T) {
 	}
 	if got := m.loadUART(0, 1); byte(got) != '\n' {
 		t.Fatalf("UART RBR second byte = %q, want newline", byte(got))
+	}
+}
+
+func TestBiosSysconResetInvokesCallback(t *testing.T) {
+	calls := 0
+	m := newBiosMMIO(nil, io.Discard, func() {
+		calls++
+	})
+
+	if ok, fault := m.Store(biosSysconBase+uint64(biosSysconResetOffset), 4, uint64(biosSysconResetValue)); !ok || fault != nil {
+		t.Fatalf("syscon reset store ok=%v fault=%v, want handled without fault", ok, fault)
+	}
+	if calls != 1 {
+		t.Fatalf("reset callback calls = %d, want 1", calls)
+	}
+	if ok, fault := m.Store(biosSysconBase+8, 4, 0); !ok || fault != nil {
+		t.Fatalf("syscon non-reset store ok=%v fault=%v, want handled without fault", ok, fault)
+	}
+	if calls != 1 {
+		t.Fatalf("reset callback calls after non-reset store = %d, want 1", calls)
 	}
 }
 
@@ -560,6 +585,15 @@ func TestRunEmuBiosFWDynamicLinuxBootsWith512MBRAM(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "Boot HART ISA Extensions    : sstc") {
 		t.Fatalf("OpenSBI did not report Sstc support\nstdout tail:\n%s\nstderr:\n%s",
+			tailString(stdout.String(), 4096), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "Platform Reboot Device      : syscon-reboot") {
+		t.Fatalf("OpenSBI did not register syscon reboot\nstdout tail:\n%s\nstderr:\n%s",
+			tailString(stdout.String(), 4096), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "Standard SBI Extensions     :") ||
+		!strings.Contains(stdout.String(), "srst") {
+		t.Fatalf("OpenSBI did not advertise SRST\nstdout tail:\n%s\nstderr:\n%s",
 			tailString(stdout.String(), 4096), stderr.String())
 	}
 	if !strings.Contains(stdout.String(), "Booting Linux on hartid 0") {

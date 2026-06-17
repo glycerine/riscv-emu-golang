@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	riscv "github.com/glycerine/riscv-emu-golang"
 )
@@ -29,6 +30,11 @@ const (
 	virtRAMBase           = uint64(0x80000000)
 	virtCPUIntcPH         = uint32(1)
 	virtPLICPH            = uint32(2)
+	virtSysconPH          = uint32(3)
+	biosSysconBase        = uint64(0x00100000)
+	biosSysconSize        = uint64(0x1000)
+	biosSysconResetOffset = uint32(0)
+	biosSysconResetValue  = uint32(1)
 	biosUARTBase          = uint64(0x10000000)
 	biosUARTSize          = uint64(0x100)
 	biosCLINTBase         = uint64(0x02000000)
@@ -73,10 +79,20 @@ func runEmuBios(cfg EmuConfig, budget uint64) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	restore := func() {}
 	if raw {
-		defer restoreTerminal()
+		var restoreOnce sync.Once
+		restore = func() {
+			restoreOnce.Do(func() {
+				_ = restoreTerminal()
+			})
+		}
+		defer restore()
 	}
-	guest, err := prepareBiosGuest(cfg)
+	guest, err := prepareBiosGuestWithReset(cfg, func() {
+		restore()
+		os.Exit(0)
+	})
 	if err != nil {
 		return 0, err
 	}
@@ -96,6 +112,10 @@ func runEmuBios(cfg EmuConfig, budget uint64) (int, error) {
 }
 
 func prepareBiosGuest(cfg EmuConfig) (*biosGuest, error) {
+	return prepareBiosGuestWithReset(cfg, nil)
+}
+
+func prepareBiosGuestWithReset(cfg EmuConfig, onSystemReset func()) (*biosGuest, error) {
 	cfg = cfg.withDefaults()
 	if err := cfg.resolveMemory(); err != nil {
 		return nil, err
@@ -164,7 +184,7 @@ func prepareBiosGuest(cfg EmuConfig) (*biosGuest, error) {
 		}
 	}
 
-	mem.SetMMIO(newBiosMMIO(cfg.Stdin, cfg.Stdout))
+	mem.SetMMIO(newBiosMMIO(cfg.Stdin, cfg.Stdout, onSystemReset))
 	cpu := riscv.NewCPU(*mem)
 	cpu.EnableStrictCSR()
 	cpu.SetPrivilegeMode(riscv.PrivMachine)
@@ -303,7 +323,9 @@ func (c EmuConfig) biosBootArgs() string {
 }
 
 type biosMMIO struct {
-	stdout          io.Writer
+	stdout        io.Writer
+	onSystemReset func()
+
 	uart            [0x100]byte
 	uartTXInterrupt bool
 	uartRX          []byte
@@ -316,11 +338,11 @@ type biosMMIO struct {
 	plicClaimed     [2]uint32
 }
 
-func newBiosMMIO(stdin io.Reader, stdout io.Writer) *biosMMIO {
+func newBiosMMIO(stdin io.Reader, stdout io.Writer, onSystemReset func()) *biosMMIO {
 	if stdout == nil {
 		stdout = io.Discard
 	}
-	m := &biosMMIO{stdout: stdout}
+	m := &biosMMIO{stdout: stdout, onSystemReset: onSystemReset}
 	m.uart[2] = 0x01 // IIR: no interrupt pending
 	m.uart[5] = 0x60 // LSR: transmitter holding register empty, idle
 	storeLittleEndian(m.clint[:], 0x4000, 8, ^uint64(0))
@@ -349,6 +371,9 @@ func (m *biosMMIO) startUARTInput(stdin io.Reader) {
 }
 
 func (m *biosMMIO) Load(addr, width uint64) (uint64, bool, *riscv.MemFault) {
+	if off, ok := mmioRangeOffset(addr, width, biosSysconBase, biosSysconSize); ok {
+		return m.loadSyscon(off, width), true, nil
+	}
 	if off, ok := mmioRangeOffset(addr, width, biosUARTBase, biosUARTSize); ok {
 		return m.loadUART(off, width), true, nil
 	}
@@ -358,7 +383,8 @@ func (m *biosMMIO) Load(addr, width uint64) (uint64, bool, *riscv.MemFault) {
 	if off, ok := mmioRangeOffset(addr, width, biosPLICBase, biosPLICSize); ok {
 		return m.loadPLIC(off, width), true, nil
 	}
-	if mmioRangeTouches(addr, width, biosUARTBase, biosUARTSize) ||
+	if mmioRangeTouches(addr, width, biosSysconBase, biosSysconSize) ||
+		mmioRangeTouches(addr, width, biosUARTBase, biosUARTSize) ||
 		mmioRangeTouches(addr, width, biosCLINTBase, biosCLINTSize) ||
 		mmioRangeTouches(addr, width, biosPLICBase, biosPLICSize) {
 		return 0, true, &riscv.MemFault{Addr: addr, Width: width, Kind: riscv.FaultLoad}
@@ -367,6 +393,10 @@ func (m *biosMMIO) Load(addr, width uint64) (uint64, bool, *riscv.MemFault) {
 }
 
 func (m *biosMMIO) Store(addr, width, value uint64) (bool, *riscv.MemFault) {
+	if off, ok := mmioRangeOffset(addr, width, biosSysconBase, biosSysconSize); ok {
+		m.storeSyscon(off, width, value)
+		return true, nil
+	}
 	if off, ok := mmioRangeOffset(addr, width, biosUARTBase, biosUARTSize); ok {
 		m.storeUART(off, width, value)
 		return true, nil
@@ -379,7 +409,8 @@ func (m *biosMMIO) Store(addr, width, value uint64) (bool, *riscv.MemFault) {
 		m.storePLIC(off, width, value)
 		return true, nil
 	}
-	if mmioRangeTouches(addr, width, biosUARTBase, biosUARTSize) ||
+	if mmioRangeTouches(addr, width, biosSysconBase, biosSysconSize) ||
+		mmioRangeTouches(addr, width, biosUARTBase, biosUARTSize) ||
 		mmioRangeTouches(addr, width, biosCLINTBase, biosCLINTSize) ||
 		mmioRangeTouches(addr, width, biosPLICBase, biosPLICSize) {
 		return true, &riscv.MemFault{Addr: addr, Width: width, Kind: riscv.FaultStore}
@@ -388,9 +419,23 @@ func (m *biosMMIO) Store(addr, width, value uint64) (bool, *riscv.MemFault) {
 }
 
 func (m *biosMMIO) MMIOOverlaps(addr, size uint64) bool {
-	return rangesOverlap(addr, addr+size, biosUARTBase, biosUARTBase+biosUARTSize) ||
+	return rangesOverlap(addr, addr+size, biosSysconBase, biosSysconBase+biosSysconSize) ||
+		rangesOverlap(addr, addr+size, biosUARTBase, biosUARTBase+biosUARTSize) ||
 		rangesOverlap(addr, addr+size, biosCLINTBase, biosCLINTBase+biosCLINTSize) ||
 		rangesOverlap(addr, addr+size, biosPLICBase, biosPLICBase+biosPLICSize)
+}
+
+func (m *biosMMIO) loadSyscon(off, width uint64) uint64 {
+	return 0
+}
+
+func (m *biosMMIO) storeSyscon(off, width, value uint64) {
+	if !mmioRangeTouches(off, width, uint64(biosSysconResetOffset), 4) {
+		return
+	}
+	if m.onSystemReset != nil {
+		m.onSystemReset()
+	}
 }
 
 func (m *biosMMIO) loadUART(off, width uint64) uint64 {
@@ -860,6 +905,22 @@ func buildVirtFDT(memSize uint64, opts virtFDTOptions) ([]byte, error) {
 	b.propCells("#size-cells", 2)
 	b.propEmpty("ranges")
 	b.propString("compatible", "simple-bus")
+
+	b.beginNode("syscon@100000")
+	b.propString("compatible", "syscon")
+	b.propCells64("reg", biosSysconBase, biosSysconSize)
+	b.propCells("reg-io-width", 4)
+	b.propEmpty("little-endian")
+	b.propCells("phandle", virtSysconPH)
+	b.endNode()
+
+	b.beginNode("reboot")
+	b.propString("compatible", "syscon-reboot")
+	b.propCells("regmap", virtSysconPH)
+	b.propCells("offset", biosSysconResetOffset)
+	b.propCells("value", biosSysconResetValue)
+	b.propCells("priority", 192)
+	b.endNode()
 
 	b.beginNode("clint@2000000")
 	b.propStringList("compatible", "sifive,clint0", "riscv,clint0")
