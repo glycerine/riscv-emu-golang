@@ -27,6 +27,7 @@ const (
 
 type EmuConfig struct {
 	RunPath           string
+	BiosPath          string
 	Seed              uint64
 	MemorySize        uint64
 	Budget            string
@@ -92,6 +93,7 @@ type EmuJITStats struct {
 
 func (c *EmuConfig) DefineFlags(fs *flag.FlagSet) {
 	fs.StringVar(&c.RunPath, "run", "", "path to RISCV ELF binary to run")
+	fs.StringVar(&c.BiosPath, "bios", "", "path to RISCV machine-mode BIOS/firmware ELF to boot")
 	fs.Uint64Var(&c.Seed, "seed", 0, "pseudo random number generator seed")
 	fs.Uint64Var(&c.MemorySize, "mem", defaultEmuMemorySize, "guest memory size in bytes")
 	fs.StringVar(&c.Budget, "budget", defaultEmuBudget, "scheduler budget as an instruction count or duration; 1ns == 1 instruction")
@@ -105,11 +107,20 @@ func (c *EmuConfig) DefineFlags(fs *flag.FlagSet) {
 }
 
 func (c *EmuConfig) ValidateConfig() error {
-	if c.RunPath == "" {
-		return fmt.Errorf("-run path required and missing")
+	if c.RunPath == "" && c.BiosPath == "" {
+		return fmt.Errorf("one of -run or -bios is required")
 	}
-	if !fileExists(c.RunPath) {
-		return fmt.Errorf("-run path '%v' does not exist", c.RunPath)
+	if c.RunPath != "" && c.BiosPath != "" {
+		return fmt.Errorf("-run and -bios are mutually exclusive")
+	}
+	pathFlag := "-run"
+	path := c.RunPath
+	if c.BiosPath != "" {
+		pathFlag = "-bios"
+		path = c.BiosPath
+	}
+	if !fileExists(path) {
+		return fmt.Errorf("%s path '%v' does not exist", pathFlag, path)
 	}
 	if c.MemorySize == 0 || c.MemorySize&(c.MemorySize-1) != 0 {
 		return fmt.Errorf("-mem must be a non-zero power of two, got %d", c.MemorySize)
@@ -145,7 +156,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
-	cfg.Args = append([]string{cfg.RunPath}, myflags.Args()...)
+	cfg.Args = append([]string{cfg.programPath()}, myflags.Args()...)
 	vv("cfg.Args = '%#v'", cfg.Args)
 
 	code, err := runEmu(*cfg)
@@ -165,6 +176,9 @@ func runEmu(cfg EmuConfig) (int, error) {
 	budget, err := cfg.schedulerBudget()
 	if err != nil {
 		return 0, err
+	}
+	if cfg.BiosPath != "" {
+		return runEmuBios(cfg, budget)
 	}
 	clockPolicy, err := cfg.clockPolicy()
 	if err != nil {
@@ -218,6 +232,13 @@ func runEmu(cfg EmuConfig) (int, error) {
 		return runEmuJIT(cpu, mem, jlinux, cfg.JITAOT, cfg.JITStats)
 	}
 	return riscv.RunWithJea9Linux(cpu, jlinux)
+}
+
+func (c EmuConfig) programPath() string {
+	if c.BiosPath != "" {
+		return c.BiosPath
+	}
+	return c.RunPath
 }
 
 func runEmuJIT(cpu *riscv.CPU, mem *riscv.GuestMemory, jlinux *riscv.Jea9Linux, aot bool, stats *EmuJITStats) (int, error) {

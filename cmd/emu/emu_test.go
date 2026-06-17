@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"flag"
 	"strings"
 	"testing"
@@ -92,6 +93,109 @@ func TestEmuTimeModeFollowsHermitFlag(t *testing.T) {
 	if got := (EmuConfig{Hermit: true}).timeMode(); got != riscv.HermitTime {
 		t.Fatalf("hermit emu time mode = %v, want HermitTime", got)
 	}
+}
+
+func TestEmuBiosFlagIsSeparateFromRun(t *testing.T) {
+	const path = "../../testvectors/jea9linux/elf/write_stdout.elf"
+	cfg, _, _ := parseEmuConfigForTest(t,
+		"-bios", path,
+	)
+	if cfg.RunPath != "" {
+		t.Fatalf("-bios populated RunPath = %q", cfg.RunPath)
+	}
+	if got, want := cfg.BiosPath, path; got != want {
+		t.Fatalf("BiosPath = %q, want %q", got, want)
+	}
+
+	empty := EmuConfig{}
+	if err := empty.ValidateConfig(); err == nil {
+		t.Fatal("ValidateConfig accepted missing -run/-bios path")
+	}
+	both := EmuConfig{
+		RunPath:  "../../testvectors/jea9linux/elf/write_stdout.elf",
+		BiosPath: "../../xendor/opensbi/build/platform/generic/firmware/fw_jump.elf",
+	}
+	if err := both.ValidateConfig(); err == nil {
+		t.Fatal("ValidateConfig accepted both -run and -bios")
+	}
+}
+
+func TestRunEmuBiosOpenSBIFwJumpGetsFDT(t *testing.T) {
+	const path = "../../xendor/opensbi/build/platform/generic/firmware/fw_jump.elf"
+	if !fileExists(path) {
+		t.Skipf("OpenSBI firmware fixture not present: %s", path)
+	}
+
+	guest, err := prepareBiosGuest(EmuConfig{
+		BiosPath:   path,
+		MemorySize: riscv.Size16GB,
+		Stdin:      strings.NewReader(""),
+		Stdout:     &bytes.Buffer{},
+		Stderr:     &bytes.Buffer{},
+	}.withDefaults())
+	if err != nil {
+		t.Fatalf("prepareBiosGuest: %v", err)
+	}
+	defer guest.mem.Free()
+
+	if got := guest.cpu.Reg(10); got != 0 {
+		t.Fatalf("a0/hartid = %d, want 0", got)
+	}
+	fdtAddr := guest.cpu.Reg(11)
+	if fdtAddr == 0 {
+		t.Fatal("a1/FDT pointer is zero")
+	}
+	if got := guest.cpu.PC(); got != guest.elf.Entry {
+		t.Fatalf("PC = 0x%x, want ELF entry 0x%x", got, guest.elf.Entry)
+	}
+	magic, fault := loadBigEndianU32(guest.mem, fdtAddr)
+	if fault != nil {
+		t.Fatalf("loading FDT magic at 0x%x: %v", fdtAddr, fault)
+	}
+	if magic != 0xd00dfeed {
+		t.Fatalf("FDT magic at 0x%x = 0x%08x, want 0xd00dfeed", fdtAddr, magic)
+	}
+
+	_, err = riscv.RunDefaultBudget(guest.cpu, &guest.cpu.Notes, 256)
+	if isNullFDTFault(err) {
+		t.Fatalf("OpenSBI still dereferenced a null FDT pointer: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code, err := runEmu(EmuConfig{
+		BiosPath:   path,
+		MemorySize: riscv.Size16GB,
+		Budget:     "256",
+		Stdin:      strings.NewReader(""),
+		Stdout:     &stdout,
+		Stderr:     &stderr,
+	})
+	if err != nil {
+		t.Fatalf("runEmu -bios: %v; stderr=%q", err, stderr.String())
+	}
+	if code != 0 {
+		t.Fatalf("runEmu -bios exit code = %d, want 0; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+}
+
+func loadBigEndianU32(mem *riscv.GuestMemory, addr uint64) (uint32, *riscv.MemFault) {
+	var raw [4]byte
+	for i := range raw {
+		v, fault := mem.Load8(addr + uint64(i))
+		if fault != nil {
+			return 0, fault
+		}
+		raw[i] = v
+	}
+	return binary.BigEndian.Uint32(raw[:]), nil
+}
+
+func isNullFDTFault(err error) bool {
+	if err == nil {
+		return false
+	}
+	var fault *riscv.MemFault
+	return errors.As(err, &fault) && fault.Kind == riscv.FaultLoad && fault.Addr < 8
 }
 
 func envHas(env []string, want string) bool {
@@ -346,7 +450,7 @@ func parseEmuConfigForTest(t *testing.T, args ...string) (EmuConfig, *bytes.Buff
 	if err := cfg.ValidateConfig(); err != nil {
 		t.Fatalf("validate flags: %v", err)
 	}
-	cfg.Args = append([]string{cfg.RunPath}, fs.Args()...)
+	cfg.Args = append([]string{cfg.programPath()}, fs.Args()...)
 	cfg.Env = []string{}
 
 	var stdout, stderr bytes.Buffer
