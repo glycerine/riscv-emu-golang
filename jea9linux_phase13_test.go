@@ -306,8 +306,15 @@ func TestJea9Linux_JITAllCheckedInELFFixtures(t *testing.T) {
 	if len(paths) == 0 {
 		t.Fatal("no jea9linux ELF fixtures found")
 	}
+	integrationOnly := map[string]string{
+		"tcp_socket_client.elf": "requires a peer server and port arguments",
+		"tcp_socket_server.elf": "requires client peers and port arguments",
+	}
 	for _, path := range paths {
 		t.Run(filepath.Base(path), func(t *testing.T) {
+			if reason := integrationOnly[filepath.Base(path)]; reason != "" {
+				t.Skip(reason)
+			}
 			opts := Jea9LinuxOptions{
 				Stdin: bytes.NewBufferString("fixture input\n"),
 			}
