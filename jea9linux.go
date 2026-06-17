@@ -3066,17 +3066,8 @@ func (jos *Jea9Linux) sysEpollPwait(cpu *CPU, epfdRaw, eventsAddr, maxEvents, ti
 	ctx.waitHasDeadline = hasDeadline
 	if hasDeadline {
 		jos.timedEpollWaiters++
-		jos.blockedUntil = deadline
-		jos.blockedHasDeadline = true
 	}
-	if next, ok := jos.nextRunnableByPolicyAfterCurrent(); ok {
-		jos.loadContext(cpu, next)
-		jos.blocked = false
-		jos.blockedHasDeadline = false
-		return NoteHandled
-	}
-	jos.blocked = true
-	return NoteExit
+	return jos.scheduleAfterCurrentBlocked(cpu)
 }
 
 func (jos *Jea9Linux) epollDeadline(timeoutRaw uint64) (int64, bool, int64) {
