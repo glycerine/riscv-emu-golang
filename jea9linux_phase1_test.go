@@ -214,6 +214,130 @@ func TestJea9Linux_ICTickAdvancesAtBudgetBoundary(t *testing.T) {
 	}
 }
 
+func TestJea9Linux_HostBudgetDoesNotAdvanceSchedulerEvent(t *testing.T) {
+	cpu, mem, os := testLoopCPU(t, 3)
+	defer mem.Free()
+	os.traceEnabled = true
+
+	parent := os.ensureScheduler(cpu)
+	childTID := parent.tid + 1
+	os.contexts[childTID] = &jea9LinuxContext{
+		tid:   childTID,
+		state: jea9LinuxContextRunnable,
+		snapshot: jea9LinuxCPUSnapshot{
+			pc: 0x2000,
+		},
+	}
+	os.contextOrder = append(os.contextOrder, childTID)
+	beforePRNG := os.SchedulerPRNGState()
+	beforeDraws := os.SchedulerPRNGDraws()
+	beforeEvents := os.SchedulerEventID()
+
+	err := os.Run(cpu)
+	if !errors.Is(err, ErrJea9LinuxBudget) {
+		t.Fatalf("Run error = %v, want ErrJea9LinuxBudget", err)
+	}
+	requireCurrentTID(t, os, parent.tid)
+	if got := os.SchedulerPRNGDraws(); got != beforeDraws {
+		t.Fatalf("SchedulerPRNGDraws = %d, want %d after host budget", got, beforeDraws)
+	}
+	if got := os.SchedulerEventID(); got != beforeEvents {
+		t.Fatalf("SchedulerEventID = %d, want %d after host budget", got, beforeEvents)
+	}
+	if got := os.SchedulerPRNGState(); !bytes.Equal(got, beforePRNG) {
+		t.Fatalf("scheduler PRNG state changed after host budget:\ngot  %x\nwant %x", got, beforePRNG)
+	}
+	if got := len(os.TraceSnapshot().Schedule); got != 0 {
+		t.Fatalf("schedule trace entries after host budget = %d, want 0", got)
+	}
+	if got := os.MonotonicNS(); got != 0 {
+		t.Fatalf("MonotonicNS after host budget = %d, want 0", got)
+	}
+}
+
+func TestJea9Linux_SchedulerDecisionAdvancesEvent(t *testing.T) {
+	cpu, mem, os := testLoopCPU(t, 100)
+	defer mem.Free()
+	os.traceEnabled = true
+	os.schedulerConfig = Jea9LinuxSchedulerConfig{
+		Mode:                   Jea9SchedulerDST,
+		MinQuantumRetired:      2,
+		MaxQuantumRetired:      2,
+		LowPriorityDenominator: 10,
+	}
+	os.normalizeSchedulerConfig()
+
+	parent := os.ensureScheduler(cpu)
+	childTID := parent.tid + 1
+	os.contexts[childTID] = &jea9LinuxContext{
+		tid:   childTID,
+		state: jea9LinuxContextRunnable,
+		snapshot: jea9LinuxCPUSnapshot{
+			pc: 0x1000,
+		},
+	}
+	os.contextOrder = append(os.contextOrder, childTID)
+
+	err := os.Run(cpu)
+	if !errors.Is(err, ErrJea9LinuxBudget) {
+		t.Fatalf("Run error = %v, want ErrJea9LinuxBudget", err)
+	}
+	if got := os.SchedulerEventID(); got != 1 {
+		t.Fatalf("SchedulerEventID = %d, want 1 after scheduler quantum", got)
+	}
+	requireCurrentTID(t, os, childTID)
+	trace := os.TraceSnapshot()
+	if got := len(trace.Schedule); got != 1 {
+		t.Fatalf("schedule trace entries = %d, want 1", got)
+	}
+	if got := trace.Schedule[0].Event; got != "quantum" {
+		t.Fatalf("schedule event = %q, want quantum", got)
+	}
+	if got := trace.Schedule[0].SchedEventID; got != 1 {
+		t.Fatalf("trace SchedEventID = %d, want 1", got)
+	}
+	if got := trace.Schedule[0].RiscvInstrRetired; got != 2 {
+		t.Fatalf("trace RiscvInstrRetired = %d, want 2", got)
+	}
+}
+
+func TestJea9Linux_SchedulerDecisionAdvancesEvent_LazyJIT(t *testing.T) {
+	cpu, mem, os := testLoopCPU(t, 100)
+	defer mem.Free()
+	os.schedulerConfig = Jea9LinuxSchedulerConfig{
+		Mode:                   Jea9SchedulerDST,
+		MinQuantumRetired:      2,
+		MaxQuantumRetired:      2,
+		LowPriorityDenominator: 10,
+	}
+	os.normalizeSchedulerConfig()
+	jit := NewJIT()
+	defer jit.Close()
+
+	parent := os.ensureScheduler(cpu)
+	childTID := parent.tid + 1
+	os.contexts[childTID] = &jea9LinuxContext{
+		tid:   childTID,
+		state: jea9LinuxContextRunnable,
+		snapshot: jea9LinuxCPUSnapshot{
+			pc: 0x1000,
+		},
+	}
+	os.contextOrder = append(os.contextOrder, childTID)
+
+	err := os.RunJIT(cpu, jit)
+	if !errors.Is(err, ErrJea9LinuxBudget) {
+		t.Fatalf("RunJIT error = %v, want ErrJea9LinuxBudget", err)
+	}
+	if got := os.SchedulerEventID(); got != 1 {
+		t.Fatalf("SchedulerEventID = %d, want 1 after scheduler quantum", got)
+	}
+	requireCurrentTID(t, os, childTID)
+	if got := cpu.RiscvInstrRetired(); got != 2 {
+		t.Fatalf("RiscvInstrRetired = %d, want 2", got)
+	}
+}
+
 func TestJITStepBlockBudget_ExpiresAtExactInstructionCount(t *testing.T) {
 	cpu, mem, _ := testLoopCPU(t, 5)
 	defer mem.Free()

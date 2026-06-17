@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
+	mathrand2 "math/rand/v2"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -20,6 +21,27 @@ const (
 	Jea9ClockICTick
 )
 
+type ClockPolicy uint8
+
+const (
+	ClockPolicyOnlyDeadlockAdvances ClockPolicy = iota
+	ClockPolicyPRNG
+	ClockPolicyFixed
+)
+
+func (p ClockPolicy) String() string {
+	switch p {
+	case ClockPolicyOnlyDeadlockAdvances:
+		return "only-deadlock-advances"
+	case ClockPolicyPRNG:
+		return "prng"
+	case ClockPolicyFixed:
+		return "fixed"
+	default:
+		return "unknown"
+	}
+}
+
 type Jea9LinuxNanosleepAdvanceMode uint8
 
 const (
@@ -27,9 +49,62 @@ const (
 	Jea9NanosleepAdvanceFixed
 )
 
+type Jea9LinuxSchedulerMode uint8
+
+const (
+	Jea9SchedulerRoundRobin Jea9LinuxSchedulerMode = iota
+	Jea9SchedulerDST
+	Jea9SchedulerChaos
+)
+
+type Jea9LinuxSchedulerConfig struct {
+	Mode Jea9LinuxSchedulerMode
+
+	Seed [32]byte
+
+	MinQuantumRetired uint64
+	MaxQuantumRetired uint64
+
+	LowPriorityNumerator   uint64
+	LowPriorityDenominator uint64
+
+	PriorityShuffleMinRetired uint64
+	PriorityShuffleMaxRetired uint64
+
+	ChaosWindowProbNumerator   uint64
+	ChaosWindowProbDenominator uint64
+	ChaosWindowMaxNS           int64
+	ChaosBudgetNumerator       uint64
+	ChaosBudgetDenominator     uint64
+}
+
+type jea9LinuxSchedPriority uint8
+
+const (
+	jea9LinuxSchedHigh jea9LinuxSchedPriority = iota
+	jea9LinuxSchedLow
+)
+
+func (p jea9LinuxSchedPriority) String() string {
+	switch p {
+	case jea9LinuxSchedHigh:
+		return "high"
+	case jea9LinuxSchedLow:
+		return "low"
+	default:
+		return "unknown"
+	}
+}
+
 const (
 	defaultJea9LinuxInstructionBudget = uint64(65536)
 	defaultJea9LinuxStackReserve      = uint64(8 * Size1MB)
+	defaultJea9LinuxClockPRNGMinNS    = int64(1_000_000)
+	defaultJea9LinuxClockPRNGMaxNS    = int64(500_000_000)
+	defaultJea9LinuxRoundRobinQuantum = uint64(65536)
+	defaultJea9LinuxSchedMinQuantum   = uint64(100)
+	defaultJea9LinuxSchedMaxQuantum   = uint64(1000)
+	defaultJea9LinuxChaosWindowMaxNS  = int64(3_000_000_000)
 )
 
 var (
@@ -313,12 +388,14 @@ type jea9LinuxSignalFrame struct {
 type Jea9LinuxOptions struct {
 	EntropySeed       []byte
 	ClockMode         Jea9LinuxClockMode
+	ClockPolicy       ClockPolicy
 	MonotonicStartNS  int64
 	RealtimeOffsetNS  int64
 	NSPerInstruction  int64
 	NanosleepMode     Jea9LinuxNanosleepAdvanceMode
 	NanosleepFixedNS  int64
 	InstructionBudget uint64
+	Scheduler         Jea9LinuxSchedulerConfig
 	// Trace enables replay/debug recording. It is off by default for normal runs.
 	Trace             bool
 	Stdin             io.Reader
@@ -347,13 +424,27 @@ type Jea9LinuxSyscallTraceEntry struct {
 }
 
 type Jea9LinuxScheduleTraceEntry struct {
-	Event           string
-	TID             uint64
-	NextTID         uint64
-	FromPC          uint64
-	NextPC          uint64
-	MonotonicNS     int64
-	RiscvInstrBegun uint64 // cumulative guest instruction attempts begun by the hart
+	Event             string
+	TID               uint64
+	NextTID           uint64
+	FromPC            uint64
+	NextPC            uint64
+	MonotonicNS       int64
+	RiscvInstrBegun   uint64 // cumulative guest instruction attempts begun by the hart
+	SchedEventID      uint64
+	SchedPRNGDraws    uint64
+	SchedPRNGState    []byte
+	RiscvInstrRetired uint64
+	QuantumRetired    uint64
+	Reason            string
+	FromPriority      string
+	ToPriority        string
+	ChaosActive       bool
+	ChaosUntilNS      int64
+	ClockPolicy       string
+	ClockAdvanceNS    int64
+	ClockBeforeNS     int64
+	ClockAfterNS      int64
 }
 
 type Jea9LinuxRandomTraceEntry struct {
@@ -389,13 +480,18 @@ type Jea9LinuxTraceSnapshot struct {
 }
 
 type Jea9Linux struct {
-	clockMode         Jea9LinuxClockMode
-	monotonicNS       int64
-	realtimeOffsetNS  int64
-	nsPerInstruction  int64
-	nanosleepMode     Jea9LinuxNanosleepAdvanceMode
-	nanosleepFixedNS  int64
-	instructionBudget uint64
+	clockMode           Jea9LinuxClockMode
+	clockPolicy         ClockPolicy
+	clockFixedAdvanceNS int64
+	clockPRNGMinNS      int64
+	clockPRNGMaxNS      int64
+	monotonicNS         int64
+	realtimeOffsetNS    int64
+	nsPerInstruction    int64
+	nanosleepMode       Jea9LinuxNanosleepAdvanceMode
+	nanosleepFixedNS    int64
+	instructionBudget   uint64
+	schedulerConfig     Jea9LinuxSchedulerConfig
 
 	stdin             io.Reader
 	stdout            io.Writer
@@ -411,6 +507,19 @@ type Jea9Linux struct {
 	randomCounter uint64
 	randomBuf     [32]byte
 	randomOff     int
+
+	schedRNG          *mathrand2.ChaCha8
+	schedPRNGSnapshot []byte
+	schedDraws        uint64
+	schedEventID      uint64
+
+	currentQuantumRetired      uint64
+	nextScheduleAtRetired      uint64
+	nextPriorityShuffleRetired uint64
+	chaosActive                bool
+	chaosStartNS               int64
+	chaosUntilNS               int64
+	chaosBlockedNS             int64
 
 	budgetYields       uint64
 	blocked            bool
@@ -511,6 +620,7 @@ type jea9LinuxContext struct {
 	state           jea9LinuxContextState
 	snapshot        jea9LinuxCPUSnapshot
 	syscallTrap     jea9LinuxEcallTrapFrame
+	schedPriority   jea9LinuxSchedPriority
 	clearChildTID   uint64
 	robustList      uint64
 	robustListLen   uint64
@@ -546,12 +656,16 @@ var (
 func NewJea9Linux(opts Jea9LinuxOptions) *Jea9Linux {
 	jos := &Jea9Linux{
 		clockMode:         opts.ClockMode,
+		clockPolicy:       opts.ClockPolicy,
+		clockPRNGMinNS:    defaultJea9LinuxClockPRNGMinNS,
+		clockPRNGMaxNS:    defaultJea9LinuxClockPRNGMaxNS,
 		monotonicNS:       opts.MonotonicStartNS,
 		realtimeOffsetNS:  opts.RealtimeOffsetNS,
 		nsPerInstruction:  opts.NSPerInstruction,
 		nanosleepMode:     opts.NanosleepMode,
 		nanosleepFixedNS:  opts.NanosleepFixedNS,
 		instructionBudget: opts.InstructionBudget,
+		schedulerConfig:   opts.Scheduler,
 		stdin:             opts.Stdin,
 		stdout:            opts.Stdout,
 		stderr:            opts.Stderr,
@@ -572,6 +686,7 @@ func NewJea9Linux(opts Jea9LinuxOptions) *Jea9Linux {
 	if jos.nsPerInstruction == 0 {
 		jos.nsPerInstruction = 1
 	}
+	jos.normalizeSchedulerConfig()
 	if jos.stdout == nil {
 		jos.stdout = io.Discard
 	}
@@ -595,7 +710,45 @@ func NewJea9Linux(opts Jea9LinuxOptions) *Jea9Linux {
 	}
 	jos.rootSeed = deriveJea9LinuxRootSeed(opts.EntropySeed)
 	jos.randomOff = len(jos.randomBuf)
+	jos.initSchedulerPRNG()
 	return jos
+}
+
+func (jos *Jea9Linux) normalizeSchedulerConfig() {
+	if jos.schedulerConfig.MinQuantumRetired == 0 {
+		if jos.schedulerConfig.Mode == Jea9SchedulerRoundRobin {
+			jos.schedulerConfig.MinQuantumRetired = defaultJea9LinuxRoundRobinQuantum
+		} else {
+			jos.schedulerConfig.MinQuantumRetired = defaultJea9LinuxSchedMinQuantum
+		}
+	}
+	if jos.schedulerConfig.MaxQuantumRetired < jos.schedulerConfig.MinQuantumRetired {
+		jos.schedulerConfig.MaxQuantumRetired = jos.schedulerConfig.MinQuantumRetired
+	}
+	if jos.schedulerConfig.LowPriorityDenominator == 0 {
+		jos.schedulerConfig.LowPriorityDenominator = 10
+	}
+	if jos.schedulerConfig.LowPriorityNumerator > jos.schedulerConfig.LowPriorityDenominator {
+		jos.schedulerConfig.LowPriorityNumerator = jos.schedulerConfig.LowPriorityDenominator
+	}
+	if jos.schedulerConfig.PriorityShuffleMinRetired == 0 {
+		jos.schedulerConfig.PriorityShuffleMinRetired = jos.schedulerConfig.MinQuantumRetired * 10
+	}
+	if jos.schedulerConfig.PriorityShuffleMaxRetired < jos.schedulerConfig.PriorityShuffleMinRetired {
+		jos.schedulerConfig.PriorityShuffleMaxRetired = jos.schedulerConfig.PriorityShuffleMinRetired
+	}
+	if jos.schedulerConfig.ChaosWindowProbDenominator == 0 {
+		jos.schedulerConfig.ChaosWindowProbDenominator = 100
+	}
+	if jos.schedulerConfig.ChaosWindowMaxNS <= 0 {
+		jos.schedulerConfig.ChaosWindowMaxNS = defaultJea9LinuxChaosWindowMaxNS
+	}
+	if jos.schedulerConfig.ChaosBudgetDenominator == 0 {
+		jos.schedulerConfig.ChaosBudgetDenominator = 5
+	}
+	if jos.schedulerConfig.ChaosBudgetNumerator == 0 {
+		jos.schedulerConfig.ChaosBudgetNumerator = 1
+	}
 }
 
 func jea9LinuxTimeZoneFiles() map[string][]byte {
@@ -699,9 +852,181 @@ func deriveJea9LinuxRootSeed(seed []byte) [32]byte {
 	return out
 }
 
+func deriveJea9LinuxSchedulerSeed(rootSeed [32]byte, override [32]byte) [32]byte {
+	if !jea9LinuxZero32(override) {
+		return override
+	}
+	h := sha256.New()
+	_, _ = h.Write(rootSeed[:])
+	_, _ = h.Write([]byte("jea9linux-scheduler-chacha8-v1"))
+	var out [32]byte
+	copy(out[:], h.Sum(nil))
+	return out
+}
+
+func jea9LinuxZero32(v [32]byte) bool {
+	for _, b := range v {
+		if b != 0 {
+			return false
+		}
+	}
+	return true
+}
+
+func (jos *Jea9Linux) initSchedulerPRNG() {
+	seed := deriveJea9LinuxSchedulerSeed(jos.rootSeed, jos.schedulerConfig.Seed)
+	jos.schedRNG = mathrand2.NewChaCha8(seed)
+	jos.schedDraws = 0
+	jos.schedEventID = 0
+	jos.commitSchedulerPRNGState(nil)
+}
+
+func (jos *Jea9Linux) commitSchedulerPRNGState(cpu *CPU) {
+	_ = cpu
+	if jos == nil || jos.schedRNG == nil {
+		return
+	}
+	snap, err := jos.schedRNG.MarshalBinary()
+	if err != nil {
+		panic("jea9linux: marshal scheduler PRNG: " + err.Error())
+	}
+	jos.schedPRNGSnapshot = append(jos.schedPRNGSnapshot[:0], snap...)
+}
+
+func (jos *Jea9Linux) schedUint64(cpu *CPU, why string) uint64 {
+	_ = why
+	if jos.schedRNG == nil {
+		jos.initSchedulerPRNG()
+	}
+	v := jos.schedRNG.Uint64()
+	jos.schedDraws++
+	jos.commitSchedulerPRNGState(cpu)
+	return v
+}
+
+func (jos *Jea9Linux) schedN(cpu *CPU, n uint64, why string) uint64 {
+	if n == 0 {
+		return 0
+	}
+	limit := ^uint64(0) - (^uint64(0) % n)
+	for {
+		v := jos.schedUint64(cpu, why)
+		if v < limit {
+			return v % n
+		}
+	}
+}
+
+func (jos *Jea9Linux) schedulerActive() bool {
+	return true
+}
+
+func (jos *Jea9Linux) nextSchedulerEvent(cpu *CPU, reason string) {
+	_ = reason
+	jos.schedEventID++
+	jos.commitSchedulerPRNGState(cpu)
+}
+
+func (jos *Jea9Linux) drawSchedulerQuantum(cpu *CPU) uint64 {
+	minQ := jos.schedulerConfig.MinQuantumRetired
+	maxQ := jos.schedulerConfig.MaxQuantumRetired
+	if maxQ < minQ {
+		maxQ = minQ
+	}
+	if jos.schedulerConfig.Mode == Jea9SchedulerRoundRobin || minQ == maxQ {
+		return minQ
+	}
+	span := maxQ - minQ + 1
+	return minQ + jos.schedN(cpu, span, "scheduler-quantum")
+}
+
+func (jos *Jea9Linux) installNextSchedulerQuantum(cpu *CPU) uint64 {
+	q := jos.drawSchedulerQuantum(cpu)
+	jos.currentQuantumRetired = q
+	jos.nextScheduleAtRetired = cpu.RiscvInstrRetired() + q
+	return q
+}
+
+func (jos *Jea9Linux) schedulerRemainingRetired(cpu *CPU) (uint64, bool) {
+	if !jos.schedulerActive() {
+		return 0, false
+	}
+	if jos.nextScheduleAtRetired == 0 {
+		jos.installNextSchedulerQuantum(cpu)
+	}
+	retired := cpu.RiscvInstrRetired()
+	if retired >= jos.nextScheduleAtRetired {
+		return 0, true
+	}
+	return jos.nextScheduleAtRetired - retired, true
+}
+
+func (jos *Jea9Linux) drawSchedulerPriority(cpu *CPU) jea9LinuxSchedPriority {
+	denom := jos.schedulerConfig.LowPriorityDenominator
+	if denom == 0 {
+		denom = 10
+	}
+	if jos.schedulerConfig.LowPriorityNumerator != 0 &&
+		jos.schedN(cpu, denom, "scheduler-priority") < jos.schedulerConfig.LowPriorityNumerator {
+		return jea9LinuxSchedLow
+	}
+	return jea9LinuxSchedHigh
+}
+
+func (jos *Jea9Linux) reshuffleSchedulerPriorities(cpu *CPU) {
+	for _, tid := range jos.contextOrder {
+		ctx := jos.contexts[tid]
+		if ctx == nil || ctx.state == jea9LinuxContextExited {
+			continue
+		}
+		ctx.schedPriority = jos.drawSchedulerPriority(cpu)
+	}
+	span := jos.schedulerConfig.PriorityShuffleMaxRetired - jos.schedulerConfig.PriorityShuffleMinRetired + 1
+	next := jos.schedulerConfig.PriorityShuffleMinRetired + jos.schedN(cpu, span, "scheduler-priority-shuffle")
+	jos.nextPriorityShuffleRetired = cpu.RiscvInstrRetired() + next
+}
+
+func (jos *Jea9Linux) maybeReshuffleSchedulerPriorities(cpu *CPU) {
+	if jos.schedulerConfig.Mode != Jea9SchedulerDST && jos.schedulerConfig.Mode != Jea9SchedulerChaos {
+		return
+	}
+	if jos.nextPriorityShuffleRetired == 0 || cpu.RiscvInstrRetired() >= jos.nextPriorityShuffleRetired {
+		jos.reshuffleSchedulerPriorities(cpu)
+	}
+}
+
 func (jos *Jea9Linux) ClockMode() Jea9LinuxClockMode { return jos.clockMode }
 
 func (jos *Jea9Linux) SetClockMode(mode Jea9LinuxClockMode) { jos.clockMode = mode }
+
+func (jos *Jea9Linux) ClockPolicy() ClockPolicy { return jos.clockPolicy }
+
+func (jos *Jea9Linux) SetClockPolicy(policy ClockPolicy) { jos.clockPolicy = policy }
+
+func (jos *Jea9Linux) ClockFixedAdvanceNS() int64 { return jos.clockFixedAdvanceNS }
+
+func (jos *Jea9Linux) SetClockFixedAdvanceNS(ns int64) { jos.clockFixedAdvanceNS = ns }
+
+func (jos *Jea9Linux) SchedulerPRNGState() []byte {
+	if jos == nil {
+		return nil
+	}
+	return append([]byte(nil), jos.schedPRNGSnapshot...)
+}
+
+func (jos *Jea9Linux) SchedulerPRNGDraws() uint64 {
+	if jos == nil {
+		return 0
+	}
+	return jos.schedDraws
+}
+
+func (jos *Jea9Linux) SchedulerEventID() uint64 {
+	if jos == nil {
+		return 0
+	}
+	return jos.schedEventID
+}
 
 func (jos *Jea9Linux) InstructionBudget() uint64 { return jos.instructionBudget }
 
@@ -727,6 +1052,9 @@ func (jos *Jea9Linux) TraceSnapshot() Jea9LinuxTraceSnapshot {
 		Schedule: append([]Jea9LinuxScheduleTraceEntry(nil),
 			jos.trace.Schedule...),
 		Clock: append([]Jea9LinuxClockTraceEntry(nil), jos.trace.Clock...),
+	}
+	for i := range out.Schedule {
+		out.Schedule[i].SchedPRNGState = append([]byte(nil), out.Schedule[i].SchedPRNGState...)
 	}
 	if len(jos.trace.Random) > 0 {
 		out.Random = make([]Jea9LinuxRandomTraceEntry, len(jos.trace.Random))
@@ -858,13 +1186,18 @@ func (jos *Jea9Linux) recordScheduleTracePC(cpu *CPU, event string, tid, nextTID
 		return
 	}
 	jos.trace.Schedule = append(jos.trace.Schedule, Jea9LinuxScheduleTraceEntry{
-		Event:           event,
-		TID:             tid,
-		NextTID:         nextTID,
-		FromPC:          fromPC,
-		NextPC:          nextPC,
-		MonotonicNS:     jos.monotonicNS,
-		RiscvInstrBegun: cpu.RiscvInstrBegun(),
+		Event:             event,
+		TID:               tid,
+		NextTID:           nextTID,
+		FromPC:            fromPC,
+		NextPC:            nextPC,
+		MonotonicNS:       jos.monotonicNS,
+		RiscvInstrBegun:   cpu.RiscvInstrBegun(),
+		SchedEventID:      jos.schedEventID,
+		SchedPRNGDraws:    jos.schedDraws,
+		SchedPRNGState:    append([]byte(nil), jos.schedPRNGSnapshot...),
+		RiscvInstrRetired: cpu.RiscvInstrRetired(),
+		ClockPolicy:       jos.clockPolicy.String(),
 	})
 }
 
@@ -1136,6 +1469,111 @@ func (jos *Jea9Linux) nextRunnableAfterCurrent() (uint64, bool) {
 	return 0, false
 }
 
+func (jos *Jea9Linux) nextRunnableByPolicyAfterCurrent() (uint64, bool) {
+	jos.refreshChaosWindow()
+	if len(jos.contextOrder) == 0 {
+		return 0, false
+	}
+	start := 0
+	for i, tid := range jos.contextOrder {
+		if tid == jos.currentTID {
+			start = i
+			break
+		}
+	}
+	for step := 1; step <= len(jos.contextOrder); step++ {
+		tid := jos.contextOrder[(start+step)%len(jos.contextOrder)]
+		if tid == jos.currentTID {
+			continue
+		}
+		ctx := jos.contexts[tid]
+		if ctx == nil || ctx.state != jea9LinuxContextRunnable {
+			continue
+		}
+		if jos.chaosActive && ctx.schedPriority == jea9LinuxSchedLow {
+			continue
+		}
+		return tid, true
+	}
+	return 0, false
+}
+
+func (jos *Jea9Linux) refreshChaosWindow() {
+	if !jos.chaosActive || jos.monotonicNS < jos.chaosUntilNS {
+		return
+	}
+	if jos.chaosUntilNS > jos.chaosStartNS {
+		jos.chaosBlockedNS += jos.chaosUntilNS - jos.chaosStartNS
+	}
+	jos.chaosActive = false
+	jos.chaosStartNS = 0
+	jos.chaosUntilNS = 0
+}
+
+func (jos *Jea9Linux) remainingChaosBudgetNS() int64 {
+	if jos.monotonicNS <= 0 {
+		return -jos.chaosBlockedNS
+	}
+	denom := jos.schedulerConfig.ChaosBudgetDenominator
+	if denom == 0 {
+		denom = 5
+	}
+	numer := jos.schedulerConfig.ChaosBudgetNumerator
+	if numer == 0 {
+		numer = 1
+	}
+	allowed := int64((uint64(jos.monotonicNS) * numer) / denom)
+	return allowed - jos.chaosBlockedNS
+}
+
+func (jos *Jea9Linux) startChaosWindow(cpu *CPU, durationNS int64) bool {
+	if durationNS <= 0 || jos.schedulerConfig.Mode != Jea9SchedulerChaos {
+		return false
+	}
+	jos.refreshChaosWindow()
+	if jos.chaosActive {
+		return false
+	}
+	remaining := jos.remainingChaosBudgetNS()
+	if remaining <= 0 {
+		return false
+	}
+	if durationNS > remaining {
+		durationNS = remaining
+	}
+	jos.nextSchedulerEvent(cpu, "chaos-window")
+	jos.chaosActive = true
+	jos.chaosStartNS = jos.monotonicNS
+	jos.chaosUntilNS = jos.monotonicNS + durationNS
+	jos.clockPolicy = ClockPolicyFixed
+	jos.clockFixedAdvanceNS = durationNS
+	return true
+}
+
+func (jos *Jea9Linux) maybeStartChaosWindow(cpu *CPU) bool {
+	jos.refreshChaosWindow()
+	if jos.schedulerConfig.Mode != Jea9SchedulerChaos || jos.chaosActive {
+		return false
+	}
+	denom := jos.schedulerConfig.ChaosWindowProbDenominator
+	if denom == 0 {
+		denom = 100
+	}
+	numer := jos.schedulerConfig.ChaosWindowProbNumerator
+	if numer == 0 || numer > denom {
+		return false
+	}
+	if jos.schedN(cpu, denom, "scheduler-chaos-window-prob") >= numer {
+		return false
+	}
+	maxNS := jos.schedulerConfig.ChaosWindowMaxNS
+	if maxNS <= 0 {
+		maxNS = defaultJea9LinuxChaosWindowMaxNS
+	}
+	durationNS := int64(1 + jos.schedN(cpu, uint64(maxNS), "scheduler-chaos-window-duration"))
+	return jos.startChaosWindow(cpu, durationNS)
+}
+
 func (jos *Jea9Linux) firstRunnableContext() (uint64, bool) {
 	for _, tid := range jos.contextOrder {
 		if ctx := jos.contexts[tid]; ctx != nil && ctx.state == jea9LinuxContextRunnable {
@@ -1173,14 +1611,66 @@ func (jos *Jea9Linux) advanceIdleClockToNextDeadline() {
 	if jos.clockMode != Jea9ClockIdleJump {
 		return
 	}
-	deadline, ok := jos.nextWaitDeadline()
-	if !ok {
-		return
-	}
-	if deadline > jos.monotonicNS {
-		jos.monotonicNS = deadline
+	jos.advanceVirtualClockForSchedulerEvent(nil, "idle-jump")
+}
+
+func (jos *Jea9Linux) advanceVirtualClockForSchedulerEvent(cpu *CPU, reason string) (int64, bool) {
+	before := jos.monotonicNS
+	switch jos.clockPolicy {
+	case ClockPolicyOnlyDeadlockAdvances:
+		if jos.hasRunnableContext() {
+			return 0, false
+		}
+		deadline, ok := jos.nextWaitDeadline()
+		if !ok {
+			return 0, false
+		}
+		if deadline > jos.monotonicNS {
+			jos.monotonicNS = deadline
+		}
+	case ClockPolicyPRNG:
+		minNS := jos.clockPRNGMinNS
+		maxNS := jos.clockPRNGMaxNS
+		if minNS <= 0 {
+			minNS = defaultJea9LinuxClockPRNGMinNS
+		}
+		if maxNS < minNS {
+			maxNS = minNS
+		}
+		span := uint64(maxNS - minNS + 1)
+		jos.monotonicNS += minNS + int64(jos.schedN(cpu, span, reason+":clock-prng"))
+	case ClockPolicyFixed:
+		jos.monotonicNS += jos.clockFixedAdvanceNS
+	default:
+		return 0, false
 	}
 	jos.refreshBlocked()
+	return jos.monotonicNS - before, true
+}
+
+func (jos *Jea9Linux) advanceVirtualClockWhenNoRunnableCandidate(cpu *CPU, reason string) (int64, bool) {
+	before := jos.monotonicNS
+	switch jos.clockPolicy {
+	case ClockPolicyOnlyDeadlockAdvances:
+		deadline, ok := jos.nextWaitDeadline()
+		if jos.chaosActive && jos.chaosUntilNS > jos.monotonicNS && (!ok || jos.chaosUntilNS < deadline) {
+			deadline = jos.chaosUntilNS
+			ok = true
+		}
+		if !ok {
+			return 0, false
+		}
+		if deadline > jos.monotonicNS {
+			jos.monotonicNS = deadline
+		}
+	case ClockPolicyPRNG, ClockPolicyFixed:
+		return jos.advanceVirtualClockForSchedulerEvent(cpu, reason)
+	default:
+		return 0, false
+	}
+	jos.refreshChaosWindow()
+	jos.refreshBlocked()
+	return jos.monotonicNS - before, true
 }
 
 func (jos *Jea9Linux) scheduleAfterCurrentBlocked(cpu *CPU) NoteDisposition {
@@ -1190,10 +1680,8 @@ func (jos *Jea9Linux) scheduleAfterCurrentBlocked(cpu *CPU) NoteDisposition {
 		jos.blockedHasDeadline = false
 		return NoteHandled
 	}
-	if deadline, ok := jos.nextWaitDeadline(); ok {
-		if deadline > jos.monotonicNS {
-			jos.monotonicNS = deadline
-		}
+	if _, ok := jos.nextWaitDeadline(); ok {
+		jos.advanceVirtualClockForSchedulerEvent(cpu, "blocked")
 		jos.refreshBlocked()
 		if next, ok := jos.firstRunnableContext(); ok {
 			jos.loadContext(cpu, next)
@@ -1668,8 +2156,17 @@ func elfProgramBreak(ef *ELF) uint64 {
 }
 
 func (jos *Jea9Linux) Run(cpu *CPU) error {
+	runBudget := jos.instructionBudget
+	if remaining, ok := jos.schedulerRemainingRetired(cpu); ok {
+		if remaining == 0 {
+			return jos.expireSchedulerQuantum(cpu)
+		}
+		if runBudget == 0 || remaining < runBudget {
+			runBudget = remaining
+		}
+	}
 	attemptsBefore := cpu.RiscvInstrBegun()
-	res, err := RunDefaultBudget(cpu, &cpu.Notes, jos.instructionBudget)
+	res, err := RunDefaultBudget(cpu, &cpu.Notes, runBudget)
 	attemptDelta := cpu.RiscvInstrBegun() - attemptsBefore
 	jos.accountInsAttempts(attemptDelta)
 	if jos.Blocked() {
@@ -1680,6 +2177,9 @@ func (jos *Jea9Linux) Run(cpu *CPU) error {
 	}
 	switch res {
 	case RunBudgetExpired:
+		if jos.schedulerActive() && cpu.RiscvInstrRetired() >= jos.nextScheduleAtRetired {
+			return jos.expireSchedulerQuantum(cpu)
+		}
 		return jos.expireBudget(cpu)
 	case RunBudgetExit:
 		return nil
@@ -1701,6 +2201,14 @@ func (jos *Jea9Linux) RunJIT(cpu *CPU, jit *JIT) error {
 				return jos.expireBudget(cpu)
 			}
 			remaining = budget - used
+		}
+		if schedRemaining, ok := jos.schedulerRemainingRetired(cpu); ok {
+			if schedRemaining == 0 {
+				return jos.expireSchedulerQuantum(cpu)
+			}
+			if remaining == 0 || schedRemaining < remaining {
+				remaining = schedRemaining
+			}
 		}
 
 		attemptsBefore := cpu.RiscvInstrBegun()
@@ -1739,6 +2247,9 @@ func (jos *Jea9Linux) RunJIT(cpu *CPU, jit *JIT) error {
 
 		switch res {
 		case RunBudgetExpired:
+			if jos.schedulerActive() && cpu.RiscvInstrRetired() >= jos.nextScheduleAtRetired {
+				return jos.expireSchedulerQuantum(cpu)
+			}
 			return jos.expireBudget(cpu)
 		case RunBudgetExit:
 			return nil
@@ -1746,21 +2257,36 @@ func (jos *Jea9Linux) RunJIT(cpu *CPU, jit *JIT) error {
 	}
 }
 
-func (jos *Jea9Linux) expireBudget(cpu *CPU) error {
-	jos.budgetYields++
-	if jos.contexts != nil {
-		from := jos.traceTID()
-		to := from
-		ctx := jos.ensureScheduler(cpu)
-		ctx.state = jea9LinuxContextRunnable
-		ctx.snapshot = snapshotJea9LinuxCPU(cpu)
-		fromPC := ctx.snapshot.pc
-		jos.advanceIdleClockToNextDeadline()
-		if next, ok := jos.nextRunnableAfterCurrent(); ok {
+func (jos *Jea9Linux) expireSchedulerQuantum(cpu *CPU) error {
+	from := jos.traceTID()
+	to := from
+	ctx := jos.ensureScheduler(cpu)
+	ctx.state = jea9LinuxContextRunnable
+	ctx.snapshot = snapshotJea9LinuxCPU(cpu)
+	fromPC := ctx.snapshot.pc
+	jos.nextSchedulerEvent(cpu, "quantum")
+	jos.maybeReshuffleSchedulerPriorities(cpu)
+	jos.maybeStartChaosWindow(cpu)
+	if next, ok := jos.nextRunnableByPolicyAfterCurrent(); ok {
+		jos.loadContext(cpu, next)
+		to = next
+	} else if _, advanced := jos.advanceVirtualClockWhenNoRunnableCandidate(cpu, "quantum"); advanced {
+		if next, ok := jos.nextRunnableByPolicyAfterCurrent(); ok {
 			jos.loadContext(cpu, next)
 			to = next
 		}
-		jos.recordScheduleTracePC(cpu, "budget", from, to, fromPC, cpu.PC())
+	}
+	jos.installNextSchedulerQuantum(cpu)
+	jos.recordScheduleTracePC(cpu, "quantum", from, to, fromPC, cpu.PC())
+	return ErrJea9LinuxBudget
+}
+
+func (jos *Jea9Linux) expireBudget(cpu *CPU) error {
+	jos.budgetYields++
+	if jos.contexts != nil {
+		ctx := jos.ensureScheduler(cpu)
+		ctx.state = jea9LinuxContextRunnable
+		ctx.snapshot = snapshotJea9LinuxCPU(cpu)
 	}
 	return ErrJea9LinuxBudget
 }

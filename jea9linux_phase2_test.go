@@ -188,10 +188,11 @@ func TestJea9Linux_NanosleepDeschedulesCurrentContext(t *testing.T) {
 	}
 }
 
-func TestJea9Linux_NanosleepIdleJumpWakesAtBudgetBoundary(t *testing.T) {
+func TestJea9Linux_NanosleepIdleJumpDoesNotWakeAtHostBudgetBoundary(t *testing.T) {
 	j := NewJea9Linux(Jea9LinuxOptions{
 		ClockMode:        Jea9ClockIdleJump,
 		MonotonicStartNS: 10,
+		Scheduler:        Jea9LinuxSchedulerConfig{Mode: Jea9SchedulerDST},
 	})
 	cpu, mem := newJea9LinuxSyscallCPU(t, j)
 	defer mem.Free()
@@ -217,14 +218,53 @@ func TestJea9Linux_NanosleepIdleJumpWakesAtBudgetBoundary(t *testing.T) {
 	if err := j.expireBudget(cpu); !errors.Is(err, ErrJea9LinuxBudget) {
 		t.Fatalf("expireBudget error = %v, want ErrJea9LinuxBudget", err)
 	}
+	requireCurrentTID(t, j, child)
+	if got := j.MonotonicNS(); got != 10 {
+		t.Fatalf("MonotonicNS() = %d, want unchanged 10 after host budget boundary", got)
+	}
+	if got := j.contexts[j.pid].state; got != jea9LinuxContextWaiting {
+		t.Fatalf("parent state = %v, want still waiting", got)
+	}
+}
+
+func TestJea9Linux_NanosleepIdleJumpWakesAtSchedulerQuantum(t *testing.T) {
+	j := NewJea9Linux(Jea9LinuxOptions{
+		ClockMode:        Jea9ClockIdleJump,
+		MonotonicStartNS: 10,
+		Scheduler: Jea9LinuxSchedulerConfig{
+			MinQuantumRetired: 1,
+			MaxQuantumRetired: 1,
+		},
+	})
+	cpu, mem := newJea9LinuxSyscallCPU(t, j)
+	defer mem.Free()
+
+	child := cloneJea9LinuxThread(t, cpu, j, 0x820000, 0, 0, 0, jea9TestCloneThreadFlags)
+	j.contexts[child].snapshot.x[5] = 77
+
+	req := uint64(0x4100)
+	if f := mem.Store64(req, 0); f != nil {
+		t.Fatal(f)
+	}
+	if f := mem.Store64(req+8, 90); f != nil {
+		t.Fatal(f)
+	}
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysNanosleep, req, 0); d != NoteHandled {
+		t.Fatalf("nanosleep disposition = %v, want NoteHandled after switching to child", d)
+	}
+	requireCurrentTID(t, j, child)
+
+	err := j.expireSchedulerQuantum(cpu)
+	if !errors.Is(err, ErrJea9LinuxBudget) {
+		t.Fatalf("expireSchedulerQuantum error = %v, want ErrJea9LinuxBudget", err)
+	}
 	requireCurrentTID(t, j, j.pid)
 	if got := j.MonotonicNS(); got != 100 {
-		t.Fatalf("MonotonicNS() = %d, want idle jump to 100 at budget boundary", got)
+		t.Fatalf("MonotonicNS() = %d, want deadline 100 after scheduler quantum", got)
 	}
 	if got := j.contexts[j.pid].state; got != jea9LinuxContextRunnable {
-		t.Fatalf("parent state = %v, want runnable", got)
+		t.Fatalf("parent state = %v, want runnable after scheduler quantum", got)
 	}
-	requireSyscallReturn(t, cpu, 0)
 }
 
 func TestJea9Linux_NanosleepInvalidTimespecSyscall(t *testing.T) {
