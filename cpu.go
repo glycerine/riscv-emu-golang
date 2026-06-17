@@ -97,6 +97,8 @@ type CPU struct {
 	mcounteren uint64 // 0x306: machine counter enable
 	scounteren uint64 // 0x106: supervisor counter enable
 	stimecmp   uint64 // 0x14d: supervisor timer compare (Sstc)
+	stipMIP    bool   // STIP source written through mip by M-mode firmware.
+	stipSTime  bool   // STIP source asserted by stimecmp.
 	strictCSR  bool
 }
 
@@ -1807,7 +1809,7 @@ func (c *CPU) readCSR(addr uint32) (uint64, bool) {
 	case 0x143:
 		return c.stval, true // stval
 	case 0x144:
-		return c.sip | (c.mip & c.mideleg), true // sip
+		return c.sip | (c.mipValue() & c.mideleg), true // sip
 	case 0x14d:
 		return c.stimecmp, true // stimecmp
 	case 0x180:
@@ -1835,7 +1837,7 @@ func (c *CPU) readCSR(addr uint32) (uint64, bool) {
 	case 0x343:
 		return c.mtval, true // mtval
 	case 0x344:
-		return c.mip, true // mip
+		return c.mipValue(), true // mip
 	case 0xC00:
 		return c.riscvInstrBegun, true // cycle approximation tracks instruction attempts
 	case 0xC02:
@@ -1881,7 +1883,7 @@ func (c *CPU) writeCSR(addr uint32, val uint64) bool {
 	case 0x143:
 		c.stval = val // stval
 	case 0x144:
-		c.sip = val // sip
+		c.sip = val &^ mipSTIP // sip
 	case 0x14d:
 		c.stimecmp = val // stimecmp
 		c.refreshSupervisorTimerPending()
@@ -1912,7 +1914,7 @@ func (c *CPU) writeCSR(addr uint32, val uint64) bool {
 	case 0x343:
 		c.mtval = val // mtval
 	case 0x344:
-		c.mip = val // mip
+		c.setMIPCSR(val) // mip
 	// CSRs written by riscv-tests reset_vector — accept silently
 	case 0x3A0: // pmpcfg0
 	case 0x3B0: // pmpaddr0

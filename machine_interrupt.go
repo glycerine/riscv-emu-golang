@@ -42,15 +42,20 @@ func (c *CPU) refreshSupervisorTimerPending() {
 }
 
 func (c *CPU) refreshSupervisorTimerPendingAt(now uint64) {
-	if c.stimecmp == ^uint64(0) {
-		c.mip &^= mipSTIP
-		return
+	c.stipSTime = c.stimecmp != ^uint64(0) && now >= c.stimecmp
+}
+
+func (c *CPU) mipValue() uint64 {
+	pending := c.mip &^ mipSTIP
+	if c.stipMIP || c.stipSTime {
+		pending |= mipSTIP
 	}
-	if now >= c.stimecmp {
-		c.mip |= mipSTIP
-	} else {
-		c.mip &^= mipSTIP
-	}
+	return pending
+}
+
+func (c *CPU) setMIPCSR(val uint64) {
+	c.mip = val &^ mipSTIP
+	c.stipMIP = val&mipSTIP != 0
 }
 
 func (c *CPU) takePendingBiosInterrupt() bool {
@@ -66,7 +71,7 @@ func (c *CPU) takePendingBiosInterrupt() bool {
 }
 
 func (c *CPU) pendingMachineInterrupt() (uint64, bool) {
-	pending := c.mip & c.mie &^ c.mideleg
+	pending := c.mipValue() & c.mie &^ c.mideleg
 	if pending == 0 {
 		return 0, false
 	}
@@ -80,7 +85,7 @@ func (c *CPU) pendingSupervisorInterrupt() (uint64, bool) {
 	if c.priv == PrivMachine {
 		return 0, false
 	}
-	pending := (c.mip | c.sip) & (c.mie | c.sie) & c.mideleg
+	pending := (c.mipValue() | c.sip) & (c.mie | c.sie) & c.mideleg
 	if pending == 0 {
 		return 0, false
 	}

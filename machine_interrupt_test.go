@@ -151,7 +151,7 @@ func TestRunBiosMachineBudget_DeliversDelegatedSupervisorTimerInterrupt(t *testi
 	cpu.SetPrivilegeMode(PrivSupervisor)
 	cpu.SetPC(pc)
 	cpu.stvec = handler
-	cpu.mip = mipSTIP
+	cpu.setMIPCSR(mipSTIP)
 	cpu.mideleg = mipSTIP
 	cpu.sie = mipSTIP
 	cpu.mstatus = statusSIE
@@ -174,6 +174,43 @@ func TestRunBiosMachineBudget_DeliversDelegatedSupervisorTimerInterrupt(t *testi
 	}
 }
 
+func TestRunBiosMachineBudget_PreservesOpenSBISupervisorTimerInterrupt(t *testing.T) {
+	mem, err := NewGuestMemory(Size64KB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mem.Free()
+	timer := &testMachineTimer{}
+	mem.SetMMIO(timer)
+
+	const (
+		pc      = uint64(0x1000)
+		handler = uint64(0x3000)
+	)
+	cpu := NewCPU(*mem)
+	cpu.SetPrivilegeMode(PrivSupervisor)
+	cpu.SetPC(pc)
+	cpu.stvec = handler
+	cpu.setMIPCSR(mipSTIP)
+	cpu.mideleg = mipSTIP
+	cpu.sie = mipSTIP
+	cpu.mstatus = statusSIE
+
+	res, err := RunBiosMachineBudget(cpu, &cpu.Notes, 1)
+	if err != nil {
+		t.Fatalf("RunBiosMachineBudget: %v", err)
+	}
+	if res != RunBudgetExpired {
+		t.Fatalf("RunMachineBudget result = %v, want expired", res)
+	}
+	if cpu.PC() != handler {
+		t.Fatalf("PC = 0x%x, want supervisor handler 0x%x", cpu.PC(), handler)
+	}
+	if cpu.scause != InterruptCauseFlag|InterruptSTIP || cpu.sepc != pc {
+		t.Fatalf("supervisor trap scause=0x%x sepc=0x%x", cpu.scause, cpu.sepc)
+	}
+}
+
 func TestRunBiosMachineBudget_SupervisorTimerInterruptUsesVectoredStvec(t *testing.T) {
 	mem, err := NewGuestMemory(Size64KB)
 	if err != nil {
@@ -189,7 +226,7 @@ func TestRunBiosMachineBudget_SupervisorTimerInterruptUsesVectoredStvec(t *testi
 	cpu.SetPrivilegeMode(PrivSupervisor)
 	cpu.SetPC(pc)
 	cpu.stvec = base | 1
-	cpu.mip = mipSTIP
+	cpu.setMIPCSR(mipSTIP)
 	cpu.mideleg = mipSTIP
 	cpu.sie = mipSTIP
 	cpu.mstatus = statusSIE
@@ -277,8 +314,42 @@ func TestRunMachineBudget_DoesNotAdvanceSupervisorTimerCompare(t *testing.T) {
 	if cpu.PC() != pc+4 {
 		t.Fatalf("PC = 0x%x, want executed instruction at 0x%x", cpu.PC(), pc+4)
 	}
-	if cpu.mip&mipSTIP != 0 {
-		t.Fatalf("generic RunMachineBudget set STIP: mip=0x%x", cpu.mip)
+	if cpu.mipValue()&mipSTIP != 0 {
+		t.Fatalf("generic RunMachineBudget set STIP: mip=0x%x", cpu.mipValue())
+	}
+}
+
+func TestCPU_STIPSourcesAreIndependent(t *testing.T) {
+	mem, err := NewGuestMemory(Size64KB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mem.Free()
+	cpu := NewCPU(*mem)
+
+	cpu.setMIPCSR(mipSTIP)
+	cpu.stimecmp = 2000
+	cpu.refreshSupervisorTimerPendingAt(1000)
+	if got := cpu.mipValue(); got&mipSTIP == 0 {
+		t.Fatalf("OpenSBI STIP source was clobbered by inactive Sstc source: mip=0x%x", got)
+	}
+
+	cpu.writeCSR(0x14d, 500)
+	cpu.refreshSupervisorTimerPendingAt(1000)
+	cpu.setMIPCSR(0)
+	if got := cpu.mipValue(); got&mipSTIP == 0 {
+		t.Fatalf("Sstc STIP source was clobbered by clearing mip CSR source: mip=0x%x", got)
+	}
+
+	cpu.setMIPCSR(mipSTIP)
+	cpu.writeCSR(0x14d, ^uint64(0))
+	if got := cpu.mipValue(); got&mipSTIP == 0 {
+		t.Fatalf("OpenSBI STIP source was clobbered by disabling stimecmp: mip=0x%x", got)
+	}
+
+	cpu.setMIPCSR(0)
+	if got := cpu.mipValue(); got&mipSTIP != 0 {
+		t.Fatalf("STIP still visible after clearing both sources: mip=0x%x", got)
 	}
 }
 

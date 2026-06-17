@@ -453,6 +453,37 @@ func TestRunEmuBiosFWDynamicLinuxBootsWith512MBRAM(t *testing.T) {
 	}
 }
 
+func TestRunEmuBiosFWDynamicLinuxPassesTimerProbe(t *testing.T) {
+	const biosPath = "../../xendor/opensbi/build/platform/generic/firmware/fw_dynamic.elf"
+	const kernelPath = "../../xendor/linux/boot/vmlinuz-6.17.0-35-generic"
+	const initrdPath = "../../xendor/linux/initramfs.cpio.gz"
+	for _, path := range []string{biosPath, kernelPath, initrdPath} {
+		if !fileExists(path) {
+			t.Skipf("Linux BIOS boot fixture not present: %s", path)
+		}
+	}
+
+	var stdout, stderr bytes.Buffer
+	ok, err := runBiosUntilOutput(EmuConfig{
+		BiosPath:   biosPath,
+		KernelPath: kernelPath,
+		InitrdPath: initrdPath,
+		Append:     linuxUARTBootArgs,
+		Memory:     "512MB",
+		Stdin:      strings.NewReader(""),
+		Stdout:     &stdout,
+		Stderr:     &stderr,
+	}, "Freeing unused kernel image", 1_600_000_000)
+	if err != nil {
+		t.Fatalf("Linux timer milestone err = %v\nstdout tail:\n%s\nstderr:\n%s",
+			err, tailString(stdout.String(), 4096), stderr.String())
+	}
+	if !ok {
+		t.Fatalf("Linux timer milestone not reached\nstdout tail:\n%s\nstderr:\n%s",
+			tailString(stdout.String(), 4096), stderr.String())
+	}
+}
+
 func runBiosUntilOutput(cfg EmuConfig, marker string, maxInstructions uint64) (bool, error) {
 	guest, err := prepareBiosGuest(cfg.withDefaults())
 	if err != nil {
