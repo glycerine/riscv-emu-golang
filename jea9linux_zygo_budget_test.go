@@ -8,6 +8,7 @@ import (
 	"testing"
 )
 
+// fibonacci is a classic simple driver of lots of recursive stack alloc/dealloc.
 const zygoBudgetFib10Program = "(defn fib [x] (cond (== x 0) 0 (== x 1) 1 (+ (fib (- x 1)) (fib (- x 2))))) (println (fib 10))"
 
 func TestJea9Linux_ZygoFib10_InterpreterBudget1000(t *testing.T) {
