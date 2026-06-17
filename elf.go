@@ -13,7 +13,8 @@ const (
 	elfMagic     = "\x7fELF"
 	elfClass64   = 2
 	elfDataLE    = 1 // little-endian
-	elfTypeExec  = 2 // ET_EXEC
+	elfTypeExec  = 2   // ET_EXEC
+	elfTypeDyn   = 3   // ET_DYN (also static-pie)
 	elfMachRISCV = 0xF3
 	ptLoad       = 1 // PT_LOAD
 	shtSymtab    = 2 // SHT_SYMTAB
@@ -25,6 +26,11 @@ const (
 	pfW = 0x2 // PF_W (writable)
 	pfR = 0x4 // PF_R (readable)
 )
+
+// staticPieBase is the load address applied to ET_DYN (static-pie) ELFs
+// whose segment vaddrs are zero-based. Matches the standard RISC-V virt
+// machine RAM start and OpenSBI's expected runtime address.
+const staticPieBase = uint64(0x80000000)
 
 // Elf64Header is the 64-byte ELF file header.
 type Elf64Header struct {
@@ -121,8 +127,19 @@ func loadELFReader(mem *GuestMemory, r io.ReadSeeker, data []byte) (*ELF, error)
 	if hdr.Ident[5] != elfDataLE {
 		return nil, errors.New("elf: not little-endian")
 	}
-	if hdr.Type != elfTypeExec {
+	if hdr.Type != elfTypeExec && hdr.Type != elfTypeDyn {
 		return nil, fmt.Errorf("elf: not an executable (type 0x%x)", hdr.Type)
+	}
+
+	// Static-pie ELFs (ET_DYN) have segment vaddrs relative to zero.
+	// Slide them to the standard RISC-V virt RAM base so that OpenSBI and
+	// other static-pie firmware land at the address they expect to run from.
+	// True shared libraries are also ET_DYN but have no fixed runtime address;
+	// we treat everything as static-pie here since the emulator only runs
+	// bare-metal firmware and kernels, not userspace dynamic linking.
+	pieBase := uint64(0)
+	if hdr.Type == elfTypeDyn {
+		pieBase = staticPieBase
 	}
 	if hdr.Machine != elfMachRISCV {
 		return nil, fmt.Errorf("elf: not RISC-V (machine 0x%x)", hdr.Machine)
@@ -166,15 +183,15 @@ func loadELFReader(mem *GuestMemory, r io.ReadSeeker, data []byte) (*ELF, error)
 			if _, err := io.ReadFull(r, buf); err != nil {
 				return nil, fmt.Errorf("elf: read segment %d: %w", i, err)
 			}
-			if f := mem.WriteBytes(ph.VAddr, buf); f != nil {
+			if f := mem.WriteBytes(ph.VAddr+pieBase, buf); f != nil {
 				return nil, fmt.Errorf("elf: write segment %d to 0x%x: %v",
-					i, ph.VAddr, f)
+					i, ph.VAddr+pieBase, f)
 			}
 		}
 
 		// Zero-fill BSS (MemSz > FileSz)
 		if ph.MemSz > ph.FileSz {
-			bssStart := ph.VAddr + ph.FileSz
+			bssStart := ph.VAddr + ph.FileSz + pieBase
 			bssSize := ph.MemSz - ph.FileSz
 			if f := mem.ZeroRange(bssStart, bssSize); f != nil {
 				return nil, fmt.Errorf("elf: zero BSS for segment %d: %v", i, f)
@@ -183,7 +200,7 @@ func loadELFReader(mem *GuestMemory, r io.ReadSeeker, data []byte) (*ELF, error)
 
 		// Record executable extents.
 		if ph.Flags&pfX != 0 {
-			mem.AddExecRegion(ph.VAddr, ph.VAddr+ph.MemSz, ph.Flags&pfW != 0)
+			mem.AddExecRegion(ph.VAddr+pieBase, ph.VAddr+ph.MemSz+pieBase, ph.Flags&pfW != 0)
 		}
 
 		loaded++
@@ -214,7 +231,7 @@ func loadELFReader(mem *GuestMemory, r io.ReadSeeker, data []byte) (*ELF, error)
 	}
 
 	ef := &ELF{
-		Entry:  hdr.Entry,
+		Entry:  hdr.Entry + pieBase,
 		Header: &hdr,
 		Shdrs:  shdrs,
 		Data:   data,
