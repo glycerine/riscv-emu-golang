@@ -26,6 +26,38 @@ const (
 	emuPRNGMaxBudget            = uint64(500 * time.Millisecond)
 )
 
+// notes on Device Tree Blob (DTB) for describing hardware to Linux:
+//
+// Your current make linux command is fine for DTB handling.
+// Current behavior:
+//
+// If you do not pass -dtb, emu generates a virt FDT internally
+// in cmd/emu/bios.go (line 246).
+//
+// -machine defaults to virt; it is currently the only
+//  supported value, so adding -machine virt is redundant.
+// -dump-dtb path just writes the generated DTB to disk for
+//  inspection/debugging. It is not needed for boot.
+//
+// The generated DTB includes bootargs, initrd range, RAM,
+// one CPU, CPU interrupt controller, CLINT, PLIC, and ns16550 UART
+// in cmd/emu/bios.go (line 533).
+//
+// For OpenSBI, we load the DTB into guest memory and pass
+// its address in a1 before entering firmware.
+// So this target is enough:
+//
+// emu -bios xendor/opensbi/build/platform/generic/firmware/fw_dynamic.elf \
+//   -kernel xendor/linux/boot/vmlinuz-6.17.0-35-generic \
+//   -initrd xendor/linux/initramfs.cpio.gz \
+//   -append "console=hvc0 rdinit=/init"
+//
+// Use -dump-dtb /tmp/jea9linux-virt.dtb only when you want to
+// inspect what we generated. Use -dtb some.dtb only if you
+// want to replace our generated DTB entirely; in that mode
+// the external DTB needs to already contain the
+// right bootargs/initrd info.
+
 type EmuConfig struct {
 	RunPath           string
 	BiosPath          string
