@@ -73,6 +73,9 @@ const (
 	FaultFetch                          // guest PC pointed outside memory
 	FaultMisalign                       // access was not naturally aligned
 	FaultSandboxEscape                  // address was truncated by the sandbox mask
+	FaultPageLoad                       // guest load hit a virtual-memory page fault
+	FaultPageStore                      // guest store hit a virtual-memory page fault
+	FaultPageFetch                      // guest fetch hit a virtual-memory page fault
 )
 
 // CheckSandboxBounds enables strict address checking. When true, any
@@ -93,6 +96,12 @@ func (k FaultKind) String() string {
 		return "misalign"
 	case FaultSandboxEscape:
 		return "sandbox_escape"
+	case FaultPageLoad:
+		return "page_load"
+	case FaultPageStore:
+		return "page_store"
+	case FaultPageFetch:
+		return "page_fetch"
 	default:
 		return "unknown"
 	}

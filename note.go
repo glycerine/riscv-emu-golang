@@ -53,6 +53,9 @@ const (
 	CauseEcallU           uint64 = 8
 	CauseEcallS           uint64 = 9
 	CauseEcallM           uint64 = 11
+	CauseInsnPageFault    uint64 = 12
+	CauseLoadPageFault    uint64 = 13
+	CauseStorePageFault   uint64 = 15
 )
 
 // ── Note ──────────────────────────────────────────────────────────────────
@@ -168,6 +171,15 @@ func faultCauseAndText(f *MemFault) (cause uint64, text string) {
 	case FaultFetch:
 		return CauseInsnFault,
 			fmt.Sprintf("fault: fetch addr=0x%016X width=%d", f.Addr, f.Width)
+	case FaultPageLoad:
+		return CauseLoadPageFault,
+			fmt.Sprintf("fault: page-load addr=0x%016X width=%d", f.Addr, f.Width)
+	case FaultPageStore:
+		return CauseStorePageFault,
+			fmt.Sprintf("fault: page-store addr=0x%016X width=%d", f.Addr, f.Width)
+	case FaultPageFetch:
+		return CauseInsnPageFault,
+			fmt.Sprintf("fault: page-fetch addr=0x%016X width=%d", f.Addr, f.Width)
 	default: // FaultMisalign — distinguish by context if we had it; use load
 		return CauseLoadMisalign,
 			fmt.Sprintf("fault: misalign addr=0x%016X width=%d", f.Addr, f.Width)

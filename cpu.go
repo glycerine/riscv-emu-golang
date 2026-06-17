@@ -63,6 +63,7 @@ type CPU struct {
 	lastTrapCause     uint64
 	lastTrapInsnLen   uint8
 	priv              PrivilegeMode
+	mmu               *MMU
 	Notes             NoteChain // exception delivery chain; handlers installed by OS layer
 	// LR/SC reservation
 	resvAddr  uint64
@@ -228,7 +229,7 @@ func (c *CPU) ecallCause() uint64 {
 
 func (c *CPU) setEbreakTrapAtPC() {
 	insnLen := uint8(4)
-	if half, f := (&c.mem).Fetch16(c.pc); f == nil && half == 0x9002 {
+	if half, f := c.fetch16(c.pc); f == nil && half == 0x9002 {
 		insnLen = 2
 	}
 	c.setTrap(CauseBreakpoint, insnLen)
@@ -264,7 +265,7 @@ func (c *CPU) Step() error { return c.step() }
 func (c *CPU) step() error {
 	// Fetch 16 bits first to detect compressed (RVC) instructions.
 	// Bits[1:0] != 0b11 means 16-bit; 0b11 means 32-bit.
-	half, fh := (&c.mem).Fetch16(c.pc)
+	half, fh := c.fetch16(c.pc)
 	if fh != nil {
 		return fh
 	}
@@ -272,10 +273,10 @@ func (c *CPU) step() error {
 		return c.stepRVC(uint16(half))
 	}
 
-	insn, f := (&c.mem).Fetch32(c.pc)
+	insn, f := c.fetch32(c.pc)
 	if f != nil {
 		if f.Kind == FaultMisalign {
-			insn, f = (&c.mem).Fetch32U(c.pc)
+			insn, f = c.fetch32U(c.pc)
 		}
 		if f != nil {
 			return f
@@ -310,57 +311,57 @@ func (c *CPU) stepFromInsn(insn uint32) error {
 		var v uint64
 		switch funct3 {
 		case 0x0: // LB — sign-extend 8→64
-			u, f := (&c.mem).Load8(addr)
+			u, f := c.load8(addr)
 			if f != nil {
 				return f
 			}
 			v = uint64(int64(int8(u)))
 		case 0x1: // LH — sign-extend 16→64 (misalign-capable)
-			u, f := (&c.mem).Load16(addr)
+			u, f := c.load16(addr)
 			if f != nil && f.Kind == FaultMisalign {
-				u, f = (&c.mem).Load16U(addr)
+				u, f = c.load16U(addr)
 			}
 			if f != nil {
 				return f
 			}
 			v = uint64(int64(int16(u)))
 		case 0x2: // LW — sign-extend 32→64 (misalign-capable)
-			u, f := (&c.mem).Load32(addr)
+			u, f := c.load32(addr)
 			if f != nil && f.Kind == FaultMisalign {
-				u, f = (&c.mem).Load32U(addr)
+				u, f = c.load32U(addr)
 			}
 			if f != nil {
 				return f
 			}
 			v = uint64(int64(int32(u)))
 		case 0x3: // LD — full 64-bit (misalign-capable)
-			u, f := (&c.mem).Load64(addr)
+			u, f := c.load64(addr)
 			if f != nil && f.Kind == FaultMisalign {
-				u, f = (&c.mem).Load64U(addr)
+				u, f = c.load64U(addr)
 			}
 			if f != nil {
 				return f
 			}
 			v = u
 		case 0x4: // LBU — zero-extend 8→64
-			u, f := (&c.mem).Load8(addr)
+			u, f := c.load8(addr)
 			if f != nil {
 				return f
 			}
 			v = uint64(u)
 		case 0x5: // LHU — zero-extend 16→64 (misalign-capable)
-			u, f := (&c.mem).Load16(addr)
+			u, f := c.load16(addr)
 			if f != nil && f.Kind == FaultMisalign {
-				u, f = (&c.mem).Load16U(addr)
+				u, f = c.load16U(addr)
 			}
 			if f != nil {
 				return f
 			}
 			v = uint64(u)
 		case 0x6: // LWU — zero-extend 32→64 (misalign-capable)
-			u, f := (&c.mem).Load32(addr)
+			u, f := c.load32(addr)
 			if f != nil && f.Kind == FaultMisalign {
-				u, f = (&c.mem).Load32U(addr)
+				u, f = c.load32U(addr)
 			}
 			if f != nil {
 				return f
@@ -377,29 +378,29 @@ func (c *CPU) stepFromInsn(insn uint32) error {
 		addr := c.Reg(rs1) + uint64(simm)
 		switch funct3 {
 		case 0x0: // SB
-			if f := (&c.mem).Store8(addr, uint8(c.Reg(rs2))); f != nil {
+			if f := c.store8(addr, uint8(c.Reg(rs2))); f != nil {
 				return f
 			}
 		case 0x1: // SH (misalign-capable)
-			f := (&c.mem).Store16(addr, uint16(c.Reg(rs2)))
+			f := c.store16(addr, uint16(c.Reg(rs2)))
 			if f != nil && f.Kind == FaultMisalign {
-				f = (&c.mem).Store16U(addr, uint16(c.Reg(rs2)))
+				f = c.store16U(addr, uint16(c.Reg(rs2)))
 			}
 			if f != nil {
 				return f
 			}
 		case 0x2: // SW (misalign-capable)
-			f := (&c.mem).Store32(addr, uint32(c.Reg(rs2)))
+			f := c.store32(addr, uint32(c.Reg(rs2)))
 			if f != nil && f.Kind == FaultMisalign {
-				f = (&c.mem).Store32U(addr, uint32(c.Reg(rs2)))
+				f = c.store32U(addr, uint32(c.Reg(rs2)))
 			}
 			if f != nil {
 				return f
 			}
 		case 0x3: // SD (misalign-capable)
-			f := (&c.mem).Store64(addr, c.Reg(rs2))
+			f := c.store64(addr, c.Reg(rs2))
 			if f != nil && f.Kind == FaultMisalign {
-				f = (&c.mem).Store64U(addr, c.Reg(rs2))
+				f = c.store64U(addr, c.Reg(rs2))
 			}
 			if f != nil {
 				return f
@@ -854,13 +855,13 @@ func (c *CPU) stepFromInsn(insn uint32) error {
 		case 0b00010: // LR.W / LR.D
 			var v uint64
 			if width == 0b010 {
-				u, f := (&c.mem).Load32(addr)
+				u, f := c.load32(addr)
 				if f != nil {
 					return f
 				}
 				v = uint64(int64(int32(u)))
 			} else {
-				u, f := (&c.mem).Load64(addr)
+				u, f := c.load64(addr)
 				if f != nil {
 					return f
 				}
@@ -874,11 +875,11 @@ func (c *CPU) stepFromInsn(insn uint32) error {
 			success := c.resvValid && c.resvAddr == addr
 			if success {
 				if width == 0b010 {
-					if f := (&c.mem).Store32(addr, uint32(c.Reg(rs2))); f != nil {
+					if f := c.store32(addr, uint32(c.Reg(rs2))); f != nil {
 						return f
 					}
 				} else {
-					if f := (&c.mem).Store64(addr, c.Reg(rs2)); f != nil {
+					if f := c.store64(addr, c.Reg(rs2)); f != nil {
 						return f
 					}
 				}
@@ -890,23 +891,23 @@ func (c *CPU) stepFromInsn(insn uint32) error {
 
 		default: // AMO ops: rd=mem[rs1]; mem[rs1]=op(rd,rs2); advance PC
 			if width == 0b010 { // .W — 32-bit
-				old, f := (&c.mem).Load32(addr)
+				old, f := c.load32(addr)
 				if f != nil {
 					return f
 				}
 				oldSE := uint64(int64(int32(old))) // sign-extended for rd
 				newVal := amoOpW(funct5, old, uint32(c.Reg(rs2)))
-				if f := (&c.mem).Store32(addr, newVal); f != nil {
+				if f := c.store32(addr, newVal); f != nil {
 					return f
 				}
 				c.SetReg(rd, oldSE)
 			} else { // .D — 64-bit
-				old, f := (&c.mem).Load64(addr)
+				old, f := c.load64(addr)
 				if f != nil {
 					return f
 				}
 				newVal := amoOpD(funct5, old, c.Reg(rs2))
-				if f := (&c.mem).Store64(addr, newVal); f != nil {
+				if f := c.store64(addr, newVal); f != nil {
 					return f
 				}
 				c.SetReg(rd, old)
@@ -1035,7 +1036,8 @@ func (c *CPU) stepFromInsn(insn uint32) error {
 			c.retireInsn()
 			return nil
 		case insn == 0x10500073: // WFI — no-op in user-mode emulation
-		case funct3 == 0 && insn>>25 == 0x09: // SFENCE.VMA — no-op in user-mode
+		case funct3 == 0 && insn>>25 == 0x09: // SFENCE.VMA
+			c.flushTLB()
 		case funct3 >= 1 && funct3 <= 7 && funct3 != 4: // Zicsr
 			// Read old CSR value
 			old := c.readCSR(csrAddr)
@@ -1069,13 +1071,19 @@ func (c *CPU) stepFromInsn(insn uint32) error {
 		addr := uint64(int64(c.Reg(rs1)) + iimm)
 		switch funct3 {
 		case 0b010: // FLW
-			v, f := (&c.mem).Load32(addr)
+			v, f := c.load32(addr)
+			if f != nil && f.Kind == FaultMisalign {
+				v, f = c.load32U(addr)
+			}
 			if f != nil {
 				return f
 			}
 			c.SetFReg(rd, boxF32(v))
 		case 0b011: // FLD
-			v, f := (&c.mem).Load64(addr)
+			v, f := c.load64(addr)
+			if f != nil && f.Kind == FaultMisalign {
+				v, f = c.load64U(addr)
+			}
 			if f != nil {
 				return f
 			}
@@ -1090,11 +1098,19 @@ func (c *CPU) stepFromInsn(insn uint32) error {
 		addr := uint64(int64(c.Reg(rs1)) + simm)
 		switch funct3 {
 		case 0b010: // FSW
-			if f := (&c.mem).Store32(addr, uint32(c.FReg(rs2))); f != nil {
+			f := c.store32(addr, uint32(c.FReg(rs2)))
+			if f != nil && f.Kind == FaultMisalign {
+				f = c.store32U(addr, uint32(c.FReg(rs2)))
+			}
+			if f != nil {
 				return f
 			} // FSW: raw low 32 bits
 		case 0b011: // FSD
-			if f := (&c.mem).Store64(addr, c.FReg(rs2)); f != nil {
+			f := c.store64(addr, c.FReg(rs2))
+			if f != nil && f.Kind == FaultMisalign {
+				f = c.store64U(addr, c.FReg(rs2))
+			}
+			if f != nil {
 				return f
 			}
 		default:
@@ -1448,21 +1464,33 @@ func (c *CPU) stepRVC(insn uint16) error {
 			c.SetReg(rd, c.Reg(2)+nzuimm)
 		case 0b010: // C.LW  rd'= mem[rs1'+uimm]
 			uimm := uint64(((insn>>10)&7)<<3 | ((insn>>6)&1)<<2 | ((insn>>5)&1)<<6)
-			v, f := (&c.mem).Load32(c.Reg(rs1) + uimm)
+			addr := c.Reg(rs1) + uimm
+			v, f := c.load32(addr)
+			if f != nil && f.Kind == FaultMisalign {
+				v, f = c.load32U(addr)
+			}
 			if f != nil {
 				return f
 			}
 			c.SetReg(rd, uint64(int64(int32(v))))
 		case 0b001: // C.FLD fd' = mem[rs1'+uimm] (RV64: double-precision float)
 			uimm := uint64(((insn>>10)&7)<<3 | ((insn>>5)&3)<<6)
-			v, f := (&c.mem).Load64(c.Reg(rs1) + uimm)
+			addr := c.Reg(rs1) + uimm
+			v, f := c.load64(addr)
+			if f != nil && f.Kind == FaultMisalign {
+				v, f = c.load64U(addr)
+			}
 			if f != nil {
 				return f
 			}
 			c.SetFReg(rd, boxF64(v))
 		case 0b011: // C.LD  rd'= mem[rs1'+uimm]
 			uimm := uint64(((insn>>10)&7)<<3 | ((insn>>5)&3)<<6)
-			v, f := (&c.mem).Load64(c.Reg(rs1) + uimm)
+			addr := c.Reg(rs1) + uimm
+			v, f := c.load64(addr)
+			if f != nil && f.Kind == FaultMisalign {
+				v, f = c.load64U(addr)
+			}
 			if f != nil {
 				return f
 			}
@@ -1470,19 +1498,34 @@ func (c *CPU) stepRVC(insn uint16) error {
 		case 0b101: // C.FSD mem[rs1'+uimm] = fs2' (double-precision float)
 			rs2f := rp((insn >> 2) & 7)
 			uimm := uint64(((insn>>10)&7)<<3 | ((insn>>5)&3)<<6)
-			if f := (&c.mem).Store64(c.Reg(rs1)+uimm, unboxF64(c.FReg(rs2f))); f != nil {
+			addr := c.Reg(rs1) + uimm
+			f := c.store64(addr, unboxF64(c.FReg(rs2f)))
+			if f != nil && f.Kind == FaultMisalign {
+				f = c.store64U(addr, unboxF64(c.FReg(rs2f)))
+			}
+			if f != nil {
 				return f
 			}
 		case 0b110: // C.SW  mem[rs1'+uimm] = rs2'
 			rs2 := rp((insn >> 2) & 7)
 			uimm := uint64(((insn>>10)&7)<<3 | ((insn>>6)&1)<<2 | ((insn>>5)&1)<<6)
-			if f := (&c.mem).Store32(c.Reg(rs1)+uimm, uint32(c.Reg(rs2))); f != nil {
+			addr := c.Reg(rs1) + uimm
+			f := c.store32(addr, uint32(c.Reg(rs2)))
+			if f != nil && f.Kind == FaultMisalign {
+				f = c.store32U(addr, uint32(c.Reg(rs2)))
+			}
+			if f != nil {
 				return f
 			}
 		case 0b111: // C.SD  mem[rs1'+uimm] = rs2'
 			rs2 := rp((insn >> 2) & 7)
 			uimm := uint64(((insn>>10)&7)<<3 | ((insn>>5)&3)<<6)
-			if f := (&c.mem).Store64(c.Reg(rs1)+uimm, c.Reg(rs2)); f != nil {
+			addr := c.Reg(rs1) + uimm
+			f := c.store64(addr, c.Reg(rs2))
+			if f != nil && f.Kind == FaultMisalign {
+				f = c.store64U(addr, c.Reg(rs2))
+			}
+			if f != nil {
 				return f
 			}
 		default:
@@ -1608,21 +1651,33 @@ func (c *CPU) stepRVC(insn uint16) error {
 			c.SetReg(rd, c.Reg(rd)<<shamt)
 		case 0b001: // C.FLDSP fd = mem[sp+uimm] (double-precision float)
 			uimm := uint64(((insn>>12)&1)<<5 | ((insn>>5)&3)<<3 | ((insn>>2)&7)<<6)
-			v, f := (&c.mem).Load64(c.Reg(2) + uimm)
+			addr := c.Reg(2) + uimm
+			v, f := c.load64(addr)
+			if f != nil && f.Kind == FaultMisalign {
+				v, f = c.load64U(addr)
+			}
 			if f != nil {
 				return f
 			}
 			c.SetFReg(rd, boxF64(v))
 		case 0b010: // C.LWSP
 			uimm := uint64(((insn>>12)&1)<<5 | ((insn>>4)&7)<<2 | ((insn>>2)&3)<<6)
-			v, f := (&c.mem).Load32(c.Reg(2) + uimm)
+			addr := c.Reg(2) + uimm
+			v, f := c.load32(addr)
+			if f != nil && f.Kind == FaultMisalign {
+				v, f = c.load32U(addr)
+			}
 			if f != nil {
 				return f
 			}
 			c.SetReg(rd, uint64(int64(int32(v))))
 		case 0b011: // C.LDSP
 			uimm := uint64(((insn>>12)&1)<<5 | ((insn>>5)&3)<<3 | ((insn>>2)&7)<<6)
-			v, f := (&c.mem).Load64(c.Reg(2) + uimm)
+			addr := c.Reg(2) + uimm
+			v, f := c.load64(addr)
+			if f != nil && f.Kind == FaultMisalign {
+				v, f = c.load64U(addr)
+			}
 			if f != nil {
 				return f
 			}
@@ -1660,17 +1715,32 @@ func (c *CPU) stepRVC(insn uint16) error {
 			}
 		case 0b101: // C.FSDSP mem[sp+uimm] = fs2 (double-precision float)
 			uimm := uint64(((insn>>10)&7)<<3 | ((insn>>7)&7)<<6)
-			if f := (&c.mem).Store64(c.Reg(2)+uimm, unboxF64(c.FReg(rs2))); f != nil {
+			addr := c.Reg(2) + uimm
+			f := c.store64(addr, unboxF64(c.FReg(rs2)))
+			if f != nil && f.Kind == FaultMisalign {
+				f = c.store64U(addr, unboxF64(c.FReg(rs2)))
+			}
+			if f != nil {
 				return f
 			}
 		case 0b110: // C.SWSP
 			uimm := uint64(((insn>>9)&0xF)<<2 | ((insn>>7)&3)<<6)
-			if f := (&c.mem).Store32(c.Reg(2)+uimm, uint32(c.Reg(rs2))); f != nil {
+			addr := c.Reg(2) + uimm
+			f := c.store32(addr, uint32(c.Reg(rs2)))
+			if f != nil && f.Kind == FaultMisalign {
+				f = c.store32U(addr, uint32(c.Reg(rs2)))
+			}
+			if f != nil {
 				return f
 			}
 		case 0b111: // C.SDSP
 			uimm := uint64(((insn>>10)&7)<<3 | ((insn>>7)&7)<<6)
-			if f := (&c.mem).Store64(c.Reg(2)+uimm, c.Reg(rs2)); f != nil {
+			addr := c.Reg(2) + uimm
+			f := c.store64(addr, c.Reg(rs2))
+			if f != nil && f.Kind == FaultMisalign {
+				f = c.store64U(addr, c.Reg(rs2))
+			}
+			if f != nil {
 				return f
 			}
 		default:
@@ -1787,7 +1857,10 @@ func (c *CPU) writeCSR(addr uint32, val uint64) {
 	case 0x144:
 		c.sip = val // sip
 	case 0x180:
-		c.satp = val // satp; address translation is intentionally not implemented here
+		if c.satp != val {
+			c.satp = val // satp
+			c.flushTLB()
+		}
 	// M-mode trap CSRs
 	case 0x300:
 		c.mstatus = val // mstatus

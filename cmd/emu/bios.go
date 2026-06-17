@@ -60,7 +60,7 @@ func runEmuBios(cfg EmuConfig, budget uint64) (int, error) {
 	}
 	defer guest.mem.Free()
 
-	res, err := riscv.RunDefaultBudget(guest.cpu, &guest.cpu.Notes, budget)
+	res, err := riscv.RunMachineBudget(guest.cpu, &guest.cpu.Notes, budget)
 	if err != nil {
 		return 0, err
 	}
@@ -142,6 +142,7 @@ func prepareBiosGuest(cfg EmuConfig) (*biosGuest, error) {
 	mem.SetMMIO(newBiosMMIO(cfg.Stdout))
 	cpu := riscv.NewCPU(*mem)
 	cpu.SetPrivilegeMode(riscv.PrivMachine)
+	cpu.EnableMMU()
 	cpu.SetPC(elf.Entry)
 	cpu.SetReg(10, 0)       // a0: boot hart id
 	cpu.SetReg(11, fdtAddr) // a1: flattened device tree pointer
@@ -327,6 +328,12 @@ func (m *biosMMIO) Store(addr, width, value uint64) (bool, *riscv.MemFault) {
 		return true, &riscv.MemFault{Addr: addr, Width: width, Kind: riscv.FaultStore}
 	}
 	return false, nil
+}
+
+func (m *biosMMIO) MMIOOverlaps(addr, size uint64) bool {
+	return rangesOverlap(addr, addr+size, biosUARTBase, biosUARTBase+biosUARTSize) ||
+		rangesOverlap(addr, addr+size, biosCLINTBase, biosCLINTBase+biosCLINTSize) ||
+		rangesOverlap(addr, addr+size, biosPLICBase, biosPLICBase+biosPLICSize)
 }
 
 func (m *biosMMIO) loadUART(off, width uint64) uint64 {
