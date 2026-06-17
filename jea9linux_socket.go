@@ -99,6 +99,7 @@ func (jos *Jea9Linux) sysListen(fdRaw, backlog uint64) int64 {
 		f.socketLocal = cloneTCPAddr(got)
 	}
 	jos.fds[fd] = f
+	jos.startAcceptWatcher(fd, &f)
 	return 0
 }
 
@@ -137,6 +138,7 @@ func (jos *Jea9Linux) sysConnect(cpu *CPU, fdRaw, sockaddrAddr, addrlen uint64) 
 		f.socketPeer = cloneTCPAddr(got)
 	}
 	jos.fds[fd] = f
+	jos.startReadWatcher(fd, &f)
 	jos.wakeAllSocketEpollWaiters(cpu)
 	return 0
 }
@@ -170,7 +172,7 @@ func (jos *Jea9Linux) sysAccept4(cpu *CPU, fdRaw, sockaddrAddr, addrlenAddr, fla
 			return errno
 		}
 	}
-	newfd := jos.allocFD(jea9LinuxFD{
+	accepted := jea9LinuxFD{
 		kind:           jea9LinuxFDSocket,
 		flags:          uint64(flags),
 		socketFamily:   f.socketFamily,
@@ -179,7 +181,10 @@ func (jos *Jea9Linux) sysAccept4(cpu *CPU, fdRaw, sockaddrAddr, addrlenAddr, fla
 		tcpConn:        conn,
 		socketLocal:    cloneTCPAddr(local),
 		socketPeer:     cloneTCPAddr(peer),
-	})
+	}
+	newfd := jos.allocFD(accepted)
+	accepted = jos.fds[newfd]
+	jos.startReadWatcher(newfd, &accepted)
 	return int64(newfd)
 }
 
@@ -359,6 +364,10 @@ func (jos *Jea9Linux) sysSocketRead(cpu *CPU, fd int, bufAddr, n uint64) int64 {
 	if copied > 0 {
 		f.socketReadBuf = f.socketReadBuf[copied:]
 		jos.fds[fd] = f
+		if len(f.socketReadBuf) == 0 {
+			jos.clearEpollReadyBitsForFD(fd, jea9LinuxEpollIn)
+			jos.startReadWatcher(fd, &f)
+		}
 		if fault := cpu.mem.WriteBytes(bufAddr, out[:copied]); fault != nil {
 			return jea9LinuxErrEFAULT
 		}
@@ -366,6 +375,14 @@ func (jos *Jea9Linux) sysSocketRead(cpu *CPU, fd int, bufAddr, n uint64) int64 {
 	}
 	if f.socketEOF {
 		return 0
+	}
+	if f.socketErr != 0 {
+		return f.socketErr
+	}
+	if jos.timeMode == RealTime {
+		jos.startReadWatcher(fd, &f)
+		jos.clearEpollReadyBitsForFD(fd, jea9LinuxEpollIn)
+		return jea9LinuxErrEAGAIN
 	}
 	nread, err := socketNonblockingRead(f.tcpConn, out)
 	if nread > 0 {
@@ -434,6 +451,153 @@ func (jos *Jea9Linux) socketFD(fdRaw uint64) (int, jea9LinuxFD, int64) {
 		return 0, jea9LinuxFD{}, jea9LinuxErrENOTSOCK
 	}
 	return fd, f, 0
+}
+
+func (jos *Jea9Linux) sendExternalEvent(ev externalEvent) {
+	if jos.externalEvents == nil {
+		if ev.conn != nil {
+			_ = ev.conn.Close()
+		}
+		return
+	}
+	jos.externalEvents <- ev
+}
+
+func (jos *Jea9Linux) drainExternalEvents(cpu *CPU) {
+	if jos == nil || jos.timeMode != RealTime || jos.externalEvents == nil {
+		return
+	}
+	for {
+		select {
+		case ev := <-jos.externalEvents:
+			jos.applyExternalEvent(cpu, ev)
+		default:
+			return
+		}
+	}
+}
+
+func (jos *Jea9Linux) applyExternalEvent(cpu *CPU, ev externalEvent) {
+	f, ok := jos.fds[ev.fd]
+	if !ok || f.kind != jea9LinuxFDSocket || f.socketGen != ev.gen {
+		if ev.conn != nil {
+			_ = ev.conn.Close()
+		}
+		return
+	}
+	switch ev.kind {
+	case eventAccept:
+		if f.tcpListener == nil {
+			if ev.conn != nil {
+				_ = ev.conn.Close()
+			}
+			return
+		}
+		if ev.conn != nil {
+			f.socketPending = append(f.socketPending, ev.conn)
+			jos.fds[ev.fd] = f
+			jos.wakeEpollWaitersForFD(cpu, ev.fd)
+		}
+	case eventRead:
+		f.readWatching = false
+		if f.tcpConn == nil {
+			jos.fds[ev.fd] = f
+			return
+		}
+		if len(ev.data) > 0 {
+			f.socketReadBuf = append(f.socketReadBuf, ev.data...)
+			jos.fds[ev.fd] = f
+			jos.wakeEpollWaitersForFD(cpu, ev.fd)
+			return
+		}
+		jos.fds[ev.fd] = f
+	case eventEOF:
+		f.readWatching = false
+		f.socketEOF = true
+		jos.fds[ev.fd] = f
+		jos.wakeEpollWaitersForFD(cpu, ev.fd)
+	case eventError:
+		f.readWatching = false
+		if ev.errno == 0 {
+			ev.errno = jea9LinuxErrEIO
+		}
+		f.socketErr = ev.errno
+		jos.fds[ev.fd] = f
+		jos.wakeEpollWaitersForFD(cpu, ev.fd)
+	}
+}
+
+func (jos *Jea9Linux) hasExternalWaitSource() bool {
+	if jos == nil || jos.timeMode != RealTime {
+		return false
+	}
+	for _, f := range jos.fds {
+		if f.kind != jea9LinuxFDSocket {
+			continue
+		}
+		if f.acceptWatching || f.readWatching {
+			return true
+		}
+	}
+	return false
+}
+
+func (jos *Jea9Linux) startAcceptWatcher(fd int, f *jea9LinuxFD) {
+	if jos.timeMode != RealTime || f == nil || f.tcpListener == nil || f.acceptWatching {
+		return
+	}
+	f.acceptWatching = true
+	gen := f.socketGen
+	ln := f.tcpListener
+	jos.fds[fd] = *f
+	go func() {
+		for {
+			conn, err := ln.AcceptTCP()
+			if err != nil {
+				return
+			}
+			_ = conn.SetNoDelay(true)
+			jos.sendExternalEvent(externalEvent{
+				kind: eventAccept,
+				fd:   fd,
+				gen:  gen,
+				conn: conn,
+			})
+		}
+	}()
+}
+
+func (jos *Jea9Linux) startReadWatcher(fd int, f *jea9LinuxFD) {
+	if jos.timeMode != RealTime || f == nil || f.tcpConn == nil || f.readWatching || f.socketEOF || f.socketErr != 0 || len(f.socketReadBuf) > 0 {
+		return
+	}
+	f.readWatching = true
+	gen := f.socketGen
+	conn := f.tcpConn
+	jos.fds[fd] = *f
+	go func() {
+		buf := make([]byte, 32*1024)
+		n, err := conn.Read(buf)
+		if n > 0 {
+			jos.sendExternalEvent(externalEvent{
+				kind: eventRead,
+				fd:   fd,
+				gen:  gen,
+				data: append([]byte(nil), buf[:n]...),
+			})
+			return
+		}
+		if err == nil || errors.Is(err, io.EOF) {
+			jos.sendExternalEvent(externalEvent{kind: eventEOF, fd: fd, gen: gen})
+			return
+		}
+		jos.sendExternalEvent(externalEvent{
+			kind:  eventError,
+			fd:    fd,
+			gen:   gen,
+			errno: jea9LinuxErrnoFromHost(err),
+		})
+	}()
 }
 
 func loadJea9LinuxTCPAddr(cpu *CPU, addr, addrlen uint64) (*net.TCPAddr, int64) {
@@ -538,6 +702,10 @@ func (jos *Jea9Linux) socketEnsurePending(fd int, f *jea9LinuxFD) bool {
 	if f.tcpListener == nil {
 		return false
 	}
+	if jos.timeMode == RealTime {
+		jos.startAcceptWatcher(fd, f)
+		return false
+	}
 	_ = f.tcpListener.SetDeadline(time.Now().Add(jea9LinuxSocketPollWindow))
 	conn, err := f.tcpListener.AcceptTCP()
 	_ = f.tcpListener.SetDeadline(time.Time{})
@@ -550,10 +718,14 @@ func (jos *Jea9Linux) socketEnsurePending(fd int, f *jea9LinuxFD) bool {
 }
 
 func (jos *Jea9Linux) socketPollReadable(fd int, f *jea9LinuxFD) bool {
-	if f.socketEOF || len(f.socketReadBuf) > 0 {
+	if f.socketEOF || f.socketErr != 0 || len(f.socketReadBuf) > 0 {
 		return true
 	}
 	if f.tcpConn == nil {
+		return false
+	}
+	if jos.timeMode == RealTime {
+		jos.startReadWatcher(fd, f)
 		return false
 	}
 	readable, eof, err := socketPeekReadable(f.tcpConn)

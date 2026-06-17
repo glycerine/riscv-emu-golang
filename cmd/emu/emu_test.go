@@ -85,6 +85,15 @@ func TestEmuEnvDefaultsFollowHermitMode(t *testing.T) {
 	}
 }
 
+func TestEmuTimeModeFollowsHermitFlag(t *testing.T) {
+	if got := (EmuConfig{}).timeMode(); got != riscv.RealTime {
+		t.Fatalf("default emu time mode = %v, want RealTime", got)
+	}
+	if got := (EmuConfig{Hermit: true}).timeMode(); got != riscv.HermitTime {
+		t.Fatalf("hermit emu time mode = %v, want HermitTime", got)
+	}
+}
+
 func envHas(env []string, want string) bool {
 	for _, got := range env {
 		if got == want {

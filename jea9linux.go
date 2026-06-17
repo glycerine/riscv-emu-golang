@@ -13,6 +13,14 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
+)
+
+type TimeMode uint8
+
+const (
+	HermitTime TimeMode = iota
+	RealTime
 )
 
 type Jea9LinuxClockMode uint8
@@ -483,6 +491,10 @@ type jea9LinuxFD struct {
 	socketPending  []*net.TCPConn
 	socketReadBuf  []byte
 	socketEOF      bool
+	socketErr      int64
+	socketGen      uint64
+	acceptWatching bool
+	readWatching   bool
 	eventfdCounter uint64
 	epoll          *jea9LinuxEpoll
 	pipe           *jea9LinuxPipe
@@ -507,6 +519,24 @@ type jea9LinuxPipe struct {
 	buf     []byte
 	readFD  int
 	writeFD int
+}
+
+type eventKind uint8
+
+const (
+	eventAccept eventKind = iota + 1
+	eventRead
+	eventEOF
+	eventError
+)
+
+type externalEvent struct {
+	kind  eventKind
+	fd    int
+	gen   uint64
+	conn  *net.TCPConn
+	data  []byte
+	errno int64
 }
 
 type jea9LinuxSignalAction struct {
@@ -541,6 +571,7 @@ type jea9LinuxSignalFrame struct {
 
 type Jea9LinuxOptions struct {
 	EntropySeed       []byte
+	TimeMode          TimeMode
 	ClockMode         Jea9LinuxClockMode
 	ClockPolicy       ClockPolicy
 	MonotonicStartNS  int64
@@ -642,6 +673,7 @@ type Jea9LinuxTraceSnapshot struct {
 }
 
 type Jea9Linux struct {
+	timeMode            TimeMode
 	clockMode           Jea9LinuxClockMode
 	clockPolicy         ClockPolicy
 	clockFixedAdvanceNS int64
@@ -649,6 +681,8 @@ type Jea9Linux struct {
 	clockPRNGMaxNS      int64
 	chaosPolicyPhase    jea9LinuxChaosPolicyPhase
 	monotonicNS         int64
+	realStart           time.Time
+	realStartNS         int64
 	realtimeOffsetNS    int64
 	nsPerInstruction    int64
 	nanosleepMode       Jea9LinuxNanosleepAdvanceMode
@@ -661,6 +695,8 @@ type Jea9Linux struct {
 	stderr            io.Writer
 	fds               map[int]jea9LinuxFD
 	nextFD            int
+	nextSocketGen     uint64
+	externalEvents    chan externalEvent
 	files             map[string][]byte
 	allowAllHostFiles bool
 	cwd               string
@@ -823,12 +859,16 @@ var (
 )
 
 func NewJea9Linux(opts Jea9LinuxOptions) *Jea9Linux {
+	realStart := time.Now()
 	jos := &Jea9Linux{
+		timeMode:          opts.TimeMode,
 		clockMode:         opts.ClockMode,
 		clockPolicy:       opts.ClockPolicy,
 		clockPRNGMinNS:    defaultJea9LinuxClockPRNGMinNS,
 		clockPRNGMaxNS:    defaultJea9LinuxClockPRNGMaxNS,
 		monotonicNS:       opts.MonotonicStartNS,
+		realStart:         realStart,
+		realStartNS:       opts.MonotonicStartNS,
 		realtimeOffsetNS:  opts.RealtimeOffsetNS,
 		nsPerInstruction:  opts.NSPerInstruction,
 		nanosleepMode:     opts.NanosleepMode,
@@ -840,6 +880,8 @@ func NewJea9Linux(opts Jea9LinuxOptions) *Jea9Linux {
 		stderr:            opts.Stderr,
 		fds:               make(map[int]jea9LinuxFD),
 		nextFD:            3,
+		nextSocketGen:     1,
+		externalEvents:    make(chan externalEvent, 1024),
 		files:             make(map[string][]byte),
 		allowAllHostFiles: opts.AllowAllHostFiles,
 		cwd:               defaultJea9LinuxCwd(opts),
@@ -1178,6 +1220,8 @@ func (jos *Jea9Linux) maybeReshuffleSchedulerPriorities(cpu *CPU) {
 	}
 }
 
+func (jos *Jea9Linux) TimeMode() TimeMode { return jos.timeMode }
+
 func (jos *Jea9Linux) ClockMode() Jea9LinuxClockMode { return jos.clockMode }
 
 func (jos *Jea9Linux) SetClockMode(mode Jea9LinuxClockMode) { jos.clockMode = mode }
@@ -1227,10 +1271,17 @@ func (jos *Jea9Linux) SetNSPerInstruction(ns int64) {
 
 func (jos *Jea9Linux) SetMonotonicNS(ns int64) {
 	jos.monotonicNS = ns
+	if jos.timeMode == RealTime {
+		jos.realStart = time.Now()
+		jos.realStartNS = ns
+	}
 	jos.refreshBlocked()
 }
 
-func (jos *Jea9Linux) MonotonicNS() int64 { return jos.monotonicNS }
+func (jos *Jea9Linux) MonotonicNS() int64 {
+	jos.syncRealClock()
+	return jos.monotonicNS
+}
 
 func (jos *Jea9Linux) BudgetYields() uint64 { return jos.budgetYields }
 
@@ -1478,6 +1529,18 @@ func (jos *Jea9Linux) recordVirtualClockAdvanceTrace(source string, before, dead
 func (jos *Jea9Linux) Blocked() bool {
 	jos.refreshBlocked()
 	return jos.blocked
+}
+
+func (jos *Jea9Linux) syncRealClock() {
+	if jos == nil || jos.timeMode != RealTime {
+		return
+	}
+	if jos.realStart.IsZero() {
+		jos.realStart = time.Now()
+		jos.realStartNS = jos.monotonicNS
+		return
+	}
+	jos.monotonicNS = jos.realStartNS + time.Since(jos.realStart).Nanoseconds()
 }
 
 func (jos *Jea9Linux) fillRandom(dst []byte) {
@@ -1859,6 +1922,11 @@ func (jos *Jea9Linux) advanceIdleClockToNextDeadline() {
 }
 
 func (jos *Jea9Linux) advanceVirtualClockForSchedulerEvent(cpu *CPU, reason string) (int64, bool) {
+	if jos.timeMode == RealTime {
+		jos.syncRealClock()
+		jos.refreshBlocked()
+		return 0, false
+	}
 	before := jos.monotonicNS
 	switch jos.clockPolicy {
 	case ClockPolicyOnlyDeadlockAdvances, ClockPolicyChaos:
@@ -1895,6 +1963,11 @@ func (jos *Jea9Linux) advanceVirtualClockForSchedulerEvent(cpu *CPU, reason stri
 }
 
 func (jos *Jea9Linux) advanceVirtualClockWhenNoRunnableCandidate(cpu *CPU, reason string) (int64, bool) {
+	if jos.timeMode == RealTime {
+		jos.syncRealClock()
+		jos.refreshBlocked()
+		return 0, false
+	}
 	before := jos.monotonicNS
 	switch jos.clockPolicy {
 	case ClockPolicyOnlyDeadlockAdvances, ClockPolicyChaos:
@@ -1931,6 +2004,11 @@ func (jos *Jea9Linux) advanceVirtualClockWhenNoRunnableCandidate(cpu *CPU, reaso
 }
 
 func (jos *Jea9Linux) advanceVirtualClockTowardDeadline(cpu *CPU, reason string, deadline int64) (int64, bool) {
+	if jos.timeMode == RealTime {
+		jos.syncRealClock()
+		jos.refreshBlocked()
+		return 0, jos.monotonicNS >= deadline
+	}
 	before := jos.monotonicNS
 	if deadline <= before {
 		return 0, true
@@ -1980,6 +2058,13 @@ func (jos *Jea9Linux) advanceVirtualClockTowardDeadline(cpu *CPU, reason string,
 }
 
 func (jos *Jea9Linux) scheduleAfterCurrentBlocked(cpu *CPU) NoteDisposition {
+	if jos.timeMode == RealTime {
+		jos.drainExternalEvents(cpu)
+		jos.refreshBlocked()
+		if jos.loadFirstRunnableAfterBlocked(cpu) {
+			return NoteHandled
+		}
+	}
 	if next, ok := jos.nextRunnableByPolicyAfterCurrent(); ok {
 		jos.loadContext(cpu, next)
 		jos.blocked = false
@@ -2485,6 +2570,7 @@ func (jos *Jea9Linux) Run(cpu *CPU) error {
 		attemptDelta := cpu.RiscvInstrBegun() - attemptsBefore
 		used += attemptDelta
 		jos.accountInsAttempts(attemptDelta)
+		jos.drainExternalEvents(cpu)
 		if jos.Blocked() {
 			return ErrJea9LinuxBlocked
 		}
@@ -2538,6 +2624,7 @@ func (jos *Jea9Linux) RunJIT(cpu *CPU, jit *JIT) error {
 		attemptDelta := cpu.RiscvInstrBegun() - attemptsBefore
 		used += attemptDelta
 		jos.accountInsAttempts(attemptDelta)
+		jos.drainExternalEvents(cpu)
 		if jos.Blocked() {
 			return ErrJea9LinuxBlocked
 		}
@@ -2621,7 +2708,7 @@ func (jos *Jea9Linux) expireBudget(cpu *CPU) error {
 }
 
 func (jos *Jea9Linux) accountInsAttempts(attempts uint64) {
-	if jos.clockMode != Jea9ClockICTick || attempts == 0 {
+	if jos.timeMode == RealTime || jos.clockMode != Jea9ClockICTick || attempts == 0 {
 		return
 	}
 	jos.monotonicNS += int64(attempts) * jos.nsPerInstruction
@@ -2675,6 +2762,7 @@ func (jos *Jea9Linux) Handle(cpu *CPU, n Note) (disp NoteDisposition) {
 			jos.recordSyscallTrace(cpu, n, args, disp)
 		}()
 	}
+	jos.drainExternalEvents(cpu)
 	switch args.Num {
 	case jea9LinuxSysGetcwd:
 		cpu.SetReg(10, uint64(jos.sysGetcwd(cpu, args.A0, args.A1)))
@@ -2918,10 +3006,25 @@ func (jos *Jea9Linux) Handle(cpu *CPU, n Note) (disp NoteDisposition) {
 }
 
 func (jos *Jea9Linux) allocFD(fd jea9LinuxFD) int {
+	if fd.kind == jea9LinuxFDSocket && fd.socketGen == 0 {
+		fd.socketGen = jos.nextSocketGeneration()
+	}
 	n := jos.nextFD
 	jos.nextFD++
 	jos.fds[n] = fd
 	return n
+}
+
+func (jos *Jea9Linux) nextSocketGeneration() uint64 {
+	if jos.nextSocketGen == 0 {
+		jos.nextSocketGen = 1
+	}
+	gen := jos.nextSocketGen
+	jos.nextSocketGen++
+	if jos.nextSocketGen == 0 {
+		jos.nextSocketGen = 1
+	}
+	return gen
 }
 
 func (jos *Jea9Linux) sysEventfd2(init, flags uint64) int64 {
@@ -3071,6 +3174,7 @@ func (jos *Jea9Linux) sysEpollPwait(cpu *CPU, epfdRaw, eventsAddr, maxEvents, ti
 }
 
 func (jos *Jea9Linux) epollDeadline(timeoutRaw uint64) (int64, bool, int64) {
+	jos.syncRealClock()
 	timeout := int64(timeoutRaw)
 	if timeout < 0 {
 		return 0, false, 0
@@ -3179,6 +3283,9 @@ func (jos *Jea9Linux) fdReadyEvents(fd int) uint32 {
 
 func (jos *Jea9Linux) wakeEpollWaitersForFD(cpu *CPU, fd int) {
 	for _, ctx := range jos.contexts {
+		if ctx == nil {
+			continue
+		}
 		if ctx.state != jea9LinuxContextWaiting || ctx.waitKind != jea9LinuxWaitEpoll {
 			continue
 		}
@@ -3257,6 +3364,7 @@ func (jos *Jea9Linux) sysPselect6(cpu *CPU, nfds, readfds, writefds, exceptfds, 
 }
 
 func (jos *Jea9Linux) timespecDeadline(cpu *CPU, timeoutAddr uint64) (int64, bool, int64) {
+	jos.syncRealClock()
 	secRaw, f := cpu.mem.Load64(timeoutAddr)
 	if f != nil {
 		return 0, false, jea9LinuxErrEFAULT
@@ -4961,6 +5069,7 @@ func storeLinuxRlimit(cpu *CPU, addr, cur, max uint64) int64 {
 }
 
 func (jos *Jea9Linux) sysSysinfo(cpu *CPU, addr uint64) int64 {
+	jos.syncRealClock()
 	buf := make([]byte, 112)
 	uptime := jos.monotonicNS / 1_000_000_000
 	if uptime < 0 {
@@ -5164,7 +5273,7 @@ func (jos *Jea9Linux) sysClockGettime(cpu *CPU, clockID, tsAddr uint64) int64 {
 
 func (jos *Jea9Linux) sysGettimeofday(cpu *CPU, tvAddr, tzAddr uint64) int64 {
 	if tvAddr != 0 {
-		ns := jos.monotonicNS + jos.realtimeOffsetNS
+		ns, _ := jos.clockNow(jea9LinuxClockRealtime)
 		jos.recordClockTrace("gettimeofday", jea9LinuxClockRealtime, ns)
 		sec, nsec := splitLinuxNS(ns)
 		if f := cpu.mem.Store64(tvAddr, uint64(sec)); f != nil {
@@ -5187,6 +5296,7 @@ func (jos *Jea9Linux) sysGettimeofday(cpu *CPU, tvAddr, tzAddr uint64) int64 {
 
 func (jos *Jea9Linux) sysNanosleep(cpu *CPU, reqAddr, remAddr uint64) NoteDisposition {
 	_ = remAddr
+	jos.syncRealClock()
 	secRaw, f := cpu.mem.Load64(reqAddr)
 	if f != nil {
 		setJea9LinuxReturn(cpu, jea9LinuxErrEFAULT)
@@ -5236,6 +5346,7 @@ func (jos *Jea9Linux) sysNanosleep(cpu *CPU, reqAddr, remAddr uint64) NoteDispos
 }
 
 func (jos *Jea9Linux) refreshBlocked() {
+	jos.syncRealClock()
 	if jos.timedFutexWaiters > 0 {
 		jos.refreshFutexTimeouts()
 	}
@@ -5304,6 +5415,7 @@ func (jos *Jea9Linux) refreshNanosleepTimeouts() {
 }
 
 func (jos *Jea9Linux) clockNow(clockID uint64) (int64, bool) {
+	jos.syncRealClock()
 	switch clockID {
 	case jea9LinuxClockRealtime, jea9LinuxClockRealtimeCoarse:
 		return jos.monotonicNS + jos.realtimeOffsetNS, true
@@ -5362,6 +5474,66 @@ func installJea9LinuxCore(cpu *CPU, jos *Jea9Linux) func() {
 	}
 }
 
+func (jos *Jea9Linux) loadFirstRunnableAfterBlocked(cpu *CPU) bool {
+	if next, ok := jos.firstRunnableByPolicy(); ok {
+		jos.loadContext(cpu, next)
+		jos.blocked = false
+		jos.blockedHasDeadline = false
+		return true
+	}
+	return false
+}
+
+func (jos *Jea9Linux) realTimeWaitDuration(deadline int64) time.Duration {
+	jos.syncRealClock()
+	if deadline <= jos.monotonicNS {
+		return 0
+	}
+	delta := deadline - jos.monotonicNS
+	if delta > int64(1<<63-1) {
+		return time.Duration(1<<63 - 1)
+	}
+	return time.Duration(delta)
+}
+
+func (jos *Jea9Linux) waitRealTimeBlocked(cpu *CPU) bool {
+	if jos.timeMode != RealTime {
+		return false
+	}
+	for {
+		jos.drainExternalEvents(cpu)
+		jos.refreshBlocked()
+		if jos.loadFirstRunnableAfterBlocked(cpu) {
+			return true
+		}
+		deadline, hasDeadline := jos.nextWaitDeadline()
+		if !hasDeadline && !jos.hasExternalWaitSource() {
+			return false
+		}
+		if hasDeadline {
+			wait := jos.realTimeWaitDuration(deadline)
+			if wait <= 0 {
+				continue
+			}
+			timer := time.NewTimer(wait)
+			select {
+			case ev := <-jos.externalEvents:
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+				jos.applyExternalEvent(cpu, ev)
+			case <-timer.C:
+			}
+			continue
+		}
+		ev := <-jos.externalEvents
+		jos.applyExternalEvent(cpu, ev)
+	}
+}
+
 func RunWithJea9Linux(cpu *CPU, jos *Jea9Linux) (exitCode int, err error) {
 	cleanup := InstallJea9Linux(cpu, jos)
 	defer cleanup()
@@ -5369,6 +5541,11 @@ func RunWithJea9Linux(cpu *CPU, jos *Jea9Linux) (exitCode int, err error) {
 		err = jos.Run(cpu)
 		if errors.Is(err, ErrJea9LinuxBudget) {
 			continue
+		}
+		if errors.Is(err, ErrJea9LinuxBlocked) && jos.TimeMode() == RealTime {
+			if jos.waitRealTimeBlocked(cpu) {
+				continue
+			}
 		}
 		if err != nil {
 			if ex, ok := err.(*ExitError); ok {
@@ -5387,6 +5564,11 @@ func RunWithJea9LinuxJIT(cpu *CPU, jit *JIT, jos *Jea9Linux) (exitCode int, err 
 		err = jos.RunJIT(cpu, jit)
 		if errors.Is(err, ErrJea9LinuxBudget) {
 			continue
+		}
+		if errors.Is(err, ErrJea9LinuxBlocked) && jos.TimeMode() == RealTime {
+			if jos.waitRealTimeBlocked(cpu) {
+				continue
+			}
 		}
 		if err != nil {
 			if ex, ok := err.(*ExitError); ok {

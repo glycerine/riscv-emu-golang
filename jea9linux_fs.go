@@ -965,5 +965,6 @@ func errorsIsEOF(err error) bool {
 }
 
 func (jos *Jea9Linux) fsNowNS() int64 {
+	jos.syncRealClock()
 	return jos.monotonicNS + jos.realtimeOffsetNS
 }

@@ -189,6 +189,7 @@ func runEmu(cfg EmuConfig) (int, error) {
 	cpu := riscv.NewCPU(*mem)
 	jlinux := riscv.NewJea9Linux(riscv.Jea9LinuxOptions{
 		EntropySeed:       seedBytes(cfg.Seed),
+		TimeMode:          cfg.timeMode(),
 		ClockMode:         riscv.Jea9ClockIdleJump,
 		ClockPolicy:       clockPolicy,
 		MonotonicStartNS:  1,                        // cannot be 0, crashes Go runtime.
@@ -276,6 +277,13 @@ func (c EmuConfig) withDefaults() EmuConfig {
 		}
 	}
 	return c
+}
+
+func (c EmuConfig) timeMode() riscv.TimeMode {
+	if c.Hermit {
+		return riscv.HermitTime
+	}
+	return riscv.RealTime
 }
 
 type emuTimingMode uint8
