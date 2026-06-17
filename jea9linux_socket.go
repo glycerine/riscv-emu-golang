@@ -9,6 +9,8 @@ import (
 	"time"
 )
 
+const jea9LinuxSocketPollWindow = 100 * time.Microsecond
+
 func (jos *Jea9Linux) sysSocket(domainRaw, typeRaw, protoRaw uint64) int64 {
 	if !jos.allowAllHostFiles {
 		return jea9LinuxErrEACCES
@@ -47,7 +49,6 @@ func (jos *Jea9Linux) sysBind(cpu *CPU, fdRaw, sockaddrAddr, addrlen uint64) int
 	if errno != 0 {
 		return errno
 	}
-	_ = fd
 	if f.tcpListener != nil || f.tcpConn != nil {
 		return jea9LinuxErrEINVAL
 	}
@@ -59,7 +60,7 @@ func (jos *Jea9Linux) sysBind(cpu *CPU, fdRaw, sockaddrAddr, addrlen uint64) int
 		return jea9LinuxErrEAFNOSUPPORT
 	}
 	f.socketLocal = addr
-	jos.fds[int(int64(fdRaw))] = f
+	jos.fds[fd] = f
 	return 0
 }
 
@@ -365,7 +366,7 @@ func (jos *Jea9Linux) sysSocketRead(cpu *CPU, fd int, bufAddr, n uint64) int64 {
 	if f.socketEOF {
 		return 0
 	}
-	_ = f.tcpConn.SetReadDeadline(time.Now())
+	_ = f.tcpConn.SetReadDeadline(time.Now().Add(jea9LinuxSocketPollWindow))
 	nread, err := f.tcpConn.Read(out)
 	_ = f.tcpConn.SetReadDeadline(time.Time{})
 	if nread > 0 {
@@ -536,7 +537,7 @@ func (jos *Jea9Linux) socketEnsurePending(fd int, f *jea9LinuxFD) bool {
 	if f.tcpListener == nil {
 		return false
 	}
-	_ = f.tcpListener.SetDeadline(time.Now())
+	_ = f.tcpListener.SetDeadline(time.Now().Add(jea9LinuxSocketPollWindow))
 	conn, err := f.tcpListener.AcceptTCP()
 	_ = f.tcpListener.SetDeadline(time.Time{})
 	if err != nil {
@@ -555,7 +556,7 @@ func (jos *Jea9Linux) socketPollReadable(fd int, f *jea9LinuxFD) bool {
 		return false
 	}
 	var b [1]byte
-	_ = f.tcpConn.SetReadDeadline(time.Now())
+	_ = f.tcpConn.SetReadDeadline(time.Now().Add(jea9LinuxSocketPollWindow))
 	n, err := f.tcpConn.Read(b[:])
 	_ = f.tcpConn.SetReadDeadline(time.Time{})
 	if n > 0 {

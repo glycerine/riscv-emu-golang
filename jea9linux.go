@@ -139,46 +139,47 @@ var (
 )
 
 const (
-	jea9LinuxErrEFAULT       = int64(-14)
-	jea9LinuxErrEINVAL       = int64(-22)
-	jea9LinuxErrEBADF        = int64(-9)
-	jea9LinuxErrENOENT       = int64(-2)
-	jea9LinuxErrENOSYS       = int64(-38)
-	jea9LinuxErrEXDEV        = int64(-18)
-	jea9LinuxErrEPERM        = int64(-1)
-	jea9LinuxErrESRCH        = int64(-3)
-	jea9LinuxErrEIO          = int64(-5)
-	jea9LinuxErrEACCES       = int64(-13)
-	jea9LinuxErrENOMEM       = int64(-12)
-	jea9LinuxErrEAGAIN       = int64(-11)
-	jea9LinuxErrEEXIST       = int64(-17)
-	jea9LinuxErrENOTDIR      = int64(-20)
-	jea9LinuxErrEISDIR       = int64(-21)
-	jea9LinuxErrENOSPC       = int64(-28)
-	jea9LinuxErrEROFS        = int64(-30)
-	jea9LinuxErrERANGE       = int64(-34)
-	jea9LinuxErrESPIPE       = int64(-29)
-	jea9LinuxErrENAMETOOLONG = int64(-36)
-	jea9LinuxErrENOTEMPTY    = int64(-39)
-	jea9LinuxErrELOOP        = int64(-40)
-	jea9LinuxErrENOTTY       = int64(-25)
-	jea9LinuxErrEPIPE        = int64(-32)
-	jea9LinuxErrENOTSOCK     = int64(-88)
-	jea9LinuxErrEDESTADDRREQ = int64(-89)
-	jea9LinuxErrEPROTOTYPE   = int64(-91)
-	jea9LinuxErrENOPROTOOPT  = int64(-92)
-	jea9LinuxErrEPROTONOSUP  = int64(-93)
-	jea9LinuxErrEOPNOTSUPP   = int64(-95)
-	jea9LinuxErrEAFNOSUPPORT = int64(-97)
-	jea9LinuxErrEADDRINUSE   = int64(-98)
+	jea9LinuxErrEFAULT        = int64(-14)
+	jea9LinuxErrEINVAL        = int64(-22)
+	jea9LinuxErrEBADF         = int64(-9)
+	jea9LinuxErrENOENT        = int64(-2)
+	jea9LinuxErrENOSYS        = int64(-38)
+	jea9LinuxErrEXDEV         = int64(-18)
+	jea9LinuxErrEPERM         = int64(-1)
+	jea9LinuxErrESRCH         = int64(-3)
+	jea9LinuxErrEIO           = int64(-5)
+	jea9LinuxErrEACCES        = int64(-13)
+	jea9LinuxErrENOMEM        = int64(-12)
+	jea9LinuxErrEAGAIN        = int64(-11)
+	jea9LinuxErrEEXIST        = int64(-17)
+	jea9LinuxErrENOTDIR       = int64(-20)
+	jea9LinuxErrEISDIR        = int64(-21)
+	jea9LinuxErrENOSPC        = int64(-28)
+	jea9LinuxErrEROFS         = int64(-30)
+	jea9LinuxErrERANGE        = int64(-34)
+	jea9LinuxErrESPIPE        = int64(-29)
+	jea9LinuxErrENAMETOOLONG  = int64(-36)
+	jea9LinuxErrENOTEMPTY     = int64(-39)
+	jea9LinuxErrELOOP         = int64(-40)
+	jea9LinuxErrENOTTY        = int64(-25)
+	jea9LinuxErrEPIPE         = int64(-32)
+	jea9LinuxErrENOTSOCK      = int64(-88)
+	jea9LinuxErrEDESTADDRREQ  = int64(-89)
+	jea9LinuxErrEPROTOTYPE    = int64(-91)
+	jea9LinuxErrENOPROTOOPT   = int64(-92)
+	jea9LinuxErrEPROTONOSUP   = int64(-93)
+	jea9LinuxErrEOPNOTSUPP    = int64(-95)
+	jea9LinuxErrEAFNOSUPPORT  = int64(-97)
+	jea9LinuxErrEADDRINUSE    = int64(-98)
 	jea9LinuxErrEADDRNOTAVAIL = int64(-99)
-	jea9LinuxErrECONNRESET   = int64(-104)
-	jea9LinuxErrEISCONN      = int64(-106)
-	jea9LinuxErrENOTCONN     = int64(-107)
-	jea9LinuxErrETIMEDOUT    = int64(-110)
-	jea9LinuxErrECONNREFUSED = int64(-111)
-	jea9LinuxErrEALREADY     = int64(-114)
-	jea9LinuxErrEINPROGRESS  = int64(-115)
+	jea9LinuxErrECONNABORTED  = int64(-103)
+	jea9LinuxErrECONNRESET    = int64(-104)
+	jea9LinuxErrEISCONN       = int64(-106)
+	jea9LinuxErrENOTCONN      = int64(-107)
+	jea9LinuxErrETIMEDOUT     = int64(-110)
+	jea9LinuxErrECONNREFUSED  = int64(-111)
+	jea9LinuxErrEALREADY      = int64(-114)
+	jea9LinuxErrEINPROGRESS   = int64(-115)
 
 	jea9LinuxSysGetcwd           = uint64(17)
 	jea9LinuxSysEventfd2         = uint64(19)
@@ -4332,6 +4333,42 @@ func jea9LinuxErrnoFromHost(err error) int64 {
 		return jea9LinuxErrESPIPE
 	case errors.Is(err, syscall.EAGAIN):
 		return jea9LinuxErrEAGAIN
+	case errors.Is(err, syscall.EPIPE):
+		return jea9LinuxErrEPIPE
+	case errors.Is(err, syscall.ENOTSOCK):
+		return jea9LinuxErrENOTSOCK
+	case errors.Is(err, syscall.EDESTADDRREQ):
+		return jea9LinuxErrEDESTADDRREQ
+	case errors.Is(err, syscall.EPROTOTYPE):
+		return jea9LinuxErrEPROTOTYPE
+	case errors.Is(err, syscall.ENOPROTOOPT):
+		return jea9LinuxErrENOPROTOOPT
+	case errors.Is(err, syscall.EPROTONOSUPPORT):
+		return jea9LinuxErrEPROTONOSUP
+	case errors.Is(err, syscall.EOPNOTSUPP):
+		return jea9LinuxErrEOPNOTSUPP
+	case errors.Is(err, syscall.EAFNOSUPPORT):
+		return jea9LinuxErrEAFNOSUPPORT
+	case errors.Is(err, syscall.EADDRINUSE):
+		return jea9LinuxErrEADDRINUSE
+	case errors.Is(err, syscall.EADDRNOTAVAIL):
+		return jea9LinuxErrEADDRNOTAVAIL
+	case errors.Is(err, syscall.ECONNABORTED):
+		return jea9LinuxErrECONNABORTED
+	case errors.Is(err, syscall.ECONNRESET):
+		return jea9LinuxErrECONNRESET
+	case errors.Is(err, syscall.EISCONN):
+		return jea9LinuxErrEISCONN
+	case errors.Is(err, syscall.ENOTCONN):
+		return jea9LinuxErrENOTCONN
+	case errors.Is(err, syscall.ETIMEDOUT):
+		return jea9LinuxErrETIMEDOUT
+	case errors.Is(err, syscall.ECONNREFUSED):
+		return jea9LinuxErrECONNREFUSED
+	case errors.Is(err, syscall.EALREADY):
+		return jea9LinuxErrEALREADY
+	case errors.Is(err, syscall.EINPROGRESS):
+		return jea9LinuxErrEINPROGRESS
 	default:
 		return jea9LinuxErrEIO
 	}
