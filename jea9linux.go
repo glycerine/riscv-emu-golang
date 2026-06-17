@@ -456,10 +456,15 @@ type Jea9LinuxRandomTraceEntry struct {
 }
 
 type Jea9LinuxClockTraceEntry struct {
-	Source  string
-	TID     uint64
-	ClockID uint64
-	NS      int64
+	Source          string
+	TID             uint64
+	ClockID         uint64
+	NS              int64
+	BeforeNS        int64
+	AdvanceNS       int64
+	DeadlineNS      int64
+	ReachedDeadline bool
+	ClockPolicy     string
 }
 
 type Jea9LinuxSyscallCount struct {
@@ -1263,10 +1268,28 @@ func (jos *Jea9Linux) recordClockTrace(source string, clockID uint64, ns int64) 
 		return
 	}
 	jos.trace.Clock = append(jos.trace.Clock, Jea9LinuxClockTraceEntry{
-		Source:  source,
-		TID:     jos.traceTID(),
-		ClockID: clockID,
-		NS:      ns,
+		Source:      source,
+		TID:         jos.traceTID(),
+		ClockID:     clockID,
+		NS:          ns,
+		ClockPolicy: jos.clockPolicy.String(),
+	})
+}
+
+func (jos *Jea9Linux) recordVirtualClockAdvanceTrace(source string, before, deadline int64, reached bool) {
+	if !jos.traceEnabled {
+		return
+	}
+	jos.trace.Clock = append(jos.trace.Clock, Jea9LinuxClockTraceEntry{
+		Source:          source,
+		TID:             jos.traceTID(),
+		ClockID:         ^uint64(0),
+		NS:              jos.monotonicNS,
+		BeforeNS:        before,
+		AdvanceNS:       jos.monotonicNS - before,
+		DeadlineNS:      deadline,
+		ReachedDeadline: reached,
+		ClockPolicy:     jos.clockPolicy.String(),
 	})
 }
 
@@ -1673,6 +1696,7 @@ func (jos *Jea9Linux) advanceVirtualClockForSchedulerEvent(cpu *CPU, reason stri
 	}
 	jos.refreshBlocked()
 	jos.noteClockAdvance(reason, before)
+	jos.recordVirtualClockAdvanceTrace(reason, before, jos.monotonicNS, true)
 	return jos.monotonicNS - before, true
 }
 
@@ -1756,7 +1780,9 @@ func (jos *Jea9Linux) advanceVirtualClockTowardDeadline(cpu *CPU, reason string,
 	}
 	jos.refreshChaosWindow()
 	jos.refreshBlocked()
-	return jos.monotonicNS - before, jos.monotonicNS >= deadline
+	reached := jos.monotonicNS >= deadline
+	jos.recordVirtualClockAdvanceTrace(reason, before, deadline, reached)
+	return jos.monotonicNS - before, reached
 }
 
 func (jos *Jea9Linux) scheduleAfterCurrentBlocked(cpu *CPU) NoteDisposition {

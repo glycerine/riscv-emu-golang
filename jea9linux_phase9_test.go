@@ -473,6 +473,7 @@ func TestJea9Linux_FutexTimeoutIdleJump(t *testing.T) {
 func TestJea9Linux_FutexTimeoutStopsAtChaosBoundary(t *testing.T) {
 	j := NewJea9Linux(Jea9LinuxOptions{
 		MonotonicStartNS: 100,
+		Trace:            true,
 		Scheduler: Jea9LinuxSchedulerConfig{
 			Mode: Jea9SchedulerChaos,
 		},
@@ -525,6 +526,15 @@ func TestJea9Linux_FutexTimeoutStopsAtChaosBoundary(t *testing.T) {
 	}
 	if got := parentCtx.waitDeadlineNS; got != 200 {
 		t.Fatalf("parent futex deadline = %d, want 200", got)
+	}
+	trace := j.TraceSnapshot()
+	if len(trace.Clock) != 1 {
+		t.Fatalf("clock trace entries = %d, want 1: %+v", len(trace.Clock), trace.Clock)
+	}
+	entry := trace.Clock[0]
+	if entry.Source != "futex-timeout" || entry.BeforeNS != 100 || entry.NS != 150 ||
+		entry.AdvanceNS != 50 || entry.DeadlineNS != 200 || entry.ReachedDeadline {
+		t.Fatalf("clock trace entry = %+v, want futex-timeout 100->150 toward deadline 200 without reaching it", entry)
 	}
 }
 

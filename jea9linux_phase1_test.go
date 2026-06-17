@@ -161,7 +161,7 @@ func TestRunDefaultBudget_CSRSeesInstructionAttemptsInCurrentBatch(t *testing.T)
 	}
 }
 
-func TestRunDefaultBudget_ZeroBudgetUsesUnboundedRun(t *testing.T) {
+func TestRunDefaultBudget_ZeroBudgetExpiresImmediately(t *testing.T) {
 	cpu, mem := newTestCPU(t, Size64MB, 0x1000, []uint32{
 		ienc(opOPIMM, 0, 17, 0, 93), // a7 = exit
 		instrECALL,
@@ -171,12 +171,76 @@ func TestRunDefaultBudget_ZeroBudgetUsesUnboundedRun(t *testing.T) {
 	defer cleanup()
 
 	res, err := RunDefaultBudget(cpu, &cpu.Notes, 0)
+	if err != nil {
+		t.Fatalf("RunDefaultBudget zero budget: %v", err)
+	}
+	if res != RunBudgetExpired {
+		t.Fatalf("RunDefaultBudget zero budget result = %v, want RunBudgetExpired", res)
+	}
+	if got := cpu.RiscvInstrBegun(); got != 0 {
+		t.Fatalf("RiscvInstrBegun after zero budget = %d, want 0", got)
+	}
+	if got := cpu.PC(); got != 0x1000 {
+		t.Fatalf("PC after zero budget = 0x%x, want 0x1000", got)
+	}
+}
+
+func TestRunDefaultBudget_MaxBudgetRunsUntilExit(t *testing.T) {
+	cpu, mem := newTestCPU(t, Size64MB, 0x1000, []uint32{
+		ienc(opOPIMM, 0, 17, 0, 93), // a7 = exit
+		instrECALL,
+	})
+	defer mem.Free()
+	cleanup := InstallLinuxOS(cpu, io.Discard)
+	defer cleanup()
+
+	res, err := RunDefaultBudget(cpu, &cpu.Notes, ^uint64(0))
 	var ex *ExitError
 	if !errors.As(err, &ex) || ex.Code != 0 {
-		t.Fatalf("RunDefaultBudget error = %v, want exit status 0", err)
+		t.Fatalf("RunDefaultBudget max budget error = %v, want exit status 0", err)
 	}
 	if res != RunBudgetExit {
-		t.Fatalf("RunDefaultBudget result = %v, want RunBudgetExit", res)
+		t.Fatalf("RunDefaultBudget max budget result = %v, want RunBudgetExit", res)
+	}
+}
+
+func TestRunDefaultRetiredBudget_ZeroBudgetExpiresImmediately(t *testing.T) {
+	cpu, mem, _ := testLoopCPU(t, 0)
+	defer mem.Free()
+
+	res, err := RunDefaultRetiredBudget(cpu, &cpu.Notes, 0)
+	if err != nil {
+		t.Fatalf("RunDefaultRetiredBudget zero budget: %v", err)
+	}
+	if res != RunBudgetExpired {
+		t.Fatalf("RunDefaultRetiredBudget zero budget result = %v, want RunBudgetExpired", res)
+	}
+	if got := cpu.RiscvInstrRetired(); got != 0 {
+		t.Fatalf("RiscvInstrRetired after zero budget = %d, want 0", got)
+	}
+	if got := cpu.RiscvInstrBegun(); got != 0 {
+		t.Fatalf("RiscvInstrBegun after zero budget = %d, want 0", got)
+	}
+}
+
+func TestRunDefaultDualBudget_ZeroBudgetReportsLimit(t *testing.T) {
+	cpu, mem, _ := testLoopCPU(t, 0)
+	defer mem.Free()
+
+	res, limit, err := RunDefaultDualBudget(cpu, &cpu.Notes, 0, ^uint64(0))
+	if err != nil {
+		t.Fatalf("RunDefaultDualBudget zero attempt budget: %v", err)
+	}
+	if res != RunBudgetExpired || limit != RunBudgetLimitAttempt {
+		t.Fatalf("RunDefaultDualBudget zero attempt = (%v, %v), want (%v, %v)", res, limit, RunBudgetExpired, RunBudgetLimitAttempt)
+	}
+
+	res, limit, err = RunDefaultDualBudget(cpu, &cpu.Notes, ^uint64(0), 0)
+	if err != nil {
+		t.Fatalf("RunDefaultDualBudget zero retired budget: %v", err)
+	}
+	if res != RunBudgetExpired || limit != RunBudgetLimitRetired {
+		t.Fatalf("RunDefaultDualBudget zero retired = (%v, %v), want (%v, %v)", res, limit, RunBudgetExpired, RunBudgetLimitRetired)
 	}
 }
 
@@ -442,6 +506,28 @@ func TestJITStepBlockRetiredBudget_ExpiresAtRetiredCount(t *testing.T) {
 	}
 	if got := cpu.PC(); got != 0x1004 {
 		t.Fatalf("PC = 0x%x, want 0x1004", got)
+	}
+}
+
+func TestJITStepBlockRetiredBudget_ZeroBudgetExpiresImmediately(t *testing.T) {
+	cpu, mem, _ := testLoopCPU(t, 0)
+	defer mem.Free()
+
+	j := NewJIT()
+	defer j.Close()
+
+	res, err := j.StepBlockRetiredBudget(cpu, 0)
+	if err != nil {
+		t.Fatalf("StepBlockRetiredBudget zero budget: %v", err)
+	}
+	if res != RunBudgetExpired {
+		t.Fatalf("StepBlockRetiredBudget zero budget result = %v, want RunBudgetExpired", res)
+	}
+	if got := cpu.RiscvInstrBegun(); got != 0 {
+		t.Fatalf("RiscvInstrBegun after zero retired budget = %d, want 0", got)
+	}
+	if got := cpu.RiscvInstrRetired(); got != 0 {
+		t.Fatalf("RiscvInstrRetired after zero retired budget = %d, want 0", got)
 	}
 }
 

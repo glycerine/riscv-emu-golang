@@ -459,6 +459,93 @@ func TestJea9Linux_Pselect6Timeout(t *testing.T) {
 	}
 }
 
+func TestJea9Linux_Pselect6TimeoutStopsAtChaosBoundary(t *testing.T) {
+	j := NewJea9Linux(Jea9LinuxOptions{
+		MonotonicStartNS: 100,
+		Trace:            true,
+		Scheduler: Jea9LinuxSchedulerConfig{
+			Mode: Jea9SchedulerChaos,
+		},
+	})
+	cpu, mem := newJea9LinuxSyscallCPU(t, j)
+	defer mem.Free()
+	parent := installLowPriorityChaosPeer(t, j, cpu)
+
+	timeout := uint64(0x5100)
+	writeGuest64(t, mem, timeout, 0)
+	writeGuest64(t, mem, timeout+8, 100)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysPselect6, 0, 0, 0, 0, timeout, 0); d != NoteHandled {
+		t.Fatalf("pselect6 timeout disposition = %v, want NoteHandled after scheduling low-priority context", d)
+	}
+	requireTimeoutStoppedAtChaosBoundary(t, j, parent, jea9LinuxWaitNanosleep, 200, "pselect-timeout")
+}
+
+func TestJea9Linux_EpollPwaitTimeoutStopsAtChaosBoundary(t *testing.T) {
+	j := NewJea9Linux(Jea9LinuxOptions{
+		MonotonicStartNS: 100,
+		Trace:            true,
+		Scheduler: Jea9LinuxSchedulerConfig{
+			Mode: Jea9SchedulerChaos,
+		},
+	})
+	cpu, mem := newJea9LinuxSyscallCPU(t, j)
+	defer mem.Free()
+	parent := installLowPriorityChaosPeer(t, j, cpu)
+	epfd := newEpoll(t, cpu)
+
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysEpollPwait, epfd, 0x7000, 1, 100, 0, 0); d != NoteHandled {
+		t.Fatalf("epoll_pwait timeout disposition = %v, want NoteHandled after scheduling low-priority context", d)
+	}
+	requireTimeoutStoppedAtChaosBoundary(t, j, parent, jea9LinuxWaitEpoll, 100_000_100, "epoll-timeout")
+}
+
+func installLowPriorityChaosPeer(t *testing.T, j *Jea9Linux, cpu *CPU) *jea9LinuxContext {
+	t.Helper()
+	parent := j.ensureScheduler(cpu)
+	lowTID := parent.tid + 1
+	j.contexts[lowTID] = &jea9LinuxContext{
+		tid:           lowTID,
+		state:         jea9LinuxContextRunnable,
+		schedPriority: jea9LinuxSchedLow,
+		snapshot: jea9LinuxCPUSnapshot{
+			pc: 0x2000,
+		},
+	}
+	j.contextOrder = append(j.contextOrder, lowTID)
+	j.chaosActive = true
+	j.chaosStartNS = 100
+	j.chaosUntilNS = 150
+	j.clockPolicy = ClockPolicyFixed
+	j.clockFixedAdvanceNS = 50
+	return parent
+}
+
+func requireTimeoutStoppedAtChaosBoundary(t *testing.T, j *Jea9Linux, parent *jea9LinuxContext, waitKind jea9LinuxWaitKind, deadline int64, source string) {
+	t.Helper()
+	if got := j.MonotonicNS(); got != 150 {
+		t.Fatalf("monotonic ns = %d, want chaos boundary 150", got)
+	}
+	if j.chaosActive {
+		t.Fatal("chaos window remained active after reaching chaos boundary")
+	}
+	requireCurrentTID(t, j, parent.tid+1)
+	if parent.state != jea9LinuxContextWaiting || parent.waitKind != waitKind {
+		t.Fatalf("parent wait state = (%v, %v), want wait kind %v", parent.state, parent.waitKind, waitKind)
+	}
+	if parent.waitDeadlineNS != deadline {
+		t.Fatalf("parent wait deadline = %d, want %d", parent.waitDeadlineNS, deadline)
+	}
+	trace := j.TraceSnapshot()
+	if len(trace.Clock) != 1 {
+		t.Fatalf("clock trace entries = %d, want 1: %+v", len(trace.Clock), trace.Clock)
+	}
+	entry := trace.Clock[0]
+	if entry.Source != source || entry.BeforeNS != 100 || entry.NS != 150 ||
+		entry.AdvanceNS != 50 || entry.DeadlineNS != deadline || entry.ReachedDeadline {
+		t.Fatalf("clock trace entry = %+v, want %s 100->150 toward deadline %d without reaching it", entry, source, deadline)
+	}
+}
+
 func TestJea9Linux_Phase10EventPollingELFFixtures(t *testing.T) {
 	for _, path := range []string{
 		"testvectors/jea9linux/elf/eventfd_basic.elf",

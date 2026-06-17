@@ -334,6 +334,11 @@ scheduling independent: an attempt-budget expiry returns to the host without a
 scheduler event, while a retired-budget expiry performs exactly one scheduler
 event.
 
+Budget sentinel decision: `0` means expire immediately and make no guest
+progress. `^uint64(0)` is the explicit "effectively forever" budget. This keeps
+zero from silently duplicating the forever case and makes accidental zero
+budgets fail closed in deterministic scheduler code.
+
 ## Host Budget vs Scheduler Deadline
 
 Every Jea9Linux run computes two independent limits:
@@ -760,11 +765,14 @@ Tests:
   `JIT.StepBlockDualBudget` so Jea9Linux can run with both host-poll and
   scheduler-retired limits at once.
 - Preserve existing attempt/countdown budget APIs for host polling.
+- Make zero budgets expire immediately; callers that want practical infinity
+  pass `^uint64(0)`.
 - Verify non-retired ECALL/EBREAK/fault behavior.
 
 Tests:
 
 - direct retired-budget API tests for interpreter and lazy JIT;
+- zero-budget expiry tests for interpreter and lazy JIT;
 - retired deadline tests for interpreter and lazy JIT.
 - JIT/interpreter accounting equivalence.
 
@@ -866,6 +874,9 @@ APIs are the contract for this. It is acceptable for the JIT implementation to
 use native countdown dispatch internally, but the exported retired-budget API
 must not report expiration until retired instructions, not attempts, reach the
 requested deadline.
+
+Zero retired budget means "already expired", not "unbounded"; `^uint64(0)` is
+the explicit practical-forever retired budget.
 
 ### ECALL and Retired Count
 

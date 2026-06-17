@@ -191,16 +191,28 @@ func runCached(cpu *CPU, cache *DecoderCache, nc *NoteChain) error {
 }
 
 func RunDefaultBudget(cpu *CPU, nc *NoteChain, budget uint64) (RunBudgetResult, error) {
-	res, _, err := RunDefaultDualBudget(cpu, nc, budget, 0)
+	if budget == 0 {
+		return RunBudgetExpired, nil
+	}
+	res, _, err := RunDefaultDualBudget(cpu, nc, budget, ^uint64(0))
 	return res, err
 }
 
 func RunDefaultRetiredBudget(cpu *CPU, nc *NoteChain, retiredBudget uint64) (RunBudgetResult, error) {
-	res, _, err := RunDefaultDualBudget(cpu, nc, 0, retiredBudget)
+	if retiredBudget == 0 {
+		return RunBudgetExpired, nil
+	}
+	res, _, err := RunDefaultDualBudget(cpu, nc, ^uint64(0), retiredBudget)
 	return res, err
 }
 
 func RunDefaultDualBudget(cpu *CPU, nc *NoteChain, attemptBudget, retiredBudget uint64) (RunBudgetResult, RunBudgetLimit, error) {
+	if retiredBudget == 0 {
+		return RunBudgetExpired, RunBudgetLimitRetired, nil
+	}
+	if attemptBudget == 0 {
+		return RunBudgetExpired, RunBudgetLimitAttempt, nil
+	}
 	base := cpu.pc &^ uint64(0xFFF)
 	if base > 0x1000 {
 		base -= 0x1000

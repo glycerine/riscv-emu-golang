@@ -611,13 +611,19 @@ func (j *JIT) StepBlockBudget(cpu *CPU, budget uint64) (RunBudgetResult, error) 
 }
 
 func (j *JIT) StepBlockRetiredBudget(cpu *CPU, retiredBudget uint64) (RunBudgetResult, error) {
-	res, _, err := j.StepBlockDualBudget(cpu, 0, retiredBudget)
+	if retiredBudget == 0 {
+		return RunBudgetExpired, nil
+	}
+	res, _, err := j.StepBlockDualBudget(cpu, ^uint64(0), retiredBudget)
 	return res, err
 }
 
 func (j *JIT) StepBlockDualBudget(cpu *CPU, attemptBudget, retiredBudget uint64) (RunBudgetResult, RunBudgetLimit, error) {
-	if attemptBudget == 0 && retiredBudget == 0 {
-		return RunBudgetExpired, RunBudgetLimitNone, nil
+	if retiredBudget == 0 {
+		return RunBudgetExpired, RunBudgetLimitRetired, nil
+	}
+	if attemptBudget == 0 {
+		return RunBudgetExpired, RunBudgetLimitAttempt, nil
 	}
 	attemptBase := cpu.RiscvInstrBegun()
 	retiredBase := cpu.RiscvInstrRetired()
