@@ -72,10 +72,21 @@ func (m *MMU) flush() {
 }
 
 func RunMachineBudget(cpu *CPU, nc *NoteChain, budget uint64) (RunBudgetResult, error) {
+	return runMachineBudget(cpu, nc, budget, false)
+}
+
+func RunBiosMachineBudget(cpu *CPU, nc *NoteChain, budget uint64) (RunBudgetResult, error) {
+	return runMachineBudget(cpu, nc, budget, true)
+}
+
+func runMachineBudget(cpu *CPU, nc *NoteChain, budget uint64, biosMode bool) (RunBudgetResult, error) {
 	if budget == 0 {
 		return RunBudgetExpired, nil
 	}
 	for used := uint64(0); used < budget; used++ {
+		if biosMode && cpu.takePendingBiosInterrupt() {
+			continue
+		}
 		err := cpu.Step()
 		cpu.riscvInstrBegun++
 		if cpu.watchAddr != 0 {

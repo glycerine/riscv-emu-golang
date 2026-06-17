@@ -60,7 +60,7 @@ func runEmuBios(cfg EmuConfig, budget uint64) (int, error) {
 	}
 	defer guest.mem.Free()
 
-	res, err := riscv.RunMachineBudget(guest.cpu, &guest.cpu.Notes, budget)
+	res, err := riscv.RunBiosMachineBudget(guest.cpu, &guest.cpu.Notes, budget)
 	if err != nil {
 		return 0, err
 	}
@@ -144,6 +144,7 @@ func prepareBiosGuest(cfg EmuConfig) (*biosGuest, error) {
 
 	mem.SetMMIO(newBiosMMIO(cfg.Stdout))
 	cpu := riscv.NewCPU(*mem)
+	cpu.EnableStrictCSR()
 	cpu.SetPrivilegeMode(riscv.PrivMachine)
 	cpu.EnableMMU()
 	cpu.SetPC(elf.Entry)
@@ -280,19 +281,21 @@ func (c EmuConfig) biosBootArgs() string {
 }
 
 type biosMMIO struct {
-	stdout io.Writer
-	uart   [0x100]byte
-	clint  [0x10000]byte
-	mtime  uint64
+	stdout   io.Writer
+	uart     [0x100]byte
+	clint    [0x10000]byte
+	mtime    uint64
+	mtimecmp uint64
 }
 
 func newBiosMMIO(stdout io.Writer) *biosMMIO {
 	if stdout == nil {
 		stdout = io.Discard
 	}
-	m := &biosMMIO{stdout: stdout}
+	m := &biosMMIO{stdout: stdout, mtimecmp: ^uint64(0)}
 	m.uart[2] = 0x01 // IIR: no interrupt pending
 	m.uart[5] = 0x60 // LSR: transmitter holding register empty, idle
+	storeLittleEndian(m.clint[:], 0x4000, 8, m.mtimecmp)
 	return m
 }
 
@@ -320,7 +323,7 @@ func (m *biosMMIO) Store(addr, width, value uint64) (bool, *riscv.MemFault) {
 		return true, nil
 	}
 	if off, ok := mmioRangeOffset(addr, width, biosCLINTBase, biosCLINTSize); ok {
-		storeLittleEndian(m.clint[:], off, width, value)
+		m.storeCLINT(off, width, value)
 		return true, nil
 	}
 	if _, ok := mmioRangeOffset(addr, width, biosPLICBase, biosPLICSize); ok {
@@ -374,11 +377,35 @@ func (m *biosMMIO) storeUART(off, width, value uint64) {
 }
 
 func (m *biosMMIO) loadCLINT(off, width uint64) uint64 {
-	m.mtime += 1000
-	for i := uint64(0); i < 8; i++ {
-		m.clint[0xbff8+i] = byte(m.mtime >> (8 * i))
-	}
+	m.syncCLINTTime()
 	return loadLittleEndian(m.clint[:], off, width)
+}
+
+func (m *biosMMIO) storeCLINT(off, width, value uint64) {
+	storeLittleEndian(m.clint[:], off, width, value)
+	if mmioRangeTouches(off, width, 0x4000, 8) {
+		m.mtimecmp = loadLittleEndian(m.clint[:], 0x4000, 8)
+	}
+	if mmioRangeTouches(off, width, 0xbff8, 8) {
+		m.mtime = loadLittleEndian(m.clint[:], 0xbff8, 8)
+	}
+}
+
+func (m *biosMMIO) AdvanceMachineTimer(delta uint64) {
+	m.mtime += delta
+	m.syncCLINTTime()
+}
+
+func (m *biosMMIO) MachineTimerValue() uint64 {
+	return m.mtime
+}
+
+func (m *biosMMIO) MachineTimerPending() bool {
+	return m.mtime >= m.mtimecmp
+}
+
+func (m *biosMMIO) syncCLINTTime() {
+	storeLittleEndian(m.clint[:], 0xbff8, 8, m.mtime)
 }
 
 func mmioRangeOffset(addr, width, base, size uint64) (uint64, bool) {

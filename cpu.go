@@ -96,6 +96,8 @@ type CPU struct {
 	sip        uint64 // 0x144: supervisor interrupt pending
 	mcounteren uint64 // 0x306: machine counter enable
 	scounteren uint64 // 0x106: supervisor counter enable
+	stimecmp   uint64 // 0x14d: supervisor timer compare (Sstc)
+	strictCSR  bool
 }
 
 // ── Performance footgun: don't call runCached from this file ─────────────
@@ -137,7 +139,7 @@ type CPU struct {
 // `cache *DecoderCache` field; bisection proved the field is innocent and
 // the direct in-file runCached call is the actual cause.
 
-func NewCPU(mem GuestMemory) *CPU { return &CPU{mem: mem} }
+func NewCPU(mem GuestMemory) *CPU { return &CPU{mem: mem, stimecmp: ^uint64(0)} }
 
 func (c *CPU) SetPC(addr uint64) { c.pc = addr }
 func (c *CPU) PC() uint64        { return c.pc }
@@ -145,6 +147,7 @@ func (c *CPU) SetPrivilegeMode(mode PrivilegeMode) {
 	c.priv = mode
 }
 func (c *CPU) PrivilegeMode() PrivilegeMode { return c.priv }
+func (c *CPU) EnableStrictCSR()             { c.strictCSR = true }
 
 // SetReg writes a GPR. Uses the "always write, always zero x[0]" trick to
 // avoid a conditional branch. The trailing `c.x[0] = 0` preserves the RISC-V
@@ -194,7 +197,7 @@ func (c *CPU) trapToSupervisorAt(pc, cause, tval uint64) {
 	c.sepc = pc
 	c.scause = cause
 	c.stval = tval
-	c.pc = c.stvec &^ 3
+	c.pc = trapVectorPC(c.stvec, cause)
 	c.priv = PrivSupervisor
 }
 
@@ -211,9 +214,17 @@ func (c *CPU) trapToMachineAt(pc, cause, tval uint64) bool {
 	c.mepc = pc
 	c.mcause = cause
 	c.mtval = tval
-	c.pc = c.mtvec &^ 3
+	c.pc = trapVectorPC(c.mtvec, cause)
 	c.priv = PrivMachine
 	return true
+}
+
+func trapVectorPC(tvec, cause uint64) uint64 {
+	base := tvec &^ 3
+	if cause&InterruptCauseFlag == 0 || tvec&3 != 1 {
+		return base
+	}
+	return base + 4*(cause&^InterruptCauseFlag)
 }
 
 func (c *CPU) ecallCause() uint64 {
@@ -1040,7 +1051,10 @@ func (c *CPU) stepFromInsn(insn uint32) error {
 			c.flushTLB()
 		case funct3 >= 1 && funct3 <= 7 && funct3 != 4: // Zicsr
 			// Read old CSR value
-			old := c.readCSR(csrAddr)
+			old, ok := c.readCSR(csrAddr)
+			if !ok {
+				return ErrIllegalInstruction
+			}
 			// Compute new value and write if applicable
 			var src uint64
 			if funct3 >= 5 { // immediate forms (funct3=5/6/7)
@@ -1060,7 +1074,9 @@ func (c *CPU) stepFromInsn(insn uint32) error {
 			}
 			// Only write if rs1 != x0 (or uimm5 != 0 for immediate forms)
 			if src != 0 || funct3 == 1 || funct3 == 5 {
-				c.writeCSR(csrAddr, newVal)
+				if !c.writeCSR(csrAddr, newVal) {
+					return ErrIllegalInstruction
+				}
 			}
 		default:
 			return ErrIllegalInstruction
@@ -1764,73 +1780,83 @@ func misaRV64IMAFDCSU() uint64 {
 	return mxlRV64 | extIMAFDCSU
 }
 
-// readCSR reads a CSR value. Returns 0 for unknown CSRs.
-func (c *CPU) readCSR(addr uint32) uint64 {
+// readCSR reads a CSR value. The bool is false when a strict firmware CPU
+// should raise illegal-instruction for an unknown CSR probe.
+func (c *CPU) readCSR(addr uint32) (uint64, bool) {
 	switch addr {
 	case 0x001:
-		return uint64(c.fcsr & 0x1F) // fflags
+		return uint64(c.fcsr & 0x1F), true // fflags
 	case 0x002:
-		return uint64((c.fcsr >> 5) & 0x7) // frm
+		return uint64((c.fcsr >> 5) & 0x7), true // frm
 	case 0x003:
-		return uint64(c.fcsr & 0xFF) // fcsr
+		return uint64(c.fcsr & 0xFF), true // fcsr
 	case 0x100:
-		return c.mstatus & sstatusMask // sstatus
+		return c.mstatus & sstatusMask, true // sstatus
 	case 0x104:
-		return c.sie // sie
+		return c.sie | (c.mie & c.mideleg), true // sie
 	case 0x105:
-		return c.stvec // stvec
+		return c.stvec, true // stvec
 	case 0x106:
-		return c.scounteren // scounteren
+		return c.scounteren, true // scounteren
 	case 0x140:
-		return c.sscratch // sscratch
+		return c.sscratch, true // sscratch
 	case 0x141:
-		return c.sepc // sepc
+		return c.sepc, true // sepc
 	case 0x142:
-		return c.scause // scause
+		return c.scause, true // scause
 	case 0x143:
-		return c.stval // stval
+		return c.stval, true // stval
 	case 0x144:
-		return c.sip // sip
+		return c.sip | (c.mip & c.mideleg), true // sip
+	case 0x14d:
+		return c.stimecmp, true // stimecmp
 	case 0x180:
-		return c.satp // satp
+		return c.satp, true // satp
 	case 0x300:
-		return c.mstatus // mstatus
+		return c.mstatus, true // mstatus
 	case 0x301:
-		return misaRV64IMAFDCSU()
+		return misaRV64IMAFDCSU(), true
 	case 0x302:
-		return c.medeleg // medeleg
+		return c.medeleg, true // medeleg
 	case 0x303:
-		return c.mideleg // mideleg
+		return c.mideleg, true // mideleg
 	case 0x304:
-		return c.mie // mie
+		return c.mie, true // mie
 	case 0x305:
-		return c.mtvec // mtvec
+		return c.mtvec, true // mtvec
 	case 0x306:
-		return c.mcounteren // mcounteren
+		return c.mcounteren, true // mcounteren
 	case 0x340:
-		return c.mscratch // mscratch
+		return c.mscratch, true // mscratch
 	case 0x341:
-		return c.mepc // mepc
+		return c.mepc, true // mepc
 	case 0x342:
-		return c.mcause // mcause
+		return c.mcause, true // mcause
 	case 0x343:
-		return c.mtval // mtval
+		return c.mtval, true // mtval
 	case 0x344:
-		return c.mip // mip
+		return c.mip, true // mip
 	case 0xC00:
-		return c.riscvInstrBegun // cycle approximation tracks instruction attempts
+		return c.riscvInstrBegun, true // cycle approximation tracks instruction attempts
 	case 0xC02:
-		return c.riscvInstrRetired // instret/minstret-style retired instructions
+		return c.riscvInstrRetired, true // instret/minstret-style retired instructions
 	case 0xC01:
-		return c.riscvInstrBegun // time currently tracks instruction attempts
+		return c.timerValue(), true
+	case 0xF11:
+		return 0, true // mvendorid
+	case 0xF12:
+		return 0, true // marchid
+	case 0xF13:
+		return 0, true // mimpid
 	case 0xF14:
-		return 0 // mhartid = 0
+		return 0, true // mhartid = 0
 	}
-	return 0
+	return 0, !c.strictCSR
 }
 
-// writeCSR writes a CSR value. Ignores writes to unknown or read-only CSRs.
-func (c *CPU) writeCSR(addr uint32, val uint64) {
+// writeCSR writes a CSR value. The bool is false when a strict firmware CPU
+// should raise illegal-instruction for an unknown or read-only CSR write.
+func (c *CPU) writeCSR(addr uint32, val uint64) bool {
 	switch addr {
 	case 0x001:
 		c.fcsr = (c.fcsr &^ 0x1F) | uint32(val&0x1F) // fflags
@@ -1856,6 +1882,9 @@ func (c *CPU) writeCSR(addr uint32, val uint64) {
 		c.stval = val // stval
 	case 0x144:
 		c.sip = val // sip
+	case 0x14d:
+		c.stimecmp = val // stimecmp
+		c.refreshSupervisorTimerPending()
 	case 0x180:
 		if c.satp != val {
 			c.satp = val // satp
@@ -1889,7 +1918,12 @@ func (c *CPU) writeCSR(addr uint32, val uint64) {
 	case 0x3B0: // pmpaddr0
 	case 0x744: // mnstatus (non-standard)
 		// cycle/time/instret are read-only — silently ignore writes
+	case 0xC00, 0xC01, 0xC02, 0xF11, 0xF12, 0xF13, 0xF14:
+		return !c.strictCSR
+	default:
+		return !c.strictCSR
 	}
+	return true
 }
 
 // amoOpW applies the AMO operation to a 32-bit word value.

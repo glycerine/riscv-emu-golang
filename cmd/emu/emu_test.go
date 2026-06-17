@@ -467,7 +467,7 @@ func runBiosUntilOutput(cfg EmuConfig, marker string, maxInstructions uint64) (b
 		if rem := maxInstructions - used; rem < step {
 			step = rem
 		}
-		res, err := riscv.RunMachineBudget(guest.cpu, &guest.cpu.Notes, step)
+		res, err := riscv.RunBiosMachineBudget(guest.cpu, &guest.cpu.Notes, step)
 		used += step
 		if strings.Contains(writerString(cfg.Stdout), marker) {
 			return true, nil
@@ -540,7 +540,7 @@ func TestRunEmuBiosOpenSBIFwJumpGetsFDT(t *testing.T) {
 		t.Fatalf("FDT magic at 0x%x = 0x%08x, want 0xd00dfeed", fdtAddr, magic)
 	}
 
-	_, err = riscv.RunMachineBudget(guest.cpu, &guest.cpu.Notes, 256)
+	_, err = riscv.RunBiosMachineBudget(guest.cpu, &guest.cpu.Notes, 256)
 	if isNullFDTFault(err) {
 		t.Fatalf("OpenSBI still dereferenced a null FDT pointer: %v", err)
 	}

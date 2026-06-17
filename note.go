@@ -56,6 +56,14 @@ const (
 	CauseInsnPageFault    uint64 = 12
 	CauseLoadPageFault    uint64 = 13
 	CauseStorePageFault   uint64 = 15
+
+	InterruptCauseFlag uint64 = 1 << 63
+	InterruptSSIP      uint64 = 1
+	InterruptMSIP      uint64 = 3
+	InterruptSTIP      uint64 = 5
+	InterruptMTIP      uint64 = 7
+	InterruptSEIP      uint64 = 9
+	InterruptMEIP      uint64 = 11
 )
 
 // ── Note ──────────────────────────────────────────────────────────────────
