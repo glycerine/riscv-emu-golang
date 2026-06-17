@@ -143,6 +143,7 @@ func TestEmuBiosBootFlagsParse(t *testing.T) {
 		"-append", "console=hvc0 root=/dev/ram0",
 		"-dump-dtb", dumpDTBPath,
 		"-machine", "virt",
+		"-mem", "512mb",
 	)
 	if cfg.BiosPath == "" || cfg.RunPath != "" {
 		t.Fatalf("parsed BiosPath=%q RunPath=%q", cfg.BiosPath, cfg.RunPath)
@@ -162,6 +163,12 @@ func TestEmuBiosBootFlagsParse(t *testing.T) {
 	if cfg.machine() != "virt" {
 		t.Fatalf("machine = %q, want virt", cfg.machine())
 	}
+	if cfg.BiosRAMSize != riscv.Size512MB {
+		t.Fatalf("BiosRAMSize = %d, want %d", cfg.BiosRAMSize, riscv.Size512MB)
+	}
+	if cfg.MemorySize != riscv.Size4GB {
+		t.Fatalf("MemorySize slab = %d, want %d", cfg.MemorySize, riscv.Size4GB)
+	}
 	budget, err := cfg.schedulerBudget()
 	if err != nil {
 		t.Fatalf("schedulerBudget: %v", err)
@@ -176,6 +183,29 @@ func TestEmuBiosBootFlagsParse(t *testing.T) {
 	}
 	if err := runWithKernel.ValidateConfig(); err == nil {
 		t.Fatal("ValidateConfig accepted -kernel with -run")
+	}
+}
+
+func TestParseEmuMemorySize(t *testing.T) {
+	tests := []struct {
+		raw  string
+		want uint64
+	}{
+		{"1024", 1024},
+		{"0x400", 1024},
+		{"512mb", riscv.Size512MB},
+		{"512MB", riscv.Size512MB},
+		{"512 MiB", riscv.Size512MB},
+		{"2GB", riscv.Size2GB},
+	}
+	for _, tt := range tests {
+		got, err := parseEmuMemorySize(tt.raw)
+		if err != nil {
+			t.Fatalf("parseEmuMemorySize(%q): %v", tt.raw, err)
+		}
+		if got != tt.want {
+			t.Fatalf("parseEmuMemorySize(%q) = %d, want %d", tt.raw, got, tt.want)
+		}
 	}
 }
 
@@ -200,7 +230,7 @@ func TestPrepareBiosGuestLoadsKernelInitrdAndBootArgs(t *testing.T) {
 		InitrdPath:  initrdPath,
 		Append:      "console=hvc0 root=/dev/ram0",
 		DumpDTBPath: dumpDTBPath,
-		MemorySize:  riscv.Size16GB,
+		Memory:      "512MB",
 		Stdin:       strings.NewReader(""),
 		Stdout:      &bytes.Buffer{},
 		Stderr:      &bytes.Buffer{},
@@ -209,6 +239,9 @@ func TestPrepareBiosGuestLoadsKernelInitrdAndBootArgs(t *testing.T) {
 		t.Fatalf("prepareBiosGuest: %v", err)
 	}
 	defer guest.mem.Free()
+	if got := guest.mem.Size(); got != riscv.Size4GB {
+		t.Fatalf("guest memory slab = %d, want %d", got, riscv.Size4GB)
+	}
 
 	if got := guestMemoryBytes(t, guest.mem, guest.kernel.addr, len(kernel)); !bytes.Equal(got, kernel) {
 		t.Fatalf("kernel bytes at %#x = %x, want %x", guest.kernel.addr, got, kernel)
@@ -218,6 +251,9 @@ func TestPrepareBiosGuestLoadsKernelInitrdAndBootArgs(t *testing.T) {
 	}
 	if !bytes.Contains(guest.fdt, []byte("console=hvc0 root=/dev/ram0\x00")) {
 		t.Fatalf("generated FDT does not contain bootargs: %x", guest.fdt)
+	}
+	if !bytes.Contains(guest.fdt, fdtU64(riscv.Size512MB)) {
+		t.Fatalf("generated FDT does not contain 512MB RAM size")
 	}
 	if !bytes.Contains(guest.fdt, fdtU64(guest.initrd.addr)) || !bytes.Contains(guest.fdt, fdtU64(guest.initrd.end)) {
 		t.Fatalf("generated FDT does not contain initrd range %#x..%#x", guest.initrd.addr, guest.initrd.end)
@@ -358,7 +394,7 @@ func TestRunEmuBiosFWDynamicLinuxSmoke(t *testing.T) {
 		KernelPath: kernelPath,
 		InitrdPath: initrdPath,
 		Append:     linuxUARTBootArgs,
-		MemorySize: riscv.Size16GB,
+		Memory:     "512MB",
 		Budget:     "100000",
 		Stdin:      strings.NewReader(""),
 		Stdout:     &stdout,
@@ -374,7 +410,7 @@ func TestRunEmuBiosFWDynamicLinuxSmoke(t *testing.T) {
 
 const linuxUARTBootArgs = "console=ttyS0,115200 earlycon=uart8250,mmio,0x10000000 rdinit=/init"
 
-func TestRunEmuBiosFWDynamicLinuxBootsKernelMilestone(t *testing.T) {
+func TestRunEmuBiosFWDynamicLinuxBootsWith512MBRAM(t *testing.T) {
 	const biosPath = "../../xendor/opensbi/build/platform/generic/firmware/fw_dynamic.elf"
 	const kernelPath = "../../xendor/linux/boot/vmlinuz-6.17.0-35-generic"
 	const initrdPath = "../../xendor/linux/initramfs.cpio.gz"
@@ -390,11 +426,11 @@ func TestRunEmuBiosFWDynamicLinuxBootsKernelMilestone(t *testing.T) {
 		KernelPath: kernelPath,
 		InitrdPath: initrdPath,
 		Append:     linuxUARTBootArgs,
-		MemorySize: riscv.Size4GB,
+		Memory:     "512MB",
 		Stdin:      strings.NewReader(""),
 		Stdout:     &stdout,
 		Stderr:     &stderr,
-	}, "SBI misaligned access exception delegation ok", 600_000_000)
+	}, "Total pages: 131072", 400_000_000)
 	if err != nil {
 		t.Fatalf("Linux boot milestone err = %v\nstdout tail:\n%s\nstderr:\n%s",
 			err, tailString(stdout.String(), 4096), stderr.String())
@@ -409,6 +445,10 @@ func TestRunEmuBiosFWDynamicLinuxBootsKernelMilestone(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "Booting Linux on hartid 0") {
 		t.Fatalf("Linux kernel banner missing\nstdout tail:\n%s\nstderr:\n%s",
+			tailString(stdout.String(), 4096), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "node   0: [mem 0x0000000080060000-0x000000009fffffff]") {
+		t.Fatalf("Linux did not see the expected 512MB RAM range\nstdout tail:\n%s\nstderr:\n%s",
 			tailString(stdout.String(), 4096), stderr.String())
 	}
 }

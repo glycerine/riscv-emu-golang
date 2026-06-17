@@ -75,6 +75,9 @@ func runEmuBios(cfg EmuConfig, budget uint64) (int, error) {
 
 func prepareBiosGuest(cfg EmuConfig) (*biosGuest, error) {
 	cfg = cfg.withDefaults()
+	if err := cfg.resolveMemory(); err != nil {
+		return nil, err
+	}
 	if cfg.BiosPath == "" {
 		return nil, fmt.Errorf("prepare BIOS guest requires -bios")
 	}
@@ -258,6 +261,7 @@ func loadBiosFDT(cfg EmuConfig, initrd biosBlob) ([]byte, bool, error) {
 	fdt, err := buildVirtFDT(cfg.MemorySize, virtFDTOptions{
 		Machine:     cfg.machine(),
 		BootArgs:    cfg.biosBootArgs(),
+		RAMSize:     cfg.BiosRAMSize,
 		InitrdStart: initrd.addr,
 		InitrdEnd:   initrd.end,
 	})
@@ -533,6 +537,7 @@ func alignUp64(v, align uint64) uint64 {
 type virtFDTOptions struct {
 	Machine     string
 	BootArgs    string
+	RAMSize     uint64
 	InitrdStart uint64
 	InitrdEnd   uint64
 }
@@ -542,6 +547,12 @@ func buildVirtFDT(memSize uint64, opts virtFDTOptions) ([]byte, error) {
 		return nil, fmt.Errorf("memory size %#x does not cover virt RAM base %#x", memSize, virtRAMBase)
 	}
 	ramSize := memSize - virtRAMBase
+	if opts.RAMSize != 0 {
+		ramSize = opts.RAMSize
+		if ramSize > memSize-virtRAMBase {
+			return nil, fmt.Errorf("RAM size %#x exceeds memory slab %#x above virt RAM base %#x", ramSize, memSize, virtRAMBase)
+		}
+	}
 	b := newFDTBuilder()
 	machine := opts.Machine
 	if machine == "" {

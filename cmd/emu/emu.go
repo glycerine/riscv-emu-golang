@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"math/bits"
 	"os"
 	"strconv"
 	"strings"
@@ -49,7 +50,7 @@ const (
 // console bootargs should target ttyS0/uart8250 rather than hvc0.
 // So this target is enough:
 //
-// emu -mem 4294967296 \
+// emu -mem 512MB \
 //   -bios xendor/opensbi/build/platform/generic/firmware/fw_dynamic.elf \
 //   -kernel xendor/linux/boot/vmlinuz-6.17.0-35-generic \
 //   -initrd xendor/linux/initramfs.cpio.gz \
@@ -72,7 +73,9 @@ type EmuConfig struct {
 	DumpDTBPath       string
 	Machine           string
 	Seed              uint64
+	Memory            string
 	MemorySize        uint64
+	BiosRAMSize       uint64
 	Budget            string
 	InstructionBudget uint64
 	JITLazy           bool
@@ -135,6 +138,9 @@ type EmuJITStats struct {
 // interpreter".
 
 func (c *EmuConfig) DefineFlags(fs *flag.FlagSet) {
+	if c.MemorySize == 0 {
+		c.MemorySize = defaultEmuMemorySize
+	}
 	fs.StringVar(&c.RunPath, "run", "", "path to RISCV ELF binary to run")
 	fs.StringVar(&c.BiosPath, "bios", "", "path to RISCV machine-mode BIOS/firmware ELF to boot")
 	fs.StringVar(&c.KernelPath, "kernel", "", "path to kernel or next-stage payload to load with -bios")
@@ -145,7 +151,7 @@ func (c *EmuConfig) DefineFlags(fs *flag.FlagSet) {
 	fs.StringVar(&c.DumpDTBPath, "dump-dtb", "", "write the BIOS FDT blob to this path before boot")
 	fs.StringVar(&c.Machine, "machine", "virt", "machine model for -bios; currently only virt")
 	fs.Uint64Var(&c.Seed, "seed", 0, "pseudo random number generator seed")
-	fs.Uint64Var(&c.MemorySize, "mem", defaultEmuMemorySize, "guest memory size in bytes")
+	fs.StringVar(&c.Memory, "mem", "", "guest memory size as bytes or KB/MB/GB/TB; with -bios this is RAM advertised to Linux")
 	fs.StringVar(&c.Budget, "budget", "", "scheduler/run budget as an instruction count, duration, or max; defaults to 5ms for -run and max for -bios")
 	fs.BoolVar(&c.JITLazy, "jitlazy", false, "run with the native lazy JIT instead of the interpreter")
 	fs.BoolVar(&c.JITAOT, "jitaot", false, "run with explicit AOT JIT instead of the interpreter")
@@ -206,11 +212,8 @@ func (c *EmuConfig) ValidateConfig() error {
 	if c.DTBPath != "" && c.Append != "" {
 		return fmt.Errorf("-dtb and -append cannot be combined yet; provide bootargs in the external DTB")
 	}
-	if c.MemorySize == 0 || c.MemorySize&(c.MemorySize-1) != 0 {
-		return fmt.Errorf("-mem must be a non-zero power of two, got %d", c.MemorySize)
-	}
-	if c.MemorySize > riscv.MaxGuestMemory {
-		return fmt.Errorf("-mem %d exceeds max guest memory %d", c.MemorySize, riscv.MaxGuestMemory)
+	if err := c.resolveMemory(); err != nil {
+		return err
 	}
 	if c.JITLazy && c.JITAOT {
 		return fmt.Errorf("-jitlazy and -jitaot are mutually exclusive")
@@ -393,6 +396,130 @@ func (c EmuConfig) withDefaults() EmuConfig {
 		}
 	}
 	return c
+}
+
+func (c *EmuConfig) resolveMemory() error {
+	if c.Memory != "" {
+		parsed, err := parseEmuMemorySize(c.Memory)
+		if err != nil {
+			return err
+		}
+		if c.BiosPath != "" {
+			c.BiosRAMSize = parsed
+			slab, err := biosSlabSizeForRAM(parsed)
+			if err != nil {
+				return err
+			}
+			c.MemorySize = slab
+		} else {
+			c.MemorySize = parsed
+			c.BiosRAMSize = 0
+		}
+	} else if c.MemorySize == 0 {
+		c.MemorySize = defaultEmuMemorySize
+	}
+	if c.MemorySize == 0 || c.MemorySize&(c.MemorySize-1) != 0 {
+		return fmt.Errorf("-mem must resolve to a non-zero power-of-two guest memory slab, got %d", c.MemorySize)
+	}
+	if c.MemorySize > riscv.MaxGuestMemory {
+		return fmt.Errorf("-mem %d exceeds max guest memory %d", c.MemorySize, riscv.MaxGuestMemory)
+	}
+	if c.BiosPath != "" {
+		if c.BiosRAMSize == 0 {
+			if c.MemorySize <= virtRAMBase {
+				return fmt.Errorf("-mem %#x is too small for BIOS RAM base %#x", c.MemorySize, virtRAMBase)
+			}
+			c.BiosRAMSize = c.MemorySize - virtRAMBase
+		}
+		if c.BiosRAMSize == 0 {
+			return fmt.Errorf("-mem must provide non-zero BIOS RAM")
+		}
+		if c.BiosRAMSize > c.MemorySize-virtRAMBase {
+			return fmt.Errorf("-mem BIOS RAM %#x exceeds guest slab %#x above RAM base %#x", c.BiosRAMSize, c.MemorySize, virtRAMBase)
+		}
+	}
+	return nil
+}
+
+func parseEmuMemorySize(raw string) (uint64, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, fmt.Errorf("-mem must not be empty")
+	}
+	n := strings.ReplaceAll(raw, "_", "")
+	n = strings.ReplaceAll(n, " ", "")
+	if strings.HasPrefix(n, "-") {
+		return 0, fmt.Errorf("-mem must be positive, got %q", raw)
+	}
+	suffixStart := len(n)
+	for suffixStart > 0 {
+		ch := n[suffixStart-1]
+		if (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') {
+			suffixStart--
+			continue
+		}
+		break
+	}
+	digits := n[:suffixStart]
+	suffix := strings.ToLower(n[suffixStart:])
+	if digits == "" {
+		return 0, fmt.Errorf("-mem must start with a number, got %q", raw)
+	}
+	mul := uint64(1)
+	switch suffix {
+	case "":
+	case "b":
+	case "k", "kb", "kib":
+		mul = 1 << 10
+	case "m", "mb", "mib":
+		mul = 1 << 20
+	case "g", "gb", "gib":
+		mul = 1 << 30
+	case "t", "tb", "tib":
+		mul = 1 << 40
+	default:
+		return 0, fmt.Errorf("-mem has unknown size suffix %q in %q", suffix, raw)
+	}
+	base := 10
+	if suffix == "" {
+		base = 0
+	}
+	v, err := strconv.ParseUint(digits, base, 64)
+	if err != nil || v == 0 {
+		return 0, fmt.Errorf("-mem must be a positive size, got %q", raw)
+	}
+	if v > ^uint64(0)/mul {
+		return 0, fmt.Errorf("-mem %q overflows uint64", raw)
+	}
+	return v * mul, nil
+}
+
+func biosSlabSizeForRAM(ram uint64) (uint64, error) {
+	if ram == 0 {
+		return 0, fmt.Errorf("-mem must provide non-zero BIOS RAM")
+	}
+	if ram > ^uint64(0)-virtRAMBase {
+		return 0, fmt.Errorf("-mem BIOS RAM %#x overflows RAM base %#x", ram, virtRAMBase)
+	}
+	need := virtRAMBase + ram
+	slab, ok := nextPowerOfTwo64(need)
+	if !ok || slab > riscv.MaxGuestMemory {
+		return 0, fmt.Errorf("-mem BIOS RAM %#x needs guest slab %#x, exceeding max %#x", ram, slab, riscv.MaxGuestMemory)
+	}
+	return slab, nil
+}
+
+func nextPowerOfTwo64(v uint64) (uint64, bool) {
+	if v == 0 {
+		return 1, true
+	}
+	if v&(v-1) == 0 {
+		return v, true
+	}
+	if v > 1<<63 {
+		return 0, false
+	}
+	return uint64(1) << bits.Len64(v), true
 }
 
 func (c EmuConfig) timeMode() riscv.TimeMode {
