@@ -977,3 +977,7 @@ standard:
 	cd $(ROOT) && go test -count=1 -benchtime=1x -benchmem -timeout=120s \
 	    -run='^$$' -bench='^BenchmarkRVTests_UI_(AotJIT|LazyJIT)$$' \
 	    ./bench/ 2>&1
+
+linux:
+	go install ./cmd/emu	
+	emu -bios xendor/opensbi/build/platform/generic/firmware/fw_dynamic.elf -kernel xendor/linux/boot/vmlinuz-6.17.0-35-generic -initrd xendor/linux/initramfs.cpio.gz -append console=hvc0 rdinit=/init
