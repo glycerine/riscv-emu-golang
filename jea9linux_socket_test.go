@@ -114,6 +114,61 @@ func TestJea9Linux_TCPSocketConnectAcceptReadWrite(t *testing.T) {
 	readGuestSocketEventually(t, cpu, mem, client, 0x8300, []byte("pong"))
 }
 
+func TestJea9Linux_TCPSocketEpollNoDataDoesNotBlock(t *testing.T) {
+	j := NewJea9Linux(Jea9LinuxOptions{AllowAllHostFiles: true})
+	cpu, mem := newJea9LinuxSyscallCPU(t, j)
+	defer mem.Free()
+	defer j.closeAllFDs()
+
+	server := newGuestTCPSocket(t, cpu)
+	writeGuestSockaddrInet4(t, mem, 0x5000, [4]byte{127, 0, 0, 1}, 0)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysBind, server, 0x5000, 16); d != NoteHandled {
+		t.Fatalf("server bind disposition = %v", d)
+	}
+	requireSyscallReturn(t, cpu, 0)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysListen, server, 16); d != NoteHandled {
+		t.Fatalf("server listen disposition = %v", d)
+	}
+	requireSyscallReturn(t, cpu, 0)
+	port := guestTCPListenPort(t, cpu, mem, server)
+
+	client := newGuestTCPSocket(t, cpu)
+	writeGuestSockaddrInet4(t, mem, 0x6000, [4]byte{127, 0, 0, 1}, port)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysConnect, client, 0x6000, 16); d != NoteHandled {
+		t.Fatalf("client connect disposition = %v", d)
+	}
+	requireSyscallReturn(t, cpu, 0)
+	accepted := acceptGuestTCP(t, cpu, mem, server)
+
+	epfd := newEpoll(t, cpu)
+	writeEpollEvent(t, mem, 0x7000, jea9TestEpollIn, 0xcafe)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysEpollCtl, epfd, jea9TestEpollCtlAdd, accepted, 0x7000); d != NoteHandled {
+		t.Fatalf("epoll add accepted socket disposition = %v", d)
+	}
+	requireSyscallReturn(t, cpu, 0)
+
+	type epollResult struct {
+		disposition NoteDisposition
+		ret         int64
+	}
+	done := make(chan epollResult, 1)
+	go func() {
+		d := invokeJea9LinuxSyscall(cpu, jea9TestSysEpollPwait, epfd, 0x8000, 1, 0, 0, 0)
+		done <- epollResult{disposition: d, ret: int64(cpu.Reg(10))}
+	}()
+	select {
+	case got := <-done:
+		if got.disposition != NoteHandled {
+			t.Fatalf("empty socket epoll disposition = %v, want NoteHandled", got.disposition)
+		}
+		if got.ret != 0 {
+			t.Fatalf("empty socket epoll returned %d events, want 0", got.ret)
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("epoll_pwait on idle connected socket blocked in readiness probe")
+	}
+}
+
 func newGuestTCPSocket(t *testing.T, cpu *CPU) uint64 {
 	t.Helper()
 	flags := jea9TestSockStream | jea9TestSockNonblock | jea9TestSockCloexec

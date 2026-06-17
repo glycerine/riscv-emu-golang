@@ -366,16 +366,14 @@ func (jos *Jea9Linux) sysSocketRead(cpu *CPU, fd int, bufAddr, n uint64) int64 {
 	if f.socketEOF {
 		return 0
 	}
-	_ = f.tcpConn.SetReadDeadline(time.Now().Add(jea9LinuxSocketPollWindow))
-	nread, err := f.tcpConn.Read(out)
-	_ = f.tcpConn.SetReadDeadline(time.Time{})
+	nread, err := socketNonblockingRead(f.tcpConn, out)
 	if nread > 0 {
 		if fault := cpu.mem.WriteBytes(bufAddr, out[:nread]); fault != nil {
 			return jea9LinuxErrEFAULT
 		}
 		return int64(nread)
 	}
-	if errors.Is(err, io.EOF) {
+	if err == nil || errors.Is(err, io.EOF) {
 		f.socketEOF = true
 		jos.fds[fd] = f
 		return 0
@@ -407,9 +405,7 @@ func (jos *Jea9Linux) sysSocketWrite(cpu *CPU, fd int, bufAddr, n uint64) int64 
 	if fault := cpu.mem.ReadBytes(bufAddr, buf); fault != nil {
 		return jea9LinuxErrEFAULT
 	}
-	_ = f.tcpConn.SetWriteDeadline(time.Now().Add(10 * time.Millisecond))
-	written, err := f.tcpConn.Write(buf)
-	_ = f.tcpConn.SetWriteDeadline(time.Time{})
+	written, err := socketNonblockingWrite(f.tcpConn, buf)
 	if written > 0 {
 		jos.wakeAllSocketEpollWaiters(cpu)
 		return int64(written)
@@ -555,21 +551,16 @@ func (jos *Jea9Linux) socketPollReadable(fd int, f *jea9LinuxFD) bool {
 	if f.tcpConn == nil {
 		return false
 	}
-	var b [1]byte
-	_ = f.tcpConn.SetReadDeadline(time.Now().Add(jea9LinuxSocketPollWindow))
-	n, err := f.tcpConn.Read(b[:])
-	_ = f.tcpConn.SetReadDeadline(time.Time{})
-	if n > 0 {
-		f.socketReadBuf = append(f.socketReadBuf, b[:n]...)
-		jos.fds[fd] = *f
-		return true
-	}
-	if errors.Is(err, io.EOF) {
+	readable, eof, err := socketPeekReadable(f.tcpConn)
+	if eof {
 		f.socketEOF = true
 		jos.fds[fd] = *f
 		return true
 	}
-	return false
+	if err != nil {
+		return true
+	}
+	return readable
 }
 
 func (jos *Jea9Linux) wakeAllSocketEpollWaiters(cpu *CPU) {
@@ -589,6 +580,61 @@ func socketWouldBlock(err error) bool {
 		return true
 	}
 	return errors.Is(err, syscall.EAGAIN) || errors.Is(err, syscall.EWOULDBLOCK)
+}
+
+func socketNonblockingRead(conn *net.TCPConn, buf []byte) (int, error) {
+	raw, err := conn.SyscallConn()
+	if err != nil {
+		return 0, err
+	}
+	var n int
+	var opErr error
+	if err := raw.Control(func(fd uintptr) {
+		n, opErr = syscall.Read(int(fd), buf)
+	}); err != nil {
+		return n, err
+	}
+	return n, opErr
+}
+
+func socketNonblockingWrite(conn *net.TCPConn, buf []byte) (int, error) {
+	raw, err := conn.SyscallConn()
+	if err != nil {
+		return 0, err
+	}
+	var n int
+	var opErr error
+	if err := raw.Control(func(fd uintptr) {
+		n, opErr = syscall.Write(int(fd), buf)
+	}); err != nil {
+		return n, err
+	}
+	return n, opErr
+}
+
+func socketPeekReadable(conn *net.TCPConn) (bool, bool, error) {
+	raw, err := conn.SyscallConn()
+	if err != nil {
+		return false, false, err
+	}
+	var n int
+	var opErr error
+	var b [1]byte
+	if err := raw.Control(func(fd uintptr) {
+		n, _, opErr = syscall.Recvfrom(int(fd), b[:], syscall.MSG_PEEK)
+	}); err != nil {
+		return false, false, err
+	}
+	if opErr != nil {
+		if socketWouldBlock(opErr) {
+			return false, false, nil
+		}
+		return false, false, opErr
+	}
+	if n == 0 {
+		return true, true, nil
+	}
+	return true, false, nil
 }
 
 func cloneTCPAddr(addr *net.TCPAddr) *net.TCPAddr {
