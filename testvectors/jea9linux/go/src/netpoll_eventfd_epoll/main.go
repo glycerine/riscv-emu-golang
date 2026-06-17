@@ -28,9 +28,9 @@ func main() {
 		os.Exit(2)
 	}
 
-	var ev [12]byte
+	var ev [16]byte
 	binary.LittleEndian.PutUint32(ev[0:4], epollIn)
-	binary.LittleEndian.PutUint64(ev[4:12], 0x12345678)
+	binary.LittleEndian.PutUint64(ev[8:16], 0x12345678)
 	_, _, errno = syscall.RawSyscall6(
 		sysEpollCtl,
 		epfd,
@@ -44,7 +44,7 @@ func main() {
 		os.Exit(3)
 	}
 
-	var out [12]byte
+	var out [16]byte
 	n, _, errno := syscall.RawSyscall6(
 		sysEpollPwait,
 		epfd,
@@ -58,7 +58,7 @@ func main() {
 		os.Exit(4)
 	}
 	if binary.LittleEndian.Uint32(out[0:4]) != epollIn ||
-		binary.LittleEndian.Uint64(out[4:12]) != 0x12345678 {
+		binary.LittleEndian.Uint64(out[8:16]) != 0x12345678 {
 		os.Exit(5)
 	}
 	fmt.Print("eventfd_epoll_ready\n")

@@ -7,8 +7,9 @@ struct sockaddr_in {
 
 struct epoll_event {
 	unsigned int events;
+	unsigned int pad;
 	unsigned long data;
-} __attribute__((packed));
+};
 
 struct timespec {
 	long sec;

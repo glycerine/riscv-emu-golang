@@ -162,8 +162,9 @@ func (jos *Jea9Linux) sysAccept4(cpu *CPU, fdRaw, sockaddrAddr, addrlenAddr, fla
 	conn := f.socketPending[0]
 	copy(f.socketPending, f.socketPending[1:])
 	f.socketPending = f.socketPending[:len(f.socketPending)-1]
-	if len(f.socketPending) == 0 && !jos.socketEnsurePending(fd, &f) {
-		jos.clearEpollReadyBitsForFD(fd, jea9LinuxEpollIn)
+	jos.clearEpollReadyBitsForFD(fd, jea9LinuxEpollIn)
+	if len(f.socketPending) == 0 {
+		_ = jos.socketEnsurePending(fd, &f)
 	}
 	jos.fds[fd] = f
 	_ = conn.SetNoDelay(true)
@@ -499,6 +500,7 @@ func (jos *Jea9Linux) applyExternalEvent(cpu *CPU, ev externalEvent) {
 		if ev.conn != nil {
 			f.socketPending = append(f.socketPending, ev.conn)
 			jos.fds[ev.fd] = f
+			jos.clearEpollReadyBitsForFD(ev.fd, jea9LinuxEpollIn)
 			jos.wakeEpollWaitersForFD(cpu, ev.fd)
 		}
 	case eventRead:

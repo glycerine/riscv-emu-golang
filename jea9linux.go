@@ -421,6 +421,9 @@ const (
 	jea9LinuxEpollOut    = uint32(0x004)
 	jea9LinuxEpollET     = uint32(0x80000000)
 
+	jea9LinuxEpollEventSize       = uint64(16)
+	jea9LinuxEpollEventDataOffset = uint64(8)
+
 	jea9LinuxSIGSEGV = uint64(11)
 
 	jea9LinuxSIGBlock   = uint64(0)
@@ -3112,7 +3115,7 @@ func loadJea9LinuxEpollEvent(cpu *CPU, addr uint64) (jea9LinuxEpollRegistration,
 		return jea9LinuxEpollRegistration{}, jea9LinuxErrEFAULT
 	}
 	var raw [8]byte
-	if f := cpu.mem.ReadBytes(addr+4, raw[:]); f != nil {
+	if f := cpu.mem.ReadBytes(addr+jea9LinuxEpollEventDataOffset, raw[:]); f != nil {
 		return jea9LinuxEpollRegistration{}, jea9LinuxErrEFAULT
 	}
 	data := binary.LittleEndian.Uint64(raw[:])
@@ -3125,7 +3128,7 @@ func storeJea9LinuxEpollEvent(cpu *CPU, addr uint64, events uint32, data uint64)
 	}
 	var raw [8]byte
 	binary.LittleEndian.PutUint64(raw[:], data)
-	if f := cpu.mem.WriteBytes(addr+4, raw[:]); f != nil {
+	if f := cpu.mem.WriteBytes(addr+jea9LinuxEpollEventDataOffset, raw[:]); f != nil {
 		return jea9LinuxErrEFAULT
 	}
 	return 0
@@ -3206,7 +3209,7 @@ func (jos *Jea9Linux) epollCollectReady(cpu *CPU, epfd int, eventsAddr, maxEvent
 		if ready == 0 {
 			continue
 		}
-		if errno := storeJea9LinuxEpollEvent(cpu, eventsAddr+uint64(count)*12, ready, reg.data); errno != 0 {
+		if errno := storeJea9LinuxEpollEvent(cpu, eventsAddr+uint64(count)*jea9LinuxEpollEventSize, ready, reg.data); errno != 0 {
 			return 0, errno
 		}
 		count++

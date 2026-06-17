@@ -7,8 +7,9 @@ struct timespec {
 
 struct epoll_event {
 	unsigned int events;
+	unsigned int pad;
 	unsigned long data;
-} __attribute__((packed));
+};
 
 static long sys1(long n, long a0) {
 	register long x10 __asm__("a0") = a0;

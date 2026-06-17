@@ -32,6 +32,15 @@ func writeGuest64(t *testing.T, mem *GuestMemory, addr, value uint64) {
 	}
 }
 
+func readGuest32(t *testing.T, mem *GuestMemory, addr uint64) uint32 {
+	t.Helper()
+	got, f := mem.Load32(addr)
+	if f != nil {
+		t.Fatalf("Load32(0x%x): %v", addr, f)
+	}
+	return got
+}
+
 func readGuest64(t *testing.T, mem *GuestMemory, addr uint64) uint64 {
 	t.Helper()
 	got, f := mem.Load64(addr)
@@ -48,7 +57,7 @@ func writeEpollEvent(t *testing.T, mem *GuestMemory, addr uint64, events uint32,
 	}
 	var raw [8]byte
 	binary.LittleEndian.PutUint64(raw[:], data)
-	if f := mem.WriteBytes(addr+4, raw[:]); f != nil {
+	if f := mem.WriteBytes(addr+jea9LinuxEpollEventDataOffset, raw[:]); f != nil {
 		t.Fatalf("WriteBytes(epoll data): %v", f)
 	}
 }
@@ -60,12 +69,44 @@ func requireEpollEvent(t *testing.T, mem *GuestMemory, addr uint64, events uint3
 		t.Fatalf("Load32(epoll events): %v", f)
 	}
 	var raw [8]byte
-	if f := mem.ReadBytes(addr+4, raw[:]); f != nil {
+	if f := mem.ReadBytes(addr+jea9LinuxEpollEventDataOffset, raw[:]); f != nil {
 		t.Fatalf("ReadBytes(epoll data): %v", f)
 	}
 	gotData := binary.LittleEndian.Uint64(raw[:])
 	if gotEvents != events || gotData != data {
 		t.Fatalf("epoll event at 0x%x = {events=0x%x,data=0x%x}, want {0x%x,0x%x}", addr, gotEvents, gotData, events, data)
+	}
+}
+
+func TestJea9Linux_EpollEventLayoutRISCV64(t *testing.T) {
+	j := NewJea9Linux(Jea9LinuxOptions{})
+	cpu, mem := newJea9LinuxSyscallCPU(t, j)
+	defer mem.Free()
+
+	eventfd := newEventfd(t, cpu, 1, 0)
+	epfd := newEpoll(t, cpu)
+	if f := mem.Store32(0x7000, jea9TestEpollIn); f != nil {
+		t.Fatalf("Store32(epoll events): %v", f)
+	}
+	if f := mem.Store32(0x7004, 0xdeadbeef); f != nil {
+		t.Fatalf("Store32(epoll pad): %v", f)
+	}
+	const wantData = uint64(0x1122334455667788)
+	if f := mem.Store64(0x7000+jea9LinuxEpollEventDataOffset, wantData); f != nil {
+		t.Fatalf("Store64(epoll data): %v", f)
+	}
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysEpollCtl, epfd, jea9TestEpollCtlAdd, eventfd, 0x7000); d != NoteHandled {
+		t.Fatalf("epoll add disposition = %v", d)
+	}
+	requireSyscallReturn(t, cpu, 0)
+
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysEpollPwait, epfd, 0x8000, 1, 0, 0, 0); d != NoteHandled {
+		t.Fatalf("epoll wait disposition = %v", d)
+	}
+	requireSyscallReturn(t, cpu, 1)
+	requireEpollEvent(t, mem, 0x8000, jea9TestEpollIn, wantData)
+	if got := readGuest32(t, mem, 0x8004); got != 0 {
+		t.Fatalf("epoll output pad = 0x%x, want 0", got)
 	}
 }
 
@@ -418,7 +459,7 @@ func TestJea9Linux_EpollPwaitReadyOrder(t *testing.T) {
 	}
 	requireSyscallReturn(t, cpu, 2)
 	requireEpollEvent(t, mem, out, jea9TestEpollIn, 0x2222)
-	requireEpollEvent(t, mem, out+12, jea9TestEpollIn, 0x1111)
+	requireEpollEvent(t, mem, out+jea9LinuxEpollEventSize, jea9TestEpollIn, 0x1111)
 }
 
 func TestJea9Linux_PipeReadinessThroughEpoll(t *testing.T) {

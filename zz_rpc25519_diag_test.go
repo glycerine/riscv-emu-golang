@@ -47,7 +47,10 @@ func TestDiagRPC25519HangLog5(t *testing.T) {
 		Stderr:            &stderr,
 		AllowAllHostFiles: true,
 	})
-	args := []string{"rpc25519.test"}
+	args := []string{"rpc25519.test", "-test.v"}
+	if run := os.Getenv("JEA9LINUX_RPC25519_TEST_RUN"); run != "" {
+		args = append(args, "-test.run", run)
+	}
 	if err := jos.InitELFStack(cpu, elf, Jea9LinuxStartOptions{
 		Args:     args,
 		Env:      os.Environ(),
@@ -138,15 +141,15 @@ func formatRPC25519Diag(cpu *CPU, jos *Jea9Linux, stdout, stderr string) string 
 				if !ok {
 					continue
 				}
-				fmt.Fprintf(&b, "  watch fd=%d reg.events=0x%x data=0x%x ready=0x%x kind=%s\n",
-					watched, reg.events, reg.data, jos.fdReadyEvents(watched)&reg.events, fdKindString(jos.fds[watched].kind))
+				fmt.Fprintf(&b, "  watch fd=%d reg.events=0x%x data=0x%x lastReady=0x%x ready=0x%x kind=%s\n",
+					watched, reg.events, reg.data, reg.lastReady, diagFDReadyEvents(jos, watched)&reg.events, fdKindString(jos.fds[watched].kind))
 			}
 		case jea9LinuxFDSocket:
 			fmt.Fprintf(&b, "fd=%d kind=socket flags=0x%x listener=%v conn=%v pending=%d readbuf=%d eof=%v local=%v peer=%v ready=0x%x\n",
 				fd, f.flags, f.tcpListener != nil, f.tcpConn != nil, len(f.socketPending),
-				len(f.socketReadBuf), f.socketEOF, f.socketLocal, f.socketPeer, jos.fdReadyEvents(fd))
+				len(f.socketReadBuf), f.socketEOF, f.socketLocal, f.socketPeer, diagFDReadyEvents(jos, fd))
 		case jea9LinuxFDEventfd:
-			fmt.Fprintf(&b, "fd=%d kind=eventfd counter=%d ready=0x%x\n", fd, f.eventfdCounter, jos.fdReadyEvents(fd))
+			fmt.Fprintf(&b, "fd=%d kind=eventfd counter=%d ready=0x%x\n", fd, f.eventfdCounter, diagFDReadyEvents(jos, fd))
 		}
 	}
 	start := len(trace.Syscalls) - 40
@@ -168,6 +171,44 @@ func formatRPC25519Diag(cpu *CPU, jos *Jea9Linux, stdout, stderr string) string 
 			i, s.Event, s.TID, s.NextTID, s.FromPC, s.NextPC, s.MonotonicNS, s.RiscvInstrBegun, s.Reason)
 	}
 	return b.String()
+}
+
+func diagFDReadyEvents(jos *Jea9Linux, fd int) uint32 {
+	f, ok := jos.fds[fd]
+	if !ok {
+		return 0
+	}
+	switch f.kind {
+	case jea9LinuxFDEventfd:
+		events := jea9LinuxEpollOut
+		if f.eventfdCounter != 0 {
+			events |= jea9LinuxEpollIn
+		}
+		return events
+	case jea9LinuxFDPipeRead:
+		if f.pipe != nil && len(f.pipe.buf) > 0 {
+			return jea9LinuxEpollIn
+		}
+	case jea9LinuxFDPipeWrite:
+		if f.pipe != nil && len(f.pipe.buf) < cap(f.pipe.buf) {
+			return jea9LinuxEpollOut
+		}
+	case jea9LinuxFDStdout, jea9LinuxFDStderr:
+		return jea9LinuxEpollOut
+	case jea9LinuxFDSocket:
+		events := uint32(0)
+		if f.tcpListener != nil && len(f.socketPending) > 0 {
+			events |= jea9LinuxEpollIn
+		}
+		if f.tcpConn != nil {
+			events |= jea9LinuxEpollOut
+			if f.socketEOF || f.socketErr != 0 || len(f.socketReadBuf) > 0 {
+				events |= jea9LinuxEpollIn
+			}
+		}
+		return events
+	}
+	return 0
 }
 
 func diagDisasm(mem *GuestMemory, pc uint64) string {
