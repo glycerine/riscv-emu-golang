@@ -40,12 +40,16 @@ const (
 )
 
 const (
+	uartIERRDI  = byte(1) << 0
 	uartIERTHRI = byte(1) << 1
 	uartIIRNone = byte(0x01)
 	uartIIRTHRI = byte(0x02)
+	uartIIRRDI  = byte(0x04)
 	uartLCRDLAB = byte(0x80)
+	uartLSRDR   = byte(0x01)
 	uartLSRTHRE = byte(0x20)
 	uartLSRTEMT = byte(0x40)
+	uartRXLimit = 4096
 )
 
 type biosGuest struct {
@@ -153,7 +157,7 @@ func prepareBiosGuest(cfg EmuConfig) (*biosGuest, error) {
 		}
 	}
 
-	mem.SetMMIO(newBiosMMIO(cfg.Stdout))
+	mem.SetMMIO(newBiosMMIO(cfg.Stdin, cfg.Stdout))
 	cpu := riscv.NewCPU(*mem)
 	cpu.EnableStrictCSR()
 	cpu.SetPrivilegeMode(riscv.PrivMachine)
@@ -295,6 +299,8 @@ type biosMMIO struct {
 	stdout          io.Writer
 	uart            [0x100]byte
 	uartTXInterrupt bool
+	uartRX          []byte
+	uartRXCh        chan byte
 	clint           [0x10000]byte
 	mtime           uint64
 	plicPriority    [64]uint32
@@ -303,7 +309,7 @@ type biosMMIO struct {
 	plicClaimed     [2]uint32
 }
 
-func newBiosMMIO(stdout io.Writer) *biosMMIO {
+func newBiosMMIO(stdin io.Reader, stdout io.Writer) *biosMMIO {
 	if stdout == nil {
 		stdout = io.Discard
 	}
@@ -311,7 +317,28 @@ func newBiosMMIO(stdout io.Writer) *biosMMIO {
 	m.uart[2] = 0x01 // IIR: no interrupt pending
 	m.uart[5] = 0x60 // LSR: transmitter holding register empty, idle
 	storeLittleEndian(m.clint[:], 0x4000, 8, ^uint64(0))
+	m.startUARTInput(stdin)
 	return m
+}
+
+func (m *biosMMIO) startUARTInput(stdin io.Reader) {
+	if stdin == nil {
+		return
+	}
+	m.uartRXCh = make(chan byte, uartRXLimit)
+	go func() {
+		var buf [256]byte
+		for {
+			n, err := stdin.Read(buf[:])
+			for i := 0; i < n; i++ {
+				m.uartRXCh <- buf[i]
+			}
+			if err != nil {
+				close(m.uartRXCh)
+				return
+			}
+		}
+	}()
 }
 
 func (m *biosMMIO) Load(addr, width uint64) (uint64, bool, *riscv.MemFault) {
@@ -368,20 +395,37 @@ func (m *biosMMIO) loadUART(off, width uint64) uint64 {
 }
 
 func (m *biosMMIO) uartByte(off uint64) byte {
+	m.drainUARTInput()
 	dlab := m.uart[3]&uartLCRDLAB != 0
 	switch off {
 	case 0:
+		if !dlab {
+			if len(m.uartRX) == 0 {
+				return 0
+			}
+			b := m.uartRX[0]
+			copy(m.uartRX, m.uartRX[1:])
+			m.uartRX = m.uartRX[:len(m.uartRX)-1]
+			return b
+		}
 		return m.uart[0]
 	case 1:
 		return m.uart[1]
 	case 2:
-		if !dlab && m.uartInterruptPending() {
+		if !dlab && m.uartRXInterruptPending() {
+			return uartIIRRDI
+		}
+		if !dlab && m.uartTXInterruptPending() {
 			m.uartTXInterrupt = false
 			return uartIIRTHRI
 		}
 		return uartIIRNone
 	case 5:
-		return uartLSRTHRE | uartLSRTEMT
+		lsr := uartLSRTHRE | uartLSRTEMT
+		if len(m.uartRX) != 0 {
+			lsr |= uartLSRDR
+		}
+		return lsr
 	default:
 		return m.uart[off]
 	}
@@ -411,7 +455,31 @@ func (m *biosMMIO) storeUART(off, width, value uint64) {
 }
 
 func (m *biosMMIO) uartInterruptPending() bool {
+	m.drainUARTInput()
+	return m.uartRXInterruptPending() || m.uartTXInterruptPending()
+}
+
+func (m *biosMMIO) uartRXInterruptPending() bool {
+	return m.uart[1]&uartIERRDI != 0 && len(m.uartRX) != 0
+}
+
+func (m *biosMMIO) uartTXInterruptPending() bool {
 	return m.uart[1]&uartIERTHRI != 0 && m.uartTXInterrupt
+}
+
+func (m *biosMMIO) drainUARTInput() {
+	for m.uartRXCh != nil && len(m.uartRX) < uartRXLimit {
+		select {
+		case b, ok := <-m.uartRXCh:
+			if !ok {
+				m.uartRXCh = nil
+				return
+			}
+			m.uartRX = append(m.uartRX, b)
+		default:
+			return
+		}
+	}
 }
 
 func (m *biosMMIO) loadCLINT(off, width uint64) uint64 {

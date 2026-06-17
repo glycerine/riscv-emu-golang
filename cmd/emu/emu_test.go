@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -316,7 +317,7 @@ func TestPrepareBiosGuestUsesExternalDTB(t *testing.T) {
 
 func TestBiosUARTTransmitInterruptThroughPLIC(t *testing.T) {
 	var stdout bytes.Buffer
-	m := newBiosMMIO(&stdout)
+	m := newBiosMMIO(strings.NewReader(""), &stdout)
 
 	m.storePLIC(4*uint64(biosUARTIRQ), 4, 1)
 	m.storePLIC(0x2000+0x80*uint64(plicSContext), 4, uint64(1)<<biosUARTIRQ)
@@ -347,6 +348,65 @@ func TestBiosUARTTransmitInterruptThroughPLIC(t *testing.T) {
 	}
 	if !m.SupervisorExternalInterruptPending() {
 		t.Fatal("UART THR write did not reassert transmit interrupt")
+	}
+}
+
+func TestBiosUARTReceiveInterruptThroughPLIC(t *testing.T) {
+	m := newBiosMMIO(nil, io.Discard)
+	m.uartRX = append(m.uartRX, "ls\n"...)
+
+	m.storePLIC(4*uint64(biosUARTIRQ), 4, 1)
+	m.storePLIC(0x2000+0x80*uint64(plicSContext), 4, uint64(1)<<biosUARTIRQ)
+	m.storePLIC(0x200000+0x1000*uint64(plicSContext), 4, 0)
+
+	if m.SupervisorExternalInterruptPending() {
+		t.Fatal("PLIC reported UART receive interrupt before RDI was enabled")
+	}
+
+	m.storeUART(1, 1, uint64(uartIERRDI))
+	if !m.SupervisorExternalInterruptPending() {
+		t.Fatal("PLIC did not report UART receive interrupt after RDI enable")
+	}
+	if got := m.loadUART(5, 1); byte(got)&uartLSRDR == 0 {
+		t.Fatalf("UART LSR = 0x%x, want data-ready", got)
+	}
+	if got := m.loadPLIC(0x200000+0x1000*uint64(plicSContext)+4, 4); got != uint64(biosUARTIRQ) {
+		t.Fatalf("PLIC claim = %d, want UART IRQ %d", got, biosUARTIRQ)
+	}
+	if got := m.loadUART(2, 1); byte(got) != uartIIRRDI {
+		t.Fatalf("UART IIR = 0x%x, want RDI 0x%x", got, uartIIRRDI)
+	}
+	for _, want := range []byte("ls\n") {
+		if got := m.loadUART(0, 1); byte(got) != want {
+			t.Fatalf("UART RBR = %q, want %q", byte(got), want)
+		}
+	}
+	if got := m.loadUART(5, 1); byte(got)&uartLSRDR != 0 {
+		t.Fatalf("UART LSR = 0x%x, want data-ready clear", got)
+	}
+	m.storePLIC(0x200000+0x1000*uint64(plicSContext)+4, 4, uint64(biosUARTIRQ))
+	if m.SupervisorExternalInterruptPending() {
+		t.Fatal("UART receive interrupt still pending after draining input")
+	}
+}
+
+func TestBiosUARTInputReaderFeedsReceiveFIFO(t *testing.T) {
+	m := newBiosMMIO(strings.NewReader("x\n"), io.Discard)
+	deadline := time.Now().Add(time.Second)
+	for len(m.uartRX) < 2 && time.Now().Before(deadline) {
+		m.drainUARTInput()
+	}
+	if len(m.uartRX) < 2 {
+		t.Fatalf("UART RX len = %d, want stdin bytes", len(m.uartRX))
+	}
+	if got := m.loadUART(5, 1); byte(got)&uartLSRDR == 0 {
+		t.Fatalf("UART LSR = 0x%x, want data-ready", got)
+	}
+	if got := m.loadUART(0, 1); byte(got) != 'x' {
+		t.Fatalf("UART RBR first byte = %q, want x", byte(got))
+	}
+	if got := m.loadUART(0, 1); byte(got) != '\n' {
+		t.Fatalf("UART RBR second byte = %q, want newline", byte(got))
 	}
 }
 
