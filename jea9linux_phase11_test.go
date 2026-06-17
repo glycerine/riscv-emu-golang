@@ -302,6 +302,33 @@ func TestJea9Linux_SigaltstackReadbackAndInvalidFlags(t *testing.T) {
 	requireSyscallReturn(t, cpu, jea9LinuxErrEINVAL)
 }
 
+func TestJea9Linux_SigaltstackAcceptsAutoDisarm(t *testing.T) {
+	j := NewJea9Linux(Jea9LinuxOptions{})
+	cpu, mem := newJea9LinuxSyscallCPU(t, j)
+	defer mem.Free()
+
+	stack := uint64(0x7000)
+	old := uint64(0x7040)
+	writeGuest64(t, mem, stack, 0x9000)
+	writeGuest64(t, mem, stack+8, jea9LinuxSSAutoDisarm)
+	writeGuest64(t, mem, stack+16, 0x2000)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysSigaltstack, stack, 0); d != NoteHandled {
+		t.Fatalf("sigaltstack autodisarm disposition = %v, want NoteHandled", d)
+	}
+	requireSyscallReturn(t, cpu, 0)
+	ctx := j.contexts[j.pid]
+	if ctx.sigaltSP != 0x9000 || ctx.sigaltSize != 0x2000 || ctx.sigaltFlags != jea9LinuxSSAutoDisarm {
+		t.Fatalf("altstack = {0x%x,0x%x,0x%x}", ctx.sigaltSP, ctx.sigaltFlags, ctx.sigaltSize)
+	}
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysSigaltstack, 0, old); d != NoteHandled {
+		t.Fatalf("sigaltstack autodisarm readback disposition = %v, want NoteHandled", d)
+	}
+	requireSyscallReturn(t, cpu, 0)
+	if got := readGuest64(t, mem, old+8); got != jea9LinuxSSAutoDisarm {
+		t.Fatalf("old altstack flags = 0x%x, want SS_AUTODISARM", got)
+	}
+}
+
 func TestJea9Linux_TgkillTargetsTidAndKillTargetsProcess(t *testing.T) {
 	j := NewJea9Linux(Jea9LinuxOptions{})
 	cpu, mem := newJea9LinuxSyscallCPU(t, j)

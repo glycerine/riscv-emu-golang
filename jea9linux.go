@@ -423,6 +423,7 @@ const (
 	jea9LinuxSASiginfo     = uint64(0x00000004)
 	jea9LinuxSAOnstack     = uint64(0x08000000)
 	jea9LinuxSSDisable     = uint64(2)
+	jea9LinuxSSAutoDisarm  = uint64(1 << 31)
 
 	jea9LinuxSignalCodeUser       = int32(0)
 	jea9LinuxSignalCodeSEGVMapErr = int32(1)
@@ -3419,7 +3420,7 @@ func (jos *Jea9Linux) sysSigaltstack(cpu *CPU, newAddr, oldAddr uint64) int64 {
 		if errno != 0 {
 			return errno
 		}
-		if flags&^jea9LinuxSSDisable != 0 {
+		if flags&^(jea9LinuxSSDisable|jea9LinuxSSAutoDisarm) != 0 {
 			return jea9LinuxErrEINVAL
 		}
 		ctx.sigaltSP = sp
