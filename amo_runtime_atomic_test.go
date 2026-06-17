@@ -37,33 +37,47 @@ func TestCPU_RuntimeAtomicXchg8Sequence(t *testing.T) {
 		{initial: 0x81223344, offset: 0, oldByte: 0x44, wantMem: 0x812233aa},
 		{initial: 0x81223344, offset: 3, oldByte: 0x81, wantMem: 0xaa223344},
 	}
-	for _, tt := range tests {
-		t.Run("offset", func(t *testing.T) {
-			cpu, mem := newTestCPU(t, Size1MB, codeVA, insns)
-			defer mem.Free()
-			mustStore32AMO(t, mem, dataVA, tt.initial)
-			cpu.SetReg(10, dataVA+tt.offset)
-			cpu.SetReg(11, 0xaa)
+	for _, mode := range []string{"step", "cached"} {
+		for _, tt := range tests {
+			t.Run(mode, func(t *testing.T) {
+				cpu, mem := newTestCPU(t, Size1MB, codeVA, insns)
+				defer mem.Free()
+				mustStore32AMO(t, mem, dataVA, tt.initial)
+				cpu.SetReg(10, dataVA+tt.offset)
+				cpu.SetReg(11, 0xaa)
 
-			const maxSteps = 64
-			endPC := codeVA + uint64(len(insns))*4
-			for step := 0; step < maxSteps && cpu.PC() != endPC; step++ {
-				if err := cpu.Step(); err != nil {
-					t.Fatalf("step %d pc=0x%x: %v", step, cpu.PC(), err)
+				endPC := codeVA + uint64(len(insns))*4
+				switch mode {
+				case "step":
+					const maxSteps = 64
+					for step := 0; step < maxSteps && cpu.PC() != endPC; step++ {
+						if err := cpu.Step(); err != nil {
+							t.Fatalf("step %d pc=0x%x: %v", step, cpu.PC(), err)
+						}
+					}
+				case "cached":
+					cache := NewDecoderCache(codeVA, 4096)
+					res, err := runCachedBudget(cpu, cache, &cpu.Notes, uint64(len(insns)))
+					if err != nil {
+						t.Fatalf("runCachedBudget: %v", err)
+					}
+					if res != RunBudgetExpired {
+						t.Fatalf("runCachedBudget result = %v, want %v", res, RunBudgetExpired)
+					}
 				}
-			}
-			if cpu.PC() != endPC {
-				t.Fatalf("program did not finish, pc=0x%x", cpu.PC())
-			}
-			if got := cpu.Reg(15); got != tt.oldByte {
-				t.Fatalf("old byte = 0x%x, want 0x%x", got, tt.oldByte)
-			}
-			if got := mustLoad32AMO(t, mem, dataVA); got != tt.wantMem {
-				t.Fatalf("word after xchg8 = 0x%x, want 0x%x", got, tt.wantMem)
-			}
-			if cpu.resvValid {
-				t.Fatalf("xchg8 sequence left reservation valid")
-			}
-		})
+				if cpu.PC() != endPC {
+					t.Fatalf("program did not finish, pc=0x%x", cpu.PC())
+				}
+				if got := cpu.Reg(15); got != tt.oldByte {
+					t.Fatalf("old byte = 0x%x, want 0x%x", got, tt.oldByte)
+				}
+				if got := mustLoad32AMO(t, mem, dataVA); got != tt.wantMem {
+					t.Fatalf("word after xchg8 = 0x%x, want 0x%x", got, tt.wantMem)
+				}
+				if cpu.resvValid {
+					t.Fatalf("xchg8 sequence left reservation valid")
+				}
+			})
+		}
 	}
 }

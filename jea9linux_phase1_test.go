@@ -88,6 +88,52 @@ func TestRunDefaultBudget_ExpiresAtExactInstructionCount(t *testing.T) {
 	}
 }
 
+func TestRunDefaultBudget_ExpiresInsideOutOfCacheJALTarget(t *testing.T) {
+	mem, err := NewGuestMemory(Size1MB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mem.Free()
+
+	const caller = uint64(0x80000)
+	const callee = uint64(0x40000)
+	storeInsns(mem, caller, []uint32{
+		jenc(1, int32(int64(callee)-int64(caller))), // JAL ra, callee outside the initial decoder cache.
+		ienc(opOPIMM, 0, 7, 0, 7),                   // ADDI x7, x0, 7; must not run before callee returns.
+		instrEBREAK,
+	})
+	storeInsns(mem, callee, []uint32{
+		ienc(opOPIMM, 0, 5, 0, 1), // ADDI x5, x0, 1
+		ienc(opOPIMM, 0, 6, 0, 2), // ADDI x6, x0, 2
+		ienc(opJALR, 0, 0, 1, 0),  // JALR x0, 0(ra)
+	})
+
+	cpu := NewCPU(*mem)
+	cpu.SetPC(caller)
+	res, err := RunDefaultBudget(cpu, &cpu.Notes, 2)
+	if err != nil {
+		t.Fatalf("RunDefaultBudget: %v", err)
+	}
+	if res != RunBudgetExpired {
+		t.Fatalf("RunDefaultBudget result = %v, want RunBudgetExpired", res)
+	}
+	if got := cpu.PC(); got != callee+4 {
+		t.Fatalf("PC = 0x%x, want callee continuation 0x%x", got, callee+4)
+	}
+	if got := cpu.Reg(1); got != caller+4 {
+		t.Fatalf("ra = 0x%x, want 0x%x", got, caller+4)
+	}
+	if got := cpu.Reg(5); got != 1 {
+		t.Fatalf("x5 = %d, want 1", got)
+	}
+	if got := cpu.Reg(6); got != 0 {
+		t.Fatalf("x6 = %d, want 0 before second callee instruction", got)
+	}
+	if got := cpu.Reg(7); got != 0 {
+		t.Fatalf("x7 = %d, want 0 before caller continuation", got)
+	}
+}
+
 func TestRunDefaultBudget_CSRSeesInstructionAttemptsInCurrentBatch(t *testing.T) {
 	csrrsCycle := ienc(opSYSTEM, 2, 3, 0, 0xC00) // CSRRS x3, cycle, x0
 	cpu, mem := newTestCPU(t, Size64MB, 0x1000, []uint32{

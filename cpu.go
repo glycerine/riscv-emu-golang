@@ -768,7 +768,8 @@ func (c *CPU) stepFromInsn(insn uint32) error {
 			c.resvValid = true
 
 		case 0b00011: // SC.W / SC.D
-			if c.resvValid && c.resvAddr == addr {
+			success := c.resvValid && c.resvAddr == addr
+			if success {
 				if width == 0b010 {
 					if f := (&c.mem).Store32(addr, uint32(c.Reg(rs2))); f != nil {
 						return f

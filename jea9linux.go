@@ -352,6 +352,8 @@ type Jea9LinuxScheduleTraceEntry struct {
 	Event           string
 	TID             uint64
 	NextTID         uint64
+	FromPC          uint64
+	NextPC          uint64
 	MonotonicNS     int64
 	RiscvInstrBegun uint64 // cumulative guest instruction attempts begun by the hart
 }
@@ -855,6 +857,10 @@ func (jos *Jea9Linux) recordSyscallTrace(cpu *CPU, n Note, args SyscallArgs, d N
 }
 
 func (jos *Jea9Linux) recordScheduleTrace(cpu *CPU, event string, tid, nextTID uint64) {
+	jos.recordScheduleTracePC(cpu, event, tid, nextTID, cpu.PC(), cpu.PC())
+}
+
+func (jos *Jea9Linux) recordScheduleTracePC(cpu *CPU, event string, tid, nextTID, fromPC, nextPC uint64) {
 	if !jos.traceEnabled {
 		return
 	}
@@ -862,6 +868,8 @@ func (jos *Jea9Linux) recordScheduleTrace(cpu *CPU, event string, tid, nextTID u
 		Event:           event,
 		TID:             tid,
 		NextTID:         nextTID,
+		FromPC:          fromPC,
+		NextPC:          nextPC,
 		MonotonicNS:     jos.monotonicNS,
 		RiscvInstrBegun: cpu.RiscvInstrBegun(),
 	})
@@ -1061,7 +1069,9 @@ func (jos *Jea9Linux) completeContextEcallTrap(ctx *jea9LinuxContext) {
 	if ctx == nil || !ctx.syscallTrap.active {
 		return
 	}
-	ctx.snapshot.pc = ctx.syscallTrap.resumePC
+	if ctx.snapshot.pc == ctx.syscallTrap.trapPC {
+		ctx.snapshot.pc = ctx.syscallTrap.resumePC
+	}
 	ctx.syscallTrap = jea9LinuxEcallTrapFrame{}
 }
 
@@ -1753,12 +1763,13 @@ func (jos *Jea9Linux) expireBudget(cpu *CPU) error {
 		ctx := jos.ensureScheduler(cpu)
 		ctx.state = jea9LinuxContextRunnable
 		ctx.snapshot = snapshotJea9LinuxCPU(cpu)
+		fromPC := ctx.snapshot.pc
 		jos.advanceIdleClockToNextDeadline()
 		if next, ok := jos.nextRunnableAfterCurrent(); ok {
 			jos.loadContext(cpu, next)
 			to = next
 		}
-		jos.recordScheduleTrace(cpu, "budget", from, to)
+		jos.recordScheduleTracePC(cpu, "budget", from, to, fromPC, cpu.PC())
 	}
 	return ErrJea9LinuxBudget
 }
@@ -2629,7 +2640,9 @@ func (jos *Jea9Linux) deliverSignal(cpu *CPU, ctx *jea9LinuxContext, sig uint64,
 			snap.pc = jos.activeEcallTrap.resumePC
 		}
 	} else if ctx.syscallTrap.active {
-		snap.pc = ctx.syscallTrap.resumePC
+		if snap.pc == ctx.syscallTrap.trapPC {
+			snap.pc = ctx.syscallTrap.resumePC
+		}
 	}
 	frameSP, siginfoAddr, ucontextAddr, errno := jos.writeSignalFrame(cpu, ctx, snap, info)
 	if errno != 0 {
@@ -2948,12 +2961,13 @@ func (jos *Jea9Linux) sysSchedYield(cpu *CPU) NoteDisposition {
 	cpu.SetReg(10, 0)
 	ctx.state = jea9LinuxContextRunnable
 	ctx.snapshot = snapshotJea9LinuxCPU(cpu)
+	fromPC := ctx.snapshot.pc
 	jos.advanceIdleClockToNextDeadline()
 	if next, ok := jos.nextRunnableAfterCurrent(); ok {
 		jos.loadContext(cpu, next)
 		to = next
 	}
-	jos.recordScheduleTrace(cpu, "yield", from, to)
+	jos.recordScheduleTracePC(cpu, "yield", from, to, fromPC, cpu.PC())
 	return NoteHandled
 }
 

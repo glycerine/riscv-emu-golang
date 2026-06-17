@@ -47,26 +47,46 @@ func TestJea9Linux_ZygoFib10_InterpreterBudget1000(t *testing.T) {
 
 	code, err := RunWithJea9Linux(cpu, jos)
 	if err != nil {
-		t.Fatalf("RunWithJea9Linux: %v\nstderr:\n%s\ntrace:\n%s", err, limitZygoBudgetString(stderr.String(), 2048), formatZygoBudgetTrace(jos))
+		t.Fatalf("RunWithJea9Linux: %v\nstderr:\n%s\ntrace:\n%s", err, limitZygoBudgetString(stderr.String(), 2048), formatZygoBudgetTrace(cpu, jos))
 	}
 	if code != 0 {
-		t.Fatalf("exit code = %d, want 0\nstderr:\n%s\ntrace:\n%s", code, limitZygoBudgetString(stderr.String(), 2048), formatZygoBudgetTrace(jos))
+		t.Fatalf("exit code = %d, want 0\nstderr:\n%s\ntrace:\n%s", code, limitZygoBudgetString(stderr.String(), 2048), formatZygoBudgetTrace(cpu, jos))
 	}
 	if got := stdout.String(); got != "55\n" {
 		t.Fatalf("stdout = %q, want %q\nstderr:\n%s", got, "55\n", limitZygoBudgetString(stderr.String(), 2048))
 	}
 }
 
-func formatZygoBudgetTrace(jos *Jea9Linux) string {
+func formatZygoBudgetTrace(cpu *CPU, jos *Jea9Linux) string {
 	var b strings.Builder
 	trace := jos.TraceSnapshot()
 	fmt.Fprintf(&b, "currentTID=%d tid=%d contexts=%d syscalls=%d schedules=%d\n",
 		jos.currentTID, jos.tid, len(jos.contexts), len(trace.Syscalls), len(trace.Schedule))
+	if schedLock, f := cpu.mem.Load64(0x8510e0); f == nil {
+		fmt.Fprintf(&b, "sched.lock@0x8510e0=0x%016x\n", schedLock)
+	} else {
+		fmt.Fprintf(&b, "sched.lock@0x8510e0 fault=%v\n", f)
+	}
+	for _, tid := range jos.contextOrder {
+		ctx := jos.contexts[tid]
+		if ctx == nil {
+			continue
+		}
+		fmt.Fprintf(&b, "ctx tid=%d state=%s wait=%d addr=0x%x deadline=%d hasDeadline=%v pc=0x%x trap=%v trapPC=0x%x resumePC=0x%x\n",
+			tid, ctx.state, ctx.waitKind, ctx.waitAddr, ctx.waitDeadlineNS, ctx.waitHasDeadline,
+			ctx.snapshot.pc, ctx.syscallTrap.active, ctx.syscallTrap.trapPC, ctx.syscallTrap.resumePC)
+	}
 	for _, c := range jos.TopSyscallCounts(8) {
 		fmt.Fprintf(&b, "syscall count num=%d count=%d\n", c.Num, c.Count)
 	}
 	for _, c := range jos.TopSyscallPCCounts(8) {
 		fmt.Fprintf(&b, "syscall pc=0x%x count=%d\n", c.PC, c.Count)
+	}
+	for i, s := range trace.Schedule {
+		if s.RiscvInstrBegun >= 370000 && s.RiscvInstrBegun <= 376000 {
+			fmt.Fprintf(&b, "schedule-near[%d] event=%s tid=%d next=%d fromPC=0x%x nextPC=0x%x ns=%d ins=%d\n",
+				i, s.Event, s.TID, s.NextTID, s.FromPC, s.NextPC, s.MonotonicNS, s.RiscvInstrBegun)
+		}
 	}
 	start := len(trace.Schedule) - 16
 	if start < 0 {
@@ -74,8 +94,8 @@ func formatZygoBudgetTrace(jos *Jea9Linux) string {
 	}
 	for i := start; i < len(trace.Schedule); i++ {
 		s := trace.Schedule[i]
-		fmt.Fprintf(&b, "schedule[%d] event=%s tid=%d next=%d ns=%d ins=%d\n",
-			i, s.Event, s.TID, s.NextTID, s.MonotonicNS, s.RiscvInstrBegun)
+		fmt.Fprintf(&b, "schedule[%d] event=%s tid=%d next=%d fromPC=0x%x nextPC=0x%x ns=%d ins=%d\n",
+			i, s.Event, s.TID, s.NextTID, s.FromPC, s.NextPC, s.MonotonicNS, s.RiscvInstrBegun)
 	}
 	start = len(trace.Syscalls) - 16
 	if start < 0 {

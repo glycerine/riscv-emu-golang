@@ -78,3 +78,31 @@ func TestJea9Linux_BlockingEcallKeepsTrapframeUntilWake(t *testing.T) {
 		t.Fatalf("loaded CPU pc = 0x%x, want resume PC 0x%x", cpu.PC(), trapPC+4)
 	}
 }
+
+func TestJea9Linux_LoadContextDoesNotReplayStaleEcallTrapframe(t *testing.T) {
+	j := NewJea9Linux(Jea9LinuxOptions{PID: 123, TID: 123})
+	cpu, mem := newJea9LinuxSyscallCPU(t, j)
+	defer mem.Free()
+
+	ctx := j.ensureScheduler(cpu)
+	ctx.state = jea9LinuxContextRunnable
+	ctx.snapshot.pc = 0x2000
+	ctx.syscallTrap = jea9LinuxEcallTrapFrame{
+		active:   true,
+		trapPC:   0x1000,
+		resumePC: 0x1004,
+		cause:    CauseEcallU,
+		insnLen:  4,
+	}
+	cpu.SetPC(0xdead)
+
+	if !j.loadContext(cpu, ctx.tid) {
+		t.Fatal("loadContext failed")
+	}
+	if got := cpu.PC(); got != 0x2000 {
+		t.Fatalf("loaded CPU pc = 0x%x, want saved normal PC 0x2000", got)
+	}
+	if ctx.syscallTrap.active {
+		t.Fatal("stale ECALL trapframe was not cleared")
+	}
+}
