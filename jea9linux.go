@@ -4044,14 +4044,7 @@ func (jos *Jea9Linux) sysFutex(cpu *CPU, addr, op, val, timeoutAddr, val3 uint64
 	case jea9LinuxFutexWait, jea9LinuxFutexWaitBitset:
 		ret, blocked := jos.futexWait(cpu, ctx, addr, uint32(val), timeoutAddr)
 		if blocked {
-			if next, ok := jos.nextRunnableByPolicyAfterCurrent(); ok {
-				jos.loadContext(cpu, next)
-				jos.blocked = false
-				jos.blockedHasDeadline = false
-				return NoteHandled
-			}
-			jos.blocked = true
-			return NoteExit
+			return jos.scheduleAfterCurrentBlocked(cpu)
 		}
 		cpu.SetReg(10, uint64(ret))
 		ctx.snapshot = snapshotJea9LinuxCPU(cpu)
@@ -4104,8 +4097,6 @@ func (jos *Jea9Linux) futexWait(cpu *CPU, ctx *jea9LinuxContext, addr uint64, ex
 	jos.futexWaiters[addr] = append(jos.futexWaiters[addr], ctx.tid)
 	if hasDeadline {
 		jos.timedFutexWaiters++
-		jos.blockedUntil = deadline
-		jos.blockedHasDeadline = true
 	}
 	return 0, true
 }
