@@ -192,7 +192,7 @@ func runEmu(cfg EmuConfig) (int, error) {
 		EntropySeed:       seedBytes(cfg.Seed),
 		ClockMode:         riscv.Jea9ClockIdleJump,
 		ClockPolicy:       clockPolicy,
-		MonotonicStartNS:  0,
+		MonotonicStartNS:  1,
 		RealtimeOffsetNS:  cfg.RealtimeOffsetNS,
 		InstructionBudget: instructionBudget,
 		Scheduler:         cfg.schedulerConfig(budget),
