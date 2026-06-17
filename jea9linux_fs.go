@@ -599,6 +599,18 @@ func (jos *Jea9Linux) statFD(fdRaw uint64) (jea9LinuxStat, int64) {
 			ctimeNS: now,
 			dtype:   jea9LinuxDirentFIFO,
 		}, 0
+	case jea9LinuxFDSocket:
+		return jea9LinuxStat{
+			dev:     1,
+			ino:     uint64(300 + fd),
+			mode:    jea9LinuxModeIFSOCK | 0o777,
+			nlink:   1,
+			blksize: 4096,
+			atimeNS: now,
+			mtimeNS: now,
+			ctimeNS: now,
+			dtype:   jea9LinuxDirentUnknown,
+		}, 0
 	case jea9LinuxFDHostFile:
 		if f.hostFile == nil {
 			return jea9LinuxStat{}, jea9LinuxErrEBADF
@@ -907,6 +919,21 @@ func closeJea9LinuxFD(f jea9LinuxFD) int64 {
 	if f.kind == jea9LinuxFDHostFile && f.hostFile != nil {
 		if err := f.hostFile.Close(); err != nil {
 			return jea9LinuxErrnoFromHost(err)
+		}
+	}
+	if f.kind == jea9LinuxFDSocket {
+		if f.tcpListener != nil {
+			if err := f.tcpListener.Close(); err != nil {
+				return jea9LinuxErrnoFromHost(err)
+			}
+		}
+		if f.tcpConn != nil {
+			if err := f.tcpConn.Close(); err != nil {
+				return jea9LinuxErrnoFromHost(err)
+			}
+		}
+		for _, conn := range f.socketPending {
+			_ = conn.Close()
 		}
 	}
 	return 0

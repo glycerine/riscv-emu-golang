@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	mathrand2 "math/rand/v2"
+	"net"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -161,7 +162,23 @@ const (
 	jea9LinuxErrENOTEMPTY    = int64(-39)
 	jea9LinuxErrELOOP        = int64(-40)
 	jea9LinuxErrENOTTY       = int64(-25)
+	jea9LinuxErrEPIPE        = int64(-32)
+	jea9LinuxErrENOTSOCK     = int64(-88)
+	jea9LinuxErrEDESTADDRREQ = int64(-89)
+	jea9LinuxErrEPROTOTYPE   = int64(-91)
+	jea9LinuxErrENOPROTOOPT  = int64(-92)
+	jea9LinuxErrEPROTONOSUP  = int64(-93)
+	jea9LinuxErrEOPNOTSUPP   = int64(-95)
+	jea9LinuxErrEAFNOSUPPORT = int64(-97)
+	jea9LinuxErrEADDRINUSE   = int64(-98)
+	jea9LinuxErrEADDRNOTAVAIL = int64(-99)
+	jea9LinuxErrECONNRESET   = int64(-104)
+	jea9LinuxErrEISCONN      = int64(-106)
+	jea9LinuxErrENOTCONN     = int64(-107)
 	jea9LinuxErrETIMEDOUT    = int64(-110)
+	jea9LinuxErrECONNREFUSED = int64(-111)
+	jea9LinuxErrEALREADY     = int64(-114)
+	jea9LinuxErrEINPROGRESS  = int64(-115)
 
 	jea9LinuxSysGetcwd           = uint64(17)
 	jea9LinuxSysEventfd2         = uint64(19)
@@ -222,6 +239,19 @@ const (
 	jea9LinuxSysGetpid           = uint64(172)
 	jea9LinuxSysGettid           = uint64(178)
 	jea9LinuxSysSysinfo          = uint64(179)
+	jea9LinuxSysSocket           = uint64(198)
+	jea9LinuxSysSocketpair       = uint64(199)
+	jea9LinuxSysBind             = uint64(200)
+	jea9LinuxSysListen           = uint64(201)
+	jea9LinuxSysAccept           = uint64(202)
+	jea9LinuxSysConnect          = uint64(203)
+	jea9LinuxSysGetsockname      = uint64(204)
+	jea9LinuxSysGetpeername      = uint64(205)
+	jea9LinuxSysSendto           = uint64(206)
+	jea9LinuxSysRecvfrom         = uint64(207)
+	jea9LinuxSysSetsockopt       = uint64(208)
+	jea9LinuxSysGetsockopt       = uint64(209)
+	jea9LinuxSysShutdown         = uint64(210)
 	jea9LinuxSysMunmap           = uint64(215)
 	jea9LinuxSysBrk              = uint64(214)
 	jea9LinuxSysClone            = uint64(220)
@@ -229,6 +259,7 @@ const (
 	jea9LinuxSysMprotect         = uint64(226)
 	jea9LinuxSysMincore          = uint64(232)
 	jea9LinuxSysMadvise          = uint64(233)
+	jea9LinuxSysAccept4          = uint64(242)
 	jea9LinuxSysRiscvHwprobe     = uint64(258)
 	jea9LinuxSysPrlimit64        = uint64(261)
 	jea9LinuxSysRenameat2        = uint64(276)
@@ -327,6 +358,7 @@ const (
 	jea9LinuxModeIFDIR         = uint32(0o040000)
 	jea9LinuxModeIFREG         = uint32(0o100000)
 	jea9LinuxModeIFLNK         = uint32(0o120000)
+	jea9LinuxModeIFSOCK        = uint32(0o140000)
 	jea9LinuxDirentUnknown     = uint8(0)
 	jea9LinuxDirentFIFO        = uint8(1)
 	jea9LinuxDirentCHR         = uint8(2)
@@ -355,6 +387,23 @@ const (
 	jea9LinuxOAppend  = uint64(0x400)
 
 	jea9LinuxEFDSemaphore = uint64(1)
+
+	jea9LinuxAFUnix       = int32(1)
+	jea9LinuxAFInet       = int32(2)
+	jea9LinuxAFInet6      = int32(10)
+	jea9LinuxSockStream   = int32(1)
+	jea9LinuxSockDgram    = int32(2)
+	jea9LinuxSockNonblock = int32(0x800)
+	jea9LinuxSockCloexec  = int32(0x80000)
+	jea9LinuxIPProtoTCP   = int32(6)
+	jea9LinuxIPProtoIPv6  = int32(41)
+	jea9LinuxSolSocket    = int32(1)
+	jea9LinuxSolTCP       = int32(6)
+	jea9LinuxSoError      = int32(4)
+	jea9LinuxSoType       = int32(3)
+	jea9LinuxSoReuseAddr  = int32(2)
+	jea9LinuxIPv6V6Only   = int32(26)
+	jea9LinuxTCPNoDelay   = int32(1)
 
 	jea9LinuxEpollCtlAdd = uint64(1)
 	jea9LinuxEpollCtlDel = uint64(2)
@@ -409,17 +458,28 @@ const (
 	jea9LinuxFDPipeWrite
 	jea9LinuxFDHostFile
 	jea9LinuxFDDir
+	jea9LinuxFDSocket
 )
 
 type jea9LinuxFD struct {
 	kind           jea9LinuxFDKind
 	data           []byte
 	hostFile       *os.File
+	tcpListener    *net.TCPListener
+	tcpConn        *net.TCPConn
 	dirPath        string
 	dirents        []string
 	direntOff      int
 	off            int64
 	flags          uint64
+	socketFamily   int32
+	socketType     int32
+	socketProtocol int32
+	socketLocal    *net.TCPAddr
+	socketPeer     *net.TCPAddr
+	socketPending  []*net.TCPConn
+	socketReadBuf  []byte
+	socketEOF      bool
 	eventfdCounter uint64
 	epoll          *jea9LinuxEpoll
 	pipe           *jea9LinuxPipe
@@ -2763,6 +2823,48 @@ func (jos *Jea9Linux) Handle(cpu *CPU, n Note) (disp NoteDisposition) {
 	case jea9LinuxSysSysinfo:
 		cpu.SetReg(10, uint64(jos.sysSysinfo(cpu, args.A0)))
 		return NoteHandled
+	case jea9LinuxSysSocket:
+		cpu.SetReg(10, uint64(jos.sysSocket(args.A0, args.A1, args.A2)))
+		return NoteHandled
+	case jea9LinuxSysSocketpair:
+		cpu.SetReg(10, uint64(jos.sysSocketpair(args.A0, args.A1, args.A2, args.A3)))
+		return NoteHandled
+	case jea9LinuxSysBind:
+		cpu.SetReg(10, uint64(jos.sysBind(cpu, args.A0, args.A1, args.A2)))
+		return NoteHandled
+	case jea9LinuxSysListen:
+		cpu.SetReg(10, uint64(jos.sysListen(args.A0, args.A1)))
+		return NoteHandled
+	case jea9LinuxSysAccept:
+		cpu.SetReg(10, uint64(jos.sysAccept4(cpu, args.A0, args.A1, args.A2, 0)))
+		return NoteHandled
+	case jea9LinuxSysAccept4:
+		cpu.SetReg(10, uint64(jos.sysAccept4(cpu, args.A0, args.A1, args.A2, args.A3)))
+		return NoteHandled
+	case jea9LinuxSysConnect:
+		cpu.SetReg(10, uint64(jos.sysConnect(cpu, args.A0, args.A1, args.A2)))
+		return NoteHandled
+	case jea9LinuxSysGetsockname:
+		cpu.SetReg(10, uint64(jos.sysGetsockname(cpu, args.A0, args.A1, args.A2)))
+		return NoteHandled
+	case jea9LinuxSysGetpeername:
+		cpu.SetReg(10, uint64(jos.sysGetpeername(cpu, args.A0, args.A1, args.A2)))
+		return NoteHandled
+	case jea9LinuxSysSendto:
+		cpu.SetReg(10, uint64(jos.sysSendto(cpu, args.A0, args.A1, args.A2, args.A3, args.A4, args.A5)))
+		return NoteHandled
+	case jea9LinuxSysRecvfrom:
+		cpu.SetReg(10, uint64(jos.sysRecvfrom(cpu, args.A0, args.A1, args.A2, args.A3, args.A4, args.A5)))
+		return NoteHandled
+	case jea9LinuxSysSetsockopt:
+		cpu.SetReg(10, uint64(jos.sysSetsockopt(cpu, args.A0, args.A1, args.A2, args.A3, args.A4)))
+		return NoteHandled
+	case jea9LinuxSysGetsockopt:
+		cpu.SetReg(10, uint64(jos.sysGetsockopt(cpu, args.A0, args.A1, args.A2, args.A3, args.A4)))
+		return NoteHandled
+	case jea9LinuxSysShutdown:
+		cpu.SetReg(10, uint64(jos.sysShutdown(args.A0, args.A1)))
+		return NoteHandled
 	case jea9LinuxSysBrk:
 		cpu.SetReg(10, jos.sysBrk(cpu, args.A0))
 		return NoteHandled
@@ -3032,6 +3134,18 @@ func (jos *Jea9Linux) fdReadyEvents(fd int) uint32 {
 		}
 	case jea9LinuxFDStdout, jea9LinuxFDStderr:
 		return jea9LinuxEpollOut
+	case jea9LinuxFDSocket:
+		events := uint32(0)
+		if f.tcpListener != nil && jos.socketEnsurePending(fd, &f) {
+			events |= jea9LinuxEpollIn
+		}
+		if f.tcpConn != nil {
+			events |= jea9LinuxEpollOut
+			if jos.socketPollReadable(fd, &f) {
+				events |= jea9LinuxEpollIn
+			}
+		}
+		return events
 	}
 	return 0
 }
@@ -4276,6 +4390,8 @@ func (jos *Jea9Linux) sysRead(cpu *CPU, fdRaw, bufAddr, n uint64) int64 {
 		return count
 	case jea9LinuxFDHostFile:
 		return readJea9LinuxHostFile(cpu, f, bufAddr, n)
+	case jea9LinuxFDSocket:
+		return jos.sysSocketRead(cpu, fd, bufAddr, n)
 	case jea9LinuxFDEventfd:
 		return jos.sysEventfdRead(cpu, fd, f, bufAddr, n)
 	case jea9LinuxFDPipeRead:
@@ -4328,6 +4444,8 @@ func (jos *Jea9Linux) sysWrite(cpu *CPU, fdRaw, bufAddr, n uint64) int64 {
 		return jos.sysEventfdWrite(cpu, fd, f, bufAddr, n)
 	case jea9LinuxFDPipeWrite:
 		return jos.sysPipeWrite(cpu, fd, f, bufAddr, n)
+	case jea9LinuxFDSocket:
+		return jos.sysSocketWrite(cpu, fd, bufAddr, n)
 	default:
 		return jea9LinuxErrEBADF
 	}
