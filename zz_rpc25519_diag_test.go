@@ -31,6 +31,7 @@ func TestDiagRPC25519HangLog5(t *testing.T) {
 	}
 	cpu := NewCPU(*mem)
 	jos := NewJea9Linux(Jea9LinuxOptions{
+		TimeMode:          RealTime,
 		ClockMode:         Jea9ClockIdleJump,
 		ClockPolicy:       ClockPolicyOnlyDeadlockAdvances,
 		MonotonicStartNS:  1,
@@ -81,6 +82,12 @@ func TestDiagRPC25519HangLog5(t *testing.T) {
 				t.Fatal("diagnostic deadline")
 			}
 			continue
+		}
+		if errors.Is(err, ErrJea9LinuxBlocked) {
+			if jos.waitRealTimeBlocked(cpu) {
+				continue
+			}
+			t.Fatalf("blocked without realtime wake source\n%s", formatRPC25519Diag(cpu, jos, stdout.String(), stderr.String()))
 		}
 		if err != nil {
 			var ex *ExitError

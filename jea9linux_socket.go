@@ -162,6 +162,9 @@ func (jos *Jea9Linux) sysAccept4(cpu *CPU, fdRaw, sockaddrAddr, addrlenAddr, fla
 	conn := f.socketPending[0]
 	copy(f.socketPending, f.socketPending[1:])
 	f.socketPending = f.socketPending[:len(f.socketPending)-1]
+	if len(f.socketPending) == 0 && !jos.socketEnsurePending(fd, &f) {
+		jos.clearEpollReadyBitsForFD(fd, jea9LinuxEpollIn)
+	}
 	jos.fds[fd] = f
 	_ = conn.SetNoDelay(true)
 	local, _ := conn.LocalAddr().(*net.TCPAddr)

@@ -2571,6 +2571,7 @@ func (jos *Jea9Linux) Run(cpu *CPU) error {
 		used += attemptDelta
 		jos.accountInsAttempts(attemptDelta)
 		jos.drainExternalEvents(cpu)
+		jos.refreshEpollReadiness(cpu)
 		if jos.Blocked() {
 			return ErrJea9LinuxBlocked
 		}
@@ -2625,6 +2626,7 @@ func (jos *Jea9Linux) RunJIT(cpu *CPU, jit *JIT) error {
 		used += attemptDelta
 		jos.accountInsAttempts(attemptDelta)
 		jos.drainExternalEvents(cpu)
+		jos.refreshEpollReadiness(cpu)
 		if jos.Blocked() {
 			return ErrJea9LinuxBlocked
 		}
@@ -3131,6 +3133,7 @@ func storeJea9LinuxEpollEvent(cpu *CPU, addr uint64, events uint32, data uint64)
 
 func (jos *Jea9Linux) sysEpollPwait(cpu *CPU, epfdRaw, eventsAddr, maxEvents, timeoutRaw, sigmask, sigsetSize uint64) NoteDisposition {
 	_, _ = sigmask, sigsetSize
+	jos.drainExternalEvents(cpu)
 	ctx := jos.ensureScheduler(cpu)
 	n, errno := jos.epollCollectReady(cpu, int(int64(epfdRaw)), eventsAddr, maxEvents)
 	if errno != 0 {
@@ -3294,6 +3297,22 @@ func (jos *Jea9Linux) wakeEpollWaitersForFD(cpu *CPU, fd int) {
 			continue
 		}
 		if _, ok := ep.epoll.registrations[fd]; !ok {
+			continue
+		}
+		n, errno := jos.epollCollectReady(cpu, ctx.waitFD, ctx.waitEventAddr, ctx.waitMaxEvents)
+		if errno != 0 {
+			jos.markRunnable(ctx.tid, errno)
+			continue
+		}
+		if n > 0 {
+			jos.markRunnable(ctx.tid, n)
+		}
+	}
+}
+
+func (jos *Jea9Linux) refreshEpollReadiness(cpu *CPU) {
+	for _, ctx := range jos.contexts {
+		if ctx == nil || ctx.state != jea9LinuxContextWaiting || ctx.waitKind != jea9LinuxWaitEpoll {
 			continue
 		}
 		n, errno := jos.epollCollectReady(cpu, ctx.waitFD, ctx.waitEventAddr, ctx.waitMaxEvents)

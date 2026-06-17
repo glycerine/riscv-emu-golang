@@ -212,6 +212,45 @@ func TestJea9Linux_TCPSocketEpollOutEdgeDoesNotSpin(t *testing.T) {
 	requireSyscallReturn(t, cpu, 0)
 }
 
+func TestJea9Linux_TCPSocketHermitRefreshWakesBlockedListenerEpoll(t *testing.T) {
+	j := NewJea9Linux(Jea9LinuxOptions{AllowAllHostFiles: true})
+	cpu, mem := newJea9LinuxSyscallCPU(t, j)
+	defer mem.Free()
+	defer j.closeAllFDs()
+
+	server := listenGuestTCP(t, cpu, mem)
+	port := guestTCPListenPort(t, cpu, mem, server)
+	epfd := newEpoll(t, cpu)
+	writeEpollEvent(t, mem, 0x7000, jea9TestEpollIn|jea9TestEpollET, 0xcafe)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysEpollCtl, epfd, jea9TestEpollCtlAdd, server, 0x7000); d != NoteHandled {
+		t.Fatalf("epoll add listener disposition = %v", d)
+	}
+	requireSyscallReturn(t, cpu, 0)
+
+	child := cloneJea9LinuxThread(t, cpu, j, 0x890000, 0, 0, 0, jea9TestCloneThreadFlags)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysEpollPwait, epfd, 0x8000, 1, ^uint64(0), 0, 0); d != NoteHandled {
+		t.Fatalf("blocking listener epoll disposition = %v", d)
+	}
+	requireCurrentTID(t, j, child)
+	if got := j.contexts[j.pid].state; got != jea9LinuxContextWaiting {
+		t.Fatalf("parent state = %v, want waiting", got)
+	}
+
+	conn := dialHostTCP(t, port)
+	defer conn.Close()
+	deadline := time.Now().Add(250 * time.Millisecond)
+	for j.contexts[j.pid].state != jea9LinuxContextRunnable && time.Now().Before(deadline) {
+		j.refreshEpollReadiness(cpu)
+	}
+	if got := j.contexts[j.pid].state; got != jea9LinuxContextRunnable {
+		t.Fatalf("parent state after host connect = %v, want runnable", got)
+	}
+	if got := int64(j.contexts[j.pid].snapshot.x[10]); got != 1 {
+		t.Fatalf("epoll return = %d, want 1", got)
+	}
+	requireEpollEvent(t, mem, 0x8000, jea9TestEpollIn, 0xcafe)
+}
+
 func newGuestTCPSocket(t *testing.T, cpu *CPU) uint64 {
 	t.Helper()
 	flags := jea9TestSockStream | jea9TestSockNonblock | jea9TestSockCloexec
