@@ -103,7 +103,7 @@ func (c *EmuConfig) DefineFlags(fs *flag.FlagSet) {
 	fs.BoolVar(&c.Deadlock, "deadlock", false, "run each thread until it blocks before scheduling another thread (at most one of -deadlock -prng or -chaos may be given; if none the default is a fixed quantum of -budget duration)")
 	fs.BoolVar(&c.PRNG, "prng", false, "use deterministic PRNG scheduling quantum and clock advancement")
 	fs.BoolVar(&c.Chaos, "chaos", false, "use deterministic chaos scheduling")
-	fs.Int64Var(&c.MonotonicStartNS, "monotonic-ns", defaultEmuMonotonicStartNS, "initial monotonic clock value in nanoseconds since Unix epoch; default is 2000-01-01T00:00:00Z")
+	fs.Int64Var(&c.MonotonicStartNS, "init", defaultEmuMonotonicStartNS, "initial monotonic clock value in nanoseconds since Unix epoch; default is 2000-01-01T00:00:00Z")
 	fs.Int64Var(&c.RealtimeOffsetNS, "realtime-offset-ns", 0, "realtime clock offset from monotonic time in nanoseconds")
 }
 
