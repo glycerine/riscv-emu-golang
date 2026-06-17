@@ -9,25 +9,46 @@ import (
 )
 
 const (
-	jea9TestSysIoctl     = uint64(29)
-	jea9TestSysMkdirat   = uint64(34)
-	jea9TestSysFcntl     = uint64(25)
-	jea9TestSysLseek     = uint64(62)
-	jea9TestSysWrite     = uint64(64)
-	jea9TestSysPread64   = uint64(67)
-	jea9TestSysUname     = uint64(160)
-	jea9TestSysGetrlimit = uint64(163)
-	jea9TestSysPrctl     = uint64(167)
-	jea9TestSysGetpid    = uint64(172)
-	jea9TestSysGettid    = uint64(178)
-	jea9TestSysSysinfo   = uint64(179)
-	jea9TestSysPrlimit64 = uint64(261)
+	jea9TestSysGetcwd     = uint64(17)
+	jea9TestSysDup3       = uint64(24)
+	jea9TestSysIoctl      = uint64(29)
+	jea9TestSysMkdirat    = uint64(34)
+	jea9TestSysUnlinkat   = uint64(35)
+	jea9TestSysStatfs     = uint64(43)
+	jea9TestSysFstatfs    = uint64(44)
+	jea9TestSysFtruncate  = uint64(46)
+	jea9TestSysFaccessat  = uint64(48)
+	jea9TestSysChdir      = uint64(49)
+	jea9TestSysFcntl      = uint64(25)
+	jea9TestSysGetdents   = uint64(61)
+	jea9TestSysLseek      = uint64(62)
+	jea9TestSysWrite      = uint64(64)
+	jea9TestSysReadv      = uint64(65)
+	jea9TestSysWritev     = uint64(66)
+	jea9TestSysPread64    = uint64(67)
+	jea9TestSysPwrite64   = uint64(68)
+	jea9TestSysReadlink   = uint64(78)
+	jea9TestSysFstatat    = uint64(79)
+	jea9TestSysFstat      = uint64(80)
+	jea9TestSysFsync      = uint64(82)
+	jea9TestSysUname      = uint64(160)
+	jea9TestSysGetrlimit  = uint64(163)
+	jea9TestSysPrctl      = uint64(167)
+	jea9TestSysGetpid     = uint64(172)
+	jea9TestSysGettid     = uint64(178)
+	jea9TestSysSysinfo    = uint64(179)
+	jea9TestSysPrlimit64  = uint64(261)
+	jea9TestSysRenameat2  = uint64(276)
+	jea9TestSysStatx      = uint64(291)
+	jea9TestSysFaccessat2 = uint64(439)
 
 	jea9TestFGetFL = uint64(3)
 
-	jea9TestOWronly = uint64(0x1)
-	jea9TestOCreate = uint64(0x40)
-	jea9TestOTrunc  = uint64(0x200)
+	jea9TestOWronly    = uint64(0x1)
+	jea9TestORdwr      = uint64(0x2)
+	jea9TestOCreate    = uint64(0x40)
+	jea9TestOTrunc     = uint64(0x200)
+	jea9TestODirectory = uint64(0x10000)
 
 	jea9TestTCGETS     = uint64(0x5401)
 	jea9TestTCSETS     = uint64(0x5402)
@@ -42,6 +63,9 @@ const (
 
 	jea9TestPRSetName = uint64(15)
 	jea9TestPRGetName = uint64(16)
+
+	jea9TestATEmptyPath = uint64(0x1000)
+	jea9TestATRemovedir = uint64(0x200)
 )
 
 type limitedWriter struct {
@@ -79,6 +103,38 @@ func unameField(t *testing.T, mem *GuestMemory, base uint64, index int) string {
 		data = data[:i]
 	}
 	return string(data)
+}
+
+func parseLinuxDirentNames(t *testing.T, mem *GuestMemory, addr uint64, n int) map[string]bool {
+	t.Helper()
+	data := readGuestBytes(t, mem, addr, n)
+	names := make(map[string]bool)
+	for off := 0; off < len(data); {
+		if off+19 > len(data) {
+			t.Fatalf("short dirent at offset %d in %d bytes", off, len(data))
+		}
+		reclen := int(binary.LittleEndian.Uint16(data[off+16:]))
+		if reclen <= 0 || off+reclen > len(data) {
+			t.Fatalf("bad dirent reclen %d at offset %d in %d bytes", reclen, off, len(data))
+		}
+		nameBytes := data[off+19 : off+reclen]
+		if i := bytes.IndexByte(nameBytes, 0); i >= 0 {
+			nameBytes = nameBytes[:i]
+		}
+		names[string(nameBytes)] = true
+		off += reclen
+	}
+	return names
+}
+
+func writeGuestIovec(t *testing.T, mem *GuestMemory, addr, base, length uint64) {
+	t.Helper()
+	if f := mem.Store64(addr, base); f != nil {
+		t.Fatalf("Store64 iov base: %v", f)
+	}
+	if f := mem.Store64(addr+8, length); f != nil {
+		t.Fatalf("Store64 iov len: %v", f)
+	}
 }
 
 func TestJea9Linux_WriteStdoutStderrAndPartial(t *testing.T) {
@@ -514,6 +570,261 @@ func TestJea9Linux_MkdiratDirfdErrorEdges(t *testing.T) {
 		t.Fatalf("mkdirat nondir fd disposition = %v", d)
 	}
 	requireSyscallReturn(t, cpu, jea9LinuxErrENOTDIR)
+}
+
+func TestJea9Linux_GetcwdChdirAndRelativeOpenat(t *testing.T) {
+	root := t.TempDir()
+	sub := filepath.Join(root, "sub")
+	if err := os.Mkdir(sub, 0o755); err != nil {
+		t.Fatalf("Mkdir(%q): %v", sub, err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, "data.txt"), []byte("cwd data"), 0o644); err != nil {
+		t.Fatalf("WriteFile data.txt: %v", err)
+	}
+	j := NewJea9Linux(Jea9LinuxOptions{AllowAllHostFiles: true, Cwd: root})
+	cpu, mem := newJea9LinuxSyscallCPU(t, j)
+	defer mem.Free()
+
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysGetcwd, 0x5000, 4096); d != NoteHandled {
+		t.Fatalf("getcwd disposition = %v", d)
+	}
+	requireSyscallReturn(t, cpu, int64(len(root)+1))
+	if got, errno := readLinuxCString(cpu, 0x5000, 4096); errno != 0 || got != root {
+		t.Fatalf("getcwd = %q errno %d, want %q", got, errno, root)
+	}
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysGetcwd, 0x5000, uint64(len(root))); d != NoteHandled {
+		t.Fatalf("small getcwd disposition = %v", d)
+	}
+	requireSyscallReturn(t, cpu, jea9LinuxErrERANGE)
+
+	writeGuestCString(t, mem, 0x5000, "sub")
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysChdir, 0x5000); d != NoteHandled {
+		t.Fatalf("chdir disposition = %v", d)
+	}
+	requireSyscallReturn(t, cpu, 0)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysGetcwd, 0x5000, 4096); d != NoteHandled {
+		t.Fatalf("getcwd after chdir disposition = %v", d)
+	}
+	if got, errno := readLinuxCString(cpu, 0x5000, 4096); errno != 0 || got != sub {
+		t.Fatalf("getcwd after chdir = %q errno %d, want %q", got, errno, sub)
+	}
+
+	writeGuestCString(t, mem, 0x5000, "data.txt")
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysOpenat, jea9TestATFDCWD, 0x5000, 0, 0); d != NoteHandled {
+		t.Fatalf("relative openat disposition = %v", d)
+	}
+	fd := cpu.Reg(10)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysRead, fd, 0x6000, 16); d != NoteHandled {
+		t.Fatalf("relative read disposition = %v", d)
+	}
+	requireSyscallReturn(t, cpu, 8)
+	if got := string(readGuestBytes(t, mem, 0x6000, 8)); got != "cwd data" {
+		t.Fatalf("relative read = %q", got)
+	}
+}
+
+func TestJea9Linux_StatFstatStatxAndStatfs(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "stat.txt")
+	if err := os.WriteFile(path, []byte("stat-data"), 0o640); err != nil {
+		t.Fatalf("WriteFile(%q): %v", path, err)
+	}
+	j := NewJea9Linux(Jea9LinuxOptions{AllowAllHostFiles: true})
+	cpu, mem := newJea9LinuxSyscallCPU(t, j)
+	defer mem.Free()
+
+	writeGuestCString(t, mem, 0x5000, path)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysFstatat, jea9TestATFDCWD, 0x5000, 0x6000, 0); d != NoteHandled {
+		t.Fatalf("fstatat disposition = %v", d)
+	}
+	requireSyscallReturn(t, cpu, 0)
+	mode, _ := mem.Load32(0x6000 + 16)
+	size, _ := mem.Load64(0x6000 + 48)
+	if mode&jea9LinuxModeIFMT != jea9LinuxModeIFREG || size != 9 {
+		t.Fatalf("fstatat mode/size = 0%o/%d, want regular/9", mode, size)
+	}
+
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysOpenat, jea9TestATFDCWD, 0x5000, 0, 0); d != NoteHandled {
+		t.Fatalf("openat stat file disposition = %v", d)
+	}
+	fd := cpu.Reg(10)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysFstat, fd, 0x6100); d != NoteHandled {
+		t.Fatalf("fstat disposition = %v", d)
+	}
+	requireSyscallReturn(t, cpu, 0)
+	size, _ = mem.Load64(0x6100 + 48)
+	if size != 9 {
+		t.Fatalf("fstat size = %d, want 9", size)
+	}
+
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysStatx, jea9TestATFDCWD, 0x5000, 0, 0, 0x6200); d != NoteHandled {
+		t.Fatalf("statx disposition = %v", d)
+	}
+	requireSyscallReturn(t, cpu, 0)
+	statxMode, _ := mem.Load16(0x6200 + 28)
+	statxSize, _ := mem.Load64(0x6200 + 40)
+	if uint32(statxMode)&jea9LinuxModeIFMT != jea9LinuxModeIFREG || statxSize != 9 {
+		t.Fatalf("statx mode/size = 0%o/%d, want regular/9", statxMode, statxSize)
+	}
+
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysStatfs, 0x5000, 0x6400); d != NoteHandled {
+		t.Fatalf("statfs disposition = %v", d)
+	}
+	requireSyscallReturn(t, cpu, 0)
+	if magic, _ := mem.Load64(0x6400); magic == 0 {
+		t.Fatal("statfs magic is zero")
+	}
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysFstatfs, fd, 0x6500); d != NoteHandled {
+		t.Fatalf("fstatfs disposition = %v", d)
+	}
+	requireSyscallReturn(t, cpu, 0)
+}
+
+func TestJea9Linux_GetdentsReadlinkAndAccess(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "alpha.txt"), []byte("alpha"), 0o644); err != nil {
+		t.Fatalf("WriteFile alpha: %v", err)
+	}
+	link := filepath.Join(dir, "alpha.link")
+	if err := os.Symlink("alpha.txt", link); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	j := NewJea9Linux(Jea9LinuxOptions{AllowAllHostFiles: true})
+	cpu, mem := newJea9LinuxSyscallCPU(t, j)
+	defer mem.Free()
+
+	writeGuestCString(t, mem, 0x5000, dir)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysOpenat, jea9TestATFDCWD, 0x5000, jea9TestODirectory, 0); d != NoteHandled {
+		t.Fatalf("openat dir disposition = %v", d)
+	}
+	fd := cpu.Reg(10)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysGetdents, fd, 0x6000, 512); d != NoteHandled {
+		t.Fatalf("getdents disposition = %v", d)
+	}
+	n := int(cpu.Reg(10))
+	if n <= 0 {
+		t.Fatalf("getdents returned %d, want entries", n)
+	}
+	names := parseLinuxDirentNames(t, mem, 0x6000, n)
+	if !names["."] || !names[".."] || !names["alpha.txt"] || !names["alpha.link"] {
+		t.Fatalf("getdents names = %v", names)
+	}
+
+	writeGuestCString(t, mem, 0x5000, link)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysReadlink, jea9TestATFDCWD, 0x5000, 0x7000, 64); d != NoteHandled {
+		t.Fatalf("readlinkat disposition = %v", d)
+	}
+	requireSyscallReturn(t, cpu, 9)
+	if got := string(readGuestBytes(t, mem, 0x7000, 9)); got != "alpha.txt" {
+		t.Fatalf("readlink target = %q", got)
+	}
+
+	writeGuestCString(t, mem, 0x5000, filepath.Join(dir, "alpha.txt"))
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysFaccessat, jea9TestATFDCWD, 0x5000, 4, 0); d != NoteHandled {
+		t.Fatalf("faccessat disposition = %v", d)
+	}
+	requireSyscallReturn(t, cpu, 0)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysFaccessat2, jea9TestATFDCWD, 0x5000, 4, 0); d != NoteHandled {
+		t.Fatalf("faccessat2 disposition = %v", d)
+	}
+	requireSyscallReturn(t, cpu, 0)
+}
+
+func TestJea9Linux_VectorPwriteFtruncateRenameUnlinkAndDup3(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "vec.txt")
+	j := NewJea9Linux(Jea9LinuxOptions{AllowAllHostFiles: true})
+	cpu, mem := newJea9LinuxSyscallCPU(t, j)
+	defer mem.Free()
+
+	writeGuestCString(t, mem, 0x5000, path)
+	flags := jea9TestORdwr | jea9TestOCreate | jea9TestOTrunc
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysOpenat, jea9TestATFDCWD, 0x5000, flags, 0o644); d != NoteHandled {
+		t.Fatalf("open vec file disposition = %v", d)
+	}
+	fd := cpu.Reg(10)
+	if f := mem.WriteBytes(0x6000, []byte("hello ")); f != nil {
+		t.Fatal(f)
+	}
+	if f := mem.WriteBytes(0x6100, []byte("world")); f != nil {
+		t.Fatal(f)
+	}
+	writeGuestIovec(t, mem, 0x7000, 0x6000, 6)
+	writeGuestIovec(t, mem, 0x7010, 0x6100, 5)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysWritev, fd, 0x7000, 2); d != NoteHandled {
+		t.Fatalf("writev disposition = %v", d)
+	}
+	requireSyscallReturn(t, cpu, 11)
+
+	if f := mem.WriteBytes(0x6200, []byte("J")); f != nil {
+		t.Fatal(f)
+	}
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysPwrite64, fd, 0x6200, 1, 6); d != NoteHandled {
+		t.Fatalf("pwrite64 disposition = %v", d)
+	}
+	requireSyscallReturn(t, cpu, 1)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysFsync, fd); d != NoteHandled {
+		t.Fatalf("fsync disposition = %v", d)
+	}
+	requireSyscallReturn(t, cpu, 0)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysFtruncate, fd, 7); d != NoteHandled {
+		t.Fatalf("ftruncate disposition = %v", d)
+	}
+	requireSyscallReturn(t, cpu, 0)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysLseek, fd, 0, jea9TestSeekSet); d != NoteHandled {
+		t.Fatalf("lseek vec disposition = %v", d)
+	}
+	writeGuestIovec(t, mem, 0x7020, 0x6300, 4)
+	writeGuestIovec(t, mem, 0x7030, 0x6400, 8)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysReadv, fd, 0x7020, 2); d != NoteHandled {
+		t.Fatalf("readv disposition = %v", d)
+	}
+	requireSyscallReturn(t, cpu, 7)
+	if got := string(readGuestBytes(t, mem, 0x6300, 4)) + string(readGuestBytes(t, mem, 0x6400, 3)); got != "hello J" {
+		t.Fatalf("readv data = %q", got)
+	}
+
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysDup3, fd, 77, 0); d != NoteHandled {
+		t.Fatalf("dup3 disposition = %v", d)
+	}
+	requireSyscallReturn(t, cpu, 77)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysClose, fd); d != NoteHandled {
+		t.Fatalf("close original disposition = %v", d)
+	}
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysFstat, 77, 0x7200); d != NoteHandled {
+		t.Fatalf("fstat dup disposition = %v", d)
+	}
+	requireSyscallReturn(t, cpu, 0)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysClose, 77); d != NoteHandled {
+		t.Fatalf("close dup disposition = %v", d)
+	}
+
+	renamed := filepath.Join(dir, "renamed.txt")
+	writeGuestCString(t, mem, 0x5000, path)
+	writeGuestCString(t, mem, 0x5100, renamed)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysRenameat2, jea9TestATFDCWD, 0x5000, jea9TestATFDCWD, 0x5100, 0); d != NoteHandled {
+		t.Fatalf("renameat2 disposition = %v", d)
+	}
+	requireSyscallReturn(t, cpu, 0)
+	if got, err := os.ReadFile(renamed); err != nil || string(got) != "hello J" {
+		t.Fatalf("renamed file = %q err %v, want hello J", string(got), err)
+	}
+	writeGuestCString(t, mem, 0x5000, renamed)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysUnlinkat, jea9TestATFDCWD, 0x5000, 0); d != NoteHandled {
+		t.Fatalf("unlinkat file disposition = %v", d)
+	}
+	requireSyscallReturn(t, cpu, 0)
+	if _, err := os.Stat(renamed); !os.IsNotExist(err) {
+		t.Fatalf("renamed file still exists or stat error: %v", err)
+	}
+	emptyDir := filepath.Join(dir, "empty")
+	if err := os.Mkdir(emptyDir, 0o755); err != nil {
+		t.Fatalf("Mkdir empty: %v", err)
+	}
+	writeGuestCString(t, mem, 0x5000, emptyDir)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysUnlinkat, jea9TestATFDCWD, 0x5000, jea9TestATRemovedir); d != NoteHandled {
+		t.Fatalf("unlinkat dir disposition = %v", d)
+	}
+	requireSyscallReturn(t, cpu, 0)
 }
 
 func TestJea9Linux_ConfiguredReadOnlyFileReadSeekPreadAndFcntl(t *testing.T) {

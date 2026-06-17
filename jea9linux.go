@@ -143,6 +143,7 @@ const (
 	jea9LinuxErrEBADF        = int64(-9)
 	jea9LinuxErrENOENT       = int64(-2)
 	jea9LinuxErrENOSYS       = int64(-38)
+	jea9LinuxErrEXDEV        = int64(-18)
 	jea9LinuxErrEPERM        = int64(-1)
 	jea9LinuxErrESRCH        = int64(-3)
 	jea9LinuxErrEIO          = int64(-5)
@@ -152,26 +153,48 @@ const (
 	jea9LinuxErrEEXIST       = int64(-17)
 	jea9LinuxErrENOTDIR      = int64(-20)
 	jea9LinuxErrEISDIR       = int64(-21)
+	jea9LinuxErrENOSPC       = int64(-28)
+	jea9LinuxErrEROFS        = int64(-30)
+	jea9LinuxErrERANGE       = int64(-34)
 	jea9LinuxErrESPIPE       = int64(-29)
 	jea9LinuxErrENAMETOOLONG = int64(-36)
+	jea9LinuxErrENOTEMPTY    = int64(-39)
+	jea9LinuxErrELOOP        = int64(-40)
 	jea9LinuxErrENOTTY       = int64(-25)
 	jea9LinuxErrETIMEDOUT    = int64(-110)
 
+	jea9LinuxSysGetcwd           = uint64(17)
 	jea9LinuxSysEventfd2         = uint64(19)
 	jea9LinuxSysEpollCreate1     = uint64(20)
 	jea9LinuxSysEpollCtl         = uint64(21)
 	jea9LinuxSysEpollPwait       = uint64(22)
+	jea9LinuxSysDup3             = uint64(24)
 	jea9LinuxSysFcntl            = uint64(25)
 	jea9LinuxSysIoctl            = uint64(29)
 	jea9LinuxSysMkdirat          = uint64(34)
+	jea9LinuxSysUnlinkat         = uint64(35)
+	jea9LinuxSysStatfs           = uint64(43)
+	jea9LinuxSysFstatfs          = uint64(44)
+	jea9LinuxSysFtruncate        = uint64(46)
+	jea9LinuxSysFaccessat        = uint64(48)
+	jea9LinuxSysChdir            = uint64(49)
 	jea9LinuxSysOpenat           = uint64(56)
 	jea9LinuxSysClose            = uint64(57)
 	jea9LinuxSysPipe2            = uint64(59)
+	jea9LinuxSysGetdents64       = uint64(61)
 	jea9LinuxSysLseek            = uint64(62)
 	jea9LinuxSysRead             = uint64(63)
 	jea9LinuxSysWrite            = uint64(64)
+	jea9LinuxSysReadv            = uint64(65)
+	jea9LinuxSysWritev           = uint64(66)
 	jea9LinuxSysPread64          = uint64(67)
+	jea9LinuxSysPwrite64         = uint64(68)
 	jea9LinuxSysPselect6         = uint64(72)
+	jea9LinuxSysReadlinkat       = uint64(78)
+	jea9LinuxSysNewfstatat       = uint64(79)
+	jea9LinuxSysFstat            = uint64(80)
+	jea9LinuxSysFsync            = uint64(82)
+	jea9LinuxSysFdatasync        = uint64(83)
 	jea9LinuxSysSetTidAddress    = uint64(96)
 	jea9LinuxSysFutex            = uint64(98)
 	jea9LinuxSysSetRobustList    = uint64(99)
@@ -208,8 +231,11 @@ const (
 	jea9LinuxSysMadvise          = uint64(233)
 	jea9LinuxSysRiscvHwprobe     = uint64(258)
 	jea9LinuxSysPrlimit64        = uint64(261)
+	jea9LinuxSysRenameat2        = uint64(276)
 	jea9LinuxSysGetrandom        = uint64(278)
+	jea9LinuxSysStatx            = uint64(291)
 	jea9LinuxSysFutexTime64      = uint64(422)
+	jea9LinuxSysFaccessat2       = uint64(439)
 
 	jea9LinuxClockRealtime        = uint64(0)
 	jea9LinuxClockMonotonic       = uint64(1)
@@ -283,9 +309,42 @@ const (
 	jea9LinuxFutexWaitBitset = uint64(9)
 	jea9LinuxFutexWakeBitset = uint64(10)
 
-	jea9LinuxFDNonblock = uint64(0x800)
-	jea9LinuxFDCloexec  = uint64(0x80000)
-	jea9LinuxATFDCWD    = ^uint64(99) // -100
+	jea9LinuxFDNonblock        = uint64(0x800)
+	jea9LinuxODirectory        = uint64(0x10000)
+	jea9LinuxONofollow         = uint64(0x20000)
+	jea9LinuxFDCloexec         = uint64(0x80000)
+	jea9LinuxATFDCWD           = ^uint64(99) // -100
+	jea9LinuxATEmptyPath       = uint64(0x1000)
+	jea9LinuxATEaccess         = uint64(0x200)
+	jea9LinuxATRemovedir       = uint64(0x200)
+	jea9LinuxATSymlinkNofollow = uint64(0x100)
+	jea9LinuxRenameNoreplace   = uint64(1)
+	jea9LinuxRenameExchange    = uint64(2)
+	jea9LinuxRenameWhiteout    = uint64(4)
+	jea9LinuxModeIFMT          = uint32(0o170000)
+	jea9LinuxModeIFIFO         = uint32(0o010000)
+	jea9LinuxModeIFCHR         = uint32(0o020000)
+	jea9LinuxModeIFDIR         = uint32(0o040000)
+	jea9LinuxModeIFREG         = uint32(0o100000)
+	jea9LinuxModeIFLNK         = uint32(0o120000)
+	jea9LinuxDirentUnknown     = uint8(0)
+	jea9LinuxDirentFIFO        = uint8(1)
+	jea9LinuxDirentCHR         = uint8(2)
+	jea9LinuxDirentDIR         = uint8(4)
+	jea9LinuxDirentREG         = uint8(8)
+	jea9LinuxDirentLNK         = uint8(10)
+	jea9LinuxStatxType         = uint32(0x0001)
+	jea9LinuxStatxMode         = uint32(0x0002)
+	jea9LinuxStatxNlink        = uint32(0x0004)
+	jea9LinuxStatxUID          = uint32(0x0008)
+	jea9LinuxStatxGID          = uint32(0x0010)
+	jea9LinuxStatxAtime        = uint32(0x0020)
+	jea9LinuxStatxMtime        = uint32(0x0040)
+	jea9LinuxStatxCtime        = uint32(0x0080)
+	jea9LinuxStatxIno          = uint32(0x0100)
+	jea9LinuxStatxSize         = uint32(0x0200)
+	jea9LinuxStatxBlocks       = uint32(0x0400)
+	jea9LinuxStatxBasicStats   = uint32(0x07ff)
 
 	jea9LinuxOAccmode = uint64(0x3)
 	jea9LinuxOWronly  = uint64(0x1)
@@ -349,12 +408,16 @@ const (
 	jea9LinuxFDPipeRead
 	jea9LinuxFDPipeWrite
 	jea9LinuxFDHostFile
+	jea9LinuxFDDir
 )
 
 type jea9LinuxFD struct {
 	kind           jea9LinuxFDKind
 	data           []byte
 	hostFile       *os.File
+	dirPath        string
+	dirents        []string
+	direntOff      int
 	off            int64
 	flags          uint64
 	eventfdCounter uint64
@@ -430,6 +493,7 @@ type Jea9LinuxOptions struct {
 	Stderr            io.Writer
 	Files             map[string][]byte
 	AllowAllHostFiles bool
+	Cwd               string
 	PID               uint64
 	TID               uint64
 }
@@ -535,6 +599,8 @@ type Jea9Linux struct {
 	nextFD            int
 	files             map[string][]byte
 	allowAllHostFiles bool
+	cwd               string
+	execPath          string
 	pid               uint64
 	tid               uint64
 
@@ -712,6 +778,7 @@ func NewJea9Linux(opts Jea9LinuxOptions) *Jea9Linux {
 		nextFD:            3,
 		files:             make(map[string][]byte),
 		allowAllHostFiles: opts.AllowAllHostFiles,
+		cwd:               normalizeJea9LinuxGuestPath(opts.Cwd),
 		pid:               opts.PID,
 		tid:               opts.TID,
 		threadName:        "jea9linux",
@@ -2192,6 +2259,7 @@ func (jos *Jea9Linux) InitELFStack(cpu *CPU, ef *ELF, opts Jea9LinuxStartOptions
 	if execPath == "" {
 		execPath = args[0]
 	}
+	jos.execPath = execPath
 
 	stackTop := opts.StackTop
 	if stackTop == 0 {
@@ -2544,6 +2612,9 @@ func (jos *Jea9Linux) Handle(cpu *CPU, n Note) (disp NoteDisposition) {
 		}()
 	}
 	switch args.Num {
+	case jea9LinuxSysGetcwd:
+		cpu.SetReg(10, uint64(jos.sysGetcwd(cpu, args.A0, args.A1)))
+		return NoteHandled
 	case jea9LinuxSysEventfd2:
 		cpu.SetReg(10, uint64(jos.sysEventfd2(args.A0, args.A1)))
 		return NoteHandled
@@ -2555,6 +2626,9 @@ func (jos *Jea9Linux) Handle(cpu *CPU, n Note) (disp NoteDisposition) {
 		return NoteHandled
 	case jea9LinuxSysEpollPwait:
 		return jos.sysEpollPwait(cpu, args.A0, args.A1, args.A2, args.A3, args.A4, args.A5)
+	case jea9LinuxSysDup3:
+		cpu.SetReg(10, uint64(jos.sysDup3(args.A0, args.A1, args.A2)))
+		return NoteHandled
 	case jea9LinuxSysFcntl:
 		cpu.SetReg(10, uint64(jos.sysFcntl(args.A0, args.A1, args.A2)))
 		return NoteHandled
@@ -2563,6 +2637,24 @@ func (jos *Jea9Linux) Handle(cpu *CPU, n Note) (disp NoteDisposition) {
 		return NoteHandled
 	case jea9LinuxSysMkdirat:
 		cpu.SetReg(10, uint64(jos.sysMkdirat(cpu, args.A0, args.A1, args.A2)))
+		return NoteHandled
+	case jea9LinuxSysUnlinkat:
+		cpu.SetReg(10, uint64(jos.sysUnlinkat(cpu, args.A0, args.A1, args.A2)))
+		return NoteHandled
+	case jea9LinuxSysStatfs:
+		cpu.SetReg(10, uint64(jos.sysStatfs(cpu, args.A0, args.A1)))
+		return NoteHandled
+	case jea9LinuxSysFstatfs:
+		cpu.SetReg(10, uint64(jos.sysFstatfs(cpu, args.A0, args.A1)))
+		return NoteHandled
+	case jea9LinuxSysFtruncate:
+		cpu.SetReg(10, uint64(jos.sysFtruncate(args.A0, args.A1)))
+		return NoteHandled
+	case jea9LinuxSysFaccessat:
+		cpu.SetReg(10, uint64(jos.sysFaccessat(cpu, args.A0, args.A1, args.A2, args.A3)))
+		return NoteHandled
+	case jea9LinuxSysChdir:
+		cpu.SetReg(10, uint64(jos.sysChdir(cpu, args.A0)))
 		return NoteHandled
 	case jea9LinuxSysOpenat:
 		cpu.SetReg(10, uint64(jos.sysOpenat(cpu, args.A0, args.A1, args.A2, args.A3)))
@@ -2573,6 +2665,9 @@ func (jos *Jea9Linux) Handle(cpu *CPU, n Note) (disp NoteDisposition) {
 	case jea9LinuxSysPipe2:
 		cpu.SetReg(10, uint64(jos.sysPipe2(cpu, args.A0, args.A1)))
 		return NoteHandled
+	case jea9LinuxSysGetdents64:
+		cpu.SetReg(10, uint64(jos.sysGetdents64(cpu, args.A0, args.A1, args.A2)))
+		return NoteHandled
 	case jea9LinuxSysLseek:
 		cpu.SetReg(10, uint64(jos.sysLseek(args.A0, args.A1, args.A2)))
 		return NoteHandled
@@ -2582,11 +2677,32 @@ func (jos *Jea9Linux) Handle(cpu *CPU, n Note) (disp NoteDisposition) {
 	case jea9LinuxSysWrite:
 		cpu.SetReg(10, uint64(jos.sysWrite(cpu, args.A0, args.A1, args.A2)))
 		return NoteHandled
+	case jea9LinuxSysReadv:
+		cpu.SetReg(10, uint64(jos.sysReadv(cpu, args.A0, args.A1, args.A2)))
+		return NoteHandled
+	case jea9LinuxSysWritev:
+		cpu.SetReg(10, uint64(jos.sysWritev(cpu, args.A0, args.A1, args.A2)))
+		return NoteHandled
 	case jea9LinuxSysPread64:
 		cpu.SetReg(10, uint64(jos.sysPread64(cpu, args.A0, args.A1, args.A2, args.A3)))
 		return NoteHandled
+	case jea9LinuxSysPwrite64:
+		cpu.SetReg(10, uint64(jos.sysPwrite64(cpu, args.A0, args.A1, args.A2, args.A3)))
+		return NoteHandled
 	case jea9LinuxSysPselect6:
 		return jos.sysPselect6(cpu, args.A0, args.A1, args.A2, args.A3, args.A4, args.A5)
+	case jea9LinuxSysReadlinkat:
+		cpu.SetReg(10, uint64(jos.sysReadlinkat(cpu, args.A0, args.A1, args.A2, args.A3)))
+		return NoteHandled
+	case jea9LinuxSysNewfstatat:
+		cpu.SetReg(10, uint64(jos.sysNewfstatat(cpu, args.A0, args.A1, args.A2, args.A3)))
+		return NoteHandled
+	case jea9LinuxSysFstat:
+		cpu.SetReg(10, uint64(jos.sysFstat(cpu, args.A0, args.A1)))
+		return NoteHandled
+	case jea9LinuxSysFsync, jea9LinuxSysFdatasync:
+		cpu.SetReg(10, uint64(jos.sysFsync(args.A0)))
+		return NoteHandled
 	case jea9LinuxSysSetTidAddress:
 		cpu.SetReg(10, uint64(jos.sysSetTidAddress(cpu, args.A0)))
 		return NoteHandled
@@ -2674,10 +2790,19 @@ func (jos *Jea9Linux) Handle(cpu *CPU, n Note) (disp NoteDisposition) {
 	case jea9LinuxSysPrlimit64:
 		cpu.SetReg(10, uint64(jos.sysPrlimit64(cpu, args.A0, args.A1, args.A2, args.A3)))
 		return NoteHandled
+	case jea9LinuxSysRenameat2:
+		cpu.SetReg(10, uint64(jos.sysRenameat2(cpu, args.A0, args.A1, args.A2, args.A3, args.A4)))
+		return NoteHandled
 	case jea9LinuxSysNanosleep:
 		return jos.sysNanosleep(cpu, args.A0, args.A1)
 	case jea9LinuxSysGetrandom:
 		cpu.SetReg(10, uint64(jos.sysGetrandom(cpu, args.A0, args.A1, args.A2)))
+		return NoteHandled
+	case jea9LinuxSysStatx:
+		cpu.SetReg(10, uint64(jos.sysStatx(cpu, args.A0, args.A1, args.A2, args.A3, args.A4)))
+		return NoteHandled
+	case jea9LinuxSysFaccessat2:
+		cpu.SetReg(10, uint64(jos.sysFaccessat(cpu, args.A0, args.A1, args.A2, args.A3)))
 		return NoteHandled
 	default:
 		ret := jea9LinuxErrENOSYS
@@ -3898,6 +4023,9 @@ func (jos *Jea9Linux) sysOpenat(cpu *CPU, dirfd, pathAddr, flags, mode uint64) i
 	if errno != 0 {
 		return errno
 	}
+	if path == "" {
+		return jea9LinuxErrENOENT
+	}
 	switch path {
 	case "/dev/urandom", "/dev/random":
 		if flags&jea9LinuxOAccmode != 0 {
@@ -3910,7 +4038,17 @@ func (jos *Jea9Linux) sysOpenat(cpu *CPU, dirfd, pathAddr, flags, mode uint64) i
 			if flags&jea9LinuxOAccmode != 0 {
 				return jea9LinuxErrEACCES
 			}
-			fd := jos.allocFD(jea9LinuxFD{kind: jea9LinuxFDFile, data: data, flags: flags})
+			if flags&jea9LinuxODirectory != 0 {
+				return jea9LinuxErrENOTDIR
+			}
+			fd := jos.allocFD(jea9LinuxFD{kind: jea9LinuxFDFile, data: data, dirPath: path, flags: flags})
+			return int64(fd)
+		}
+		if jos.virtualDirExists(path) {
+			if flags&jea9LinuxOAccmode != 0 {
+				return jea9LinuxErrEISDIR
+			}
+			fd := jos.allocFD(jea9LinuxFD{kind: jea9LinuxFDDir, dirPath: path, flags: flags})
 			return int64(fd)
 		}
 		if jos.allowAllHostFiles {
@@ -3924,6 +4062,9 @@ func (jos *Jea9Linux) sysMkdirat(cpu *CPU, dirfd, pathAddr, mode uint64) int64 {
 	path, errno := jos.readLinuxAtPath(cpu, dirfd, pathAddr)
 	if errno != 0 {
 		return errno
+	}
+	if path == "" {
+		return jea9LinuxErrENOENT
 	}
 	if !jos.allowAllHostFiles {
 		return jea9LinuxErrENOENT
@@ -3943,13 +4084,22 @@ func (jos *Jea9Linux) readLinuxAtPath(cpu *CPU, dirfd, pathAddr uint64) (string,
 }
 
 func (jos *Jea9Linux) resolveLinuxAtPath(dirfd uint64, path string) (string, int64) {
-	if path == "" || filepath.IsAbs(path) || dirfd == jea9LinuxATFDCWD {
-		return path, 0
+	if path == "" {
+		return "", 0
+	}
+	if filepath.IsAbs(path) {
+		return normalizeJea9LinuxGuestPath(path), 0
+	}
+	if dirfd == jea9LinuxATFDCWD {
+		return joinJea9LinuxGuestPath(jos.cwd, path), 0
 	}
 	fd := int(int64(dirfd))
 	f, ok := jos.fds[fd]
 	if !ok {
 		return "", jea9LinuxErrEBADF
+	}
+	if f.kind == jea9LinuxFDDir {
+		return joinJea9LinuxGuestPath(f.dirPath, path), 0
 	}
 	if f.kind != jea9LinuxFDHostFile || f.hostFile == nil {
 		return "", jea9LinuxErrENOTDIR
@@ -3965,6 +4115,15 @@ func (jos *Jea9Linux) resolveLinuxAtPath(dirfd uint64, path string) (string, int
 }
 
 func (jos *Jea9Linux) sysOpenHostFile(path string, flags, mode uint64) int64 {
+	if flags&jea9LinuxONofollow != 0 {
+		info, err := os.Lstat(path)
+		if err != nil {
+			return jea9LinuxErrnoFromHost(err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return jea9LinuxErrELOOP
+		}
+	}
 	hostFlags, errno := jea9LinuxHostOpenFlags(flags)
 	if errno != 0 {
 		return errno
@@ -3974,9 +4133,21 @@ func (jos *Jea9Linux) sysOpenHostFile(path string, flags, mode uint64) int64 {
 	if err != nil {
 		return jea9LinuxErrnoFromHost(err)
 	}
+	if flags&jea9LinuxODirectory != 0 {
+		info, err := file.Stat()
+		if err != nil {
+			_ = file.Close()
+			return jea9LinuxErrnoFromHost(err)
+		}
+		if !info.IsDir() {
+			_ = file.Close()
+			return jea9LinuxErrENOTDIR
+		}
+	}
 	fd := jos.allocFD(jea9LinuxFD{
 		kind:     jea9LinuxFDHostFile,
 		hostFile: file,
+		dirPath:  path,
 		flags:    flags,
 	})
 	return int64(fd)
@@ -4025,12 +4196,22 @@ func jea9LinuxErrnoFromHost(err error) int64 {
 		return jea9LinuxErrEACCES
 	case errors.Is(err, syscall.EEXIST), errors.Is(err, os.ErrExist):
 		return jea9LinuxErrEEXIST
+	case errors.Is(err, syscall.EXDEV):
+		return jea9LinuxErrEXDEV
 	case errors.Is(err, syscall.ENOTDIR):
 		return jea9LinuxErrENOTDIR
 	case errors.Is(err, syscall.EISDIR):
 		return jea9LinuxErrEISDIR
+	case errors.Is(err, syscall.ENOSPC):
+		return jea9LinuxErrENOSPC
+	case errors.Is(err, syscall.EROFS):
+		return jea9LinuxErrEROFS
 	case errors.Is(err, syscall.ENAMETOOLONG):
 		return jea9LinuxErrENAMETOOLONG
+	case errors.Is(err, syscall.ENOTEMPTY):
+		return jea9LinuxErrENOTEMPTY
+	case errors.Is(err, syscall.ELOOP):
+		return jea9LinuxErrELOOP
 	case errors.Is(err, syscall.ESPIPE):
 		return jea9LinuxErrESPIPE
 	case errors.Is(err, syscall.EAGAIN):
@@ -4097,6 +4278,8 @@ func (jos *Jea9Linux) sysRead(cpu *CPU, fdRaw, bufAddr, n uint64) int64 {
 		return jos.sysEventfdRead(cpu, fd, f, bufAddr, n)
 	case jea9LinuxFDPipeRead:
 		return jos.sysPipeRead(cpu, fd, f, bufAddr, n)
+	case jea9LinuxFDDir:
+		return jea9LinuxErrEISDIR
 	default:
 		return jea9LinuxErrEBADF
 	}
@@ -4246,12 +4429,7 @@ func (jos *Jea9Linux) sysClose(fdRaw uint64) int64 {
 		return jea9LinuxErrEBADF
 	}
 	delete(jos.fds, fd)
-	if f.kind == jea9LinuxFDHostFile && f.hostFile != nil {
-		if err := f.hostFile.Close(); err != nil {
-			return jea9LinuxErrnoFromHost(err)
-		}
-	}
-	return 0
+	return closeJea9LinuxFD(f)
 }
 
 func (jos *Jea9Linux) sysFcntl(fdRaw, cmd, arg uint64) int64 {
