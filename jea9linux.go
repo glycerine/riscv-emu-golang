@@ -411,6 +411,7 @@ const (
 	jea9LinuxEpollCtlMod = uint64(3)
 	jea9LinuxEpollIn     = uint32(0x001)
 	jea9LinuxEpollOut    = uint32(0x004)
+	jea9LinuxEpollET     = uint32(0x80000000)
 
 	jea9LinuxSIGSEGV = uint64(11)
 
@@ -492,8 +493,9 @@ type jea9LinuxFD struct {
 }
 
 type jea9LinuxEpollRegistration struct {
-	events uint32
-	data   uint64
+	events    uint32
+	data      uint64
+	lastReady uint32
 }
 
 type jea9LinuxEpoll struct {
@@ -3102,7 +3104,7 @@ func (jos *Jea9Linux) epollCollectReady(cpu *CPU, epfd int, eventsAddr, maxEvent
 		if !ok {
 			continue
 		}
-		ready := jos.fdReadyEvents(fd) & reg.events
+		ready := jos.epollReadyForRegistration(epfd, fd, reg)
 		if ready == 0 {
 			continue
 		}
@@ -3112,6 +3114,38 @@ func (jos *Jea9Linux) epollCollectReady(cpu *CPU, epfd int, eventsAddr, maxEvent
 		count++
 	}
 	return count, 0
+}
+
+func (jos *Jea9Linux) epollReadyForRegistration(epfd, fd int, reg jea9LinuxEpollRegistration) uint32 {
+	ready := jos.fdReadyEvents(fd) & reg.events
+	if reg.events&jea9LinuxEpollET == 0 {
+		return ready
+	}
+	edge := ready &^ reg.lastReady
+	if ep, ok := jos.fds[epfd]; ok && ep.kind == jea9LinuxFDEpoll && ep.epoll != nil {
+		reg.lastReady = ready
+		ep.epoll.registrations[fd] = reg
+		jos.fds[epfd] = ep
+	}
+	return edge
+}
+
+func (jos *Jea9Linux) clearEpollReadyBitsForFD(fd int, bits uint32) {
+	if bits == 0 {
+		return
+	}
+	for epfd, ep := range jos.fds {
+		if ep.kind != jea9LinuxFDEpoll || ep.epoll == nil {
+			continue
+		}
+		reg, ok := ep.epoll.registrations[fd]
+		if !ok || reg.lastReady&bits == 0 {
+			continue
+		}
+		reg.lastReady &^= bits
+		ep.epoll.registrations[fd] = reg
+		jos.fds[epfd] = ep
+	}
 }
 
 func (jos *Jea9Linux) fdReadyEvents(fd int) uint32 {
@@ -4508,6 +4542,7 @@ func (jos *Jea9Linux) sysEventfdRead(cpu *CPU, fd int, f jea9LinuxFD, bufAddr, n
 		return jea9LinuxErrEINVAL
 	}
 	if f.eventfdCounter == 0 {
+		jos.clearEpollReadyBitsForFD(fd, jea9LinuxEpollIn)
 		return jea9LinuxErrEAGAIN
 	}
 	value := f.eventfdCounter
@@ -4521,6 +4556,9 @@ func (jos *Jea9Linux) sysEventfdRead(cpu *CPU, fd int, f jea9LinuxFD, bufAddr, n
 		return jea9LinuxErrEFAULT
 	}
 	jos.fds[fd] = f
+	if f.eventfdCounter == 0 {
+		jos.clearEpollReadyBitsForFD(fd, jea9LinuxEpollIn)
+	}
 	return 8
 }
 
@@ -4547,6 +4585,7 @@ func (jos *Jea9Linux) sysPipeRead(cpu *CPU, fd int, f jea9LinuxFD, bufAddr, n ui
 		return jea9LinuxErrEBADF
 	}
 	if len(f.pipe.buf) == 0 {
+		jos.clearEpollReadyBitsForFD(fd, jea9LinuxEpollIn)
 		return jea9LinuxErrEAGAIN
 	}
 	count := int(n)
@@ -4558,6 +4597,9 @@ func (jos *Jea9Linux) sysPipeRead(cpu *CPU, fd int, f jea9LinuxFD, bufAddr, n ui
 	}
 	copy(f.pipe.buf, f.pipe.buf[count:])
 	f.pipe.buf = f.pipe.buf[:len(f.pipe.buf)-count]
+	if len(f.pipe.buf) == 0 {
+		jos.clearEpollReadyBitsForFD(fd, jea9LinuxEpollIn)
+	}
 	return int64(count)
 }
 

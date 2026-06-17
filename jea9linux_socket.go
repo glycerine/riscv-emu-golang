@@ -154,6 +154,7 @@ func (jos *Jea9Linux) sysAccept4(cpu *CPU, fdRaw, sockaddrAddr, addrlenAddr, fla
 		return jea9LinuxErrEINVAL
 	}
 	if !jos.socketEnsurePending(fd, &f) {
+		jos.clearEpollReadyBitsForFD(fd, jea9LinuxEpollIn)
 		return jea9LinuxErrEAGAIN
 	}
 	conn := f.socketPending[0]
@@ -371,6 +372,9 @@ func (jos *Jea9Linux) sysSocketRead(cpu *CPU, fd int, bufAddr, n uint64) int64 {
 		if fault := cpu.mem.WriteBytes(bufAddr, out[:nread]); fault != nil {
 			return jea9LinuxErrEFAULT
 		}
+		if !jos.socketPollReadable(fd, &f) {
+			jos.clearEpollReadyBitsForFD(fd, jea9LinuxEpollIn)
+		}
 		return int64(nread)
 	}
 	if err == nil || errors.Is(err, io.EOF) {
@@ -379,6 +383,7 @@ func (jos *Jea9Linux) sysSocketRead(cpu *CPU, fd int, bufAddr, n uint64) int64 {
 		return 0
 	}
 	if socketWouldBlock(err) {
+		jos.clearEpollReadyBitsForFD(fd, jea9LinuxEpollIn)
 		return jea9LinuxErrEAGAIN
 	}
 	if err != nil {
