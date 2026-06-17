@@ -357,7 +357,7 @@ func TestRunEmuBiosFWDynamicLinuxSmoke(t *testing.T) {
 		BiosPath:   biosPath,
 		KernelPath: kernelPath,
 		InitrdPath: initrdPath,
-		Append:     "console=hvc0 rdinit=/init",
+		Append:     linuxUARTBootArgs,
 		MemorySize: riscv.Size16GB,
 		Budget:     "100000",
 		Stdin:      strings.NewReader(""),
@@ -372,7 +372,9 @@ func TestRunEmuBiosFWDynamicLinuxSmoke(t *testing.T) {
 	}
 }
 
-func TestRunEmuBiosFWDynamicLinuxReachesHighHalfKernelMapping(t *testing.T) {
+const linuxUARTBootArgs = "console=ttyS0,115200 earlycon=uart8250,mmio,0x10000000 rdinit=/init"
+
+func TestRunEmuBiosFWDynamicLinuxBootsKernelMilestone(t *testing.T) {
 	const biosPath = "../../xendor/opensbi/build/platform/generic/firmware/fw_dynamic.elf"
 	const kernelPath = "../../xendor/linux/boot/vmlinuz-6.17.0-35-generic"
 	const initrdPath = "../../xendor/linux/initramfs.cpio.gz"
@@ -383,27 +385,30 @@ func TestRunEmuBiosFWDynamicLinuxReachesHighHalfKernelMapping(t *testing.T) {
 	}
 
 	var stdout, stderr bytes.Buffer
-	_, err := runBiosUntilOutput(EmuConfig{
+	ok, err := runBiosUntilOutput(EmuConfig{
 		BiosPath:   biosPath,
 		KernelPath: kernelPath,
 		InitrdPath: initrdPath,
-		Append:     "console=hvc0 rdinit=/init",
-		MemorySize: riscv.Size16GB,
+		Append:     linuxUARTBootArgs,
+		MemorySize: riscv.Size4GB,
 		Stdin:      strings.NewReader(""),
 		Stdout:     &stdout,
 		Stderr:     &stderr,
-	}, "=== RISC-V initramfs booted ===", 100_000_000)
-	var fault *riscv.MemFault
-	if !errors.As(err, &fault) {
-		t.Fatalf("Linux run err = %v, want high-half fetch fault before VM translation\nstdout tail:\n%s\nstderr:\n%s",
+	}, "SBI misaligned access exception delegation ok", 600_000_000)
+	if err != nil {
+		t.Fatalf("Linux boot milestone err = %v\nstdout tail:\n%s\nstderr:\n%s",
 			err, tailString(stdout.String(), 4096), stderr.String())
 	}
-	if fault.Kind != riscv.FaultFetch || fault.Addr < 0xffffffff80000000 {
-		t.Fatalf("Linux fault = %v, want high-half kernel fetch fault\nstdout tail:\n%s\nstderr:\n%s",
-			fault, tailString(stdout.String(), 4096), stderr.String())
+	if !ok {
+		t.Fatalf("Linux boot milestone not reached\nstdout tail:\n%s\nstderr:\n%s",
+			tailString(stdout.String(), 4096), stderr.String())
 	}
 	if !strings.Contains(stdout.String(), "Domain0 Next Mode           : S-mode") {
-		t.Fatalf("OpenSBI did not report S-mode handoff before high-half fault\nstdout tail:\n%s\nstderr:\n%s",
+		t.Fatalf("OpenSBI did not report S-mode handoff\nstdout tail:\n%s\nstderr:\n%s",
+			tailString(stdout.String(), 4096), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "Booting Linux on hartid 0") {
+		t.Fatalf("Linux kernel banner missing\nstdout tail:\n%s\nstderr:\n%s",
 			tailString(stdout.String(), 4096), stderr.String())
 	}
 }

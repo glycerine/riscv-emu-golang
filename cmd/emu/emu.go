@@ -28,7 +28,7 @@ const (
 
 // notes on Device Tree Blob (DTB) for describing hardware to Linux:
 //
-// Your current make linux command is fine for DTB handling.
+// The make linux command does not need explicit DTB flags.
 // Current behavior:
 //
 // If you do not pass -dtb, emu generates a virt FDT internally
@@ -45,12 +45,15 @@ const (
 //
 // For OpenSBI, we load the DTB into guest memory and pass
 // its address in a1 before entering firmware.
+// The generated FDT exposes an ns16550 UART at 0x10000000, so Linux
+// console bootargs should target ttyS0/uart8250 rather than hvc0.
 // So this target is enough:
 //
-// emu -bios xendor/opensbi/build/platform/generic/firmware/fw_dynamic.elf \
+// emu -mem 4294967296 \
+//   -bios xendor/opensbi/build/platform/generic/firmware/fw_dynamic.elf \
 //   -kernel xendor/linux/boot/vmlinuz-6.17.0-35-generic \
 //   -initrd xendor/linux/initramfs.cpio.gz \
-//   -append "console=hvc0 rdinit=/init"
+//   -append "console=ttyS0,115200 earlycon=uart8250,mmio,0x10000000 rdinit=/init"
 //
 // Use -dump-dtb /tmp/jea9linux-virt.dtb only when you want to
 // inspect what we generated. Use -dtb some.dtb only if you
