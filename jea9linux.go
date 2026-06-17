@@ -3867,6 +3867,7 @@ func (jos *Jea9Linux) sysExit(cpu *CPU, code uint64, exitGroup bool) NoteDisposi
 	ctx := jos.ensureScheduler(cpu)
 	if exitGroup || ctx.tid == jos.pid {
 		cpu.ExitCode = int(int32(code))
+		jos.closeAllFDs()
 		return NoteExit
 	}
 	jos.exitCurrentThread(cpu)
@@ -3875,6 +3876,7 @@ func (jos *Jea9Linux) sysExit(cpu *CPU, code uint64, exitGroup bool) NoteDisposi
 		return NoteHandled
 	}
 	cpu.ExitCode = int(int32(code))
+	jos.closeAllFDs()
 	return NoteExit
 }
 

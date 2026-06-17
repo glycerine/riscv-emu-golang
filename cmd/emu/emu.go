@@ -147,7 +147,6 @@ func main() {
 	}
 	cfg.Args = append([]string{cfg.RunPath}, myflags.Args()...)
 	vv("cfg.Args = '%#v'", cfg.Args)
-	cfg.Env = []string{}
 
 	code, err := runEmu(*cfg)
 	if err != nil {
@@ -268,6 +267,13 @@ func (c EmuConfig) withDefaults() EmuConfig {
 	}
 	if c.Stderr == nil {
 		c.Stderr = os.Stderr
+	}
+	if c.Env == nil {
+		if c.Hermit {
+			c.Env = []string{}
+		} else {
+			c.Env = os.Environ()
+		}
 	}
 	return c
 }

@@ -498,10 +498,26 @@ func TestJea9Linux_HostPassthroughDefaultCwdAllowsRelativeCreate(t *testing.T) {
 		t.Fatalf("write host.cid disposition = %v", d)
 	}
 	requireSyscallReturn(t, cpu, 11)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysFstat, fd, 0x8000); d != NoteHandled {
+		t.Fatalf("fstat host.cid disposition = %v", d)
+	}
+	requireSyscallReturn(t, cpu, 0)
+	size, _ := mem.Load64(0x8000 + 48)
+	if size != 11 {
+		t.Fatalf("fstat host.cid size = %d, want 11", size)
+	}
 	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysClose, fd); d != NoteHandled {
 		t.Fatalf("close host.cid disposition = %v", d)
 	}
 	requireSyscallReturn(t, cpu, 0)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysFstatat, jea9TestATFDCWD, 0x5000, 0x8100, 0); d != NoteHandled {
+		t.Fatalf("fstatat host.cid disposition = %v", d)
+	}
+	requireSyscallReturn(t, cpu, 0)
+	size, _ = mem.Load64(0x8100 + 48)
+	if size != 11 {
+		t.Fatalf("fstatat host.cid size = %d, want 11", size)
+	}
 
 	got, err := os.ReadFile(filepath.Join(cwd, "host.cid"))
 	if err != nil {
@@ -509,6 +525,44 @@ func TestJea9Linux_HostPassthroughDefaultCwdAllowsRelativeCreate(t *testing.T) {
 	}
 	if string(got) != "cid payload" {
 		t.Fatalf("host.cid = %q", string(got))
+	}
+}
+
+func TestJea9Linux_ExitGroupClosesHostFiles(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "exit-close.txt")
+	j := NewJea9Linux(Jea9LinuxOptions{AllowAllHostFiles: true})
+	cpu, mem := newJea9LinuxSyscallCPU(t, j)
+	defer mem.Free()
+
+	writeGuestCString(t, mem, 0x5000, path)
+	flags := jea9TestOWronly | jea9TestOCreate | jea9TestOTrunc
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysOpenat, jea9TestATFDCWD, 0x5000, flags, 0o644); d != NoteHandled {
+		t.Fatalf("open exit-close file disposition = %v", d)
+	}
+	fd := cpu.Reg(10)
+	if f := mem.WriteBytes(0x6000, []byte("close on exit")); f != nil {
+		t.Fatal(f)
+	}
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysWrite, fd, 0x6000, 13); d != NoteHandled {
+		t.Fatalf("write exit-close file disposition = %v", d)
+	}
+	requireSyscallReturn(t, cpu, 13)
+
+	if d := invokeJea9LinuxSyscall(cpu, jea9LinuxSysExitGroup, 0); d != NoteExit {
+		t.Fatalf("exit_group disposition = %v, want NoteExit", d)
+	}
+	if _, ok := j.fds[int(fd)]; ok {
+		t.Fatalf("host fd %d still present after exit_group", fd)
+	}
+	if len(j.fds) != 0 {
+		t.Fatalf("fd table has %d entries after exit_group, want 0", len(j.fds))
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile(%q): %v", path, err)
+	}
+	if string(got) != "close on exit" {
+		t.Fatalf("exit-close file = %q", string(got))
 	}
 }
 

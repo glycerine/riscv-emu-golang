@@ -912,6 +912,13 @@ func closeJea9LinuxFD(f jea9LinuxFD) int64 {
 	return 0
 }
 
+func (jos *Jea9Linux) closeAllFDs() {
+	for fd, f := range jos.fds {
+		delete(jos.fds, fd)
+		_ = closeJea9LinuxFD(f)
+	}
+}
+
 func uint64String(v uint64) string {
 	if v == 0 {
 		return "0"

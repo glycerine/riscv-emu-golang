@@ -66,6 +66,34 @@ func TestRunEmuSeedControlsGetrandom(t *testing.T) {
 	}
 }
 
+func TestEmuEnvDefaultsFollowHermitMode(t *testing.T) {
+	t.Setenv("JEA9_EMU_ENV_TEST_MARKER", "inherited")
+
+	nonHermit := EmuConfig{}.withDefaults()
+	if !envHas(nonHermit.Env, "JEA9_EMU_ENV_TEST_MARKER=inherited") {
+		t.Fatalf("non-hermit Env did not inherit marker: %q", nonHermit.Env)
+	}
+
+	hermit := EmuConfig{Hermit: true}.withDefaults()
+	if len(hermit.Env) != 0 {
+		t.Fatalf("hermit Env len = %d, want 0; Env=%q", len(hermit.Env), hermit.Env)
+	}
+
+	explicitEmpty := EmuConfig{Env: []string{}}.withDefaults()
+	if len(explicitEmpty.Env) != 0 {
+		t.Fatalf("explicit empty Env len = %d, want 0; Env=%q", len(explicitEmpty.Env), explicitEmpty.Env)
+	}
+}
+
+func envHas(env []string, want string) bool {
+	for _, got := range env {
+		if got == want {
+			return true
+		}
+	}
+	return false
+}
+
 func TestRunEmuJea9LinuxFixtureModes(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
