@@ -1688,29 +1688,75 @@ func (jos *Jea9Linux) advanceVirtualClockWhenNoRunnableCandidate(cpu *CPU, reaso
 		if !ok {
 			return 0, false
 		}
-		if deadline > jos.monotonicNS {
-			jos.monotonicNS = deadline
+		delta, _ := jos.advanceVirtualClockTowardDeadline(cpu, reason, deadline)
+		if delta == 0 {
+			return 0, false
 		}
 	case ClockPolicyPRNG, ClockPolicyFixed:
-		return jos.advanceVirtualClockForSchedulerEvent(cpu, reason)
+		deadline, ok := jos.nextWaitDeadline()
+		if jos.chaosActive && jos.chaosUntilNS > jos.monotonicNS && (!ok || jos.chaosUntilNS < deadline) {
+			deadline = jos.chaosUntilNS
+			ok = true
+		}
+		if !ok {
+			return jos.advanceVirtualClockForSchedulerEvent(cpu, reason)
+		}
+		delta, _ := jos.advanceVirtualClockTowardDeadline(cpu, reason, deadline)
+		if delta == 0 {
+			return 0, false
+		}
+	default:
+		return 0, false
+	}
+	jos.noteClockAdvance(reason, before)
+	return jos.monotonicNS - before, true
+}
+
+func (jos *Jea9Linux) advanceVirtualClockTowardDeadline(cpu *CPU, reason string, deadline int64) (int64, bool) {
+	before := jos.monotonicNS
+	if deadline <= before {
+		return 0, true
+	}
+	target := deadline
+	if jos.chaosActive && jos.chaosUntilNS > before && jos.chaosUntilNS < target {
+		target = jos.chaosUntilNS
+	}
+	switch jos.clockPolicy {
+	case ClockPolicyOnlyDeadlockAdvances:
+		jos.monotonicNS = target
+	case ClockPolicyPRNG:
+		minNS := jos.clockPRNGMinNS
+		maxNS := jos.clockPRNGMaxNS
+		if minNS <= 0 {
+			minNS = defaultJea9LinuxClockPRNGMinNS
+		}
+		if maxNS < minNS {
+			maxNS = minNS
+		}
+		span := uint64(maxNS - minNS + 1)
+		delta := minNS + int64(jos.schedN(cpu, span, reason+":clock-prng"))
+		if delta <= 0 {
+			return 0, false
+		}
+		if delta > target-before {
+			delta = target - before
+		}
+		jos.monotonicNS += delta
+	case ClockPolicyFixed:
+		delta := jos.clockFixedAdvanceNS
+		if delta <= 0 {
+			return 0, false
+		}
+		if delta > target-before {
+			delta = target - before
+		}
+		jos.monotonicNS += delta
 	default:
 		return 0, false
 	}
 	jos.refreshChaosWindow()
 	jos.refreshBlocked()
-	jos.noteClockAdvance(reason, before)
-	return jos.monotonicNS - before, true
-}
-
-func (jos *Jea9Linux) advanceVirtualClockToDeadline(deadline int64) (int64, bool) {
-	before := jos.monotonicNS
-	if deadline <= before {
-		return 0, false
-	}
-	jos.monotonicNS = deadline
-	jos.refreshChaosWindow()
-	jos.refreshBlocked()
-	return jos.monotonicNS - before, true
+	return jos.monotonicNS - before, jos.monotonicNS >= deadline
 }
 
 func (jos *Jea9Linux) scheduleAfterCurrentBlocked(cpu *CPU) NoteDisposition {
@@ -1721,8 +1767,7 @@ func (jos *Jea9Linux) scheduleAfterCurrentBlocked(cpu *CPU) NoteDisposition {
 		return NoteHandled
 	}
 	if _, ok := jos.nextWaitDeadline(); ok {
-		jos.advanceVirtualClockForSchedulerEvent(cpu, "blocked")
-		jos.refreshBlocked()
+		jos.advanceVirtualClockWhenNoRunnableCandidate(cpu, "blocked")
 		if next, ok := jos.firstRunnableByPolicy(); ok {
 			jos.loadContext(cpu, next)
 			jos.blocked = false
@@ -2449,8 +2494,7 @@ func (jos *Jea9Linux) Handle(cpu *CPU, n Note) (disp NoteDisposition) {
 		cpu.SetReg(10, uint64(jos.sysPread64(cpu, args.A0, args.A1, args.A2, args.A3)))
 		return NoteHandled
 	case jea9LinuxSysPselect6:
-		cpu.SetReg(10, uint64(jos.sysPselect6(cpu, args.A0, args.A1, args.A2, args.A3, args.A4, args.A5)))
-		return NoteHandled
+		return jos.sysPselect6(cpu, args.A0, args.A1, args.A2, args.A3, args.A4, args.A5)
 	case jea9LinuxSysSetTidAddress:
 		cpu.SetReg(10, uint64(jos.sysSetTidAddress(cpu, args.A0)))
 		return NoteHandled
@@ -2681,10 +2725,11 @@ func (jos *Jea9Linux) sysEpollPwait(cpu *CPU, epfdRaw, eventsAddr, maxEvents, ti
 	}
 	if hasDeadline {
 		if _, ok := jos.nextRunnableByPolicyAfterCurrent(); !ok {
-			jos.advanceVirtualClockToDeadline(deadline)
-			cpu.SetReg(10, 0)
-			ctx.snapshot = snapshotJea9LinuxCPU(cpu)
-			return NoteHandled
+			if _, reached := jos.advanceVirtualClockTowardDeadline(cpu, "epoll-timeout", deadline); reached {
+				cpu.SetReg(10, 0)
+				ctx.snapshot = snapshotJea9LinuxCPU(cpu)
+				return NoteHandled
+			}
 		}
 	}
 	ctx.snapshot = snapshotJea9LinuxCPU(cpu)
@@ -2820,19 +2865,37 @@ func (jos *Jea9Linux) sysPipe2(cpu *CPU, pipefdAddr, flags uint64) int64 {
 	return 0
 }
 
-func (jos *Jea9Linux) sysPselect6(cpu *CPU, nfds, readfds, writefds, exceptfds, timeoutAddr, sigmask uint64) int64 {
+func (jos *Jea9Linux) sysPselect6(cpu *CPU, nfds, readfds, writefds, exceptfds, timeoutAddr, sigmask uint64) NoteDisposition {
 	_, _, _, _, _ = nfds, readfds, writefds, exceptfds, sigmask
 	if timeoutAddr == 0 {
-		return 0
+		cpu.SetReg(10, 0)
+		return NoteHandled
 	}
 	deadline, hasDeadline, errno := jos.timespecDeadline(cpu, timeoutAddr)
 	if errno != 0 {
-		return errno
+		cpu.SetReg(10, uint64(errno))
+		return NoteHandled
 	}
-	if hasDeadline && deadline > jos.monotonicNS {
-		jos.advanceVirtualClockToDeadline(deadline)
+	if !hasDeadline || deadline <= jos.monotonicNS {
+		cpu.SetReg(10, 0)
+		return NoteHandled
 	}
-	return 0
+	ctx := jos.ensureScheduler(cpu)
+	if _, ok := jos.nextRunnableByPolicyAfterCurrent(); !ok {
+		if _, reached := jos.advanceVirtualClockTowardDeadline(cpu, "pselect-timeout", deadline); reached {
+			cpu.SetReg(10, 0)
+			ctx.snapshot = snapshotJea9LinuxCPU(cpu)
+			return NoteHandled
+		}
+	}
+	ctx.snapshot = snapshotJea9LinuxCPU(cpu)
+	ctx.state = jea9LinuxContextWaiting
+	jos.clearContextWaitFields(ctx)
+	ctx.waitKind = jea9LinuxWaitNanosleep
+	ctx.waitDeadlineNS = deadline
+	ctx.waitHasDeadline = true
+	jos.timedNanosleepWaiters++
+	return jos.scheduleAfterCurrentBlocked(cpu)
 }
 
 func (jos *Jea9Linux) timespecDeadline(cpu *CPU, timeoutAddr uint64) (int64, bool, int64) {
@@ -3663,8 +3726,9 @@ func (jos *Jea9Linux) futexWait(cpu *CPU, ctx *jea9LinuxContext, addr uint64, ex
 	}
 	if hasDeadline {
 		if _, ok := jos.nextRunnableByPolicyAfterCurrent(); !ok {
-			jos.advanceVirtualClockToDeadline(deadline)
-			return jea9LinuxErrETIMEDOUT, false
+			if _, reached := jos.advanceVirtualClockTowardDeadline(cpu, "futex-timeout", deadline); reached {
+				return jea9LinuxErrETIMEDOUT, false
+			}
 		}
 	}
 	ctx.snapshot = snapshotJea9LinuxCPU(cpu)

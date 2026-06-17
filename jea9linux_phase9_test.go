@@ -470,6 +470,64 @@ func TestJea9Linux_FutexTimeoutIdleJump(t *testing.T) {
 	}
 }
 
+func TestJea9Linux_FutexTimeoutStopsAtChaosBoundary(t *testing.T) {
+	j := NewJea9Linux(Jea9LinuxOptions{
+		MonotonicStartNS: 100,
+		Scheduler: Jea9LinuxSchedulerConfig{
+			Mode: Jea9SchedulerChaos,
+		},
+	})
+	cpu, mem := newJea9LinuxSyscallCPU(t, j)
+	defer mem.Free()
+
+	parent := j.ensureScheduler(cpu)
+	lowTID := parent.tid + 1
+	j.contexts[lowTID] = &jea9LinuxContext{
+		tid:           lowTID,
+		state:         jea9LinuxContextRunnable,
+		schedPriority: jea9LinuxSchedLow,
+		snapshot: jea9LinuxCPUSnapshot{
+			pc: 0x2000,
+		},
+	}
+	j.contextOrder = append(j.contextOrder, lowTID)
+	j.chaosActive = true
+	j.chaosStartNS = 100
+	j.chaosUntilNS = 150
+	j.clockPolicy = ClockPolicyFixed
+	j.clockFixedAdvanceNS = 50
+
+	addr := uint64(0xb200)
+	timeout := uint64(0xb300)
+	if f := mem.Store32(addr, 1); f != nil {
+		t.Fatal(f)
+	}
+	if f := mem.Store64(timeout, 0); f != nil {
+		t.Fatal(f)
+	}
+	if f := mem.Store64(timeout+8, 100); f != nil {
+		t.Fatal(f)
+	}
+
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysFutex, addr, jea9TestFutexWait, 1, timeout); d != NoteHandled {
+		t.Fatalf("futex wait disposition = %v, want NoteHandled after scheduling low-priority context", d)
+	}
+	if got := j.MonotonicNS(); got != 150 {
+		t.Fatalf("monotonic ns = %d, want chaos boundary 150, not futex deadline 200", got)
+	}
+	if j.chaosActive {
+		t.Fatal("chaos window remained active after reaching chaos boundary")
+	}
+	requireCurrentTID(t, j, lowTID)
+	parentCtx := j.contexts[parent.tid]
+	if parentCtx.state != jea9LinuxContextWaiting || parentCtx.waitKind != jea9LinuxWaitFutex {
+		t.Fatalf("parent wait state = (%v, %v), want futex waiting", parentCtx.state, parentCtx.waitKind)
+	}
+	if got := parentCtx.waitDeadlineNS; got != 200 {
+		t.Fatalf("parent futex deadline = %d, want 200", got)
+	}
+}
+
 func TestJea9Linux_SetTidAddressClearOnThreadExit(t *testing.T) {
 	j := NewJea9Linux(Jea9LinuxOptions{})
 	cpu, mem := newJea9LinuxSyscallCPU(t, j)
