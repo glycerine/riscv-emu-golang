@@ -225,7 +225,7 @@ const (
 
 	IRJalrIC // JALR site "inline cache" (vestigial name, and was never instruction count). Now better described as: JALR indirect jump via decoder-cache lookup (the old 2-slot IC is deprecated). {targetVReg=A, siteIdx=Imm}. WriteBackAll must precede.
 
-	IRSyscall // guest ECALL. Imm=pc+4 (resume).
+	IRSyscall // guest ECALL trap. Imm=trap PC.
 	// WriteBackAll must precede so the installed guest OS observes current
 	// guest register state.
 
@@ -514,7 +514,7 @@ func (ins IRInstr) String() string {
 	case IRJalrIC:
 		return fmt.Sprintf("%s target=%s site=%d", ins.Op, ins.A, ins.Imm)
 	case IRSyscall:
-		return fmt.Sprintf("%s resumePC=0x%x", ins.Op, uint64(ins.Imm))
+		return fmt.Sprintf("%s trapPC=0x%x", ins.Op, uint64(ins.Imm))
 	case IRChainExit:
 		return fmt.Sprintf("%s targetPC=0x%x exitIdx=%d", ins.Op, uint64(ins.Imm), ins.Imm2)
 	case IRStopperLoad:

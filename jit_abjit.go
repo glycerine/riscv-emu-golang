@@ -29,6 +29,7 @@ import (
 //	       ── JIT code: R15 remaining budget ──
 //	       SpillIC writes R15 back to s.IC
 //	Go  ←  cpu.riscvInstrBegun += attempted instructions
+//	       cpu.riscvInstrRetired += retired instructions
 //
 // Chain exits preserve R15 across blocks (no re-zeroing).
 // Gocall sequences (SpillIC/LoadIC) preserve R15 across Go callbacks.
@@ -77,6 +78,7 @@ func abjitDispatch(
 		icDelta = initialBudget - s.IC
 	}
 	cpu.riscvInstrBegun += icDelta
+	cpu.riscvInstrRetired += nativeRetiredDelta(s.Status, icDelta)
 
 	res := jitcall.Result{
 		PC:          s.PC,

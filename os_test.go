@@ -354,8 +354,12 @@ func TestNoteChain_InfiniteNesting(t *testing.T) {
 	cpu.Notes.Push(func(cpu *CPU, n Note) NoteDisposition {
 		if n.Cause == CauseBreakpoint {
 			breakpointHit = true
-			// Skip over the EBREAK by advancing PC, then return handled
-			// (PC is already past EBREAK since Step() set nextPC before returning)
+			// RISC-V breakpoints are traps: the CPU leaves PC at the
+			// EBREAK, so a handler that wants to continue must skip it.
+			if n.InsnLen == 0 {
+				t.Fatalf("breakpoint note missing instruction length")
+			}
+			cpu.SetPC(n.PC + uint64(n.InsnLen))
 			return NoteHandled
 		}
 		return NoteForward

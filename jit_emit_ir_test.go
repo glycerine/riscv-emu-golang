@@ -824,7 +824,7 @@ func TestSRL_CrossBlock_Writeback(t *testing.T) {
 	if cpu.x[11] != 0xFFFFFFFF80000000 {
 		t.Fatalf("block 1: x[11]=0x%x, want 0xFFFFFFFF80000000", cpu.x[11])
 	}
-	// Advance past ECALL
+	// Simulate a handler choosing the ECALL resume PC.
 	cpu.SetPC(pc + 8)
 
 	// Block 2

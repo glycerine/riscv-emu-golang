@@ -27,13 +27,13 @@ import (
 
 // SyscallArgs holds the arguments for a guest syscall.
 type SyscallArgs struct {
-	Num  uint64 // syscall number (a7)
-	A0   uint64 // arg0 (a0)
-	A1   uint64 // arg1 (a1)
-	A2   uint64 // arg2 (a2)
-	A3   uint64 // arg3 (a3)
-	A4   uint64 // arg4 (a4)
-	A5   uint64 // arg5 (a5)
+	Num uint64 // syscall number (a7)
+	A0  uint64 // arg0 (a0)
+	A1  uint64 // arg1 (a1)
+	A2  uint64 // arg2 (a2)
+	A3  uint64 // arg3 (a3)
+	A4  uint64 // arg4 (a4)
+	A5  uint64 // arg5 (a5)
 }
 
 // SyscallHandler handles one specific syscall number.
@@ -120,6 +120,7 @@ func (o *OS) Handle(cpu *CPU, n Note) NoteDisposition {
 		}
 		if handled {
 			cpu.SetReg(10, uint64(result))
+			advanceHandledEcall(cpu, n)
 			return NoteHandled
 		}
 	}
@@ -136,12 +137,14 @@ func (o *OS) Handle(cpu *CPU, n Note) NoteDisposition {
 		}
 		if handled {
 			cpu.SetReg(10, uint64(result))
+			advanceHandledEcall(cpu, n)
 			return NoteHandled
 		}
 	}
 
 	// Unknown syscall — return -ENOSYS and continue
 	cpu.SetReg(10, ^uint64(37)) // -ENOSYS = -38 as two's complement uint64
+	advanceHandledEcall(cpu, n)
 	return NoteHandled
 }
 
@@ -318,6 +321,19 @@ func IsEcall(n Note) bool {
 	return n.Cause == CauseEcallU || n.Cause == CauseEcallS || n.Cause == CauseEcallM
 }
 
+func ecallResumePC(n Note) (uint64, bool) {
+	if !IsEcall(n) || n.InsnLen == 0 {
+		return 0, false
+	}
+	return n.PC + uint64(n.InsnLen), true
+}
+
+func advanceHandledEcall(cpu *CPU, n Note) {
+	if pc, ok := ecallResumePC(n); ok {
+		cpu.SetPC(pc)
+	}
+}
+
 // IsFault reports whether the note is a memory fault of any kind.
 func IsFault(n Note) bool {
 	return strings.HasPrefix(n.Text, "fault:")
@@ -326,4 +342,12 @@ func IsFault(n Note) bool {
 // IsBreakpoint reports whether the note is an EBREAK.
 func IsBreakpoint(n Note) bool {
 	return n.Cause == CauseBreakpoint
+}
+
+func IsEbreak(n Note) bool {
+	return n.Cause == CauseBreakpoint && n.InsnLen == 4
+}
+
+func IsCompressedEbreak(n Note) bool {
+	return n.Cause == CauseBreakpoint && n.InsnLen == 2
 }

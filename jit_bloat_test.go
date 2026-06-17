@@ -11,11 +11,10 @@ import (
 // the IR op count and emitted host-code byte count for the lazy block
 // entered at PC 0x000010de in bench/libriscv_guest/bench_guest.elf.
 //
-// The block is a small byte-checksum loop that now continues through
-// the inline-ECALL path when the lazy scanner has an executable region.
-// It expands dramatically, mostly from sandboxed-memory bounds/alignment
-// checks, precise countdown budget exits, and the FixedStatic allocator's
-// spill-everything temporaries.
+// The block is a small byte-checksum loop ending at an ECALL trap boundary.
+// It expands mostly from sandboxed-memory bounds/alignment checks, precise
+// countdown budget exits, and the FixedStatic allocator's spill-everything
+// temporaries.
 //
 // This test is the before/after harness for upcoming peephole /
 // codegen work. The max* budgets start a little above today's

@@ -333,7 +333,7 @@ func TestJea9Linux_JITReplayMatchesInterpreterTrace(t *testing.T) {
 	}
 }
 
-func TestJea9Linux_JITInlineEcallContinuesThroughOS(t *testing.T) {
+func TestJea9Linux_JITEcallTrapBoundaryRunsThroughOS(t *testing.T) {
 
 	const codeVA = uint64(0x1000)
 	insns := []uint32{
@@ -356,9 +356,9 @@ func TestJea9Linux_JITInlineEcallContinuesThroughOS(t *testing.T) {
 	if res == nil {
 		t.Fatalf("emitBlock returned nil")
 	}
-	if res.numInsns != len(insns) {
-		t.Fatalf("lazy block decoded %d instructions, want %d through ECALLs",
-			res.numInsns, len(insns))
+	if res.numInsns != 2 {
+		t.Fatalf("lazy block decoded %d instructions, want 2 ending at ECALL trap",
+			res.numInsns)
 	}
 
 	err := jit.RunJIT(cpu)

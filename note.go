@@ -68,11 +68,14 @@ const (
 // Cause is the RISC-V mcause value for efficient dispatch on common cases.
 // Tval is the mtval value (faulting address, bad instruction word, etc.).
 // PC is the guest program counter at the time the exception occurred.
+// InsnLen is the trapping instruction length when known; ECALL/EBREAK handlers
+// use it to distinguish 32-bit EBREAK from 16-bit C.EBREAK.
 type Note struct {
-	Text  string // Plan 9-style string identity — forward if unrecognised
-	Cause uint64 // RISC-V mcause
-	Tval  uint64 // RISC-V mtval
-	PC    uint64 // guest PC at time of exception
+	Text    string // Plan 9-style string identity — forward if unrecognised
+	Cause   uint64 // RISC-V mcause
+	Tval    uint64 // RISC-V mtval
+	PC      uint64 // guest PC at time of exception
+	InsnLen uint8  // trapping instruction length, or 0 when unknown
 }
 
 func (n Note) String() string { return n.Text }
@@ -91,6 +94,17 @@ const (
 )
 
 func noteFromStepErr(err error, pc uint64) Note {
+	return noteFromStepErrWithTrap(err, pc, 0, 0)
+}
+
+func noteFromCPUError(cpu *CPU, err error) Note {
+	if cpu == nil {
+		return noteFromStepErr(err, 0)
+	}
+	return noteFromStepErrWithTrap(err, cpu.PC(), cpu.lastTrapCause, cpu.lastTrapInsnLen)
+}
+
+func noteFromStepErrWithTrap(err error, pc uint64, trapCause uint64, trapInsnLen uint8) Note {
 	switch e := err.(type) {
 	case *MemFault:
 		cause, text := faultCauseAndText(e)
@@ -103,16 +117,30 @@ func noteFromStepErr(err error, pc uint64) Note {
 	}
 	switch err {
 	case ErrEbreak:
+		if trapCause != CauseBreakpoint {
+			trapCause = CauseBreakpoint
+		}
+		if trapInsnLen == 0 {
+			trapInsnLen = 4
+		}
 		return Note{
-			Text:  noteTextBreakpoint,
-			Cause: CauseBreakpoint,
-			PC:    pc,
+			Text:    noteTextBreakpoint,
+			Cause:   trapCause,
+			PC:      pc,
+			InsnLen: trapInsnLen,
 		}
 	case ErrEcall:
+		if trapCause != CauseEcallU && trapCause != CauseEcallS && trapCause != CauseEcallM {
+			trapCause = CauseEcallU
+		}
+		if trapInsnLen == 0 {
+			trapInsnLen = 4
+		}
 		return Note{
-			Text:  noteTextEcall,
-			Cause: CauseEcallU,
-			PC:    pc,
+			Text:    noteTextEcall,
+			Cause:   trapCause,
+			PC:      pc,
+			InsnLen: trapInsnLen,
 		}
 	case ErrIllegalInstruction:
 		return Note{
@@ -255,7 +283,7 @@ func RunWithChain(cpu *CPU, nc *NoteChain) error {
 		if err == nil {
 			continue
 		}
-		n := noteFromStepErr(err, cpu.PC())
+		n := noteFromCPUError(cpu, err)
 		switch nc.Deliver(cpu, n) {
 		case NoteHandled:
 			continue

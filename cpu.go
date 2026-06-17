@@ -28,13 +28,16 @@ var ErrIllegalInstruction = errors.New("illegal instruction")
 // CPU is a single RV64I hart.
 // mem is inline and first for cache locality — touched on every instruction.
 type CPU struct {
-	mem             GuestMemory
-	pc              uint64
-	x               [32]uint64 // x[0] is hardwired zero
-	f               [32]uint64 // f0-f31: NaN-boxed float32 or raw float64 bits
-	fcsr            uint32     // FP control/status: fflags[4:0] + frm[7:5]
-	riscvInstrBegun uint64     // guest instruction attempts begun, including faulting attempts
-	Notes           NoteChain  // exception delivery chain; handlers installed by OS layer
+	mem               GuestMemory
+	pc                uint64
+	x                 [32]uint64 // x[0] is hardwired zero
+	f                 [32]uint64 // f0-f31: NaN-boxed float32 or raw float64 bits
+	fcsr              uint32     // FP control/status: fflags[4:0] + frm[7:5]
+	riscvInstrBegun   uint64     // guest instruction attempts begun, including faulting attempts
+	riscvInstrRetired uint64     // RISC-V instret-style retired instructions
+	lastTrapCause     uint64
+	lastTrapInsnLen   uint8
+	Notes             NoteChain // exception delivery chain; handlers installed by OS layer
 	// LR/SC reservation
 	resvAddr  uint64
 	resvValid bool
@@ -111,9 +114,26 @@ func (c *CPU) FReg(r uint8) uint64       { return c.f[r] }
 func (c *CPU) FCSR() uint32              { return c.fcsr }
 func (c *CPU) SetFCSR(v uint32)          { c.fcsr = v }
 func (c *CPU) RiscvInstrBegun() uint64   { return c.riscvInstrBegun }
-func (c *CPU) ResetRiscvInstrBegun()     { c.riscvInstrBegun = 0 }
+func (c *CPU) RiscvInstrRetired() uint64 { return c.riscvInstrRetired }
 func (c *CPU) SetWatchAddr(addr uint64)  { c.watchAddr = addr }
 func (c *CPU) WatchAddr() uint64         { return c.watchAddr }
+
+func (c *CPU) setTrap(cause uint64, insnLen uint8) {
+	c.lastTrapCause = cause
+	c.lastTrapInsnLen = insnLen
+}
+
+func (c *CPU) setEbreakTrapAtPC() {
+	insnLen := uint8(4)
+	if half, f := (&c.mem).Fetch16(c.pc); f == nil && half == 0x9002 {
+		insnLen = 2
+	}
+	c.setTrap(CauseBreakpoint, insnLen)
+}
+
+func (c *CPU) retireInsn() {
+	c.riscvInstrRetired++
+}
 
 // Run executes the guest until an unhandled note or fatal exception.
 // Exceptions are delivered through cpu.Notes; see NoteChain and RunWithChain.
@@ -367,6 +387,7 @@ func (c *CPU) stepFromInsn(insn uint32) error {
 			if funct7i32 == 0x04 { // SLLI.UW: rd = uint64(uint32(rs1)) << shamt
 				c.SetReg(rd, uint64(uint32(c.Reg(rs1)))<<uint(shamt))
 				c.pc = nextPC
+				c.retireInsn()
 				return nil
 			}
 			v = int32(c.Reg(rs1)) << shamt
@@ -654,6 +675,7 @@ func (c *CPU) stepFromInsn(insn uint32) error {
 		case 0x04: // Zba: ADD.UW  rd = x3 + uint64(uint32(x2))
 			c.SetReg(rd, c.Reg(rs2)+uint64(uint32(c.Reg(rs1))))
 			c.pc = nextPC
+			c.retireInsn()
 			return nil
 		case 0x10: // Zba: SH1ADD.UW / SH2ADD.UW / SH3ADD.UW
 			zext := uint64(uint32(c.Reg(rs1)))
@@ -669,6 +691,7 @@ func (c *CPU) stepFromInsn(insn uint32) error {
 				return ErrIllegalInstruction
 			}
 			c.pc = nextPC
+			c.retireInsn()
 			return nil
 		case 0x30: // Zbb: ROLW / RORW
 			sh := b32 & 0x1F
@@ -796,7 +819,7 @@ func (c *CPU) stepFromInsn(insn uint32) error {
 	case 0x17:
 		c.SetReg(rd, c.pc+uint64(int64(int32(insn&0xFFFFF000))))
 
-	// ── JAL (J-type) ─────────────────────────────────────────────────────
+		// ── JAL (J-type) ─────────────────────────────────────────────────────
 	case 0x6F:
 		// Reconstruct J-type immediate (21 bits, bit 0 always 0).
 		// Shift left 11 so the sign bit lands at bit 31 of int32,
@@ -808,6 +831,7 @@ func (c *CPU) stepFromInsn(insn uint32) error {
 		jimm := int64(int32(raw<<11)) >> 11 // sign-extend 21→64
 		c.SetReg(rd, uint64(nextPC))
 		c.pc = c.pc + uint64(jimm)
+		c.retireInsn()
 		return nil
 
 	// ── JALR (I-type) ────────────────────────────────────────────────────
@@ -815,6 +839,7 @@ func (c *CPU) stepFromInsn(insn uint32) error {
 		target := (c.Reg(rs1) + uint64(iimm)) &^ 1
 		c.SetReg(rd, uint64(nextPC))
 		c.pc = target
+		c.retireInsn()
 		return nil
 
 	// ── BRANCH (B-type) ──────────────────────────────────────────────────
@@ -850,17 +875,19 @@ func (c *CPU) stepFromInsn(insn uint32) error {
 		}
 		if taken {
 			c.pc = c.pc + uint64(bimm)
+			c.retireInsn()
 			return nil
 		}
 
-	// ── SYSTEM ───────────────────────────────────────────────────────────
+		// ── SYSTEM ───────────────────────────────────────────────────────────
 	case 0x73: // ── SYSTEM ───────────────────────────────────────────────────
 		csrAddr := insn >> 20
 		switch {
 		case insn == 0x00100073: // EBREAK
-			c.pc = nextPC
+			c.setTrap(CauseBreakpoint, 4)
 			return ErrEbreak
 		case insn == 0x00000073: // ECALL
+			c.setTrap(CauseEcallU, 4)
 			if c.mtvec != 0 {
 				c.mepc = c.pc // save PC of ECALL instruction
 				c.mcause = 8  // CauseEcallU
@@ -868,10 +895,10 @@ func (c *CPU) stepFromInsn(insn uint32) error {
 				c.pc = c.mtvec // trap to handler
 				return nil
 			}
-			c.pc = nextPC
 			return ErrEcall
 		case insn == 0x30200073: // MRET
 			c.pc = c.mepc
+			c.retireInsn()
 			return nil
 		case insn == 0x10500073: // WFI — no-op in user-mode emulation
 		case funct3 == 0 && insn>>25 == 0x09: // SFENCE.VMA — no-op in user-mode
@@ -1252,6 +1279,7 @@ func (c *CPU) stepFromInsn(insn uint32) error {
 	}
 
 	c.pc = nextPC
+	c.retireInsn()
 	return nil
 }
 
@@ -1418,17 +1446,20 @@ func (c *CPU) stepRVC(insn uint16) error {
 		case 0b101: // C.J  pc += offset
 			off := cjOffset(insn)
 			c.pc = c.pc + uint64(off)
+			c.retireInsn()
 			return nil
 		case 0b110: // C.BEQZ
 			rs1 := rp((insn >> 7) & 7)
 			if c.Reg(rs1) == 0 {
 				c.pc = c.pc + uint64(cbOffset(insn))
+				c.retireInsn()
 				return nil
 			}
 		case 0b111: // C.BNEZ
 			rs1 := rp((insn >> 7) & 7)
 			if c.Reg(rs1) != 0 {
 				c.pc = c.pc + uint64(cbOffset(insn))
+				c.retireInsn()
 				return nil
 			}
 		}
@@ -1470,19 +1501,21 @@ func (c *CPU) stepRVC(insn uint16) error {
 						return ErrIllegalInstruction
 					}
 					c.pc = c.Reg(rd) &^ 1
+					c.retireInsn()
 					return nil
 				}
 				// C.MV
 				c.SetReg(rd, c.Reg(rs2))
 			} else {
 				if rd == 0 && rs2 == 0 { // C.EBREAK
-					c.pc = nextPC
+					c.setTrap(CauseBreakpoint, 2)
 					return ErrEbreak
 				}
 				if rs2 == 0 { // C.JALR
 					ret := nextPC
 					c.pc = c.Reg(rd) &^ 1
 					c.SetReg(1, ret)
+					c.retireInsn()
 					return nil
 				}
 				// C.ADD
@@ -1514,6 +1547,7 @@ func (c *CPU) stepRVC(insn uint16) error {
 	}
 
 	c.pc = nextPC
+	c.retireInsn()
 	return nil
 }
 
@@ -1536,8 +1570,10 @@ func (c *CPU) readCSR(addr uint32) uint64 {
 		return c.mcause // mcause
 	case 0x343:
 		return c.mtval // mtval
-	case 0xC00, 0xC02:
-		return c.riscvInstrBegun // cycle / instret currently expose instruction attempts
+	case 0xC00:
+		return c.riscvInstrBegun // cycle approximation tracks instruction attempts
+	case 0xC02:
+		return c.riscvInstrRetired // instret/minstret-style retired instructions
 	case 0xC01:
 		return c.riscvInstrBegun // time currently tracks instruction attempts
 	case 0xF14:

@@ -94,7 +94,7 @@ would overflow. NOSPLIT is incompatible with the callback design.
 
 ---
 
-## 1. Parallel Stacks Design
+## 1. Orthogonal Stacks Design
 
 JIT code maintains **two stacks simultaneously**:
 
@@ -112,6 +112,8 @@ JIT code maintains **two stacks simultaneously**:
 - **Control**: Since we generate all JIT code, we choose which "stack pointer"
   each instruction uses. Guest RISC-V SP (x2) is a third, completely
   separate address space (guest virtual addresses in GuestMemory).
+
+Thus each stack can adjust independently of the other. They are orthogonal.
 
 ### RSP rules
 

@@ -319,8 +319,8 @@ type JIT struct {
 	DispatchCompile    uint64 // new block compilations
 	DispatchBudget     uint64 // jitBudget returns to Go dispatch
 	DispatchEcall      uint64 // jitEcall returns to Go dispatch
-	DispatchEcallReal  uint64 // jitEcall returns whose resumePC-4 is an ECALL instruction
-	DispatchEcallStale uint64 // jitEcall returns whose resumePC-4 is not an ECALL instruction
+	DispatchEcallReal  uint64 // jitEcall returns whose trap PC is an ECALL instruction
+	DispatchEcallStale uint64 // jitEcall returns whose trap PC is not an ECALL instruction
 	DispatchFault      uint64 // native fault/misalignment/illegal returns to Go dispatch
 	InterpretedInsns   uint64 // guest instruction attempts by JIT-owned interpreter fallback
 	ICDeltaOK          uint64 // instruction-attempt delta reported by jitOK returns
@@ -1008,12 +1008,24 @@ func (j *JIT) recordNativeICDelta(status uint64, delta uint64) {
 	}
 }
 
-func (j *JIT) recordEcallReturnPC(cpu *CPU, resumePC uint64) {
-	if cpu == nil || resumePC < 4 {
+func nativeRetiredDelta(status uint64, attempts uint64) uint64 {
+	if attempts == 0 {
+		return 0
+	}
+	switch int(status) {
+	case jitEcall, jitEbreak, jitLoadFault, jitStoreFault, jitMisalign, jitIllegal:
+		return attempts - 1
+	default:
+		return attempts
+	}
+}
+
+func (j *JIT) recordEcallTrapPC(cpu *CPU, trapPC uint64) {
+	if cpu == nil {
 		j.DispatchEcallStale++
 		return
 	}
-	insn, fault := (&cpu.mem).Fetch32(resumePC - 4)
+	insn, fault := (&cpu.mem).Fetch32(trapPC)
 	if fault == nil && insn == 0x00000073 {
 		j.DispatchEcallReal++
 	} else {
@@ -1142,6 +1154,7 @@ func (j *JIT) stepBlockWithBudget(cpu *CPU, budget uint64) (ic uint64, err error
 				cpu.mem.RegFileBase(), cpu.mem.StackTop(),
 				dcBase, dcMask, vBegin, segSz, budget)
 			cpu.riscvInstrBegun += res.ICdelta
+			cpu.riscvInstrRetired += nativeRetiredDelta(res.Status, res.ICdelta)
 		}
 		if j.trace {
 			fmt.Fprintf(os.Stderr, "JIT pc=0x%x -> PC=0x%x status=%d\n",
@@ -1182,7 +1195,8 @@ func (j *JIT) stepBlockWithBudget(cpu *CPU, budget uint64) (ic uint64, err error
 			}
 			return cpu.riscvInstrBegun, nil
 		case jitEcall:
-			j.recordEcallReturnPC(cpu, cpu.pc)
+			j.recordEcallTrapPC(cpu, cpu.pc)
+			cpu.setTrap(CauseEcallU, 4)
 			if cpu.mtvec != 0 {
 				cpu.mepc = cpu.pc
 				cpu.mcause = 8
@@ -1192,6 +1206,7 @@ func (j *JIT) stepBlockWithBudget(cpu *CPU, budget uint64) (ic uint64, err error
 			}
 			return cpu.riscvInstrBegun, ErrEcall
 		case jitEbreak:
+			cpu.setEbreakTrapAtPC()
 			return cpu.riscvInstrBegun, ErrEbreak
 		case jitLoadFault:
 			return cpu.riscvInstrBegun, &MemFault{Addr: res.FaultAddr, Width: 8, Kind: FaultLoad}
@@ -1324,6 +1339,7 @@ func (j *JIT) RunJIT(cpu *CPU) (err0 error) {
 				res = sandboxRv8Call(blk.fn, cpu, regFile, stackTop,
 					dcBase, dcMask, vBegin, segSz, jitMaxBudget)
 				cpu.riscvInstrBegun += res.ICdelta
+				cpu.riscvInstrRetired += nativeRetiredDelta(res.Status, res.ICdelta)
 			}
 			cpu.pc = res.PC
 			j.recordNativeICDelta(res.Status, res.ICdelta)
@@ -1374,7 +1390,8 @@ func (j *JIT) RunJIT(cpu *CPU) (err0 error) {
 				continue
 
 			case jitEcall:
-				j.recordEcallReturnPC(cpu, cpu.pc)
+				j.recordEcallTrapPC(cpu, cpu.pc)
+				cpu.setTrap(CauseEcallU, 4)
 				if cpu.mtvec != 0 {
 					cpu.mepc = cpu.pc
 					cpu.mcause = 8
@@ -1382,7 +1399,7 @@ func (j *JIT) RunJIT(cpu *CPU) (err0 error) {
 					cpu.pc = cpu.mtvec
 					continue
 				}
-				n := noteFromStepErr(ErrEcall, cpu.pc)
+				n := noteFromCPUError(cpu, ErrEcall)
 				switch cpu.Notes.Deliver(cpu, n) {
 				case NoteHandled:
 					continue
@@ -1393,7 +1410,8 @@ func (j *JIT) RunJIT(cpu *CPU) (err0 error) {
 				}
 
 			case jitEbreak:
-				n := noteFromStepErr(ErrEbreak, cpu.pc)
+				cpu.setEbreakTrapAtPC()
+				n := noteFromCPUError(cpu, ErrEbreak)
 				switch cpu.Notes.Deliver(cpu, n) {
 				case NoteHandled:
 					continue
@@ -1432,7 +1450,7 @@ func (j *JIT) RunJIT(cpu *CPU) (err0 error) {
 				if err == nil {
 					continue
 				}
-				n := noteFromStepErr(err, cpu.PC())
+				n := noteFromCPUError(cpu, err)
 				switch cpu.Notes.Deliver(cpu, n) {
 				case NoteHandled:
 					continue
@@ -1491,7 +1509,7 @@ func (j *JIT) RunJIT(cpu *CPU) (err0 error) {
 		if err == nil {
 			continue
 		}
-		n := noteFromStepErr(err, cpu.PC())
+		n := noteFromCPUError(cpu, err)
 		switch cpu.Notes.Deliver(cpu, n) {
 		case NoteHandled:
 			continue

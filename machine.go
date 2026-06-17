@@ -61,20 +61,21 @@ func (m *Machine) Clone() (*Machine, error) {
 		return nil, err
 	}
 	childCPU := &CPU{
-		mem:             *childMem, // value-copy base+mask+size+execRegions into the new CPU
-		pc:              m.CPU.pc,
-		x:               m.CPU.x,
-		f:               m.CPU.f,
-		fcsr:            m.CPU.fcsr,
-		riscvInstrBegun: m.CPU.riscvInstrBegun,
-		resvAddr:        m.CPU.resvAddr,
-		resvValid:       m.CPU.resvValid,
-		watchAddr:       m.CPU.watchAddr,
-		mtvec:           m.CPU.mtvec,
-		mepc:            m.CPU.mepc,
-		mcause:          m.CPU.mcause,
-		mstatus:         m.CPU.mstatus,
-		mtval:           m.CPU.mtval,
+		mem:               *childMem, // value-copy base+mask+size+execRegions into the new CPU
+		pc:                m.CPU.pc,
+		x:                 m.CPU.x,
+		f:                 m.CPU.f,
+		fcsr:              m.CPU.fcsr,
+		riscvInstrBegun:   m.CPU.riscvInstrBegun,
+		riscvInstrRetired: m.CPU.riscvInstrRetired,
+		resvAddr:          m.CPU.resvAddr,
+		resvValid:         m.CPU.resvValid,
+		watchAddr:         m.CPU.watchAddr,
+		mtvec:             m.CPU.mtvec,
+		mepc:              m.CPU.mepc,
+		mcause:            m.CPU.mcause,
+		mstatus:           m.CPU.mstatus,
+		mtval:             m.CPU.mtval,
 		// Notes: zero value (empty NoteChain). Caller reinstalls handlers.
 	}
 	var childJIT *JIT

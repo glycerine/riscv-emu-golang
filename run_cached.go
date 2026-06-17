@@ -204,6 +204,7 @@ func runCachedBudget(cpu *CPU, cache *DecoderCache, nc *NoteChain, budget uint64
 	for {
 		var err error
 		var instrBegun uint64
+		var instrRetired uint64
 		countdown := pollBatch
 		if budget != 0 {
 			remaining := budget - budgetUsed
@@ -214,6 +215,7 @@ func runCachedBudget(cpu *CPU, cache *DecoderCache, nc *NoteChain, budget uint64
 		slot := cache.lookup(pc)
 	inner:
 		for {
+			inlineRetired := true
 			switch slot.op {
 
 			// ── case 0 ────────────────────────────────────────────────────
@@ -225,8 +227,11 @@ func runCachedBudget(cpu *CPU, cache *DecoderCache, nc *NoteChain, budget uint64
 			case 0:
 				if instrBegun != 0 {
 					cpu.riscvInstrBegun += instrBegun
+					cpu.riscvInstrRetired += instrRetired
 					instrBegun = 0
+					instrRetired = 0
 				}
+				inlineRetired = false
 				pc, err = slowStep(cpu, cache, slot, pc)
 				if err == nil && slot.op != 0 {
 					continue
@@ -876,7 +881,7 @@ func runCachedBudget(cpu *CPU, cache *DecoderCache, nc *NoteChain, budget uint64
 
 			case opC_EBREAK:
 				err = ErrEbreak
-				pc += 2
+				cpu.setTrap(CauseBreakpoint, 2)
 
 			case opC_JALR: // rd != 0 by decode
 				target := cpu.x[slot.rd] &^ 1
@@ -906,18 +911,24 @@ func runCachedBudget(cpu *CPU, cache *DecoderCache, nc *NoteChain, budget uint64
 				}
 				pc += 2
 
-			// ══════════════════════════════════════════════════════════════
-			//   Default: opDelegate (FP/AMO/SYSTEM/Zb*) or RVC FP classes.
-			// ══════════════════════════════════════════════════════════════
+				// ══════════════════════════════════════════════════════════════
+				//   Default: opDelegate (FP/AMO/SYSTEM/Zb*) or RVC FP classes.
+				// ══════════════════════════════════════════════════════════════
 			default:
 				if instrBegun != 0 {
 					cpu.riscvInstrBegun += instrBegun
+					cpu.riscvInstrRetired += instrRetired
 					instrBegun = 0
+					instrRetired = 0
 				}
+				inlineRetired = false
 				pc, err = cpu.delegateInsn(slot, pc)
 			}
 
 			instrBegun++
+			if err == nil && inlineRetired {
+				instrRetired++
+			}
 			if budget != 0 {
 				budgetUsed++
 			}
@@ -935,6 +946,7 @@ func runCachedBudget(cpu *CPU, cache *DecoderCache, nc *NoteChain, budget uint64
 			}
 		}
 		cpu.riscvInstrBegun += instrBegun
+		cpu.riscvInstrRetired += instrRetired
 		cpu.pc = pc
 
 		if cpu.watchAddr != 0 {
@@ -948,12 +960,11 @@ func runCachedBudget(cpu *CPU, cache *DecoderCache, nc *NoteChain, budget uint64
 			}
 			continue
 		}
-		n := noteFromStepErr(err, cpu.PC())
+		n := noteFromCPUError(cpu, err)
 		switch nc.Deliver(cpu, n) {
 		case NoteHandled:
-			// Handler may have advanced cpu.pc (e.g. ECALL returns past
-			// the ecall). Reload so the inner loop resumes from the right
-			// PC.
+			// Handlers may select a new resume PC. Reload so the inner
+			// loop resumes from the architectural state they left behind.
 			pc = cpu.pc
 			if budget != 0 && budgetUsed >= budget {
 				return RunBudgetExpired, nil

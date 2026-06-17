@@ -166,7 +166,8 @@ func (c *CPU) execRVCSlot(slot *DecodedInsn, pc uint64) (uint64, error) {
 		return target, nil
 
 	case opC_EBREAK:
-		return nextPC, ErrEbreak
+		c.setTrap(CauseBreakpoint, 2)
+		return pc, ErrEbreak
 
 	case opC_MISC_ALU: // funct3=100 q1: SRLI / SRAI / ANDI / SUB / XOR / OR / AND / SUBW / ADDW
 		insn := uint16(slot.insn)

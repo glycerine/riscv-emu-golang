@@ -440,6 +440,7 @@ type Jea9Linux struct {
 	nanosleepCount        uint64
 	nanosleepTotalNS      uint64
 	nanosleepMaxNS        uint64
+	activeEcallTrap       jea9LinuxEcallTrapFrame
 }
 
 type jea9LinuxAuxEntry struct {
@@ -497,10 +498,19 @@ type jea9LinuxCPUSnapshot struct {
 	mtval   uint64
 }
 
+type jea9LinuxEcallTrapFrame struct {
+	active   bool
+	trapPC   uint64
+	resumePC uint64
+	cause    uint64
+	insnLen  uint8
+}
+
 type jea9LinuxContext struct {
 	tid             uint64
 	state           jea9LinuxContextState
 	snapshot        jea9LinuxCPUSnapshot
+	syscallTrap     jea9LinuxEcallTrapFrame
 	clearChildTID   uint64
 	robustList      uint64
 	robustListLen   uint64
@@ -960,6 +970,7 @@ func (jos *Jea9Linux) ensureScheduler(cpu *CPU) *jea9LinuxContext {
 			state:    jea9LinuxContextRunnable,
 			snapshot: snapshotJea9LinuxCPU(cpu),
 		}
+		jos.attachActiveEcallTrap(ctx)
 		jos.contexts[ctx.tid] = ctx
 		jos.contextOrder = append(jos.contextOrder, ctx.tid)
 		jos.loadedGuestContexts = 1
@@ -972,6 +983,7 @@ func (jos *Jea9Linux) ensureScheduler(cpu *CPU) *jea9LinuxContext {
 			state:    jea9LinuxContextRunnable,
 			snapshot: snapshotJea9LinuxCPU(cpu),
 		}
+		jos.attachActiveEcallTrap(ctx)
 		jos.contexts[ctx.tid] = ctx
 		jos.contextOrder = append(jos.contextOrder, ctx.tid)
 	}
@@ -982,6 +994,7 @@ func (jos *Jea9Linux) ensureScheduler(cpu *CPU) *jea9LinuxContext {
 		jos.nextTID = jos.currentTID + 1
 	}
 	jos.loadedGuestContexts = 1
+	jos.attachActiveEcallTrap(ctx)
 	return ctx
 }
 
@@ -1021,11 +1034,71 @@ func restoreJea9LinuxCPU(cpu *CPU, snap jea9LinuxCPUSnapshot) {
 	cpu.mtval = snap.mtval
 }
 
+func jea9LinuxEcallTrapFromNote(n Note) jea9LinuxEcallTrapFrame {
+	if !IsEcall(n) || n.InsnLen == 0 {
+		return jea9LinuxEcallTrapFrame{}
+	}
+	return jea9LinuxEcallTrapFrame{
+		active:   true,
+		trapPC:   n.PC,
+		resumePC: n.PC + uint64(n.InsnLen),
+		cause:    n.Cause,
+		insnLen:  n.InsnLen,
+	}
+}
+
+func (jos *Jea9Linux) attachActiveEcallTrap(ctx *jea9LinuxContext) {
+	if ctx == nil || !jos.activeEcallTrap.active {
+		return
+	}
+	if ctx.tid != jos.currentTID {
+		return
+	}
+	ctx.syscallTrap = jos.activeEcallTrap
+}
+
+func (jos *Jea9Linux) completeContextEcallTrap(ctx *jea9LinuxContext) {
+	if ctx == nil || !ctx.syscallTrap.active {
+		return
+	}
+	ctx.snapshot.pc = ctx.syscallTrap.resumePC
+	ctx.syscallTrap = jea9LinuxEcallTrapFrame{}
+}
+
+func (jos *Jea9Linux) syscallReturnSnapshot(cpu *CPU, retval uint64) jea9LinuxCPUSnapshot {
+	snap := snapshotJea9LinuxCPU(cpu)
+	snap.x[10] = retval
+	snap.x[0] = 0
+	if jos.activeEcallTrap.active {
+		snap.pc = jos.activeEcallTrap.resumePC
+	}
+	return snap
+}
+
+func (jos *Jea9Linux) finishHandledEcall(cpu *CPU, startTID uint64, trap jea9LinuxEcallTrapFrame, disp NoteDisposition, resume bool) {
+	if !resume || !trap.active || disp != NoteHandled {
+		return
+	}
+	var ctx *jea9LinuxContext
+	if jos.contexts != nil && startTID != 0 {
+		ctx = jos.contexts[startTID]
+	}
+	if ctx != nil && ctx.state == jea9LinuxContextRunnable && ctx.snapshot.pc == trap.trapPC {
+		jos.completeContextEcallTrap(ctx)
+	}
+	if ctx == nil || (jos.currentTID == startTID && ctx.state == jea9LinuxContextRunnable) {
+		if cpu.PC() == trap.trapPC {
+			cpu.SetPC(trap.resumePC)
+		}
+	}
+}
+
 func (jos *Jea9Linux) loadContext(cpu *CPU, tid uint64) bool {
 	ctx := jos.contexts[tid]
 	if ctx == nil || ctx.state != jea9LinuxContextRunnable {
 		return false
 	}
+	jos.completeContextEcallTrap(ctx)
 	restoreJea9LinuxCPU(cpu, ctx.snapshot)
 	jos.currentTID = tid
 	jos.tid = tid
@@ -1142,6 +1215,7 @@ func (jos *Jea9Linux) markRunnable(tid uint64, retval int64) {
 	}
 	ctx.state = jea9LinuxContextRunnable
 	ctx.snapshot.x[10] = uint64(retval)
+	jos.completeContextEcallTrap(ctx)
 	jos.clearContextWaitFields(ctx)
 }
 
@@ -1642,7 +1716,7 @@ func (jos *Jea9Linux) RunJIT(cpu *CPU, jit *JIT) error {
 			if _, ok := err.(*ExitError); ok {
 				return err
 			}
-			n := noteFromStepErr(err, cpu.PC())
+			n := noteFromCPUError(cpu, err)
 			var disp NoteDisposition
 			disp = cpu.Notes.Deliver(cpu, n)
 			switch disp {
@@ -1698,6 +1772,23 @@ func (jos *Jea9Linux) Handle(cpu *CPU, n Note) (disp NoteDisposition) {
 			return jos.handleFaultSignal(cpu, n)
 		}
 		return NoteForward
+	}
+	trap := jea9LinuxEcallTrapFromNote(n)
+	resumeEcall := true
+	startTID := jos.currentTID
+	if startTID == 0 {
+		startTID = jos.tid
+		if startTID == 0 {
+			startTID = jos.pid
+		}
+	}
+	prevTrap := jos.activeEcallTrap
+	if trap.active {
+		jos.activeEcallTrap = trap
+		defer func() {
+			jos.finishHandledEcall(cpu, startTID, trap, disp, resumeEcall)
+			jos.activeEcallTrap = prevTrap
+		}()
 	}
 	args := SyscallArgs{
 		Num: cpu.Reg(17),
@@ -1791,6 +1882,7 @@ func (jos *Jea9Linux) Handle(cpu *CPU, n Note) (disp NoteDisposition) {
 	case jea9LinuxSysRtSigprocmask:
 		return jos.sysRtSigprocmask(cpu, args.A0, args.A1, args.A2, args.A3)
 	case jea9LinuxSysRtSigreturn:
+		resumeEcall = false
 		return jos.sysRtSigreturn(cpu)
 	case jea9LinuxSysExit, jea9LinuxSysExitGroup:
 		return jos.sysExit(cpu, args.A0, args.Num == jea9LinuxSysExitGroup)
@@ -2459,6 +2551,7 @@ func (jos *Jea9Linux) sysRtSigreturn(cpu *CPU) NoteDisposition {
 	delete(jos.signalFrames, key)
 	ctx.signalMask = mask
 	restoreJea9LinuxCPU(cpu, snap)
+	ctx.syscallTrap = jea9LinuxEcallTrapFrame{}
 	ctx.snapshot = snapshotJea9LinuxCPU(cpu)
 	return NoteHandled
 }
@@ -2528,6 +2621,11 @@ func (jos *Jea9Linux) deliverSignal(cpu *CPU, ctx *jea9LinuxContext, sig uint64,
 	snap := ctx.snapshot
 	if current {
 		snap = snapshotJea9LinuxCPU(cpu)
+		if jos.activeEcallTrap.active && snap.pc == jos.activeEcallTrap.trapPC {
+			snap.pc = jos.activeEcallTrap.resumePC
+		}
+	} else if ctx.syscallTrap.active {
+		snap.pc = ctx.syscallTrap.resumePC
 	}
 	frameSP, siginfoAddr, ucontextAddr, errno := jos.writeSignalFrame(cpu, ctx, snap, info)
 	if errno != 0 {
@@ -2556,6 +2654,7 @@ func (jos *Jea9Linux) deliverSignal(cpu *CPU, ctx *jea9LinuxContext, sig uint64,
 	ctx.signalMask |= action.mask | jea9LinuxSignalBit(sig)
 	jos.cancelContextWait(ctx)
 	ctx.state = jea9LinuxContextRunnable
+	ctx.syscallTrap = jea9LinuxEcallTrapFrame{}
 	ctx.snapshot = snap
 	if current {
 		restoreJea9LinuxCPU(cpu, snap)
@@ -2793,8 +2892,7 @@ func (jos *Jea9Linux) sysClone(cpu *CPU, flags, childStack, parentTIDAddr, tls, 
 		}
 	}
 
-	childSnap := snapshotJea9LinuxCPU(cpu)
-	childSnap.x[10] = 0
+	childSnap := jos.syscallReturnSnapshot(cpu, 0)
 	if childStack != 0 {
 		childSnap.x[2] = childStack
 	}
@@ -2817,7 +2915,7 @@ func (jos *Jea9Linux) sysClone(cpu *CPU, flags, childStack, parentTIDAddr, tls, 
 
 	cpu.SetReg(10, tid)
 	parent.state = jea9LinuxContextRunnable
-	parent.snapshot = snapshotJea9LinuxCPU(cpu)
+	parent.snapshot = jos.syscallReturnSnapshot(cpu, tid)
 	return int64(tid)
 }
 

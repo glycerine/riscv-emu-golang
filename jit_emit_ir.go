@@ -384,6 +384,10 @@ func (e *emitter) advancePC(size uint64) {
 	e.pc += size
 }
 
+func (e *emitter) countInsn() {
+	e.numInsns++
+}
+
 func (e *emitter) spillIC() {
 	e.irEm.SpillIC()
 }
@@ -394,12 +398,12 @@ func (e *emitter) emitReturn(pc uint64, status int) {
 	e.irEm.Ret(pc, status, VRegZero)
 }
 
-// emitSyscall emits a guest ECALL. ABJIT lowers this as a resumable
-// Jea9Linux/NoteChain callout, not as a host syscall.
-func (e *emitter) emitSyscall(resumePC uint64) {
+// emitSyscall emits a guest ECALL trap. The CPU-side trap PC is passed through
+// to Go; the installed OS decides if and when to resume at trapPC+4.
+func (e *emitter) emitSyscall(trapPC uint64) {
 	e.spillIC()
 	e.irEm.WriteBackAll()
-	e.irEm.Syscall(resumePC, 0)
+	e.irEm.Syscall(trapPC, 0)
 }
 
 // allocFaultLabel allocates a per-call-site fault label and registers its
@@ -438,16 +442,14 @@ func (e *emitter) emitChainableReturn(pc uint64) {
 // x86 unconditionally leaves the block. When true, finalize()'s
 // fall-through emitChainableReturn is dead code and is skipped.
 //
-// Recognised terminators: IRRet, IRRetDyn, IRChainExit, IRJalrIC.
-// IRSyscall is intentionally not listed: ABJIT resumes after handled
-// Jea9Linux ECALLs.
+// Recognised terminators: IRRet, IRRetDyn, IRChainExit, IRJalrIC, IRSyscall.
 func (e *emitter) lastIRWasTerminator() bool {
 	ins := e.irEm.Block.Instrs
 	if len(ins) == 0 {
 		return false
 	}
 	switch ins[len(ins)-1].Op {
-	case IRRet, IRRetDyn, IRChainExit, IRJalrIC:
+	case IRRet, IRRetDyn, IRChainExit, IRJalrIC, IRSyscall:
 		return true
 	}
 	return false
@@ -1323,10 +1325,11 @@ func (e *emitter) emit32(insn uint32) {
 	case 0x73: // SYSTEM
 		switch insn {
 		case 0x00000073: // ECALL
-			e.advancePC(4)
+			e.countInsn()
 			e.emitSyscall(e.pc)
+			e.terminated = true
 		case 0x00100073: // EBREAK
-			e.advancePC(4)
+			e.countInsn()
 			e.emitReturn(e.pc, jitEbreak)
 			e.terminated = true
 		default:
@@ -3306,7 +3309,7 @@ func (e *emitter) emitRVC_Q2(insn uint16, funct3 uint16) {
 			}
 		} else {
 			if rd == 0 && rs2 == 0 {
-				e.advancePC(2)
+				e.countInsn()
 				e.emitReturn(e.pc, jitEbreak)
 				e.terminated = true
 			} else if rs2 == 0 {
