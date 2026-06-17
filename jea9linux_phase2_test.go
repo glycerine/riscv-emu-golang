@@ -231,6 +231,7 @@ func TestJea9Linux_NanosleepIdleJumpWakesAtSchedulerQuantum(t *testing.T) {
 	j := NewJea9Linux(Jea9LinuxOptions{
 		ClockMode:        Jea9ClockIdleJump,
 		MonotonicStartNS: 10,
+		Trace:            true,
 		Scheduler: Jea9LinuxSchedulerConfig{
 			MinQuantumRetired: 1,
 			MaxQuantumRetired: 1,
@@ -264,6 +265,15 @@ func TestJea9Linux_NanosleepIdleJumpWakesAtSchedulerQuantum(t *testing.T) {
 	}
 	if got := j.contexts[j.pid].state; got != jea9LinuxContextRunnable {
 		t.Fatalf("parent state = %v, want runnable after scheduler quantum", got)
+	}
+	trace := j.TraceSnapshot()
+	if got := len(trace.Schedule); got != 1 {
+		t.Fatalf("schedule trace entries = %d, want 1", got)
+	}
+	entry := trace.Schedule[0]
+	if entry.Reason != "quantum" || entry.ClockAdvanceNS != 90 || entry.ClockBeforeNS != 10 || entry.ClockAfterNS != 100 {
+		t.Fatalf("schedule clock trace = {reason:%q advance:%d before:%d after:%d}, want quantum 90 10 100",
+			entry.Reason, entry.ClockAdvanceNS, entry.ClockBeforeNS, entry.ClockAfterNS)
 	}
 }
 

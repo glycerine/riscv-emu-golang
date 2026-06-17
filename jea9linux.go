@@ -520,6 +520,10 @@ type Jea9Linux struct {
 	chaosStartNS               int64
 	chaosUntilNS               int64
 	chaosBlockedNS             int64
+	lastClockAdvanceReason     string
+	lastClockAdvanceNS         int64
+	lastClockBeforeNS          int64
+	lastClockAfterNS           int64
 
 	budgetYields       uint64
 	blocked            bool
@@ -1183,6 +1187,7 @@ func (jos *Jea9Linux) recordScheduleTrace(cpu *CPU, event string, tid, nextTID u
 
 func (jos *Jea9Linux) recordScheduleTracePC(cpu *CPU, event string, tid, nextTID, fromPC, nextPC uint64) {
 	if !jos.traceEnabled {
+		jos.clearLastClockAdvance()
 		return
 	}
 	jos.trace.Schedule = append(jos.trace.Schedule, Jea9LinuxScheduleTraceEntry{
@@ -1197,8 +1202,47 @@ func (jos *Jea9Linux) recordScheduleTracePC(cpu *CPU, event string, tid, nextTID
 		SchedPRNGDraws:    jos.schedDraws,
 		SchedPRNGState:    append([]byte(nil), jos.schedPRNGSnapshot...),
 		RiscvInstrRetired: cpu.RiscvInstrRetired(),
+		QuantumRetired:    jos.currentQuantumRetired,
+		Reason:            jos.scheduleTraceReason(event),
+		FromPriority:      jos.contextPriorityString(tid),
+		ToPriority:        jos.contextPriorityString(nextTID),
+		ChaosActive:       jos.chaosActive,
+		ChaosUntilNS:      jos.chaosUntilNS,
 		ClockPolicy:       jos.clockPolicy.String(),
+		ClockAdvanceNS:    jos.lastClockAdvanceNS,
+		ClockBeforeNS:     jos.lastClockBeforeNS,
+		ClockAfterNS:      jos.lastClockAfterNS,
 	})
+	jos.clearLastClockAdvance()
+}
+
+func (jos *Jea9Linux) scheduleTraceReason(event string) string {
+	if jos.lastClockAdvanceReason != "" {
+		return jos.lastClockAdvanceReason
+	}
+	return event
+}
+
+func (jos *Jea9Linux) contextPriorityString(tid uint64) string {
+	ctx := jos.contexts[tid]
+	if ctx == nil {
+		return ""
+	}
+	return ctx.schedPriority.String()
+}
+
+func (jos *Jea9Linux) noteClockAdvance(reason string, before int64) {
+	jos.lastClockAdvanceReason = reason
+	jos.lastClockBeforeNS = before
+	jos.lastClockAfterNS = jos.monotonicNS
+	jos.lastClockAdvanceNS = jos.monotonicNS - before
+}
+
+func (jos *Jea9Linux) clearLastClockAdvance() {
+	jos.lastClockAdvanceReason = ""
+	jos.lastClockAdvanceNS = 0
+	jos.lastClockBeforeNS = 0
+	jos.lastClockAfterNS = 0
 }
 
 func (jos *Jea9Linux) recordRandomTrace(source string, n, flags uint64, b []byte) {
@@ -1446,29 +1490,6 @@ func (jos *Jea9Linux) loadContext(cpu *CPU, tid uint64) bool {
 	return true
 }
 
-func (jos *Jea9Linux) nextRunnableAfterCurrent() (uint64, bool) {
-	if len(jos.contextOrder) == 0 {
-		return 0, false
-	}
-	start := 0
-	for i, tid := range jos.contextOrder {
-		if tid == jos.currentTID {
-			start = i
-			break
-		}
-	}
-	for step := 1; step <= len(jos.contextOrder); step++ {
-		tid := jos.contextOrder[(start+step)%len(jos.contextOrder)]
-		if tid == jos.currentTID {
-			continue
-		}
-		if ctx := jos.contexts[tid]; ctx != nil && ctx.state == jea9LinuxContextRunnable {
-			return tid, true
-		}
-	}
-	return 0, false
-}
-
 func (jos *Jea9Linux) nextRunnableByPolicyAfterCurrent() (uint64, bool) {
 	jos.refreshChaosWindow()
 	if len(jos.contextOrder) == 0 {
@@ -1486,6 +1507,21 @@ func (jos *Jea9Linux) nextRunnableByPolicyAfterCurrent() (uint64, bool) {
 		if tid == jos.currentTID {
 			continue
 		}
+		ctx := jos.contexts[tid]
+		if ctx == nil || ctx.state != jea9LinuxContextRunnable {
+			continue
+		}
+		if jos.chaosActive && ctx.schedPriority == jea9LinuxSchedLow {
+			continue
+		}
+		return tid, true
+	}
+	return 0, false
+}
+
+func (jos *Jea9Linux) firstRunnableByPolicy() (uint64, bool) {
+	jos.refreshChaosWindow()
+	for _, tid := range jos.contextOrder {
 		ctx := jos.contexts[tid]
 		if ctx == nil || ctx.state != jea9LinuxContextRunnable {
 			continue
@@ -1574,15 +1610,6 @@ func (jos *Jea9Linux) maybeStartChaosWindow(cpu *CPU) bool {
 	return jos.startChaosWindow(cpu, durationNS)
 }
 
-func (jos *Jea9Linux) firstRunnableContext() (uint64, bool) {
-	for _, tid := range jos.contextOrder {
-		if ctx := jos.contexts[tid]; ctx != nil && ctx.state == jea9LinuxContextRunnable {
-			return tid, true
-		}
-	}
-	return 0, false
-}
-
 func (jos *Jea9Linux) hasRunnableContext() bool {
 	for _, ctx := range jos.contexts {
 		if ctx.state == jea9LinuxContextRunnable {
@@ -1645,6 +1672,7 @@ func (jos *Jea9Linux) advanceVirtualClockForSchedulerEvent(cpu *CPU, reason stri
 		return 0, false
 	}
 	jos.refreshBlocked()
+	jos.noteClockAdvance(reason, before)
 	return jos.monotonicNS - before, true
 }
 
@@ -1670,11 +1698,12 @@ func (jos *Jea9Linux) advanceVirtualClockWhenNoRunnableCandidate(cpu *CPU, reaso
 	}
 	jos.refreshChaosWindow()
 	jos.refreshBlocked()
+	jos.noteClockAdvance(reason, before)
 	return jos.monotonicNS - before, true
 }
 
 func (jos *Jea9Linux) scheduleAfterCurrentBlocked(cpu *CPU) NoteDisposition {
-	if next, ok := jos.nextRunnableAfterCurrent(); ok {
+	if next, ok := jos.nextRunnableByPolicyAfterCurrent(); ok {
 		jos.loadContext(cpu, next)
 		jos.blocked = false
 		jos.blockedHasDeadline = false
@@ -1683,7 +1712,7 @@ func (jos *Jea9Linux) scheduleAfterCurrentBlocked(cpu *CPU) NoteDisposition {
 	if _, ok := jos.nextWaitDeadline(); ok {
 		jos.advanceVirtualClockForSchedulerEvent(cpu, "blocked")
 		jos.refreshBlocked()
-		if next, ok := jos.firstRunnableContext(); ok {
+		if next, ok := jos.firstRunnableByPolicy(); ok {
 			jos.loadContext(cpu, next)
 			jos.blocked = false
 			jos.blockedHasDeadline = false
@@ -2156,35 +2185,53 @@ func elfProgramBreak(ef *ELF) uint64 {
 }
 
 func (jos *Jea9Linux) Run(cpu *CPU) error {
-	runBudget := jos.instructionBudget
-	if remaining, ok := jos.schedulerRemainingRetired(cpu); ok {
-		if remaining == 0 {
-			return jos.expireSchedulerQuantum(cpu)
+	budget := jos.instructionBudget
+	var used uint64
+	for {
+		remaining := budget
+		if budget != 0 {
+			if used >= budget {
+				return jos.expireBudget(cpu)
+			}
+			remaining = budget - used
 		}
-		if runBudget == 0 || remaining < runBudget {
-			runBudget = remaining
+		if schedRemaining, ok := jos.schedulerRemainingRetired(cpu); ok {
+			if schedRemaining == 0 {
+				return jos.expireSchedulerQuantum(cpu)
+			}
+			if remaining == 0 || schedRemaining < remaining {
+				remaining = schedRemaining
+			}
 		}
-	}
-	attemptsBefore := cpu.RiscvInstrBegun()
-	res, err := RunDefaultBudget(cpu, &cpu.Notes, runBudget)
-	attemptDelta := cpu.RiscvInstrBegun() - attemptsBefore
-	jos.accountInsAttempts(attemptDelta)
-	if jos.Blocked() {
-		return ErrJea9LinuxBlocked
-	}
-	if err != nil {
-		return err
-	}
-	switch res {
-	case RunBudgetExpired:
-		if jos.schedulerActive() && cpu.RiscvInstrRetired() >= jos.nextScheduleAtRetired {
-			return jos.expireSchedulerQuantum(cpu)
+
+		attemptsBefore := cpu.RiscvInstrBegun()
+		res, err := RunDefaultBudget(cpu, &cpu.Notes, remaining)
+		attemptDelta := cpu.RiscvInstrBegun() - attemptsBefore
+		used += attemptDelta
+		jos.accountInsAttempts(attemptDelta)
+		if jos.Blocked() {
+			return ErrJea9LinuxBlocked
 		}
-		return jos.expireBudget(cpu)
-	case RunBudgetExit:
-		return nil
-	default:
-		return nil
+		if err != nil {
+			return err
+		}
+		switch res {
+		case RunBudgetExpired:
+			if jos.schedulerActive() && cpu.RiscvInstrRetired() >= jos.nextScheduleAtRetired {
+				return jos.expireSchedulerQuantum(cpu)
+			}
+			if budget != 0 && used >= budget {
+				return jos.expireBudget(cpu)
+			}
+			if attemptDelta == 0 {
+				return jos.expireBudget(cpu)
+			}
+			continue
+		case RunBudgetExit:
+			return nil
+		default:
+			return nil
+		}
 	}
 }
 
@@ -2250,7 +2297,13 @@ func (jos *Jea9Linux) RunJIT(cpu *CPU, jit *JIT) error {
 			if jos.schedulerActive() && cpu.RiscvInstrRetired() >= jos.nextScheduleAtRetired {
 				return jos.expireSchedulerQuantum(cpu)
 			}
-			return jos.expireBudget(cpu)
+			if budget != 0 && used >= budget {
+				return jos.expireBudget(cpu)
+			}
+			if attemptDelta == 0 {
+				return jos.expireBudget(cpu)
+			}
+			continue
 		case RunBudgetExit:
 			return nil
 		}
@@ -2258,6 +2311,7 @@ func (jos *Jea9Linux) RunJIT(cpu *CPU, jit *JIT) error {
 }
 
 func (jos *Jea9Linux) expireSchedulerQuantum(cpu *CPU) error {
+	jos.clearLastClockAdvance()
 	from := jos.traceTID()
 	to := from
 	ctx := jos.ensureScheduler(cpu)
@@ -2617,7 +2671,7 @@ func (jos *Jea9Linux) sysEpollPwait(cpu *CPU, epfdRaw, eventsAddr, maxEvents, ti
 		return NoteHandled
 	}
 	if hasDeadline {
-		if _, ok := jos.nextRunnableAfterCurrent(); !ok {
+		if _, ok := jos.nextRunnableByPolicyAfterCurrent(); !ok {
 			jos.monotonicNS = deadline
 			cpu.SetReg(10, 0)
 			ctx.snapshot = snapshotJea9LinuxCPU(cpu)
@@ -2638,7 +2692,7 @@ func (jos *Jea9Linux) sysEpollPwait(cpu *CPU, epfdRaw, eventsAddr, maxEvents, ti
 		jos.blockedUntil = deadline
 		jos.blockedHasDeadline = true
 	}
-	if next, ok := jos.nextRunnableAfterCurrent(); ok {
+	if next, ok := jos.nextRunnableByPolicyAfterCurrent(); ok {
 		jos.loadContext(cpu, next)
 		jos.blocked = false
 		jos.blockedHasDeadline = false
@@ -3480,7 +3534,7 @@ func (jos *Jea9Linux) sysSchedYield(cpu *CPU) NoteDisposition {
 	ctx.snapshot = snapshotJea9LinuxCPU(cpu)
 	fromPC := ctx.snapshot.pc
 	jos.advanceIdleClockToNextDeadline()
-	if next, ok := jos.nextRunnableAfterCurrent(); ok {
+	if next, ok := jos.nextRunnableByPolicyAfterCurrent(); ok {
 		jos.loadContext(cpu, next)
 		to = next
 	}
@@ -3527,7 +3581,7 @@ func (jos *Jea9Linux) sysExit(cpu *CPU, code uint64, exitGroup bool) NoteDisposi
 		return NoteExit
 	}
 	jos.exitCurrentThread(cpu)
-	if next, ok := jos.nextRunnableAfterCurrent(); ok {
+	if next, ok := jos.nextRunnableByPolicyAfterCurrent(); ok {
 		jos.loadContext(cpu, next)
 		return NoteHandled
 	}
@@ -3555,7 +3609,7 @@ func (jos *Jea9Linux) sysFutex(cpu *CPU, addr, op, val, timeoutAddr, val3 uint64
 	case jea9LinuxFutexWait, jea9LinuxFutexWaitBitset:
 		ret, blocked := jos.futexWait(cpu, ctx, addr, uint32(val), timeoutAddr)
 		if blocked {
-			if next, ok := jos.nextRunnableAfterCurrent(); ok {
+			if next, ok := jos.nextRunnableByPolicyAfterCurrent(); ok {
 				jos.loadContext(cpu, next)
 				jos.blocked = false
 				jos.blockedHasDeadline = false
@@ -3599,7 +3653,7 @@ func (jos *Jea9Linux) futexWait(cpu *CPU, ctx *jea9LinuxContext, addr uint64, ex
 		return jea9LinuxErrETIMEDOUT, false
 	}
 	if hasDeadline {
-		if _, ok := jos.nextRunnableAfterCurrent(); !ok {
+		if _, ok := jos.nextRunnableByPolicyAfterCurrent(); !ok {
 			jos.monotonicNS = deadline
 			return jea9LinuxErrETIMEDOUT, false
 		}

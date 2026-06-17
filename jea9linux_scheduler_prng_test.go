@@ -2,6 +2,7 @@ package riscv
 
 import (
 	"bytes"
+	"errors"
 	"testing"
 )
 
@@ -163,6 +164,30 @@ func TestJea9Linux_ClockPolicyFixedUsesStateValue(t *testing.T) {
 	}
 }
 
+func TestJea9Linux_ClockPolicyPRNGDoesNotDrawOnHostBudget(t *testing.T) {
+	cpu, mem, j := testLoopCPU(t, 1)
+	defer mem.Free()
+	j.clockPolicy = ClockPolicyPRNG
+	j.schedulerConfig = Jea9LinuxSchedulerConfig{
+		MinQuantumRetired: 5,
+		MaxQuantumRetired: 5,
+	}
+	j.normalizeSchedulerConfig()
+	j.installNextSchedulerQuantum(cpu)
+
+	beforeDraws := j.SchedulerPRNGDraws()
+	beforeState := j.SchedulerPRNGState()
+	if err := j.Run(cpu); !errors.Is(err, ErrJea9LinuxBudget) {
+		t.Fatalf("Run error = %v, want ErrJea9LinuxBudget", err)
+	}
+	if got := j.SchedulerPRNGDraws(); got != beforeDraws {
+		t.Fatalf("SchedulerPRNGDraws after host budget = %d, want %d", got, beforeDraws)
+	}
+	if got := j.SchedulerPRNGState(); !bytes.Equal(got, beforeState) {
+		t.Fatalf("scheduler PRNG state changed after host budget:\ngot  %x\nwant %x", got, beforeState)
+	}
+}
+
 func TestJea9Linux_RandomQuantumWithinBoundsAndReplays(t *testing.T) {
 	opts := Jea9LinuxOptions{
 		EntropySeed: []byte("quantum seed"),
@@ -195,6 +220,30 @@ func TestJea9Linux_RandomQuantumWithinBoundsAndReplays(t *testing.T) {
 	}
 	if got := first.SchedulerPRNGDraws(); got != 8 {
 		t.Fatalf("SchedulerPRNGDraws after quantum draws = %d, want 8", got)
+	}
+}
+
+func TestJea9Linux_RandomQuantumDoesNotDrawOnHostBudget(t *testing.T) {
+	cpu, mem, j := testLoopCPU(t, 1)
+	defer mem.Free()
+	j.schedulerConfig = Jea9LinuxSchedulerConfig{
+		Mode:                   Jea9SchedulerDST,
+		MinQuantumRetired:      5,
+		MaxQuantumRetired:      9,
+		LowPriorityDenominator: 10,
+	}
+	j.normalizeSchedulerConfig()
+	j.installNextSchedulerQuantum(cpu)
+	beforeDraws := j.SchedulerPRNGDraws()
+	beforeState := j.SchedulerPRNGState()
+	if err := j.Run(cpu); !errors.Is(err, ErrJea9LinuxBudget) {
+		t.Fatalf("Run error = %v, want ErrJea9LinuxBudget", err)
+	}
+	if got := j.SchedulerPRNGDraws(); got != beforeDraws {
+		t.Fatalf("SchedulerPRNGDraws after host budget = %d, want %d", got, beforeDraws)
+	}
+	if got := j.SchedulerPRNGState(); !bytes.Equal(got, beforeState) {
+		t.Fatalf("scheduler PRNG state changed after host budget:\ngot  %x\nwant %x", got, beforeState)
 	}
 }
 
@@ -231,6 +280,30 @@ func TestJea9Linux_PriorityShuffleStableByContextOrder(t *testing.T) {
 	}
 	if !bytes.Equal(first.SchedulerPRNGState(), second.SchedulerPRNGState()) {
 		t.Fatal("same seed priority shuffle produced different PRNG states")
+	}
+}
+
+func TestJea9Linux_DSTChoosesRunnableInStableOrder(t *testing.T) {
+	j := NewJea9Linux(Jea9LinuxOptions{
+		Scheduler: Jea9LinuxSchedulerConfig{Mode: Jea9SchedulerDST},
+	})
+	cpu, mem := newClockPolicyCPU(t)
+	defer mem.Free()
+	current := j.ensureScheduler(cpu)
+	waitingTID := current.tid + 1
+	exitedTID := current.tid + 2
+	runnableTID := current.tid + 3
+	j.contexts[waitingTID] = &jea9LinuxContext{tid: waitingTID, state: jea9LinuxContextWaiting}
+	j.contexts[exitedTID] = &jea9LinuxContext{tid: exitedTID, state: jea9LinuxContextExited}
+	j.contexts[runnableTID] = &jea9LinuxContext{tid: runnableTID, state: jea9LinuxContextRunnable}
+	j.contextOrder = append(j.contextOrder, waitingTID, exitedTID, runnableTID)
+
+	got, ok := j.nextRunnableByPolicyAfterCurrent()
+	if !ok {
+		t.Fatal("nextRunnableByPolicyAfterCurrent found no runnable context")
+	}
+	if got != runnableTID {
+		t.Fatalf("next runnable tid = %d, want stable runnable tid %d", got, runnableTID)
 	}
 }
 

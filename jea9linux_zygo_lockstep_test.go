@@ -363,6 +363,36 @@ func zygoLockstepCompareOS(out *strings.Builder, jit, interp *Jea9Linux) {
 	if jit.monotonicNS != interp.monotonicNS {
 		fmt.Fprintf(out, "monotonicNS mismatch: jit=%d interp=%d\n", jit.monotonicNS, interp.monotonicNS)
 	}
+	if jit.clockPolicy != interp.clockPolicy ||
+		jit.clockFixedAdvanceNS != interp.clockFixedAdvanceNS ||
+		jit.clockPRNGMinNS != interp.clockPRNGMinNS ||
+		jit.clockPRNGMaxNS != interp.clockPRNGMaxNS {
+		fmt.Fprintf(out, "clock policy mismatch: jit=(policy=%s fixed=%d min=%d max=%d) interp=(policy=%s fixed=%d min=%d max=%d)\n",
+			jit.clockPolicy, jit.clockFixedAdvanceNS, jit.clockPRNGMinNS, jit.clockPRNGMaxNS,
+			interp.clockPolicy, interp.clockFixedAdvanceNS, interp.clockPRNGMinNS, interp.clockPRNGMaxNS)
+	}
+	if jit.schedulerConfig != interp.schedulerConfig ||
+		jit.currentQuantumRetired != interp.currentQuantumRetired ||
+		jit.nextScheduleAtRetired != interp.nextScheduleAtRetired ||
+		jit.nextPriorityShuffleRetired != interp.nextPriorityShuffleRetired {
+		fmt.Fprintf(out, "scheduler quantum/config mismatch: jit=(cfg=%+v q=%d next=%d shuffle=%d) interp=(cfg=%+v q=%d next=%d shuffle=%d)\n",
+			jit.schedulerConfig, jit.currentQuantumRetired, jit.nextScheduleAtRetired, jit.nextPriorityShuffleRetired,
+			interp.schedulerConfig, interp.currentQuantumRetired, interp.nextScheduleAtRetired, interp.nextPriorityShuffleRetired)
+	}
+	if jit.schedDraws != interp.schedDraws || jit.schedEventID != interp.schedEventID ||
+		!bytes.Equal(jit.schedPRNGSnapshot, interp.schedPRNGSnapshot) {
+		fmt.Fprintf(out, "scheduler PRNG mismatch: jit=(events=%d draws=%d state=%x) interp=(events=%d draws=%d state=%x)\n",
+			jit.schedEventID, jit.schedDraws, jit.schedPRNGSnapshot,
+			interp.schedEventID, interp.schedDraws, interp.schedPRNGSnapshot)
+	}
+	if jit.chaosActive != interp.chaosActive ||
+		jit.chaosStartNS != interp.chaosStartNS ||
+		jit.chaosUntilNS != interp.chaosUntilNS ||
+		jit.chaosBlockedNS != interp.chaosBlockedNS {
+		fmt.Fprintf(out, "chaos scheduler mismatch: jit=(active=%v start=%d until=%d blocked=%d) interp=(active=%v start=%d until=%d blocked=%d)\n",
+			jit.chaosActive, jit.chaosStartNS, jit.chaosUntilNS, jit.chaosBlockedNS,
+			interp.chaosActive, interp.chaosStartNS, interp.chaosUntilNS, interp.chaosBlockedNS)
+	}
 	if jit.budgetYields != interp.budgetYields {
 		fmt.Fprintf(out, "budgetYields mismatch: jit=%d interp=%d\n", jit.budgetYields, interp.budgetYields)
 	}
@@ -453,7 +483,8 @@ func zygoLockstepCompareContext(out *strings.Builder, tid uint64, jit, interp *j
 	if jit.clearChildTID != interp.clearChildTID || jit.robustList != interp.robustList ||
 		jit.robustListLen != interp.robustListLen || jit.signalMask != interp.signalMask ||
 		len(jit.pendingSignals) != len(interp.pendingSignals) ||
-		jit.sigaltSP != interp.sigaltSP || jit.sigaltSize != interp.sigaltSize || jit.sigaltFlags != interp.sigaltFlags {
+		jit.sigaltSP != interp.sigaltSP || jit.sigaltSize != interp.sigaltSize || jit.sigaltFlags != interp.sigaltFlags ||
+		jit.syscallTrap != interp.syscallTrap || jit.schedPriority != interp.schedPriority {
 		fmt.Fprintf(out, "context %d metadata mismatch\n", tid)
 	}
 	if diff := zygoLockstepSnapshotDiff("saved CPU", jit.snapshot, interp.snapshot); diff != "" {

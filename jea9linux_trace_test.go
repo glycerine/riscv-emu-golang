@@ -60,6 +60,24 @@ func TestJea9Linux_TraceRecordsSyscallsScheduleRandomAndClock(t *testing.T) {
 	if len(trace.Schedule) == 0 {
 		t.Fatal("schedule trace is empty, want scheduler-quantum records")
 	}
+	if got := trace.Schedule[0].Event; got != "quantum" {
+		t.Fatalf("schedule event = %q, want quantum", got)
+	}
+	if got := trace.Schedule[0].Reason; got != "quantum" {
+		t.Fatalf("schedule reason = %q, want quantum", got)
+	}
+	if got := trace.Schedule[0].QuantumRetired; got != 2 {
+		t.Fatalf("schedule quantum retired = %d, want 2", got)
+	}
+	if got := trace.Schedule[0].FromPriority; got != "high" {
+		t.Fatalf("schedule from priority = %q, want high", got)
+	}
+	if got := trace.Schedule[0].ToPriority; got != "high" {
+		t.Fatalf("schedule to priority = %q, want high", got)
+	}
+	if got := trace.Schedule[0].ClockPolicy; got != ClockPolicyOnlyDeadlockAdvances.String() {
+		t.Fatalf("schedule clock policy = %q, want %q", got, ClockPolicyOnlyDeadlockAdvances.String())
+	}
 	if len(trace.Random) != 1 {
 		t.Fatalf("random observations = %d, want 1", len(trace.Random))
 	}
