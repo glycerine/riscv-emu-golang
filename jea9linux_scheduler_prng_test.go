@@ -165,6 +165,29 @@ func TestJea9Linux_ClockPolicyFixedUsesStateValue(t *testing.T) {
 	}
 }
 
+func TestJea9Linux_ClockPolicyChaosNormalizesSchedulerAndPhase(t *testing.T) {
+	fromPolicy := NewJea9Linux(Jea9LinuxOptions{ClockPolicy: ClockPolicyChaos})
+	if got := fromPolicy.ClockPolicy(); got != ClockPolicyChaos {
+		t.Fatalf("ClockPolicy from policy = %s, want chaos", got)
+	}
+	if got := fromPolicy.schedulerConfig.Mode; got != Jea9SchedulerChaos {
+		t.Fatalf("scheduler mode from policy = %v, want chaos", got)
+	}
+	if got := fromPolicy.ChaosPolicyPhase(); got != jea9LinuxChaosPolicyNormal.String() {
+		t.Fatalf("chaos phase from policy = %s, want %s", got, jea9LinuxChaosPolicyNormal)
+	}
+
+	fromScheduler := NewJea9Linux(Jea9LinuxOptions{
+		Scheduler: Jea9LinuxSchedulerConfig{Mode: Jea9SchedulerChaos},
+	})
+	if got := fromScheduler.ClockPolicy(); got != ClockPolicyChaos {
+		t.Fatalf("ClockPolicy from scheduler = %s, want chaos", got)
+	}
+	if got := fromScheduler.ChaosPolicyPhase(); got != jea9LinuxChaosPolicyNormal.String() {
+		t.Fatalf("chaos phase from scheduler = %s, want %s", got, jea9LinuxChaosPolicyNormal)
+	}
+}
+
 func TestJea9Linux_ClockPolicyPRNGDoesNotDrawOnHostBudget(t *testing.T) {
 	cpu, mem, j := testLoopCPU(t, 1)
 	defer mem.Free()
@@ -371,16 +394,19 @@ func TestJea9Linux_ChaosStarvationBudgetCappedAtTwentyPercent(t *testing.T) {
 	if got := j.chaosUntilNS - j.chaosStartNS; got != 200 {
 		t.Fatalf("chaos window duration = %d, want capped 200", got)
 	}
-	if got := j.ClockPolicy(); got != ClockPolicyFixed {
-		t.Fatalf("ClockPolicy = %s, want fixed", got)
+	if got := j.ClockPolicy(); got != ClockPolicyChaos {
+		t.Fatalf("ClockPolicy = %s, want chaos", got)
 	}
-	if got := j.ClockFixedAdvanceNS(); got != 200 {
-		t.Fatalf("ClockFixedAdvanceNS = %d, want 200", got)
+	if got := j.ChaosPolicyPhase(); got != jea9LinuxChaosPolicyStarvation.String() {
+		t.Fatalf("ChaosPolicyPhase = %s, want %s", got, jea9LinuxChaosPolicyStarvation)
 	}
 	j.SetMonotonicNS(j.chaosUntilNS)
 	j.refreshChaosWindow()
 	if j.chaosActive {
 		t.Fatal("chaos window still active after reaching chaosUntilNS")
+	}
+	if got := j.ChaosPolicyPhase(); got != jea9LinuxChaosPolicyNormal.String() {
+		t.Fatalf("ChaosPolicyPhase after window = %s, want %s", got, jea9LinuxChaosPolicyNormal)
 	}
 	if got := j.chaosBlockedNS; got != 200 {
 		t.Fatalf("chaosBlockedNS = %d, want 200", got)
@@ -435,8 +461,8 @@ func TestJea9Linux_ChaosWindowStartSameSeedSameState(t *testing.T) {
 	if first.chaosUntilNS != second.chaosUntilNS {
 		t.Fatalf("chaosUntilNS mismatch: %d != %d", first.chaosUntilNS, second.chaosUntilNS)
 	}
-	if first.ClockFixedAdvanceNS() != second.ClockFixedAdvanceNS() {
-		t.Fatalf("ClockFixedAdvanceNS mismatch: %d != %d", first.ClockFixedAdvanceNS(), second.ClockFixedAdvanceNS())
+	if first.ChaosPolicyPhase() != second.ChaosPolicyPhase() {
+		t.Fatalf("ChaosPolicyPhase mismatch: %s != %s", first.ChaosPolicyPhase(), second.ChaosPolicyPhase())
 	}
 	if first.SchedulerPRNGDraws() != second.SchedulerPRNGDraws() {
 		t.Fatalf("SchedulerPRNGDraws mismatch: %d != %d", first.SchedulerPRNGDraws(), second.SchedulerPRNGDraws())

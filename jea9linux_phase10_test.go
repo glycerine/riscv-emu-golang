@@ -515,8 +515,8 @@ func installLowPriorityChaosPeer(t *testing.T, j *Jea9Linux, cpu *CPU) *jea9Linu
 	j.chaosActive = true
 	j.chaosStartNS = 100
 	j.chaosUntilNS = 150
-	j.clockPolicy = ClockPolicyFixed
-	j.clockFixedAdvanceNS = 50
+	j.clockPolicy = ClockPolicyChaos
+	j.chaosPolicyPhase = jea9LinuxChaosPolicyStarvation
 	return parent
 }
 

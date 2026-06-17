@@ -495,8 +495,8 @@ func TestJea9Linux_FutexTimeoutStopsAtChaosBoundary(t *testing.T) {
 	j.chaosActive = true
 	j.chaosStartNS = 100
 	j.chaosUntilNS = 150
-	j.clockPolicy = ClockPolicyFixed
-	j.clockFixedAdvanceNS = 50
+	j.clockPolicy = ClockPolicyChaos
+	j.chaosPolicyPhase = jea9LinuxChaosPolicyStarvation
 
 	addr := uint64(0xb200)
 	timeout := uint64(0xb300)

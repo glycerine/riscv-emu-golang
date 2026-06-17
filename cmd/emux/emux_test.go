@@ -148,11 +148,15 @@ func TestEmuxConfigDefaultsPreserveExplicitZeroClock(t *testing.T) {
 	if cfg.MemorySize != defaultEmuxMemorySize {
 		t.Fatalf("MemorySize = %d, want %d", cfg.MemorySize, defaultEmuxMemorySize)
 	}
-	if cfg.InstructionBudget != defaultEmuxInstructionBudget {
-		t.Fatalf("InstructionBudget = %d, want %d", cfg.InstructionBudget, defaultEmuxInstructionBudget)
+	if cfg.Budget != defaultEmuxBudget {
+		t.Fatalf("Budget = %q, want %q", cfg.Budget, defaultEmuxBudget)
 	}
-	if cfg.ClockMode != defaultEmuxClockMode {
-		t.Fatalf("ClockMode = %q, want %q", cfg.ClockMode, defaultEmuxClockMode)
+	budget, err := cfg.schedulerBudget()
+	if err != nil {
+		t.Fatalf("schedulerBudget default: %v", err)
+	}
+	if budget != defaultEmuxInstructionBudget {
+		t.Fatalf("schedulerBudget = %d, want %d", budget, defaultEmuxInstructionBudget)
 	}
 	if cfg.MonotonicStartNS != defaultEmuxMonotonicStartNS {
 		t.Fatalf("MonotonicStartNS = %d, want %d", cfg.MonotonicStartNS, defaultEmuxMonotonicStartNS)
@@ -186,17 +190,6 @@ func TestParseEmuxJITModeFlags(t *testing.T) {
 	)
 	if interp.JITLazy || interp.JITAOT {
 		t.Fatalf("default parsed as JITLazy=%v JITAOT=%v", interp.JITLazy, interp.JITAOT)
-	}
-	if interp.AllowAllHostFiles {
-		t.Fatal("default parsed with AllowAllHostFiles enabled")
-	}
-
-	allhost, _, _ := parseEmuxConfigForTest(t,
-		"-run", "../../testvectors/jea9linux/elf/write_stdout.elf",
-		"-allhost",
-	)
-	if !allhost.AllowAllHostFiles {
-		t.Fatal("-allhost did not enable AllowAllHostFiles")
 	}
 }
 
@@ -276,29 +269,32 @@ func benchmarkRunEmuxGoHello(b *testing.B, mode EmuxConfig) {
 	}
 }
 
-func TestParseClockModeAndSeedBytes(t *testing.T) {
+func TestParseEmuxBudgetAndSeedBytes(t *testing.T) {
 	for _, tc := range []struct {
 		name string
-		want riscv.Jea9LinuxClockMode
+		want uint64
 	}{
-		{name: "idle-jump", want: riscv.Jea9ClockIdleJump},
-		{name: "idlejump", want: riscv.Jea9ClockIdleJump},
-		{name: "ic-tick", want: riscv.Jea9ClockICTick},
-		{name: "ictick", want: riscv.Jea9ClockICTick},
+		{name: "1", want: 1},
+		{name: "1ns", want: 1},
+		{name: "1us", want: 1_000},
+		{name: "1ms", want: 1_000_000},
+		{name: "1s", want: 1_000_000_000},
+		{name: "1e6", want: 1_000_000},
+		{name: "1_000_000", want: 1_000_000},
+		{name: "1000000", want: 1_000_000},
 	} {
-		got, err := parseClockMode(tc.name)
+		got, err := parseEmuxBudget(tc.name)
 		if err != nil {
-			t.Fatalf("parseClockMode(%q): %v", tc.name, err)
+			t.Fatalf("parseEmuxBudget(%q): %v", tc.name, err)
 		}
 		if got != tc.want {
-			t.Fatalf("parseClockMode(%q) = %v, want %v", tc.name, got, tc.want)
+			t.Fatalf("parseEmuxBudget(%q) = %d, want %d", tc.name, got, tc.want)
 		}
 	}
-	if _, err := parseClockMode("host-time"); err == nil {
-		t.Fatal("parseClockMode(host-time) returned nil error")
-	}
-	if _, err := parseClockMode("manual"); err == nil {
-		t.Fatal("parseClockMode(manual) returned nil error")
+	for _, bad := range []string{"", "0", "-1", "1.5", "nope"} {
+		if _, err := parseEmuxBudget(bad); err == nil {
+			t.Fatalf("parseEmuxBudget(%q) returned nil error", bad)
+		}
 	}
 
 	const seed = uint64(0x0102030405060708)

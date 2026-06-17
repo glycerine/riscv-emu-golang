@@ -27,6 +27,7 @@ const (
 	ClockPolicyOnlyDeadlockAdvances ClockPolicy = iota
 	ClockPolicyPRNG
 	ClockPolicyFixed
+	ClockPolicyChaos
 )
 
 func (p ClockPolicy) String() string {
@@ -37,6 +38,29 @@ func (p ClockPolicy) String() string {
 		return "prng"
 	case ClockPolicyFixed:
 		return "fixed"
+	case ClockPolicyChaos:
+		return "chaos"
+	default:
+		return "unknown"
+	}
+}
+
+type jea9LinuxChaosPolicyPhase uint8
+
+const (
+	jea9LinuxChaosPolicyOff jea9LinuxChaosPolicyPhase = iota
+	jea9LinuxChaosPolicyNormal
+	jea9LinuxChaosPolicyStarvation
+)
+
+func (p jea9LinuxChaosPolicyPhase) String() string {
+	switch p {
+	case jea9LinuxChaosPolicyOff:
+		return "off"
+	case jea9LinuxChaosPolicyNormal:
+		return "normal"
+	case jea9LinuxChaosPolicyStarvation:
+		return "starvation"
 	default:
 		return "unknown"
 	}
@@ -55,6 +79,7 @@ const (
 	Jea9SchedulerRoundRobin Jea9LinuxSchedulerMode = iota
 	Jea9SchedulerDST
 	Jea9SchedulerChaos
+	Jea9SchedulerDeadlock
 )
 
 type Jea9LinuxSchedulerConfig struct {
@@ -441,6 +466,7 @@ type Jea9LinuxScheduleTraceEntry struct {
 	ToPriority        string
 	ChaosActive       bool
 	ChaosUntilNS      int64
+	ChaosPolicyPhase  string
 	ClockPolicy       string
 	ClockAdvanceNS    int64
 	ClockBeforeNS     int64
@@ -456,15 +482,16 @@ type Jea9LinuxRandomTraceEntry struct {
 }
 
 type Jea9LinuxClockTraceEntry struct {
-	Source          string
-	TID             uint64
-	ClockID         uint64
-	NS              int64
-	BeforeNS        int64
-	AdvanceNS       int64
-	DeadlineNS      int64
-	ReachedDeadline bool
-	ClockPolicy     string
+	Source           string
+	TID              uint64
+	ClockID          uint64
+	NS               int64
+	BeforeNS         int64
+	AdvanceNS        int64
+	DeadlineNS       int64
+	ReachedDeadline  bool
+	ClockPolicy      string
+	ChaosPolicyPhase string
 }
 
 type Jea9LinuxSyscallCount struct {
@@ -490,6 +517,7 @@ type Jea9Linux struct {
 	clockFixedAdvanceNS int64
 	clockPRNGMinNS      int64
 	clockPRNGMaxNS      int64
+	chaosPolicyPhase    jea9LinuxChaosPolicyPhase
 	monotonicNS         int64
 	realtimeOffsetNS    int64
 	nsPerInstruction    int64
@@ -695,6 +723,7 @@ func NewJea9Linux(opts Jea9LinuxOptions) *Jea9Linux {
 	if jos.nsPerInstruction == 0 {
 		jos.nsPerInstruction = 1
 	}
+	jos.normalizeClockPolicyChaos()
 	jos.normalizeSchedulerConfig()
 	if jos.stdout == nil {
 		jos.stdout = io.Discard
@@ -721,6 +750,18 @@ func NewJea9Linux(opts Jea9LinuxOptions) *Jea9Linux {
 	jos.randomOff = len(jos.randomBuf)
 	jos.initSchedulerPRNG()
 	return jos
+}
+
+func (jos *Jea9Linux) normalizeClockPolicyChaos() {
+	if jos.clockPolicy == ClockPolicyChaos || jos.schedulerConfig.Mode == Jea9SchedulerChaos {
+		jos.clockPolicy = ClockPolicyChaos
+		jos.schedulerConfig.Mode = Jea9SchedulerChaos
+		if jos.chaosPolicyPhase == jea9LinuxChaosPolicyOff {
+			jos.chaosPolicyPhase = jea9LinuxChaosPolicyNormal
+		}
+		return
+	}
+	jos.chaosPolicyPhase = jea9LinuxChaosPolicyOff
 }
 
 func (jos *Jea9Linux) normalizeSchedulerConfig() {
@@ -927,7 +968,7 @@ func (jos *Jea9Linux) schedN(cpu *CPU, n uint64, why string) uint64 {
 }
 
 func (jos *Jea9Linux) schedulerActive() bool {
-	return true
+	return jos.schedulerConfig.Mode != Jea9SchedulerDeadlock
 }
 
 func (jos *Jea9Linux) nextSchedulerEvent(cpu *CPU, reason string) {
@@ -1010,7 +1051,12 @@ func (jos *Jea9Linux) SetClockMode(mode Jea9LinuxClockMode) { jos.clockMode = mo
 
 func (jos *Jea9Linux) ClockPolicy() ClockPolicy { return jos.clockPolicy }
 
-func (jos *Jea9Linux) SetClockPolicy(policy ClockPolicy) { jos.clockPolicy = policy }
+func (jos *Jea9Linux) SetClockPolicy(policy ClockPolicy) {
+	jos.clockPolicy = policy
+	jos.normalizeClockPolicyChaos()
+}
+
+func (jos *Jea9Linux) ChaosPolicyPhase() string { return jos.chaosPolicyPhase.String() }
 
 func (jos *Jea9Linux) ClockFixedAdvanceNS() int64 { return jos.clockFixedAdvanceNS }
 
@@ -1213,6 +1259,7 @@ func (jos *Jea9Linux) recordScheduleTracePC(cpu *CPU, event string, tid, nextTID
 		ToPriority:        jos.contextPriorityString(nextTID),
 		ChaosActive:       jos.chaosActive,
 		ChaosUntilNS:      jos.chaosUntilNS,
+		ChaosPolicyPhase:  jos.chaosPolicyPhase.String(),
 		ClockPolicy:       jos.clockPolicy.String(),
 		ClockAdvanceNS:    jos.lastClockAdvanceNS,
 		ClockBeforeNS:     jos.lastClockBeforeNS,
@@ -1268,11 +1315,12 @@ func (jos *Jea9Linux) recordClockTrace(source string, clockID uint64, ns int64) 
 		return
 	}
 	jos.trace.Clock = append(jos.trace.Clock, Jea9LinuxClockTraceEntry{
-		Source:      source,
-		TID:         jos.traceTID(),
-		ClockID:     clockID,
-		NS:          ns,
-		ClockPolicy: jos.clockPolicy.String(),
+		Source:           source,
+		TID:              jos.traceTID(),
+		ClockID:          clockID,
+		NS:               ns,
+		ClockPolicy:      jos.clockPolicy.String(),
+		ChaosPolicyPhase: jos.chaosPolicyPhase.String(),
 	})
 }
 
@@ -1281,15 +1329,16 @@ func (jos *Jea9Linux) recordVirtualClockAdvanceTrace(source string, before, dead
 		return
 	}
 	jos.trace.Clock = append(jos.trace.Clock, Jea9LinuxClockTraceEntry{
-		Source:          source,
-		TID:             jos.traceTID(),
-		ClockID:         ^uint64(0),
-		NS:              jos.monotonicNS,
-		BeforeNS:        before,
-		AdvanceNS:       jos.monotonicNS - before,
-		DeadlineNS:      deadline,
-		ReachedDeadline: reached,
-		ClockPolicy:     jos.clockPolicy.String(),
+		Source:           source,
+		TID:              jos.traceTID(),
+		ClockID:          ^uint64(0),
+		NS:               jos.monotonicNS,
+		BeforeNS:         before,
+		AdvanceNS:        jos.monotonicNS - before,
+		DeadlineNS:       deadline,
+		ReachedDeadline:  reached,
+		ClockPolicy:      jos.clockPolicy.String(),
+		ChaosPolicyPhase: jos.chaosPolicyPhase.String(),
 	})
 }
 
@@ -1567,6 +1616,11 @@ func (jos *Jea9Linux) refreshChaosWindow() {
 	jos.chaosActive = false
 	jos.chaosStartNS = 0
 	jos.chaosUntilNS = 0
+	if jos.clockPolicy == ClockPolicyChaos {
+		jos.chaosPolicyPhase = jea9LinuxChaosPolicyNormal
+	} else {
+		jos.chaosPolicyPhase = jea9LinuxChaosPolicyOff
+	}
 }
 
 func (jos *Jea9Linux) remainingChaosBudgetNS() int64 {
@@ -1586,7 +1640,7 @@ func (jos *Jea9Linux) remainingChaosBudgetNS() int64 {
 }
 
 func (jos *Jea9Linux) startChaosWindow(cpu *CPU, durationNS int64) bool {
-	if durationNS <= 0 || jos.schedulerConfig.Mode != Jea9SchedulerChaos {
+	if durationNS <= 0 || jos.schedulerConfig.Mode != Jea9SchedulerChaos || jos.clockPolicy != ClockPolicyChaos {
 		return false
 	}
 	jos.refreshChaosWindow()
@@ -1604,8 +1658,7 @@ func (jos *Jea9Linux) startChaosWindow(cpu *CPU, durationNS int64) bool {
 	jos.chaosActive = true
 	jos.chaosStartNS = jos.monotonicNS
 	jos.chaosUntilNS = jos.monotonicNS + durationNS
-	jos.clockPolicy = ClockPolicyFixed
-	jos.clockFixedAdvanceNS = durationNS
+	jos.chaosPolicyPhase = jea9LinuxChaosPolicyStarvation
 	return true
 }
 
@@ -1642,6 +1695,14 @@ func (jos *Jea9Linux) hasRunnableContext() bool {
 	return false
 }
 
+func (jos *Jea9Linux) hasRunnableClockCandidate() bool {
+	if jos.clockPolicy != ClockPolicyChaos {
+		return jos.hasRunnableContext()
+	}
+	_, ok := jos.firstRunnableByPolicy()
+	return ok
+}
+
 func (jos *Jea9Linux) nextWaitDeadline() (int64, bool) {
 	var deadline int64
 	var ok bool
@@ -1667,8 +1728,8 @@ func (jos *Jea9Linux) advanceIdleClockToNextDeadline() {
 func (jos *Jea9Linux) advanceVirtualClockForSchedulerEvent(cpu *CPU, reason string) (int64, bool) {
 	before := jos.monotonicNS
 	switch jos.clockPolicy {
-	case ClockPolicyOnlyDeadlockAdvances:
-		if jos.hasRunnableContext() {
+	case ClockPolicyOnlyDeadlockAdvances, ClockPolicyChaos:
+		if jos.hasRunnableClockCandidate() {
 			return 0, false
 		}
 		deadline, ok := jos.nextWaitDeadline()
@@ -1703,7 +1764,7 @@ func (jos *Jea9Linux) advanceVirtualClockForSchedulerEvent(cpu *CPU, reason stri
 func (jos *Jea9Linux) advanceVirtualClockWhenNoRunnableCandidate(cpu *CPU, reason string) (int64, bool) {
 	before := jos.monotonicNS
 	switch jos.clockPolicy {
-	case ClockPolicyOnlyDeadlockAdvances:
+	case ClockPolicyOnlyDeadlockAdvances, ClockPolicyChaos:
 		deadline, ok := jos.nextWaitDeadline()
 		if jos.chaosActive && jos.chaosUntilNS > jos.monotonicNS && (!ok || jos.chaosUntilNS < deadline) {
 			deadline = jos.chaosUntilNS
@@ -1746,7 +1807,7 @@ func (jos *Jea9Linux) advanceVirtualClockTowardDeadline(cpu *CPU, reason string,
 		target = jos.chaosUntilNS
 	}
 	switch jos.clockPolicy {
-	case ClockPolicyOnlyDeadlockAdvances:
+	case ClockPolicyOnlyDeadlockAdvances, ClockPolicyChaos:
 		jos.monotonicNS = target
 	case ClockPolicyPRNG:
 		minNS := jos.clockPRNGMinNS
@@ -2277,7 +2338,7 @@ func (jos *Jea9Linux) Run(cpu *CPU) error {
 			}
 			attemptRemaining = budget - used
 		}
-		var retiredRemaining uint64
+		retiredRemaining := ^uint64(0)
 		if schedRemaining, ok := jos.schedulerRemainingRetired(cpu); ok {
 			if schedRemaining == 0 {
 				return jos.expireSchedulerQuantum(cpu)
@@ -2330,7 +2391,7 @@ func (jos *Jea9Linux) RunJIT(cpu *CPU, jit *JIT) error {
 			}
 			attemptRemaining = budget - used
 		}
-		var retiredRemaining uint64
+		retiredRemaining := ^uint64(0)
 		if schedRemaining, ok := jos.schedulerRemainingRetired(cpu); ok {
 			if schedRemaining == 0 {
 				return jos.expireSchedulerQuantum(cpu)

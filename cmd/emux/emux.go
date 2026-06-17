@@ -5,8 +5,11 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"os"
+	"strconv"
 	"strings"
+	"time"
 
 	riscv "github.com/glycerine/riscv-emu-golang"
 )
@@ -15,26 +18,28 @@ var ProgramName = "emux"
 
 const (
 	defaultEmuxMemorySize        = riscv.Size16GB
-	defaultEmuxInstructionBudget = uint64(1 << 20)
-	defaultEmuxClockMode         = "idle-jump"
+	defaultEmuxBudget            = "5ms"
+	defaultEmuxInstructionBudget = uint64(5 * time.Millisecond)
 	defaultEmuxMonotonicStartNS  = int64(1)
-	defaultEmuxNSPerInstruction  = int64(1)
+	emuxPRNGMinBudget            = uint64(1 * time.Millisecond)
+	emuxPRNGMaxBudget            = uint64(500 * time.Millisecond)
 )
 
 type EmuxConfig struct {
 	RunPath           string
 	Seed              uint64
 	MemorySize        uint64
+	Budget            string
 	InstructionBudget uint64
 	JITLazy           bool
 	JITAOT            bool
+	Hermit            bool
+	Deadlock          bool
+	PRNG              bool
 	Chaos             bool
-	AllowAllHostFiles bool
-	ClockMode         string
 	MonotonicStartNS  int64
 	MonotonicStartSet bool
 	RealtimeOffsetNS  int64
-	NSPerInstruction  int64
 	Args              []string
 	Env               []string
 	Stdin             io.Reader
@@ -91,15 +96,15 @@ func (c *EmuxConfig) DefineFlags(fs *flag.FlagSet) {
 	fs.StringVar(&c.RunPath, "run", "", "path to RISCV ELF binary to run")
 	fs.Uint64Var(&c.Seed, "seed", 0, "pseudo random number generator seed")
 	fs.Uint64Var(&c.MemorySize, "mem", defaultEmuxMemorySize, "guest memory size in bytes")
-	fs.Uint64Var(&c.InstructionBudget, "budget", defaultEmuxInstructionBudget, "jea9linux instruction budget per scheduler slice")
+	fs.StringVar(&c.Budget, "budget", defaultEmuxBudget, "scheduler budget as an instruction count or duration; 1ns == 1 instruction")
 	fs.BoolVar(&c.JITLazy, "jitlazy", false, "run with the native lazy JIT instead of the interpreter")
 	fs.BoolVar(&c.JITAOT, "jitaot", false, "run with explicit AOT JIT instead of the interpreter")
-	fs.BoolVar(&c.Chaos, "chaos", false, "run with deterministic chaos scheduling")
-	fs.BoolVar(&c.AllowAllHostFiles, "allhost", false, "allow guest file syscalls to pass through to the host filesystem")
-	fs.StringVar(&c.ClockMode, "clock", defaultEmuxClockMode, "clock mode: idle-jump or ic-tick")
+	fs.BoolVar(&c.Hermit, "hermit", false, "disable host filesystem passthrough")
+	fs.BoolVar(&c.Deadlock, "deadlock", false, "run each thread until it blocks before scheduling another thread")
+	fs.BoolVar(&c.PRNG, "prng", false, "use deterministic PRNG scheduling quantum and clock advancement")
+	fs.BoolVar(&c.Chaos, "chaos", false, "use deterministic chaos scheduling")
 	fs.Int64Var(&c.MonotonicStartNS, "monotonic-ns", defaultEmuxMonotonicStartNS, "initial monotonic clock value in nanoseconds")
 	fs.Int64Var(&c.RealtimeOffsetNS, "realtime-offset-ns", 0, "realtime clock offset from monotonic time in nanoseconds")
-	fs.Int64Var(&c.NSPerInstruction, "ns-per-instruction", defaultEmuxNSPerInstruction, "nanoseconds advanced per instruction attempt in ic-tick mode")
 }
 
 func (c *EmuxConfig) ValidateConfig() error {
@@ -118,7 +123,10 @@ func (c *EmuxConfig) ValidateConfig() error {
 	if c.JITLazy && c.JITAOT {
 		return fmt.Errorf("-jitlazy and -jitaot are mutually exclusive")
 	}
-	if _, err := parseClockMode(c.ClockMode); err != nil {
+	if _, err := c.timingMode(); err != nil {
+		return err
+	}
+	if _, err := c.schedulerBudget(); err != nil {
 		return err
 	}
 	return nil
@@ -163,7 +171,15 @@ func runEmux(cfg EmuxConfig) (int, error) {
 		return 0, err
 	}
 
-	clockMode, err := parseClockMode(cfg.ClockMode)
+	budget, err := cfg.schedulerBudget()
+	if err != nil {
+		return 0, err
+	}
+	clockPolicy, err := cfg.clockPolicy()
+	if err != nil {
+		return 0, err
+	}
+	instructionBudget, err := cfg.runInstructionBudget(budget)
 	if err != nil {
 		return 0, err
 	}
@@ -182,16 +198,16 @@ func runEmux(cfg EmuxConfig) (int, error) {
 	cpu := riscv.NewCPU(*mem)
 	jlinux := riscv.NewJea9Linux(riscv.Jea9LinuxOptions{
 		EntropySeed:       seedBytes(cfg.Seed),
-		ClockMode:         clockMode,
+		ClockMode:         riscv.Jea9ClockIdleJump,
+		ClockPolicy:       clockPolicy,
 		MonotonicStartNS:  cfg.MonotonicStartNS,
 		RealtimeOffsetNS:  cfg.RealtimeOffsetNS,
-		NSPerInstruction:  cfg.NSPerInstruction,
-		InstructionBudget: cfg.InstructionBudget,
-		Scheduler:         cfg.schedulerConfig(),
+		InstructionBudget: instructionBudget,
+		Scheduler:         cfg.schedulerConfig(budget),
 		Stdin:             cfg.Stdin,
 		Stdout:            cfg.Stdout,
 		Stderr:            cfg.Stderr,
-		AllowAllHostFiles: cfg.AllowAllHostFiles,
+		AllowAllHostFiles: !cfg.Hermit,
 	})
 
 	args := append([]string(nil), cfg.Args...)
@@ -249,17 +265,11 @@ func (c EmuxConfig) withDefaults() EmuxConfig {
 	if c.MemorySize == 0 {
 		c.MemorySize = defaultEmuxMemorySize
 	}
-	if c.InstructionBudget == 0 {
-		c.InstructionBudget = defaultEmuxInstructionBudget
-	}
-	if c.ClockMode == "" {
-		c.ClockMode = defaultEmuxClockMode
+	if c.Budget == "" && c.InstructionBudget == 0 {
+		c.Budget = defaultEmuxBudget
 	}
 	if c.MonotonicStartNS == 0 && !c.MonotonicStartSet {
 		c.MonotonicStartNS = defaultEmuxMonotonicStartNS
-	}
-	if c.NSPerInstruction == 0 {
-		c.NSPerInstruction = defaultEmuxNSPerInstruction
 	}
 	if c.Stdin == nil {
 		c.Stdin = os.Stdin
@@ -273,22 +283,145 @@ func (c EmuxConfig) withDefaults() EmuxConfig {
 	return c
 }
 
-func (c EmuxConfig) schedulerConfig() riscv.Jea9LinuxSchedulerConfig {
-	if c.Chaos {
-		return riscv.Jea9LinuxSchedulerConfig{Mode: riscv.Jea9SchedulerChaos}
+type emuxTimingMode uint8
+
+const (
+	emuxTimingFixed emuxTimingMode = iota
+	emuxTimingDeadlock
+	emuxTimingPRNG
+	emuxTimingChaos
+)
+
+func (c EmuxConfig) timingMode() (emuxTimingMode, error) {
+	n := 0
+	if c.Deadlock {
+		n++
 	}
-	return riscv.Jea9LinuxSchedulerConfig{}
+	if c.PRNG {
+		n++
+	}
+	if c.Chaos {
+		n++
+	}
+	if n > 1 {
+		return 0, fmt.Errorf("-deadlock, -prng, and -chaos are mutually exclusive")
+	}
+	switch {
+	case c.Deadlock:
+		return emuxTimingDeadlock, nil
+	case c.PRNG:
+		return emuxTimingPRNG, nil
+	case c.Chaos:
+		return emuxTimingChaos, nil
+	default:
+		return emuxTimingFixed, nil
+	}
 }
 
-func parseClockMode(name string) (riscv.Jea9LinuxClockMode, error) {
-	switch strings.ToLower(name) {
-	case "", "idle-jump", "idlejump":
-		return riscv.Jea9ClockIdleJump, nil
-	case "ic-tick", "ictick":
-		return riscv.Jea9ClockICTick, nil
-	default:
-		return 0, fmt.Errorf("-clock must be idle-jump or ic-tick, got %q", name)
+func (c EmuxConfig) clockPolicy() (riscv.ClockPolicy, error) {
+	mode, err := c.timingMode()
+	if err != nil {
+		return 0, err
 	}
+	switch mode {
+	case emuxTimingPRNG:
+		return riscv.ClockPolicyPRNG, nil
+	case emuxTimingChaos:
+		return riscv.ClockPolicyChaos, nil
+	default:
+		return riscv.ClockPolicyOnlyDeadlockAdvances, nil
+	}
+}
+
+func (c EmuxConfig) schedulerConfig(budget uint64) riscv.Jea9LinuxSchedulerConfig {
+	mode, err := c.timingMode()
+	if err != nil {
+		return riscv.Jea9LinuxSchedulerConfig{}
+	}
+	switch mode {
+	case emuxTimingDeadlock:
+		return riscv.Jea9LinuxSchedulerConfig{Mode: riscv.Jea9SchedulerDeadlock}
+	case emuxTimingPRNG:
+		return riscv.Jea9LinuxSchedulerConfig{
+			Mode:                   riscv.Jea9SchedulerDST,
+			MinQuantumRetired:      emuxPRNGMinBudget,
+			MaxQuantumRetired:      emuxPRNGMaxBudget,
+			LowPriorityDenominator: 10,
+		}
+	case emuxTimingChaos:
+		return riscv.Jea9LinuxSchedulerConfig{
+			Mode:              riscv.Jea9SchedulerChaos,
+			MinQuantumRetired: budget,
+			MaxQuantumRetired: emuxPRNGMaxBudget,
+		}
+	default:
+		return riscv.Jea9LinuxSchedulerConfig{
+			Mode:              riscv.Jea9SchedulerRoundRobin,
+			MinQuantumRetired: budget,
+			MaxQuantumRetired: budget,
+		}
+	}
+}
+
+func (c EmuxConfig) runInstructionBudget(budget uint64) (uint64, error) {
+	mode, err := c.timingMode()
+	if err != nil {
+		return 0, err
+	}
+	switch mode {
+	case emuxTimingFixed, emuxTimingChaos:
+		return budget, nil
+	default:
+		return 0, nil
+	}
+}
+
+func (c EmuxConfig) schedulerBudget() (uint64, error) {
+	if c.Budget == "" {
+		if c.InstructionBudget != 0 {
+			return c.InstructionBudget, nil
+		}
+		return parseEmuxBudget(defaultEmuxBudget)
+	}
+	return parseEmuxBudget(c.Budget)
+}
+
+func parseEmuxBudget(raw string) (uint64, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, fmt.Errorf("-budget must not be empty")
+	}
+	if d, err := time.ParseDuration(raw); err == nil {
+		if d <= 0 {
+			return 0, fmt.Errorf("-budget must be positive, got %q", raw)
+		}
+		return uint64(d), nil
+	}
+	n := strings.ReplaceAll(raw, "_", "")
+	if strings.HasPrefix(n, "-") {
+		return 0, fmt.Errorf("-budget must be positive, got %q", raw)
+	}
+	if v, err := strconv.ParseUint(n, 10, 64); err == nil {
+		if v == 0 {
+			return 0, fmt.Errorf("-budget must be positive, got %q", raw)
+		}
+		return v, nil
+	}
+	f, err := strconv.ParseFloat(n, 64)
+	if err != nil || math.IsNaN(f) || math.IsInf(f, 0) || f <= 0 {
+		return 0, fmt.Errorf("-budget must be a positive instruction count or duration, got %q", raw)
+	}
+	if math.Trunc(f) != f {
+		return 0, fmt.Errorf("-budget instruction count must be integral, got %q", raw)
+	}
+	if f > float64(^uint64(0)) {
+		return 0, fmt.Errorf("-budget overflows uint64, got %q", raw)
+	}
+	v := uint64(f)
+	if v == 0 {
+		return 0, fmt.Errorf("-budget must be positive, got %q", raw)
+	}
+	return v, nil
 }
 
 func seedBytes(seed uint64) []byte {
