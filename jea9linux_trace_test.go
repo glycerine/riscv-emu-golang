@@ -33,6 +33,10 @@ func runJea9LinuxTraceFixture(t *testing.T) (*GuestMemory, *Jea9Linux, int) {
 		MonotonicStartNS:  44,
 		InstructionBudget: 2,
 		Trace:             true,
+		Scheduler: Jea9LinuxSchedulerConfig{
+			MinQuantumRetired: 2,
+			MaxQuantumRetired: 2,
+		},
 	})
 	code, err := RunWithJea9Linux(cpu, j)
 	if err != nil {
@@ -54,7 +58,7 @@ func TestJea9Linux_TraceRecordsSyscallsScheduleRandomAndClock(t *testing.T) {
 	requireTraceSyscall(t, trace, jea9TestSysGetrandom)
 	requireTraceSyscall(t, trace, jea9LinuxSysExit)
 	if len(trace.Schedule) == 0 {
-		t.Fatal("schedule trace is empty, want budget-boundary records")
+		t.Fatal("schedule trace is empty, want scheduler-quantum records")
 	}
 	if len(trace.Random) != 1 {
 		t.Fatalf("random observations = %d, want 1", len(trace.Random))

@@ -207,9 +207,12 @@ func TestJea9Linux_SchedYieldSingleContextNoop(t *testing.T) {
 	}
 }
 
-func TestJea9Linux_BudgetBoundaryRotatesRunnableContexts(t *testing.T) {
-	cpu, mem, j := testLoopCPU(t, 2)
+func TestJea9Linux_SchedulerQuantumRotatesRunnableContexts(t *testing.T) {
+	cpu, mem, j := testLoopCPU(t, 100)
 	defer mem.Free()
+	j.schedulerConfig.MinQuantumRetired = 2
+	j.schedulerConfig.MaxQuantumRetired = 2
+	j.normalizeSchedulerConfig()
 	cleanup := InstallJea9Linux(cpu, j)
 	defer cleanup()
 
@@ -221,7 +224,7 @@ func TestJea9Linux_BudgetBoundaryRotatesRunnableContexts(t *testing.T) {
 	}
 	requireCurrentTID(t, j, child)
 	if got := j.contexts[parent].snapshot.x[1]; got != 1 {
-		t.Fatalf("parent saved x1 after first budget = %d, want 1", got)
+		t.Fatalf("parent saved x1 after first scheduler quantum = %d, want 1", got)
 	}
 	if got := cpu.Reg(1); got != 0 {
 		t.Fatalf("loaded child x1 = %d, want child snapshot 0", got)
@@ -232,7 +235,7 @@ func TestJea9Linux_BudgetBoundaryRotatesRunnableContexts(t *testing.T) {
 	}
 	requireCurrentTID(t, j, parent)
 	if got := j.contexts[child].snapshot.x[1]; got != 1 {
-		t.Fatalf("child saved x1 after second budget = %d, want 1", got)
+		t.Fatalf("child saved x1 after second scheduler quantum = %d, want 1", got)
 	}
 	if got := cpu.Reg(1); got != 1 {
 		t.Fatalf("reloaded parent x1 = %d, want 1", got)
