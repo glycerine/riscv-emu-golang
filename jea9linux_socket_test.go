@@ -251,6 +251,47 @@ func TestJea9Linux_TCPSocketHermitRefreshWakesBlockedListenerEpoll(t *testing.T)
 	requireEpollEvent(t, mem, 0x8000, jea9TestEpollIn, 0xcafe)
 }
 
+func TestJea9Linux_TCPSocketListenerEdgeRearmsAfterAcceptDrains(t *testing.T) {
+	j := NewJea9Linux(Jea9LinuxOptions{AllowAllHostFiles: true})
+	cpu, mem := newJea9LinuxSyscallCPU(t, j)
+	defer mem.Free()
+	defer j.closeAllFDs()
+
+	server := listenGuestTCP(t, cpu, mem)
+	port := guestTCPListenPort(t, cpu, mem, server)
+	epfd := newEpoll(t, cpu)
+	writeEpollEvent(t, mem, 0x7000, jea9TestEpollIn|jea9TestEpollET, 0xcafe)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysEpollCtl, epfd, jea9TestEpollCtlAdd, server, 0x7000); d != NoteHandled {
+		t.Fatalf("epoll add listener disposition = %v", d)
+	}
+	requireSyscallReturn(t, cpu, 0)
+
+	client1 := newGuestTCPSocket(t, cpu)
+	writeGuestSockaddrInet4(t, mem, 0x6000, [4]byte{127, 0, 0, 1}, port)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysConnect, client1, 0x6000, 16); d != NoteHandled {
+		t.Fatalf("first client connect disposition = %v", d)
+	}
+	requireSyscallReturn(t, cpu, 0)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysEpollPwait, epfd, 0x8000, 1, 0, 0, 0); d != NoteHandled {
+		t.Fatalf("first listener epoll disposition = %v", d)
+	}
+	requireSyscallReturn(t, cpu, 1)
+	requireEpollEvent(t, mem, 0x8000, jea9TestEpollIn, 0xcafe)
+	_ = acceptGuestTCP(t, cpu, mem, server)
+
+	client2 := newGuestTCPSocket(t, cpu)
+	writeGuestSockaddrInet4(t, mem, 0x6100, [4]byte{127, 0, 0, 1}, port)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysConnect, client2, 0x6100, 16); d != NoteHandled {
+		t.Fatalf("second client connect disposition = %v", d)
+	}
+	requireSyscallReturn(t, cpu, 0)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysEpollPwait, epfd, 0x8000, 1, 0, 0, 0); d != NoteHandled {
+		t.Fatalf("second listener epoll disposition = %v", d)
+	}
+	requireSyscallReturn(t, cpu, 1)
+	requireEpollEvent(t, mem, 0x8000, jea9TestEpollIn, 0xcafe)
+}
+
 func newGuestTCPSocket(t *testing.T, cpu *CPU) uint64 {
 	t.Helper()
 	flags := jea9TestSockStream | jea9TestSockNonblock | jea9TestSockCloexec
