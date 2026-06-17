@@ -20,7 +20,7 @@ const (
 	defaultEmuxMemorySize        = riscv.Size16GB
 	defaultEmuxBudget            = "5ms"
 	defaultEmuxInstructionBudget = uint64(5 * time.Millisecond)
-	defaultEmuxMonotonicStartNS  = int64(1)
+	defaultEmuxMonotonicStartNS  = int64(946684800000000000) // 2000-01-01T00:00:00Z
 	emuxPRNGMinBudget            = uint64(1 * time.Millisecond)
 	emuxPRNGMaxBudget            = uint64(500 * time.Millisecond)
 )
@@ -100,10 +100,10 @@ func (c *EmuxConfig) DefineFlags(fs *flag.FlagSet) {
 	fs.BoolVar(&c.JITLazy, "jitlazy", false, "run with the native lazy JIT instead of the interpreter")
 	fs.BoolVar(&c.JITAOT, "jitaot", false, "run with explicit AOT JIT instead of the interpreter")
 	fs.BoolVar(&c.Hermit, "hermit", false, "disable host filesystem passthrough")
-	fs.BoolVar(&c.Deadlock, "deadlock", false, "run each thread until it blocks before scheduling another thread")
+	fs.BoolVar(&c.Deadlock, "deadlock", false, "run each thread until it blocks before scheduling another thread (at most one of -deadlock -prng or -chaos may be given; if none the default is a fixed quantum of -budget duration)")
 	fs.BoolVar(&c.PRNG, "prng", false, "use deterministic PRNG scheduling quantum and clock advancement")
 	fs.BoolVar(&c.Chaos, "chaos", false, "use deterministic chaos scheduling")
-	fs.Int64Var(&c.MonotonicStartNS, "monotonic-ns", defaultEmuxMonotonicStartNS, "initial monotonic clock value in nanoseconds")
+	fs.Int64Var(&c.MonotonicStartNS, "monotonic-ns", defaultEmuxMonotonicStartNS, "initial monotonic clock value in nanoseconds since Unix epoch; default is 2000-01-01T00:00:00Z")
 	fs.Int64Var(&c.RealtimeOffsetNS, "realtime-offset-ns", 0, "realtime clock offset from monotonic time in nanoseconds")
 }
 
