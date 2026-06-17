@@ -314,6 +314,42 @@ func TestPrepareBiosGuestUsesExternalDTB(t *testing.T) {
 	}
 }
 
+func TestBiosUARTTransmitInterruptThroughPLIC(t *testing.T) {
+	var stdout bytes.Buffer
+	m := newBiosMMIO(&stdout)
+
+	m.storePLIC(4*uint64(biosUARTIRQ), 4, 1)
+	m.storePLIC(0x2000+0x80*uint64(plicSContext), 4, uint64(1)<<biosUARTIRQ)
+	m.storePLIC(0x200000+0x1000*uint64(plicSContext), 4, 0)
+
+	if m.SupervisorExternalInterruptPending() {
+		t.Fatal("PLIC reported UART interrupt before THRI was enabled")
+	}
+
+	m.storeUART(1, 1, uint64(uartIERTHRI))
+	if !m.SupervisorExternalInterruptPending() {
+		t.Fatal("PLIC did not report UART interrupt after THRI enable")
+	}
+	if got := m.loadPLIC(0x200000+0x1000*uint64(plicSContext)+4, 4); got != uint64(biosUARTIRQ) {
+		t.Fatalf("PLIC claim = %d, want UART IRQ %d", got, biosUARTIRQ)
+	}
+	if got := m.loadUART(2, 1); byte(got) != uartIIRTHRI {
+		t.Fatalf("UART IIR = 0x%x, want THRI 0x%x", got, uartIIRTHRI)
+	}
+	if m.SupervisorExternalInterruptPending() {
+		t.Fatal("UART interrupt still pending after IIR read while claimed")
+	}
+
+	m.storeUART(0, 1, 'A')
+	m.storePLIC(0x200000+0x1000*uint64(plicSContext)+4, 4, uint64(biosUARTIRQ))
+	if stdout.String() != "A" {
+		t.Fatalf("stdout = %q, want A", stdout.String())
+	}
+	if !m.SupervisorExternalInterruptPending() {
+		t.Fatal("UART THR write did not reassert transmit interrupt")
+	}
+}
+
 func TestPrepareBiosGuestRejectsFwJumpFDTKernelOverlap(t *testing.T) {
 	const biosPath = "../../xendor/opensbi/build/platform/generic/firmware/fw_jump.elf"
 	if !fileExists(biosPath) {

@@ -35,6 +35,17 @@ const (
 	biosCLINTSize         = uint64(0x00010000)
 	biosPLICBase          = uint64(0x0c000000)
 	biosPLICSize          = uint64(0x04000000)
+	biosUARTIRQ           = uint32(10)
+	plicSContext          = uint32(1)
+)
+
+const (
+	uartIERTHRI = byte(1) << 1
+	uartIIRNone = byte(0x01)
+	uartIIRTHRI = byte(0x02)
+	uartLCRDLAB = byte(0x80)
+	uartLSRTHRE = byte(0x20)
+	uartLSRTEMT = byte(0x40)
 )
 
 type biosGuest struct {
@@ -281,10 +292,15 @@ func (c EmuConfig) biosBootArgs() string {
 }
 
 type biosMMIO struct {
-	stdout io.Writer
-	uart   [0x100]byte
-	clint  [0x10000]byte
-	mtime  uint64
+	stdout          io.Writer
+	uart            [0x100]byte
+	uartTXInterrupt bool
+	clint           [0x10000]byte
+	mtime           uint64
+	plicPriority    [64]uint32
+	plicEnable      [2]uint64
+	plicThreshold   [2]uint32
+	plicClaimed     [2]uint32
 }
 
 func newBiosMMIO(stdout io.Writer) *biosMMIO {
@@ -305,8 +321,8 @@ func (m *biosMMIO) Load(addr, width uint64) (uint64, bool, *riscv.MemFault) {
 	if off, ok := mmioRangeOffset(addr, width, biosCLINTBase, biosCLINTSize); ok {
 		return m.loadCLINT(off, width), true, nil
 	}
-	if _, ok := mmioRangeOffset(addr, width, biosPLICBase, biosPLICSize); ok {
-		return 0, true, nil
+	if off, ok := mmioRangeOffset(addr, width, biosPLICBase, biosPLICSize); ok {
+		return m.loadPLIC(off, width), true, nil
 	}
 	if mmioRangeTouches(addr, width, biosUARTBase, biosUARTSize) ||
 		mmioRangeTouches(addr, width, biosCLINTBase, biosCLINTSize) ||
@@ -325,7 +341,8 @@ func (m *biosMMIO) Store(addr, width, value uint64) (bool, *riscv.MemFault) {
 		m.storeCLINT(off, width, value)
 		return true, nil
 	}
-	if _, ok := mmioRangeOffset(addr, width, biosPLICBase, biosPLICSize); ok {
+	if off, ok := mmioRangeOffset(addr, width, biosPLICBase, biosPLICSize); ok {
+		m.storePLIC(off, width, value)
 		return true, nil
 	}
 	if mmioRangeTouches(addr, width, biosUARTBase, biosUARTSize) ||
@@ -351,11 +368,20 @@ func (m *biosMMIO) loadUART(off, width uint64) uint64 {
 }
 
 func (m *biosMMIO) uartByte(off uint64) byte {
+	dlab := m.uart[3]&uartLCRDLAB != 0
 	switch off {
+	case 0:
+		return m.uart[0]
+	case 1:
+		return m.uart[1]
 	case 2:
-		return 0x01
+		if !dlab && m.uartInterruptPending() {
+			m.uartTXInterrupt = false
+			return uartIIRTHRI
+		}
+		return uartIIRNone
 	case 5:
-		return 0x60
+		return uartLSRTHRE | uartLSRTEMT
 	default:
 		return m.uart[off]
 	}
@@ -365,14 +391,27 @@ func (m *biosMMIO) storeUART(off, width, value uint64) {
 	for i := uint64(0); i < width; i++ {
 		b := byte(value >> (8 * i))
 		idx := off + i
-		dlab := m.uart[3]&0x80 != 0
+		dlab := m.uart[3]&uartLCRDLAB != 0
 		m.uart[idx] = b
 		if idx == 0 && !dlab {
 			_, _ = m.stdout.Write([]byte{b})
+			if m.uart[1]&uartIERTHRI != 0 {
+				m.uartTXInterrupt = true
+			}
+		}
+		if idx == 1 && !dlab {
+			if b&uartIERTHRI != 0 {
+				m.uartTXInterrupt = true
+			} else {
+				m.uartTXInterrupt = false
+			}
 		}
 	}
-	m.uart[2] = 0x01
-	m.uart[5] = 0x60
+	m.uart[5] = uartLSRTHRE | uartLSRTEMT
+}
+
+func (m *biosMMIO) uartInterruptPending() bool {
+	return m.uart[1]&uartIERTHRI != 0 && m.uartTXInterrupt
 }
 
 func (m *biosMMIO) loadCLINT(off, width uint64) uint64 {
@@ -394,6 +433,124 @@ func (m *biosMMIO) AdvanceMachineTimer(delta uint64) {
 
 func (m *biosMMIO) MachineTimerValue() uint64 {
 	return m.mtime
+}
+
+func (m *biosMMIO) SupervisorExternalInterruptPending() bool {
+	return m.plicPendingForContext(plicSContext) != 0
+}
+
+func (m *biosMMIO) loadPLIC(off, width uint64) uint64 {
+	if width != 4 {
+		return 0
+	}
+	if off < 0x1000 {
+		source := off / 4
+		if source < uint64(len(m.plicPriority)) {
+			return uint64(m.plicPriority[source])
+		}
+		return 0
+	}
+	if off >= 0x1000 && off < 0x2000 {
+		return uint64(m.plicPendingBits())
+	}
+	if off >= 0x2000 && off < 0x2000+0x80*uint64(len(m.plicEnable)) {
+		ctx := (off - 0x2000) / 0x80
+		word := ((off - 0x2000) % 0x80) / 4
+		if word == 0 {
+			return uint64(uint32(m.plicEnable[ctx]))
+		}
+		if word == 1 {
+			return uint64(uint32(m.plicEnable[ctx] >> 32))
+		}
+		return 0
+	}
+	if off >= 0x200000 && off < 0x200000+0x1000*uint64(len(m.plicThreshold)) {
+		ctx := uint32((off - 0x200000) / 0x1000)
+		reg := (off - 0x200000) % 0x1000
+		switch reg {
+		case 0:
+			return uint64(m.plicThreshold[ctx])
+		case 4:
+			return uint64(m.plicClaim(ctx))
+		default:
+			return 0
+		}
+	}
+	return 0
+}
+
+func (m *biosMMIO) storePLIC(off, width, value uint64) {
+	if width != 4 {
+		return
+	}
+	if off < 0x1000 {
+		source := off / 4
+		if source < uint64(len(m.plicPriority)) {
+			m.plicPriority[source] = uint32(value)
+		}
+		return
+	}
+	if off >= 0x2000 && off < 0x2000+0x80*uint64(len(m.plicEnable)) {
+		ctx := (off - 0x2000) / 0x80
+		word := ((off - 0x2000) % 0x80) / 4
+		switch word {
+		case 0:
+			m.plicEnable[ctx] = (m.plicEnable[ctx] &^ uint64(0xffffffff)) | uint64(uint32(value))
+		case 1:
+			m.plicEnable[ctx] = (m.plicEnable[ctx] & uint64(0xffffffff)) | uint64(uint32(value))<<32
+		}
+		return
+	}
+	if off >= 0x200000 && off < 0x200000+0x1000*uint64(len(m.plicThreshold)) {
+		ctx := uint32((off - 0x200000) / 0x1000)
+		reg := (off - 0x200000) % 0x1000
+		switch reg {
+		case 0:
+			m.plicThreshold[ctx] = uint32(value)
+		case 4:
+			m.plicComplete(ctx, uint32(value))
+		}
+	}
+}
+
+func (m *biosMMIO) plicPendingBits() uint32 {
+	if m.uartInterruptPending() {
+		return uint32(1) << biosUARTIRQ
+	}
+	return 0
+}
+
+func (m *biosMMIO) plicPendingForContext(ctx uint32) uint32 {
+	if ctx >= uint32(len(m.plicEnable)) || m.plicClaimed[ctx] != 0 {
+		return 0
+	}
+	pending := m.plicPendingBits()
+	best := uint32(0)
+	bestPriority := uint32(0)
+	for source := uint32(1); source < uint32(len(m.plicPriority)); source++ {
+		if pending&(uint32(1)<<source) == 0 || m.plicEnable[ctx]&(uint64(1)<<source) == 0 {
+			continue
+		}
+		priority := m.plicPriority[source]
+		if priority <= m.plicThreshold[ctx] || priority <= bestPriority {
+			continue
+		}
+		best = source
+		bestPriority = priority
+	}
+	return best
+}
+
+func (m *biosMMIO) plicClaim(ctx uint32) uint32 {
+	source := m.plicPendingForContext(ctx)
+	m.plicClaimed[ctx] = source
+	return source
+}
+
+func (m *biosMMIO) plicComplete(ctx, source uint32) {
+	if ctx < uint32(len(m.plicClaimed)) && m.plicClaimed[ctx] == source {
+		m.plicClaimed[ctx] = 0
+	}
 }
 
 func (m *biosMMIO) syncCLINTTime() {

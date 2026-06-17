@@ -14,15 +14,23 @@ type biosMachineTimerMMIO interface {
 	MachineTimerValue() uint64
 }
 
+type biosSupervisorExternalIRQ interface {
+	SupervisorExternalInterruptPending() bool
+}
+
 const biosTimerTicksPerInstruction = uint64(1)
 
 func (c *CPU) serviceBiosMachineTimer() {
 	timer, ok := c.mem.mmio.(biosMachineTimerMMIO)
-	if !ok {
-		return
+	if ok {
+		timer.AdvanceMachineTimer(biosTimerTicksPerInstruction)
+		c.refreshSupervisorTimerPendingAt(timer.MachineTimerValue())
 	}
-	timer.AdvanceMachineTimer(biosTimerTicksPerInstruction)
-	c.refreshSupervisorTimerPendingAt(timer.MachineTimerValue())
+	if irq, ok := c.mem.mmio.(biosSupervisorExternalIRQ); ok && irq.SupervisorExternalInterruptPending() {
+		c.mip |= mipSEIP
+	} else {
+		c.mip &^= mipSEIP
+	}
 }
 
 func (c *CPU) timerValue() uint64 {
