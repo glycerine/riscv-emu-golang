@@ -410,6 +410,19 @@ func TestBiosUARTInputReaderFeedsReceiveFIFO(t *testing.T) {
 	}
 }
 
+func TestEnableRawTerminalIgnoresNonFileStdin(t *testing.T) {
+	restore, raw, err := enableRawTerminal(strings.NewReader(""))
+	if err != nil {
+		t.Fatalf("enableRawTerminal: %v", err)
+	}
+	if raw {
+		t.Fatal("enableRawTerminal entered raw mode for non-file stdin")
+	}
+	if restore != nil {
+		t.Fatal("enableRawTerminal returned restore callback for non-file stdin")
+	}
+}
+
 func TestPrepareBiosGuestRejectsFwJumpFDTKernelOverlap(t *testing.T) {
 	const biosPath = "../../xendor/opensbi/build/platform/generic/firmware/fw_jump.elf"
 	if !fileExists(biosPath) {

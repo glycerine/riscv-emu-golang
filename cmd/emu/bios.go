@@ -69,6 +69,13 @@ func runEmuBios(cfg EmuConfig, budget uint64) (int, error) {
 	if cfg.JITLazy || cfg.JITAOT {
 		return 0, fmt.Errorf("-jitlazy and -jitaot are not supported with -bios yet")
 	}
+	restoreTerminal, raw, err := enableRawTerminal(cfg.Stdin)
+	if err != nil {
+		return 0, err
+	}
+	if raw {
+		defer restoreTerminal()
+	}
 	guest, err := prepareBiosGuest(cfg)
 	if err != nil {
 		return 0, err
