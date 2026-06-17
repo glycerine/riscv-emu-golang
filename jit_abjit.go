@@ -17,10 +17,10 @@ import (
 // Inside JIT code, R15 is always the REMAINING guest-instruction budget for
 // this dispatch. Native code reserves one instruction, or an entire fused group,
 // before executing guest work. The Go boundary converts
-// initialBudget-finalBudget into the retired-instruction delta.
+// initialBudget-finalBudget into the instruction-attempt delta.
 //
 // Outside JIT code (Go), cpu.riscvInstrBegun is the ABSOLUTE cumulative count
-// of all guest instructions ever retired.
+// of all guest instruction attempts ever begun.
 //
 // The conversion happens here, at the dispatch boundary:
 //
@@ -28,7 +28,7 @@ import (
 //	       trampoline loads R15 from s.IC
 //	       ── JIT code: R15 remaining budget ──
 //	       SpillIC writes R15 back to s.IC
-//	Go  ←  cpu.riscvInstrBegun += initialBudget - s.IC
+//	Go  ←  cpu.riscvInstrBegun += attempted instructions
 //
 // Chain exits preserve R15 across blocks (no re-zeroing).
 // Gocall sequences (SpillIC/LoadIC) preserve R15 across Go callbacks.

@@ -353,7 +353,7 @@ type Jea9LinuxScheduleTraceEntry struct {
 	TID             uint64
 	NextTID         uint64
 	MonotonicNS     int64
-	RiscvInstrBegun uint64
+	RiscvInstrBegun uint64 // cumulative guest instruction attempts begun by the hart
 }
 
 type Jea9LinuxRandomTraceEntry struct {
@@ -1589,10 +1589,10 @@ func elfProgramBreak(ef *ELF) uint64 {
 }
 
 func (jos *Jea9Linux) Run(cpu *CPU) error {
-	before := cpu.RiscvInstrBegun()
+	attemptsBefore := cpu.RiscvInstrBegun()
 	res, err := RunDefaultBudget(cpu, &cpu.Notes, jos.instructionBudget)
-	delta := cpu.RiscvInstrBegun() - before
-	jos.accountRetired(delta)
+	attemptDelta := cpu.RiscvInstrBegun() - attemptsBefore
+	jos.accountInsAttempts(attemptDelta)
 	if jos.Blocked() {
 		return ErrJea9LinuxBlocked
 	}
@@ -1624,11 +1624,11 @@ func (jos *Jea9Linux) RunJIT(cpu *CPU, jit *JIT) error {
 			remaining = budget - used
 		}
 
-		before := cpu.RiscvInstrBegun()
+		attemptsBefore := cpu.RiscvInstrBegun()
 		res, err := jit.StepBlockBudget(cpu, remaining)
-		delta := cpu.RiscvInstrBegun() - before
-		used += delta
-		jos.accountRetired(delta)
+		attemptDelta := cpu.RiscvInstrBegun() - attemptsBefore
+		used += attemptDelta
+		jos.accountInsAttempts(attemptDelta)
 		if jos.Blocked() {
 			return ErrJea9LinuxBlocked
 		}
@@ -1685,11 +1685,11 @@ func (jos *Jea9Linux) expireBudget(cpu *CPU) error {
 	return ErrJea9LinuxBudget
 }
 
-func (jos *Jea9Linux) accountRetired(delta uint64) {
-	if jos.clockMode != Jea9ClockICTick || delta == 0 {
+func (jos *Jea9Linux) accountInsAttempts(attempts uint64) {
+	if jos.clockMode != Jea9ClockICTick || attempts == 0 {
 		return
 	}
-	jos.monotonicNS += int64(delta) * jos.nsPerInstruction
+	jos.monotonicNS += int64(attempts) * jos.nsPerInstruction
 }
 
 func (jos *Jea9Linux) Handle(cpu *CPU, n Note) (disp NoteDisposition) {

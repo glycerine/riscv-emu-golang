@@ -294,7 +294,7 @@ func TestAOTInstall_RunDhrystone(t *testing.T) {
 			gotErr, cpu.PC(), cpu.RiscvInstrBegun())
 	}
 
-	t.Logf("dhrystone AOT run: retired %d insns", cpu.RiscvInstrBegun())
+	t.Logf("dhrystone AOT run: attempted %d insns", cpu.RiscvInstrBegun())
 }
 
 // TestAOTDispatch_DhrystoneReducesRoundTrips runs dhrystone under

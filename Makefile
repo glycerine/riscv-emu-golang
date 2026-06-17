@@ -612,11 +612,11 @@ bench-smoke: bench-setup
 	        -run='^TestLibriscvSmokeTest$$' \
 	        ./bench/libriscv/ 2>&1
 
-# The number of riscv instructions retired during a
+# The number of riscv instruction attempts during a
 # run on compiled bench/libriscv_guest/bench_guest.c ;
 # we use this number for the numerator in native 
 # benchmarking for an apples-to-apples comparison.
-NATIVE_RETIRED := 2524935201
+NATIVE_INS_ATTEMPTS := 2524935201
 
 bench:
 	@echo ""
@@ -670,7 +670,7 @@ bench:
 	    || echo "(failed)"
 	@printf "  %-44s " "native x86-64 (-O3 -march=native):"
 	@elapsed=$$({ /usr/bin/time -p $(GUEST_NATIVE) >/dev/null; } 2>&1 | awk '/^real/{print $$NF}'); \
-         awk "BEGIN{printf \"%.0f MIPS  (%.1f ms)\n\", $(NATIVE_RETIRED)/$$elapsed/1000000, $$elapsed*1000}"
+         awk "BEGIN{printf \"%.0f MIPS  (%.1f ms)\n\", $(NATIVE_INS_ATTEMPTS)/$$elapsed/1000000, $$elapsed*1000}"
 	@/bin/echo -n "  " ; make bench-wasm | grep MIPS
 	@echo ""
 	#make bench-coremark

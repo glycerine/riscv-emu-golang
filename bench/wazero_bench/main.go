@@ -11,12 +11,12 @@ import (
 	"github.com/tetratelabs/wazero/sys"
 )
 
-// The number of riscv instructions retired during a
+// The number of riscv instruction attempts during a
 // run on compiled bench/libriscv_guest/bench_guest.c ;
 // we use this number for the numerator in native
 // benchmarking for an apples-to-apples comparison.
-const NATIVE_RETIRED = 2524935201
-const NATIVE_RETIRED_MILLIONS = 2_524_935_201 / 1_000_000
+const NATIVE_INS_ATTEMPTS = 2524935201
+const NATIVE_INS_ATTEMPTS_MILLIONS = 2_524_935_201 / 1_000_000
 
 func main() {
 	wasm, err := os.ReadFile(os.Args[1])
@@ -55,5 +55,5 @@ func main() {
 	fmt.Printf("wasm compile:   %v    <- AOT compile happens here\n", elap21)
 	fmt.Printf("run:            %v\n", runElap)
 	fmt.Printf("total (cold):   %v\n", t3.Sub(t0))
-	fmt.Printf("wazero wasm aot-and-run                    %0.1f MIPS\n", 1e9*float64(NATIVE_RETIRED_MILLIONS)/float64(aotAndRunElapNanos))
+	fmt.Printf("wazero wasm aot-and-run                    %0.1f MIPS\n", 1e9*float64(NATIVE_INS_ATTEMPTS_MILLIONS)/float64(aotAndRunElapNanos))
 }

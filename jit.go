@@ -182,7 +182,7 @@ type JITInstructionCounterMode uint8
 const (
 	// JITICNone is retained for older callers. The native JIT no longer has
 	// a no-counter emission mode: all emitted code uses R15 as a decreasing
-	// guest-instruction budget, and Go derives retired instructions at the
+	// guest-instruction budget, and Go derives instruction attempts at the
 	// dispatch boundary.
 	JITICNone JITInstructionCounterMode = iota
 
@@ -322,14 +322,14 @@ type JIT struct {
 	DispatchEcallReal  uint64 // jitEcall returns whose resumePC-4 is an ECALL instruction
 	DispatchEcallStale uint64 // jitEcall returns whose resumePC-4 is not an ECALL instruction
 	DispatchFault      uint64 // native fault/misalignment/illegal returns to Go dispatch
-	InterpretedInsns   uint64 // guest instructions retired by JIT-owned interpreter fallback
-	ICDeltaOK          uint64 // retired-instruction delta reported by jitOK returns
-	ICDeltaBudget      uint64 // retired-instruction delta reported by jitBudget returns
-	ICDeltaJalrMiss    uint64 // retired-instruction delta reported by jitOKJalrMiss returns
-	ICDeltaEcall       uint64 // retired-instruction delta reported by jitEcall returns
-	ICDeltaFault       uint64 // retired-instruction delta reported by native fault returns
-	ICDeltaOther       uint64 // retired-instruction delta reported by other native returns
-	ICDeltaMax         uint64 // largest retired-instruction delta from one native dispatch
+	InterpretedInsns   uint64 // guest instruction attempts by JIT-owned interpreter fallback
+	ICDeltaOK          uint64 // instruction-attempt delta reported by jitOK returns
+	ICDeltaBudget      uint64 // instruction-attempt delta reported by jitBudget returns
+	ICDeltaJalrMiss    uint64 // instruction-attempt delta reported by jitOKJalrMiss returns
+	ICDeltaEcall       uint64 // instruction-attempt delta reported by jitEcall returns
+	ICDeltaFault       uint64 // instruction-attempt delta reported by native fault returns
+	ICDeltaOther       uint64 // instruction-attempt delta reported by other native returns
+	ICDeltaMax         uint64 // largest instruction-attempt delta from one native dispatch
 	ChainPatched       uint64 // chain exits successfully patched
 	ChainPatchTry      uint64 // chain exits considered for patching
 	ChainPatchNoTarget uint64 // chain patch attempts whose target block was absent
@@ -405,7 +405,7 @@ func (j *JIT) NoJITSize() int { return len(j.noJIT) }
 
 // SetInstructionCounterMode validates the legacy instruction-counter mode API.
 // Native code generation no longer switches modes: every emitted block uses
-// R15 as a decreasing budget and Go computes retired instructions from the
+// R15 as a decreasing budget and Go computes instruction attempts from the
 // remaining value returned by the trampoline.
 func (j *JIT) SetInstructionCounterMode(mode JITInstructionCounterMode) {
 	switch mode {
@@ -423,7 +423,7 @@ func (j *JIT) InstructionCounterMode() JITInstructionCounterMode {
 }
 
 // EnableFallbackTrace enables a low-volume histogram of lazy-JIT PCs that
-// retire through the interpreter because no native block is available.
+// execute through the interpreter because no native block is available.
 func (j *JIT) EnableFallbackTrace() {
 	if j.fallbackTrace == nil {
 		j.fallbackTrace = make(map[uint64]*JITFallbackTraceEntry)

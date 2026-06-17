@@ -174,7 +174,7 @@ func TestJIT_LazyBlockMapSurvivesDirectCacheCollision(t *testing.T) {
 	}
 }
 
-func TestJIT_InlineEcallExitCountsRetiredInstructions(t *testing.T) {
+func TestJIT_InlineEcallExitCountsInstructionAttempts(t *testing.T) {
 	const codeVA = uint64(0x1000)
 	insns := []uint32{
 		ienc(opOPIMM, 0, 17, 0, 93), // a7 = exit
@@ -1473,7 +1473,7 @@ func TestJIT_NaNBoxF32_Roundtrip(t *testing.T) {
 			jit.DispatchInterp)
 	}
 	if got := jit.InterpretedInsns; got != 0 {
-		t.Errorf("JIT-owned interpreter fallback retired %d instructions — expected full native coverage", got)
+		t.Errorf("JIT-owned interpreter fallback attempted %d instructions — expected full native coverage", got)
 	}
 
 	const nanBoxHi = uint64(0xFFFFFFFF00000000)

@@ -73,11 +73,11 @@ func runChainReferenceMode(t *testing.T, elfData []byte, workload string, aot bo
 	}
 	t.Logf("─── Chain reference (%s, Fixed Static Mapping, %s) ───", workload, mode)
 	t.Logf("  elapsed           : %v", elapsed)
-	t.Logf("  retired insns     : %d", insns)
+	t.Logf("  attempted insns   : %d", insns)
 	t.Logf("  DispatchOK        : %d   (jitOK returns to Go)", jit.DispatchOK)
 	t.Logf("  DispatchOther     : %d   (ecall/fault/etc returns)", jit.DispatchOther)
 	t.Logf("  DispatchInterp    : %d   (interpreter fallback)", jit.DispatchInterp)
-	t.Logf("  InterpretedInsns  : %d   (guest insns retired by JIT-owned fallback)",
+	t.Logf("  InterpretedInsns  : %d   (guest insn attempts by JIT-owned fallback)",
 		jit.InterpretedInsns)
 	t.Logf("  DispatchCompile   : %d   (block compilations)", jit.DispatchCompile)
 	t.Logf("  ChainPatched      : %d   (patches of MOVABS sentinel → target chainEntry)",

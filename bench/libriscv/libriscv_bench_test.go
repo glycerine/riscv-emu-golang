@@ -46,9 +46,9 @@ func TestLibriscvSmokeTest(t *testing.T) {
 	m := newMachine(t, 64<<20)
 	n := m.RunToCompletion(10_000_000_000)
 	if n == 0 {
-		t.Fatal("machine retired 0 instructions — possible ELF loading failure")
+		t.Fatal("machine reported 0 instructions — possible ELF loading failure")
 	}
-	t.Logf("libriscv smoke: retired %d instructions", n)
+	t.Logf("libriscv smoke: reported %d instructions", n)
 }
 
 // ── calibration benchmarks ─────────────────────────────────────────────────

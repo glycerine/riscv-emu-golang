@@ -97,7 +97,7 @@ func (c *EmuxConfig) DefineFlags(fs *flag.FlagSet) {
 	fs.StringVar(&c.ClockMode, "clock", defaultEmuxClockMode, "clock mode: idle-jump, ic-tick, or manual")
 	fs.Int64Var(&c.MonotonicStartNS, "monotonic-ns", defaultEmuxMonotonicStartNS, "initial monotonic clock value in nanoseconds")
 	fs.Int64Var(&c.RealtimeOffsetNS, "realtime-offset-ns", 0, "realtime clock offset from monotonic time in nanoseconds")
-	fs.Int64Var(&c.NSPerInstruction, "ns-per-instruction", defaultEmuxNSPerInstruction, "nanoseconds advanced per retired instruction in ic-tick mode")
+	fs.Int64Var(&c.NSPerInstruction, "ns-per-instruction", defaultEmuxNSPerInstruction, "nanoseconds advanced per instruction attempt in ic-tick mode")
 }
 
 func (c *EmuxConfig) ValidateConfig() error {

@@ -33,7 +33,7 @@ type CPU struct {
 	x               [32]uint64 // x[0] is hardwired zero
 	f               [32]uint64 // f0-f31: NaN-boxed float32 or raw float64 bits
 	fcsr            uint32     // FP control/status: fflags[4:0] + frm[7:5]
-	riscvInstrBegun uint64     // per-instruction counter incremented at start of each guest instruction
+	riscvInstrBegun uint64     // guest instruction attempts begun, including faulting attempts
 	Notes           NoteChain  // exception delivery chain; handlers installed by OS layer
 	// LR/SC reservation
 	resvAddr  uint64
@@ -1537,9 +1537,9 @@ func (c *CPU) readCSR(addr uint32) uint64 {
 	case 0x343:
 		return c.mtval // mtval
 	case 0xC00, 0xC02:
-		return c.riscvInstrBegun // cycle / instret CSRs
+		return c.riscvInstrBegun // cycle / instret currently expose instruction attempts
 	case 0xC01:
-		return c.riscvInstrBegun // time (approx)
+		return c.riscvInstrBegun // time currently tracks instruction attempts
 	case 0xF14:
 		return 0 // mhartid = 0
 	}

@@ -127,9 +127,9 @@ func TestCPU_BenchGuest_Smoke(t *testing.T) {
 		t.Fatalf("guest exited with code %d, want 0", code)
 	}
 	if insns == 0 {
-		t.Fatal("retired 0 instructions — guest did not run")
+		t.Fatal("attempted 0 instructions — guest did not run")
 	}
-	t.Logf("Go CPU smoke: retired %d instructions (exit code %d)", insns, code)
+	t.Logf("Go CPU smoke: attempted %d instructions (exit code %d)", insns, code)
 }
 
 // ── MIPS benchmark ─────────────────────────────────────────────────────────
@@ -515,9 +515,9 @@ func TestCPU_CoreMark_Smoke(t *testing.T) {
 		t.Fatalf("coremark exited with %d, want 0", code)
 	}
 	if insns == 0 {
-		t.Fatal("retired 0 instructions")
+		t.Fatal("attempted 0 instructions")
 	}
-	t.Logf("coremark: retired %d instructions (exit %d)", insns, code)
+	t.Logf("coremark: attempted %d instructions (exit %d)", insns, code)
 }
 
 // BenchmarkCPU_CoreMark runs CoreMark through the cached interpreter.
@@ -580,9 +580,9 @@ func TestCPU_Dhrystone_Smoke(t *testing.T) {
 		t.Fatalf("dhrystone exited with %d, want 0", code)
 	}
 	if insns == 0 {
-		t.Fatal("retired 0 instructions")
+		t.Fatal("attempted 0 instructions")
 	}
-	t.Logf("dhrystone: retired %d instructions (exit %d)", insns, code)
+	t.Logf("dhrystone: attempted %d instructions (exit %d)", insns, code)
 }
 
 func BenchmarkCPU_Dhrystone(b *testing.B) {

@@ -293,15 +293,15 @@ func TestChaining_SlowExitPatchesExactDuplicateTargetExit(t *testing.T) {
 // and ~4 insns per iteration, 1000 iterations fit inside one block
 // invocation; with larger iter counts the BudgetCheck forces Go
 // re-entry every ~4096 insns. The dispatch loop adds res.IC to
-// cpu.cycle on each return, so the observed cycle count must equal
-// the true retired insn count — this regresses on any bug in IC
+	// cpu.cycle on each return, so the observed cycle count must equal
+	// the true instruction-attempt count — this regresses on any bug in IC
 // accumulation (chain entries skipping XORQ correctly) or in IC
 // writeback (epilogue/slow-stub storing RBP → sret.IC).
 func TestChaining_ICAccumulatesAcrossChainedExits(t *testing.T) {
 	iters := uint64(10000) // well past MaxIC=4096; forces re-entries.
 	cpu, _ := runSimpleLoopJIT(t, iters)
 
-	// Per iteration: 3 ADDIs + 1 BLT = 4 retired. Loop runs `iters`
+		// Per iteration: 3 ADDIs + 1 BLT = 4 attempts. Loop runs `iters`
 	// times (branch taken iters-1 times, falls through on the iters-th).
 	// ECALL at the end adds 1.
 	expected := 4*iters + 1
@@ -340,11 +340,11 @@ func TestChaining_FaultExitsWritebackIC(t *testing.T) {
 	jit := NewJIT()
 	_ = jit.RunJIT(cpu) // expected non-nil error (load fault)
 
-	// Expected: LUI retires (IC=1), LW's body runs and jumps to the
+		// Expected: LUI is attempted (IC=1), LW's body runs and jumps to the
 	// fault stub BEFORE the advancePC IC++ for LW. Fault stub writes
 	// RBP → sret.IC = 1. ECALL unreachable.
 	if got := cpu.RiscvInstrBegun(); got != 1 {
-		t.Errorf("cpu.RiscvInstrBegun() = %d, want 1 (LUI retires, LW faults "+
+			t.Errorf("cpu.RiscvInstrBegun() = %d, want 1 (LUI is attempted, LW faults "+
 			"before its IC++). A value != 1 suggests IC writeback on "+
 			"the fault path is broken.", got)
 	}

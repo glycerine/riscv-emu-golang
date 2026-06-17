@@ -7,7 +7,7 @@ import (
 	"github.com/glycerine/riscv-emu-golang"
 )
 
-const benchGuestRetired = uint64(2524935201)
+const benchGuestInsAttempts = uint64(2524935201)
 
 func runJITBenchGuest(cpu *riscv.CPU) (exitCode int, insns uint64) {
 	return runJITBenchGuestWith(cpu, riscv.NewJIT())
@@ -19,7 +19,7 @@ func TestJIT_BenchGuest_Smoke(t *testing.T) {
 	defer mem.Free()
 
 	exitCode, insns := runJITBenchGuest(cpu)
-	t.Logf("JIT smoke: retired %d instructions, exit code %d, PC=0x%x",
+	t.Logf("JIT smoke: attempted %d instructions, exit code %d, PC=0x%x",
 		insns, exitCode, cpu.PC())
 	if exitCode != 0 {
 		t.Fatalf("expected exit code 0, got %d", exitCode)
@@ -33,7 +33,7 @@ func TestJIT_DispatchStats(t *testing.T) {
 
 	jit := riscv.NewJIT()
 	exitCode, insns := runJITBenchGuestWith(cpu, jit)
-	t.Logf("retired %d instructions, exit code %d", insns, exitCode)
+	t.Logf("attempted %d instructions, exit code %d", insns, exitCode)
 	t.Logf("Dispatch stats:")
 	t.Logf("  jitOK returns:   %d", jit.DispatchOK)
 	t.Logf("  other returns:   %d", jit.DispatchOther)
@@ -83,7 +83,7 @@ func benchJITBenchGuestNoIC(b *testing.B, policy riscv.RegPolicy, strategy strin
 			b.Fatalf("guest exited with code %d, want 0", exitCode)
 		}
 		tms = append(tms, time.Since(t0))
-		totalInsns += benchGuestRetired
+		totalInsns += benchGuestInsAttempts
 		mem.Free()
 	}
 

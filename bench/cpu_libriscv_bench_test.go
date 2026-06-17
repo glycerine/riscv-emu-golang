@@ -34,7 +34,7 @@ func BenchmarkCPU_ZygoFib10_Libriscv(b *testing.B) {
 		code := m.ReturnValue()
 		m.Close()
 		if insns == 0 {
-			b.Fatal("libriscv retired 0 instructions; program likely failed before completion")
+			b.Fatal("libriscv reported 0 instructions; program likely failed before completion")
 		}
 		if code != 0 {
 			b.Fatalf("libriscv zygo exited with code %d, want 0", code)
