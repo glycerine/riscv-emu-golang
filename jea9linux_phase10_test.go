@@ -55,6 +55,9 @@ func writeEpollEvent(t *testing.T, mem *GuestMemory, addr uint64, events uint32,
 	if f := mem.Store32(addr, events); f != nil {
 		t.Fatalf("Store32(epoll events): %v", f)
 	}
+	if f := mem.Store32(addr+jea9LinuxEpollEventPadOffset, 0); f != nil {
+		t.Fatalf("Store32(epoll pad): %v", f)
+	}
 	var raw [8]byte
 	binary.LittleEndian.PutUint64(raw[:], data)
 	if f := mem.WriteBytes(addr+jea9LinuxEpollEventDataOffset, raw[:]); f != nil {

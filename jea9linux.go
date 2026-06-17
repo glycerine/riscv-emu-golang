@@ -422,6 +422,7 @@ const (
 	jea9LinuxEpollET     = uint32(0x80000000)
 
 	jea9LinuxEpollEventSize       = uint64(16)
+	jea9LinuxEpollEventPadOffset  = uint64(4)
 	jea9LinuxEpollEventDataOffset = uint64(8)
 
 	jea9LinuxSIGSEGV = uint64(11)
@@ -3124,6 +3125,9 @@ func loadJea9LinuxEpollEvent(cpu *CPU, addr uint64) (jea9LinuxEpollRegistration,
 
 func storeJea9LinuxEpollEvent(cpu *CPU, addr uint64, events uint32, data uint64) int64 {
 	if f := cpu.mem.Store32(addr, events); f != nil {
+		return jea9LinuxErrEFAULT
+	}
+	if f := cpu.mem.Store32(addr+jea9LinuxEpollEventPadOffset, 0); f != nil {
 		return jea9LinuxErrEFAULT
 	}
 	var raw [8]byte
