@@ -778,7 +778,7 @@ func NewJea9Linux(opts Jea9LinuxOptions) *Jea9Linux {
 		nextFD:            3,
 		files:             make(map[string][]byte),
 		allowAllHostFiles: opts.AllowAllHostFiles,
-		cwd:               normalizeJea9LinuxGuestPath(opts.Cwd),
+		cwd:               defaultJea9LinuxCwd(opts),
 		pid:               opts.PID,
 		tid:               opts.TID,
 		threadName:        "jea9linux",

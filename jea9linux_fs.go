@@ -43,6 +43,18 @@ func normalizeJea9LinuxGuestPath(path string) string {
 	return path
 }
 
+func defaultJea9LinuxCwd(opts Jea9LinuxOptions) string {
+	if opts.Cwd != "" {
+		return normalizeJea9LinuxGuestPath(opts.Cwd)
+	}
+	if opts.AllowAllHostFiles {
+		if cwd, err := os.Getwd(); err == nil && cwd != "" {
+			return normalizeJea9LinuxGuestPath(cwd)
+		}
+	}
+	return "/"
+}
+
 func joinJea9LinuxGuestPath(base, name string) string {
 	if name == "" {
 		return normalizeJea9LinuxGuestPath(base)

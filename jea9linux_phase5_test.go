@@ -460,6 +460,58 @@ func TestJea9Linux_HostFilePassthroughWriteCreateTruncate(t *testing.T) {
 	}
 }
 
+func TestJea9Linux_HostPassthroughDefaultCwdAllowsRelativeCreate(t *testing.T) {
+	root := t.TempDir()
+	t.Chdir(root)
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+
+	j := NewJea9Linux(Jea9LinuxOptions{AllowAllHostFiles: true})
+	cpu, mem := newJea9LinuxSyscallCPU(t, j)
+	defer mem.Free()
+
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysGetcwd, 0x7000, 4096); d != NoteHandled {
+		t.Fatalf("getcwd disposition = %v", d)
+	}
+	wantCwd := normalizeJea9LinuxGuestPath(cwd)
+	requireSyscallReturn(t, cpu, int64(len(wantCwd)+1))
+	if got := string(readGuestBytes(t, mem, 0x7000, len(wantCwd))); got != wantCwd {
+		t.Fatalf("getcwd = %q, want %q", got, wantCwd)
+	}
+
+	writeGuestCString(t, mem, 0x5000, "./host.cid")
+	flags := jea9TestOWronly | jea9TestOCreate | jea9TestOTrunc
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysOpenat, jea9TestATFDCWD, 0x5000, flags, 0o644); d != NoteHandled {
+		t.Fatalf("openat ./host.cid disposition = %v", d)
+	}
+	fd := cpu.Reg(10)
+	if int64(fd) < 3 {
+		t.Fatalf("host.cid fd = %d, want >= 3", fd)
+	}
+
+	if f := mem.WriteBytes(0x6000, []byte("cid payload")); f != nil {
+		t.Fatal(f)
+	}
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysWrite, fd, 0x6000, 11); d != NoteHandled {
+		t.Fatalf("write host.cid disposition = %v", d)
+	}
+	requireSyscallReturn(t, cpu, 11)
+	if d := invokeJea9LinuxSyscall(cpu, jea9TestSysClose, fd); d != NoteHandled {
+		t.Fatalf("close host.cid disposition = %v", d)
+	}
+	requireSyscallReturn(t, cpu, 0)
+
+	got, err := os.ReadFile(filepath.Join(cwd, "host.cid"))
+	if err != nil {
+		t.Fatalf("ReadFile host.cid: %v", err)
+	}
+	if string(got) != "cid payload" {
+		t.Fatalf("host.cid = %q", string(got))
+	}
+}
+
 func TestJea9Linux_MkdiratHostPassthroughDisabledByDefault(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "blocked-dir")
 	j := NewJea9Linux(Jea9LinuxOptions{})
