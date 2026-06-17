@@ -11,9 +11,9 @@ import (
 	riscv "github.com/glycerine/riscv-emu-golang"
 )
 
-func TestRunEmuxDefaultRunsGoHelloFixture(t *testing.T) {
+func TestRunEmuDefaultRunsGoHelloFixture(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	code, err := runEmux(EmuxConfig{
+	code, err := runEmu(EmuConfig{
 		RunPath:           "../../testvectors/jea9linux/go/elf/hello.elf",
 		MemorySize:        riscv.Size16GB,
 		InstructionBudget: 1 << 20,
@@ -22,7 +22,7 @@ func TestRunEmuxDefaultRunsGoHelloFixture(t *testing.T) {
 		Stderr:            &stderr,
 	})
 	if err != nil {
-		t.Fatalf("runEmux: %v; stderr=%q", err, stderr.String())
+		t.Fatalf("runEmu: %v; stderr=%q", err, stderr.String())
 	}
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr.String())
@@ -32,9 +32,9 @@ func TestRunEmuxDefaultRunsGoHelloFixture(t *testing.T) {
 	}
 }
 
-func TestRunEmuxReturnsGuestExitCodeAndStderr(t *testing.T) {
+func TestRunEmuReturnsGuestExitCodeAndStderr(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	code, err := runEmux(EmuxConfig{
+	code, err := runEmu(EmuConfig{
 		RunPath:           "../../testvectors/jea9linux/go/elf/nilpanic.elf",
 		MemorySize:        riscv.Size16GB,
 		InstructionBudget: 1 << 20,
@@ -43,7 +43,7 @@ func TestRunEmuxReturnsGuestExitCodeAndStderr(t *testing.T) {
 		Stderr:            &stderr,
 	})
 	if err != nil {
-		t.Fatalf("runEmux: %v; stdout=%q stderr=%q", err, stdout.String(), stderr.String())
+		t.Fatalf("runEmu: %v; stdout=%q stderr=%q", err, stdout.String(), stderr.String())
 	}
 	if code != 2 {
 		t.Fatalf("exit code = %d, want 2; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
@@ -53,10 +53,10 @@ func TestRunEmuxReturnsGuestExitCodeAndStderr(t *testing.T) {
 	}
 }
 
-func TestRunEmuxSeedControlsGetrandom(t *testing.T) {
-	first := runEmuxFixtureOutput(t, 1234)
-	second := runEmuxFixtureOutput(t, 1234)
-	third := runEmuxFixtureOutput(t, 5678)
+func TestRunEmuSeedControlsGetrandom(t *testing.T) {
+	first := runEmuFixtureOutput(t, 1234)
+	second := runEmuFixtureOutput(t, 1234)
+	third := runEmuFixtureOutput(t, 5678)
 
 	if first != second {
 		t.Fatalf("same seed output differs: %q != %q", first, second)
@@ -66,7 +66,7 @@ func TestRunEmuxSeedControlsGetrandom(t *testing.T) {
 	}
 }
 
-func TestRunEmuxJea9LinuxFixtureModes(t *testing.T) {
+func TestRunEmuJea9LinuxFixtureModes(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		jitlazy bool
@@ -78,7 +78,7 @@ func TestRunEmuxJea9LinuxFixtureModes(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var stdout, stderr bytes.Buffer
-			code, err := runEmux(EmuxConfig{
+			code, err := runEmu(EmuConfig{
 				RunPath:           "../../testvectors/jea9linux/elf/write_stdout.elf",
 				MemorySize:        riscv.Size64MB,
 				InstructionBudget: 1 << 20,
@@ -89,7 +89,7 @@ func TestRunEmuxJea9LinuxFixtureModes(t *testing.T) {
 				Stderr:            &stderr,
 			})
 			if err != nil {
-				t.Fatalf("runEmux: %v; stderr=%q", err, stderr.String())
+				t.Fatalf("runEmu: %v; stderr=%q", err, stderr.String())
 			}
 			if code != 0 {
 				t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr.String())
@@ -101,8 +101,8 @@ func TestRunEmuxJea9LinuxFixtureModes(t *testing.T) {
 	}
 }
 
-func TestEmuxJITFlagsAreMutuallyExclusive(t *testing.T) {
-	cfg := EmuxConfig{
+func TestEmuJITFlagsAreMutuallyExclusive(t *testing.T) {
+	cfg := EmuConfig{
 		RunPath: "../../testvectors/jea9linux/elf/write_stdout.elf",
 		JITLazy: true,
 		JITAOT:  true,
@@ -112,8 +112,8 @@ func TestEmuxJITFlagsAreMutuallyExclusive(t *testing.T) {
 	}
 }
 
-func TestEmuxDefaultFlagsRunGoTimeNowFixtureCompletes(t *testing.T) {
-	cfg, stdout, stderr := parseEmuxConfigForTest(t,
+func TestEmuDefaultFlagsRunGoTimeNowFixtureCompletes(t *testing.T) {
+	cfg, stdout, stderr := parseEmuConfigForTest(t,
 		"-run", "../../testvectors/jea9linux/go/elf/timenow.elf",
 	)
 
@@ -123,14 +123,14 @@ func TestEmuxDefaultFlagsRunGoTimeNowFixtureCompletes(t *testing.T) {
 	}
 	done := make(chan result, 1)
 	go func() {
-		code, err := runEmux(cfg)
+		code, err := runEmu(cfg)
 		done <- result{code: code, err: err}
 	}()
 
 	select {
 	case got := <-done:
 		if got.err != nil {
-			t.Fatalf("runEmux: %v; stdout=%q stderr=%q", got.err, stdout.String(), stderr.String())
+			t.Fatalf("runEmu: %v; stdout=%q stderr=%q", got.err, stdout.String(), stderr.String())
 		}
 		if got.code != 0 {
 			t.Fatalf("exit code = %d, want 0; stdout=%q stderr=%q", got.code, stdout.String(), stderr.String())
@@ -139,37 +139,37 @@ func TestEmuxDefaultFlagsRunGoTimeNowFixtureCompletes(t *testing.T) {
 			t.Fatalf("stdout is empty; stderr=%q", stderr.String())
 		}
 	case <-time.After(30 * time.Second):
-		t.Fatalf("default emux timenow run did not complete; stdout=%q stderr=%q", stdout.String(), stderr.String())
+		t.Fatalf("default emu timenow run did not complete; stdout=%q stderr=%q", stdout.String(), stderr.String())
 	}
 }
 
-func TestEmuxConfigDefaultsPreserveExplicitZeroClock(t *testing.T) {
-	cfg := EmuxConfig{}.withDefaults()
-	if cfg.MemorySize != defaultEmuxMemorySize {
-		t.Fatalf("MemorySize = %d, want %d", cfg.MemorySize, defaultEmuxMemorySize)
+func TestEmuConfigDefaultsPreserveExplicitZeroClock(t *testing.T) {
+	cfg := EmuConfig{}.withDefaults()
+	if cfg.MemorySize != defaultEmuMemorySize {
+		t.Fatalf("MemorySize = %d, want %d", cfg.MemorySize, defaultEmuMemorySize)
 	}
-	if cfg.Budget != defaultEmuxBudget {
-		t.Fatalf("Budget = %q, want %q", cfg.Budget, defaultEmuxBudget)
+	if cfg.Budget != defaultEmuBudget {
+		t.Fatalf("Budget = %q, want %q", cfg.Budget, defaultEmuBudget)
 	}
 	budget, err := cfg.schedulerBudget()
 	if err != nil {
 		t.Fatalf("schedulerBudget default: %v", err)
 	}
-	if budget != defaultEmuxInstructionBudget {
-		t.Fatalf("schedulerBudget = %d, want %d", budget, defaultEmuxInstructionBudget)
+	if budget != defaultEmuInstructionBudget {
+		t.Fatalf("schedulerBudget = %d, want %d", budget, defaultEmuInstructionBudget)
 	}
-	if cfg.MonotonicStartNS != defaultEmuxMonotonicStartNS {
-		t.Fatalf("MonotonicStartNS = %d, want %d", cfg.MonotonicStartNS, defaultEmuxMonotonicStartNS)
+	if cfg.MonotonicStartNS != defaultEmuMonotonicStartNS {
+		t.Fatalf("MonotonicStartNS = %d, want %d", cfg.MonotonicStartNS, defaultEmuMonotonicStartNS)
 	}
 
-	explicitZero := EmuxConfig{MonotonicStartSet: true}.withDefaults()
+	explicitZero := EmuConfig{MonotonicStartSet: true}.withDefaults()
 	if explicitZero.MonotonicStartNS != 0 {
 		t.Fatalf("explicit MonotonicStartNS = %d, want zero preserved", explicitZero.MonotonicStartNS)
 	}
 }
 
-func TestParseEmuxJITModeFlags(t *testing.T) {
-	lazy, _, _ := parseEmuxConfigForTest(t,
+func TestParseEmuJITModeFlags(t *testing.T) {
+	lazy, _, _ := parseEmuConfigForTest(t,
 		"-run", "../../testvectors/jea9linux/elf/write_stdout.elf",
 		"-jitlazy",
 	)
@@ -177,7 +177,7 @@ func TestParseEmuxJITModeFlags(t *testing.T) {
 		t.Fatalf("-jitlazy parsed as JITLazy=%v JITAOT=%v", lazy.JITLazy, lazy.JITAOT)
 	}
 
-	aot, _, _ := parseEmuxConfigForTest(t,
+	aot, _, _ := parseEmuConfigForTest(t,
 		"-run", "../../testvectors/jea9linux/elf/write_stdout.elf",
 		"-jitaot",
 	)
@@ -185,7 +185,7 @@ func TestParseEmuxJITModeFlags(t *testing.T) {
 		t.Fatalf("-jitaot parsed as JITLazy=%v JITAOT=%v", aot.JITLazy, aot.JITAOT)
 	}
 
-	interp, _, _ := parseEmuxConfigForTest(t,
+	interp, _, _ := parseEmuConfigForTest(t,
 		"-run", "../../testvectors/jea9linux/elf/write_stdout.elf",
 	)
 	if interp.JITLazy || interp.JITAOT {
@@ -193,25 +193,25 @@ func TestParseEmuxJITModeFlags(t *testing.T) {
 	}
 }
 
-func BenchmarkRunEmuxGoHelloInterpreter(b *testing.B) {
-	benchmarkRunEmuxGoHello(b, EmuxConfig{})
+func BenchmarkRunEmuGoHelloInterpreter(b *testing.B) {
+	benchmarkRunEmuGoHello(b, EmuConfig{})
 }
 
-func BenchmarkRunEmuxGoHelloLazyJIT(b *testing.B) {
-	benchmarkRunEmuxGoHello(b, EmuxConfig{JITLazy: true})
+func BenchmarkRunEmuGoHelloLazyJIT(b *testing.B) {
+	benchmarkRunEmuGoHello(b, EmuConfig{JITLazy: true})
 }
 
-func BenchmarkRunEmuxGoHelloAOTJIT(b *testing.B) {
-	benchmarkRunEmuxGoHello(b, EmuxConfig{JITAOT: true})
+func BenchmarkRunEmuGoHelloAOTJIT(b *testing.B) {
+	benchmarkRunEmuGoHello(b, EmuConfig{JITAOT: true})
 }
 
-func benchmarkRunEmuxGoHello(b *testing.B, mode EmuxConfig) {
+func benchmarkRunEmuGoHello(b *testing.B, mode EmuConfig) {
 	b.Helper()
 	b.ReportAllocs()
-	var totalStats EmuxJITStats
+	var totalStats EmuJITStats
 	for i := 0; i < b.N; i++ {
 		var stdout, stderr bytes.Buffer
-		var stats EmuxJITStats
+		var stats EmuJITStats
 		cfg := mode
 		cfg.RunPath = "../../testvectors/jea9linux/go/elf/hello.elf"
 		cfg.MemorySize = riscv.Size16GB
@@ -221,9 +221,9 @@ func benchmarkRunEmuxGoHello(b *testing.B, mode EmuxConfig) {
 		cfg.Stderr = &stderr
 		cfg.JITStats = &stats
 
-		code, err := runEmux(cfg)
+		code, err := runEmu(cfg)
 		if err != nil {
-			b.Fatalf("runEmux: %v; stderr=%q", err, stderr.String())
+			b.Fatalf("runEmu: %v; stderr=%q", err, stderr.String())
 		}
 		if code != 0 {
 			b.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr.String())
@@ -269,7 +269,7 @@ func benchmarkRunEmuxGoHello(b *testing.B, mode EmuxConfig) {
 	}
 }
 
-func TestParseEmuxBudgetAndSeedBytes(t *testing.T) {
+func TestParseEmuBudgetAndSeedBytes(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		want uint64
@@ -283,17 +283,17 @@ func TestParseEmuxBudgetAndSeedBytes(t *testing.T) {
 		{name: "1_000_000", want: 1_000_000},
 		{name: "1000000", want: 1_000_000},
 	} {
-		got, err := parseEmuxBudget(tc.name)
+		got, err := parseEmuBudget(tc.name)
 		if err != nil {
-			t.Fatalf("parseEmuxBudget(%q): %v", tc.name, err)
+			t.Fatalf("parseEmuBudget(%q): %v", tc.name, err)
 		}
 		if got != tc.want {
-			t.Fatalf("parseEmuxBudget(%q) = %d, want %d", tc.name, got, tc.want)
+			t.Fatalf("parseEmuBudget(%q) = %d, want %d", tc.name, got, tc.want)
 		}
 	}
 	for _, bad := range []string{"", "0", "-1", "1.5", "nope"} {
-		if _, err := parseEmuxBudget(bad); err == nil {
-			t.Fatalf("parseEmuxBudget(%q) returned nil error", bad)
+		if _, err := parseEmuBudget(bad); err == nil {
+			t.Fatalf("parseEmuBudget(%q) returned nil error", bad)
 		}
 	}
 
@@ -303,13 +303,13 @@ func TestParseEmuxBudgetAndSeedBytes(t *testing.T) {
 	}
 }
 
-func parseEmuxConfigForTest(t *testing.T, args ...string) (EmuxConfig, *bytes.Buffer, *bytes.Buffer) {
+func parseEmuConfigForTest(t *testing.T, args ...string) (EmuConfig, *bytes.Buffer, *bytes.Buffer) {
 	t.Helper()
-	fs := flag.NewFlagSet("emux-test", flag.ContinueOnError)
+	fs := flag.NewFlagSet("emu-test", flag.ContinueOnError)
 	var flagErrors bytes.Buffer
 	fs.SetOutput(&flagErrors)
 
-	cfg := &EmuxConfig{}
+	cfg := &EmuConfig{}
 	cfg.DefineFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		t.Fatalf("parse flags: %v; output=%q", err, flagErrors.String())
@@ -332,10 +332,10 @@ func parseEmuxConfigForTest(t *testing.T, args ...string) (EmuxConfig, *bytes.Bu
 	return *cfg, &stdout, &stderr
 }
 
-func runEmuxFixtureOutput(t *testing.T, seed uint64) string {
+func runEmuFixtureOutput(t *testing.T, seed uint64) string {
 	t.Helper()
 	var stdout, stderr bytes.Buffer
-	code, err := runEmux(EmuxConfig{
+	code, err := runEmu(EmuConfig{
 		RunPath:           "../../testvectors/jea9linux/go/elf/cryptorand.elf",
 		MemorySize:        riscv.Size16GB,
 		InstructionBudget: 1 << 20,
@@ -345,7 +345,7 @@ func runEmuxFixtureOutput(t *testing.T, seed uint64) string {
 		Stderr:            &stderr,
 	})
 	if err != nil {
-		t.Fatalf("runEmux: %v; stderr=%q", err, stderr.String())
+		t.Fatalf("runEmu: %v; stderr=%q", err, stderr.String())
 	}
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
