@@ -36,6 +36,9 @@ manual resumption API.
 - Support deterministic randomized run quantum sizes.
 - Support deterministic chaos windows that temporarily starve low-priority
   threads, bounded to at most 20 percent of simulated run time.
+- Support three deterministic virtual-time advancement policies:
+  `ClockPolicyOnlyDeadlockAdvances`, `ClockPolicyPRNG`, and
+  `ClockPolicyFixed`.
 - Provide bottom-up TDD coverage so each invariant is red/green before the next
   layer depends on it.
 
@@ -211,6 +214,57 @@ type Jea9LinuxSchedulerConfig struct {
 `DST` enables seeded quanta/priorities without starvation windows.
 `Chaos` enables starvation windows.
 
+## Clock Policy Configuration
+
+Clock policy is separate from scheduler mode. The scheduler decides which guest
+context may run. The clock policy decides how virtual time advances when the OS
+needs to move time forward.
+
+```go
+type ClockPolicy uint8
+
+const (
+    ClockPolicyOnlyDeadlockAdvances ClockPolicy = iota
+    ClockPolicyPRNG
+    ClockPolicyFixed
+)
+```
+
+`ClockPolicyOnlyDeadlockAdvances` is the current idle-jump behavior renamed:
+virtual time advances to wait deadlines only when no runnable context can make
+progress.
+
+`ClockPolicyPRNG` advances virtual time by a deterministic pseudorandom delta,
+sampled uniformly from 1 millisecond through 500 milliseconds. The sample comes
+from the OS scheduler PRNG wrappers, so it is seed-controlled and replayable.
+
+`ClockPolicyFixed` advances virtual time by the exact value stored in another
+Jea9Linux OS state variable:
+
+```go
+clockFixedAdvanceNS int64
+```
+
+This fixed policy is used to implement chaos-mode "squeeze" behavior where the
+scheduler deliberately advances time in a controlled, deterministic amount.
+
+Clock policy state belongs on `Jea9Linux`:
+
+```go
+clockPolicy        ClockPolicy
+clockFixedAdvanceNS int64
+clockPRNGMinNS      int64 // default 1 * time.Millisecond
+clockPRNGMaxNS      int64 // default 500 * time.Millisecond
+```
+
+Clock advancement must obey the same determinism discipline as scheduling:
+
+- no clock-policy PRNG draw on host budget expiry;
+- no clock-policy PRNG draw during comparison or trace formatting;
+- randomized clock deltas are drawn only at semantic OS clock-advance events;
+- every PRNG clock draw updates the cached scheduler PRNG snapshot;
+- trace records include the policy, delta, pre-time, post-time, and reason.
+
 ## Context Scheduler Metadata
 
 Add to each `jea9LinuxContext`:
@@ -348,8 +402,38 @@ not start it.
 
 ## Virtual Time
 
-Virtual time remains deterministic. `Jea9ClockIdleJump` advances to wait
-deadlines when no runnable context can run.
+Virtual time remains deterministic and controlled by `ClockPolicy`.
+
+### ClockPolicyOnlyDeadlockAdvances
+
+This is the current idle-jump behavior with a clearer name. Virtual time
+advances only when the scheduler cannot make guest progress because every
+context is waiting, exited, or filtered out by scheduler policy. The clock jumps
+to the earliest deterministic deadline that can make progress possible.
+
+This policy is the conservative default because it minimizes clock movement.
+
+### ClockPolicyPRNG
+
+At semantic OS clock-advance points, draw a pseudorandom duration uniformly from
+1 millisecond through 500 milliseconds and advance virtual time by that delta.
+The draw uses the scheduler PRNG wrappers, updates the cached PRNG snapshot, and
+is recorded in trace when tracing is enabled.
+
+The random advance may or may not reach a pending wait deadline. If it does not,
+the waiting context remains waiting and the scheduler records that no context
+became runnable. If no context can run after the advance, the OS may perform
+another semantic clock-advance event; each such event is visible in scheduler
+trace and consumes exactly one deterministic PRNG draw.
+
+### ClockPolicyFixed
+
+Advance virtual time by exactly `clockFixedAdvanceNS`. There is no random draw.
+This is used by chaos mode to implement deliberate squeeze intervals where the
+scheduler controls time pressure precisely.
+
+The fixed amount is part of Jea9Linux OS state and must appear in lockstep state
+comparison. Changing it is a scheduler semantic event, not a host-budget effect.
 
 Chaos mode adds one more reason no context can run: all runnable contexts are
 low priority during a starvation window. In that case the scheduler may advance
@@ -376,6 +460,10 @@ FromPriority       string
 ToPriority         string
 ChaosActive        bool
 ChaosUntilNS       int64
+ClockPolicy        string
+ClockAdvanceNS     int64
+ClockBeforeNS      int64
+ClockAfterNS       int64
 ```
 
 Keep normal runs cheap. Full PRNG state should be included only when tracing is
@@ -517,7 +605,40 @@ Implementation:
   policy matters;
 - keep old helper or behavior for default round-robin mode until fully replaced.
 
-### 8. Chaos Window Tests
+### 8. Clock Policy Tests
+
+Red tests:
+
+- `TestJea9Linux_ClockPolicyOnlyDeadlockAdvances`
+  - with at least one runnable context, virtual time does not advance just
+    because a wait deadline exists;
+  - when no context can run, virtual time advances to the earliest deadline.
+
+- `TestJea9Linux_ClockPolicyPRNGAdvanceWithinBounds`
+  - each semantic clock advance is between 1ms and 500ms inclusive.
+
+- `TestJea9Linux_ClockPolicyPRNGSameSeedSameDeltas`
+  - same seed produces the same sequence of clock deltas and PRNG snapshots.
+
+- `TestJea9Linux_ClockPolicyPRNGDoesNotDrawOnHostBudget`
+  - host poll expiry does not change clock delta sequence, draw count, or PRNG
+    snapshot.
+
+- `TestJea9Linux_ClockPolicyFixedUsesStateValue`
+  - clock advances by exactly `clockFixedAdvanceNS`;
+  - changing `clockFixedAdvanceNS` is visible in scheduler/lockstep OS state.
+
+- `TestJea9Linux_ClockPolicyFixedChaosSqueeze`
+  - chaos mode can set a fixed squeeze delta and produce deterministic trace.
+
+Implementation:
+
+- add clock policy config/state;
+- implement a single `advanceVirtualClockForSchedulerEvent` helper;
+- route deadlock, PRNG, and fixed advancement through that helper;
+- ensure all PRNG clock draws go through scheduler RNG wrappers.
+
+### 9. Chaos Window Tests
 
 Red tests:
 
@@ -538,7 +659,7 @@ Implementation:
 - add virtual-time advance for all-low-priority blocked windows;
 - enforce starvation budget cap.
 
-### 9. Lockstep Integration Tests
+### 10. Lockstep Integration Tests
 
 Red tests:
 
@@ -556,7 +677,8 @@ Red tests:
 Implementation:
 
 - extend lockstep OS comparison to include scheduler event ID, draw count, PRNG
-  snapshot, current TID, priorities, and pending scheduler deadlines.
+  snapshot, current TID, priorities, clock policy state, fixed clock delta, and
+  pending scheduler deadlines.
 
 ## Implementation Order
 
@@ -652,12 +774,27 @@ Tests:
 - same seed/same result;
 - different seed changes schedule in a bounded test.
 
-### Phase 8: Add Chaos Windows
+### Phase 8: Add Clock Policies
+
+- Add clock policy state and config.
+- Implement `ClockPolicyOnlyDeadlockAdvances`.
+- Implement `ClockPolicyPRNG` using scheduler RNG wrappers.
+- Implement `ClockPolicyFixed` using `clockFixedAdvanceNS`.
+- Add trace fields for clock policy and clock delta.
+
+Tests:
+
+- clock policy tests;
+- PRNG clock advance does not draw on host budget;
+- fixed clock advance appears in lockstep OS state.
+
+### Phase 9: Add Chaos Windows
 
 - Add chaos state and config.
 - Add window start/end decisions.
 - Skip low-priority contexts during active windows.
 - Bound starvation to 20 percent of simulated run time.
+- Use `ClockPolicyFixed` for chaos squeeze intervals.
 
 Tests:
 
@@ -667,7 +804,7 @@ Tests:
 - starvation cap;
 - same seed replay.
 
-### Phase 9: Integrate With Zygo Lockstep and Benchmarks
+### Phase 10: Integrate With Zygo Lockstep and Benchmarks
 
 - Add scheduler state to lockstep comparison.
 - Run Zygo interpreter/lazy lockstep under multiple host budgets.
@@ -716,6 +853,11 @@ except for the intentional host-budget independence fix.
 - Interpreter and lazy JIT match scheduler event IDs, PRNG draw counts, PRNG
   snapshots, current TID, priorities, and wake deadlines.
 - Repeated scheduler-state comparison does not advance the scheduler PRNG.
+- Clock policy behavior is deterministic, traceable, and independent of host
+  budget expiry.
+- `ClockPolicyPRNG` produces reproducible 1ms-to-500ms deltas for a fixed seed.
+- `ClockPolicyFixed` advances virtual time by exactly the OS state value and can
+  be used by chaos squeeze intervals.
 - Chaos mode reproduces exactly for a fixed seed.
 - Chaos mode finds starvation-sensitive bugs without compromising deterministic
   replay.
