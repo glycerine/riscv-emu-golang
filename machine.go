@@ -68,15 +68,37 @@ func (m *Machine) Clone() (*Machine, error) {
 		fcsr:              m.CPU.fcsr,
 		riscvInstrBegun:   m.CPU.riscvInstrBegun,
 		riscvInstrRetired: m.CPU.riscvInstrRetired,
+		lastTrapCause:     m.CPU.lastTrapCause,
+		lastTrapInsnLen:   m.CPU.lastTrapInsnLen,
+		priv:              m.CPU.priv,
 		resvAddr:          m.CPU.resvAddr,
 		resvValid:         m.CPU.resvValid,
 		watchAddr:         m.CPU.watchAddr,
+		ExitCode:          m.CPU.ExitCode,
 		mtvec:             m.CPU.mtvec,
+		mscratch:          m.CPU.mscratch,
 		mepc:              m.CPU.mepc,
 		mcause:            m.CPU.mcause,
 		mstatus:           m.CPU.mstatus,
 		mtval:             m.CPU.mtval,
+		satp:              m.CPU.satp,
+		stvec:             m.CPU.stvec,
+		sscratch:          m.CPU.sscratch,
+		sepc:              m.CPU.sepc,
+		scause:            m.CPU.scause,
+		stval:             m.CPU.stval,
+		medeleg:           m.CPU.medeleg,
+		mideleg:           m.CPU.mideleg,
+		mie:               m.CPU.mie,
+		mip:               m.CPU.mip,
+		sie:               m.CPU.sie,
+		sip:               m.CPU.sip,
+		mcounteren:        m.CPU.mcounteren,
+		scounteren:        m.CPU.scounteren,
 		// Notes: zero value (empty NoteChain). Caller reinstalls handlers.
+	}
+	if m.CPU.mmu != nil {
+		childCPU.mmu = new(MMU)
 	}
 	var childJIT *JIT
 	if m.JIT != nil {

@@ -145,7 +145,17 @@ func TestMachineClone_CPUStateCopy(t *testing.T) {
 	parent.CPU.SetFReg(10, 0x4048F5C28F5C28F6)
 	parent.CPU.SetFCSR(0x5A)
 	parent.CPU.riscvInstrBegun = 42
+	parent.CPU.SetPrivilegeMode(PrivSupervisor)
+	parent.CPU.EnableMMU()
 	parent.CPU.mtvec = 0xAAAABBBB
+	parent.CPU.mscratch = 0x11112222
+	parent.CPU.satp = sv39SATP(0x3000)
+	parent.CPU.stvec = 0xBBBBCCCC
+	parent.CPU.sepc = 0xCCCCDDDD
+	parent.CPU.scause = CauseLoadPageFault
+	parent.CPU.stval = 0xDDDDEEEE
+	parent.CPU.medeleg = uint64(1) << CauseLoadPageFault
+	parent.CPU.sie = 0x20
 	parent.CPU.watchAddr = 0x1000
 
 	child, err := parent.Clone()
@@ -171,6 +181,36 @@ func TestMachineClone_CPUStateCopy(t *testing.T) {
 	}
 	if got := child.CPU.mtvec; got != 0xAAAABBBB {
 		t.Errorf("child.mtvec = 0x%x, want 0xAAAABBBB", got)
+	}
+	if got := child.CPU.PrivilegeMode(); got != PrivSupervisor {
+		t.Errorf("child privilege mode = %v, want supervisor", got)
+	}
+	if child.CPU.mmu == nil {
+		t.Fatal("child MMU is nil, want fresh enabled MMU")
+	}
+	if child.CPU.mmu == parent.CPU.mmu {
+		t.Fatal("child MMU aliases parent MMU")
+	}
+	if got := child.CPU.mscratch; got != 0x11112222 {
+		t.Errorf("child.mscratch = 0x%x, want 0x11112222", got)
+	}
+	if got := child.CPU.satp; got != sv39SATP(0x3000) {
+		t.Errorf("child.satp = 0x%x, want copied SATP", got)
+	}
+	if got := child.CPU.stvec; got != 0xBBBBCCCC {
+		t.Errorf("child.stvec = 0x%x, want 0xBBBBCCCC", got)
+	}
+	if got := child.CPU.sepc; got != 0xCCCCDDDD {
+		t.Errorf("child.sepc = 0x%x, want 0xCCCCDDDD", got)
+	}
+	if child.CPU.scause != CauseLoadPageFault || child.CPU.stval != 0xDDDDEEEE {
+		t.Errorf("child supervisor trap CSR scause=%d stval=0x%x", child.CPU.scause, child.CPU.stval)
+	}
+	if got := child.CPU.medeleg; got != uint64(1)<<CauseLoadPageFault {
+		t.Errorf("child.medeleg = 0x%x, want copied medeleg", got)
+	}
+	if got := child.CPU.sie; got != 0x20 {
+		t.Errorf("child.sie = 0x%x, want 0x20", got)
 	}
 	if got := child.CPU.WatchAddr(); got != 0x1000 {
 		t.Errorf("child.WatchAddr() = 0x%x, want 0x1000", got)
