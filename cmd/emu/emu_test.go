@@ -258,6 +258,12 @@ func TestPrepareBiosGuestLoadsKernelInitrdAndBootArgs(t *testing.T) {
 	if !bytes.Contains(guest.fdt, fdtU64(guest.initrd.addr)) || !bytes.Contains(guest.fdt, fdtU64(guest.initrd.end)) {
 		t.Fatalf("generated FDT does not contain initrd range %#x..%#x", guest.initrd.addr, guest.initrd.end)
 	}
+	if !bytes.Contains(guest.fdt, []byte("riscv,isa-base\x00")) ||
+		!bytes.Contains(guest.fdt, []byte("riscv,isa-extensions\x00")) ||
+		!bytes.Contains(guest.fdt, []byte("sstc\x00")) ||
+		!bytes.Contains(guest.fdt, []byte("rv64imafdcsu_zicsr_zifencei_sstc\x00")) {
+		t.Fatalf("generated FDT does not advertise Sstc")
+	}
 	dumped, err := os.ReadFile(dumpDTBPath)
 	if err != nil {
 		t.Fatalf("read dumped dtb: %v", err)
@@ -504,13 +510,13 @@ func runBiosUntilOutput(cfg EmuConfig, marker string, maxInstructions uint64) (b
 			return true, nil
 		}
 		if err != nil {
-			return false, fmt.Errorf("%w at pc=%#x insn=%#x", err, guest.cpu.PC(), guestInsnForTest(guest.mem, guest.cpu.PC()))
+			return false, fmt.Errorf("%w at pc=%#x insn=%#x state=%+v", err, guest.cpu.PC(), guestInsnForTest(guest.mem, guest.cpu.PC()), guest.cpu.DebugSnapshot())
 		}
 		if res == riscv.RunBudgetExit {
 			return strings.Contains(writerString(cfg.Stdout), marker), nil
 		}
 	}
-	return false, fmt.Errorf("%w after %d instructions at pc=%#x insn=%#x", errBiosBudgetExpired, maxInstructions, guest.cpu.PC(), guestInsnForTest(guest.mem, guest.cpu.PC()))
+	return false, fmt.Errorf("%w after %d instructions at pc=%#x insn=%#x state=%+v", errBiosBudgetExpired, maxInstructions, guest.cpu.PC(), guestInsnForTest(guest.mem, guest.cpu.PC()), guest.cpu.DebugSnapshot())
 }
 
 func writerString(w interface{}) string {

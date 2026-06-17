@@ -96,9 +96,10 @@ type CPU struct {
 	sip        uint64 // 0x144: supervisor interrupt pending
 	mcounteren uint64 // 0x306: machine counter enable
 	scounteren uint64 // 0x106: supervisor counter enable
+	menvcfg    uint64 // 0x30a: machine environment configuration
+	mcountinh  uint64 // 0x320: machine counter inhibit
 	stimecmp   uint64 // 0x14d: supervisor timer compare (Sstc)
-	stipMIP    bool   // STIP source written through mip by M-mode firmware.
-	stipSTime  bool   // STIP source asserted by stimecmp.
+	stip       bool   // STIP asserted by stimecmp.
 	strictCSR  bool
 }
 
@@ -168,6 +169,68 @@ func (c *CPU) RiscvInstrBegun() uint64   { return c.riscvInstrBegun }
 func (c *CPU) RiscvInstrRetired() uint64 { return c.riscvInstrRetired }
 func (c *CPU) SetWatchAddr(addr uint64)  { c.watchAddr = addr }
 func (c *CPU) WatchAddr() uint64         { return c.watchAddr }
+
+type CPUDebugSnapshot struct {
+	PC                uint64
+	Privilege         PrivilegeMode
+	MStatus           uint64
+	MIE               uint64
+	MIP               uint64
+	RawMIP            uint64
+	MEnvCfg           uint64
+	MCountInhibit     uint64
+	SIE               uint64
+	SIP               uint64
+	MEDeleg           uint64
+	MIDeleg           uint64
+	MTVec             uint64
+	STVec             uint64
+	MEPC              uint64
+	SEPC              uint64
+	MCause            uint64
+	SCause            uint64
+	MTVal             uint64
+	STVal             uint64
+	SATP              uint64
+	STimecmp          uint64
+	STimecmpPending   bool
+	LastTrapCause     uint64
+	LastTrapInsnLen   uint8
+	RiscvInstrBegun   uint64
+	RiscvInstrRetired uint64
+}
+
+func (c *CPU) DebugSnapshot() CPUDebugSnapshot {
+	return CPUDebugSnapshot{
+		PC:                c.pc,
+		Privilege:         c.priv,
+		MStatus:           c.mstatus,
+		MIE:               c.mie,
+		MIP:               c.mipValue(),
+		RawMIP:            c.mip,
+		MEnvCfg:           c.menvcfg,
+		MCountInhibit:     c.mcountinh,
+		SIE:               c.sie,
+		SIP:               c.sip,
+		MEDeleg:           c.medeleg,
+		MIDeleg:           c.mideleg,
+		MTVec:             c.mtvec,
+		STVec:             c.stvec,
+		MEPC:              c.mepc,
+		SEPC:              c.sepc,
+		MCause:            c.mcause,
+		SCause:            c.scause,
+		MTVal:             c.mtval,
+		STVal:             c.stval,
+		SATP:              c.satp,
+		STimecmp:          c.stimecmp,
+		STimecmpPending:   c.stip,
+		LastTrapCause:     c.lastTrapCause,
+		LastTrapInsnLen:   c.lastTrapInsnLen,
+		RiscvInstrBegun:   c.riscvInstrBegun,
+		RiscvInstrRetired: c.riscvInstrRetired,
+	}
+}
 
 func (c *CPU) setTrap(cause uint64, insnLen uint8) {
 	c.lastTrapCause = cause
@@ -1828,6 +1891,10 @@ func (c *CPU) readCSR(addr uint32) (uint64, bool) {
 		return c.mtvec, true // mtvec
 	case 0x306:
 		return c.mcounteren, true // mcounteren
+	case 0x30a:
+		return c.menvcfg, true // menvcfg
+	case 0x320:
+		return c.mcountinh, true // mcountinhibit
 	case 0x340:
 		return c.mscratch, true // mscratch
 	case 0x341:
@@ -1905,6 +1972,10 @@ func (c *CPU) writeCSR(addr uint32, val uint64) bool {
 		c.mtvec = val // mtvec
 	case 0x306:
 		c.mcounteren = val // mcounteren
+	case 0x30a:
+		c.menvcfg = val // menvcfg
+	case 0x320:
+		c.mcountinh = val // mcountinhibit
 	case 0x340:
 		c.mscratch = val // mscratch
 	case 0x341:
@@ -1914,7 +1985,7 @@ func (c *CPU) writeCSR(addr uint32, val uint64) bool {
 	case 0x343:
 		c.mtval = val // mtval
 	case 0x344:
-		c.setMIPCSR(val) // mip
+		c.mip = val &^ mipSTIP // mip; Sstc owns STIP.
 	// CSRs written by riscv-tests reset_vector — accept silently
 	case 0x3A0: // pmpcfg0
 	case 0x3B0: // pmpaddr0

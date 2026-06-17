@@ -95,9 +95,10 @@ func (m *Machine) Clone() (*Machine, error) {
 		sip:               m.CPU.sip,
 		mcounteren:        m.CPU.mcounteren,
 		scounteren:        m.CPU.scounteren,
+		menvcfg:           m.CPU.menvcfg,
+		mcountinh:         m.CPU.mcountinh,
 		stimecmp:          m.CPU.stimecmp,
-		stipMIP:           m.CPU.stipMIP,
-		stipSTime:         m.CPU.stipSTime,
+		stip:              m.CPU.stip,
 		strictCSR:         m.CPU.strictCSR,
 		// Notes: zero value (empty NoteChain). Caller reinstalls handlers.
 	}

@@ -281,21 +281,20 @@ func (c EmuConfig) biosBootArgs() string {
 }
 
 type biosMMIO struct {
-	stdout   io.Writer
-	uart     [0x100]byte
-	clint    [0x10000]byte
-	mtime    uint64
-	mtimecmp uint64
+	stdout io.Writer
+	uart   [0x100]byte
+	clint  [0x10000]byte
+	mtime  uint64
 }
 
 func newBiosMMIO(stdout io.Writer) *biosMMIO {
 	if stdout == nil {
 		stdout = io.Discard
 	}
-	m := &biosMMIO{stdout: stdout, mtimecmp: ^uint64(0)}
+	m := &biosMMIO{stdout: stdout}
 	m.uart[2] = 0x01 // IIR: no interrupt pending
 	m.uart[5] = 0x60 // LSR: transmitter holding register empty, idle
-	storeLittleEndian(m.clint[:], 0x4000, 8, m.mtimecmp)
+	storeLittleEndian(m.clint[:], 0x4000, 8, ^uint64(0))
 	return m
 }
 
@@ -383,9 +382,6 @@ func (m *biosMMIO) loadCLINT(off, width uint64) uint64 {
 
 func (m *biosMMIO) storeCLINT(off, width, value uint64) {
 	storeLittleEndian(m.clint[:], off, width, value)
-	if mmioRangeTouches(off, width, 0x4000, 8) {
-		m.mtimecmp = loadLittleEndian(m.clint[:], 0x4000, 8)
-	}
 	if mmioRangeTouches(off, width, 0xbff8, 8) {
 		m.mtime = loadLittleEndian(m.clint[:], 0xbff8, 8)
 	}
@@ -398,10 +394,6 @@ func (m *biosMMIO) AdvanceMachineTimer(delta uint64) {
 
 func (m *biosMMIO) MachineTimerValue() uint64 {
 	return m.mtime
-}
-
-func (m *biosMMIO) MachineTimerPending() bool {
-	return m.mtime >= m.mtimecmp
 }
 
 func (m *biosMMIO) syncCLINTTime() {
@@ -616,7 +608,9 @@ func buildVirtFDT(memSize uint64, opts virtFDTOptions) ([]byte, error) {
 	b.propCells("reg", 0)
 	b.propString("status", "okay")
 	b.propString("compatible", "riscv")
-	b.propString("riscv,isa", "rv64imafdcsu")
+	b.propString("riscv,isa-base", "rv64i")
+	b.propStringList("riscv,isa-extensions", "i", "m", "a", "f", "d", "c", "zicsr", "zifencei", "sstc")
+	b.propString("riscv,isa", "rv64imafdcsu_zicsr_zifencei_sstc")
 	b.propString("mmu-type", "riscv,sv48")
 
 	b.beginNode("interrupt-controller")

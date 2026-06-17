@@ -12,20 +12,16 @@ const (
 type biosMachineTimerMMIO interface {
 	AdvanceMachineTimer(delta uint64)
 	MachineTimerValue() uint64
-	MachineTimerPending() bool
 }
+
+const biosTimerTicksPerInstruction = uint64(1)
 
 func (c *CPU) serviceBiosMachineTimer() {
 	timer, ok := c.mem.mmio.(biosMachineTimerMMIO)
 	if !ok {
 		return
 	}
-	timer.AdvanceMachineTimer(1000)
-	if timer.MachineTimerPending() {
-		c.mip |= mipMTIP
-	} else {
-		c.mip &^= mipMTIP
-	}
+	timer.AdvanceMachineTimer(biosTimerTicksPerInstruction)
 	c.refreshSupervisorTimerPendingAt(timer.MachineTimerValue())
 }
 
@@ -42,20 +38,15 @@ func (c *CPU) refreshSupervisorTimerPending() {
 }
 
 func (c *CPU) refreshSupervisorTimerPendingAt(now uint64) {
-	c.stipSTime = c.stimecmp != ^uint64(0) && now >= c.stimecmp
+	c.stip = c.stimecmp != ^uint64(0) && now >= c.stimecmp
 }
 
 func (c *CPU) mipValue() uint64 {
 	pending := c.mip &^ mipSTIP
-	if c.stipMIP || c.stipSTime {
+	if c.stip {
 		pending |= mipSTIP
 	}
 	return pending
-}
-
-func (c *CPU) setMIPCSR(val uint64) {
-	c.mip = val &^ mipSTIP
-	c.stipMIP = val&mipSTIP != 0
 }
 
 func (c *CPU) takePendingBiosInterrupt() bool {

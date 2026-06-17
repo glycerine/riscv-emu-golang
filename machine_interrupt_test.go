@@ -3,8 +3,7 @@ package riscv
 import "testing"
 
 type testMachineTimer struct {
-	pending bool
-	ticks   uint64
+	ticks uint64
 }
 
 func (t *testMachineTimer) Load(addr, width uint64) (uint64, bool, *MemFault) {
@@ -17,15 +16,10 @@ func (t *testMachineTimer) Store(addr, width, value uint64) (bool, *MemFault) {
 
 func (t *testMachineTimer) AdvanceMachineTimer(delta uint64) {
 	t.ticks += delta
-	t.pending = true
 }
 
 func (t *testMachineTimer) MachineTimerValue() uint64 {
 	return t.ticks
-}
-
-func (t *testMachineTimer) MachineTimerPending() bool {
-	return t.pending
 }
 
 func TestRunMachineBudget_DoesNotAdvanceBiosMachineTimer(t *testing.T) {
@@ -65,7 +59,7 @@ func TestRunMachineBudget_DoesNotAdvanceBiosMachineTimer(t *testing.T) {
 	}
 }
 
-func TestRunBiosMachineBudget_DeliversMachineTimerInterrupt(t *testing.T) {
+func TestRunBiosMachineBudget_DoesNotDeliverCLINTMachineTimerInterrupt(t *testing.T) {
 	mem, err := NewGuestMemory(Size64KB)
 	if err != nil {
 		t.Fatal(err)
@@ -78,6 +72,9 @@ func TestRunBiosMachineBudget_DeliversMachineTimerInterrupt(t *testing.T) {
 		pc      = uint64(0x1000)
 		handler = uint64(0x2000)
 	)
+	if fault := mem.Store32(pc, 0x00000013); fault != nil { // addi x0,x0,0
+		t.Fatal(fault)
+	}
 	cpu := NewCPU(*mem)
 	cpu.SetPrivilegeMode(PrivSupervisor)
 	cpu.SetPC(pc)
@@ -91,90 +88,18 @@ func TestRunBiosMachineBudget_DeliversMachineTimerInterrupt(t *testing.T) {
 	if res != RunBudgetExpired {
 		t.Fatalf("RunMachineBudget result = %v, want expired", res)
 	}
-	if cpu.PC() != handler {
-		t.Fatalf("PC = 0x%x, want interrupt handler 0x%x", cpu.PC(), handler)
-	}
-	if cpu.PrivilegeMode() != PrivMachine {
-		t.Fatalf("privilege = %v, want machine", cpu.PrivilegeMode())
-	}
-	if cpu.mcause != InterruptCauseFlag|InterruptMTIP || cpu.mepc != pc {
-		t.Fatalf("machine trap mcause=0x%x mepc=0x%x", cpu.mcause, cpu.mepc)
-	}
-	if cpu.RiscvInstrBegun() != 0 {
-		t.Fatalf("interrupt delivery began %d instructions, want 0", cpu.RiscvInstrBegun())
-	}
-}
-
-func TestRunBiosMachineBudget_MachineTimerInterruptUsesVectoredMtvec(t *testing.T) {
-	mem, err := NewGuestMemory(Size64KB)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer mem.Free()
-	timer := &testMachineTimer{}
-	mem.SetMMIO(timer)
-
-	const (
-		pc   = uint64(0x1000)
-		base = uint64(0x2000)
-	)
-	cpu := NewCPU(*mem)
-	cpu.SetPrivilegeMode(PrivSupervisor)
-	cpu.SetPC(pc)
-	cpu.mtvec = base | 1
-	cpu.mie = mipMTIP
-
-	res, err := RunBiosMachineBudget(cpu, &cpu.Notes, 1)
-	if err != nil {
-		t.Fatalf("RunBiosMachineBudget: %v", err)
-	}
-	if res != RunBudgetExpired {
-		t.Fatalf("RunBiosMachineBudget result = %v, want expired", res)
-	}
-	if want := base + 4*InterruptMTIP; cpu.PC() != want {
-		t.Fatalf("PC = 0x%x, want vectored mtvec target 0x%x", cpu.PC(), want)
-	}
-}
-
-func TestRunBiosMachineBudget_DeliversDelegatedSupervisorTimerInterrupt(t *testing.T) {
-	mem, err := NewGuestMemory(Size64KB)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer mem.Free()
-
-	const (
-		pc      = uint64(0x1000)
-		handler = uint64(0x3000)
-	)
-	cpu := NewCPU(*mem)
-	cpu.SetPrivilegeMode(PrivSupervisor)
-	cpu.SetPC(pc)
-	cpu.stvec = handler
-	cpu.setMIPCSR(mipSTIP)
-	cpu.mideleg = mipSTIP
-	cpu.sie = mipSTIP
-	cpu.mstatus = statusSIE
-
-	res, err := RunBiosMachineBudget(cpu, &cpu.Notes, 1)
-	if err != nil {
-		t.Fatalf("RunBiosMachineBudget: %v", err)
-	}
-	if res != RunBudgetExpired {
-		t.Fatalf("RunMachineBudget result = %v, want expired", res)
-	}
-	if cpu.PC() != handler {
-		t.Fatalf("PC = 0x%x, want supervisor handler 0x%x", cpu.PC(), handler)
+	if cpu.PC() != pc+4 {
+		t.Fatalf("PC = 0x%x, want executed instruction at 0x%x", cpu.PC(), pc+4)
 	}
 	if cpu.PrivilegeMode() != PrivSupervisor {
 		t.Fatalf("privilege = %v, want supervisor", cpu.PrivilegeMode())
 	}
-	if cpu.scause != InterruptCauseFlag|InterruptSTIP || cpu.sepc != pc {
-		t.Fatalf("supervisor trap scause=0x%x sepc=0x%x", cpu.scause, cpu.sepc)
+	if timer.ticks != biosTimerTicksPerInstruction {
+		t.Fatalf("BIOS timer ticks = %d, want %d", timer.ticks, biosTimerTicksPerInstruction)
 	}
 }
 
-func TestRunBiosMachineBudget_PreservesOpenSBISupervisorTimerInterrupt(t *testing.T) {
+func TestRunBiosMachineBudget_SupervisorTimerCompareUsesVectoredStvec(t *testing.T) {
 	mem, err := NewGuestMemory(Size64KB)
 	if err != nil {
 		t.Fatal(err)
@@ -182,41 +107,6 @@ func TestRunBiosMachineBudget_PreservesOpenSBISupervisorTimerInterrupt(t *testin
 	defer mem.Free()
 	timer := &testMachineTimer{}
 	mem.SetMMIO(timer)
-
-	const (
-		pc      = uint64(0x1000)
-		handler = uint64(0x3000)
-	)
-	cpu := NewCPU(*mem)
-	cpu.SetPrivilegeMode(PrivSupervisor)
-	cpu.SetPC(pc)
-	cpu.stvec = handler
-	cpu.setMIPCSR(mipSTIP)
-	cpu.mideleg = mipSTIP
-	cpu.sie = mipSTIP
-	cpu.mstatus = statusSIE
-
-	res, err := RunBiosMachineBudget(cpu, &cpu.Notes, 1)
-	if err != nil {
-		t.Fatalf("RunBiosMachineBudget: %v", err)
-	}
-	if res != RunBudgetExpired {
-		t.Fatalf("RunMachineBudget result = %v, want expired", res)
-	}
-	if cpu.PC() != handler {
-		t.Fatalf("PC = 0x%x, want supervisor handler 0x%x", cpu.PC(), handler)
-	}
-	if cpu.scause != InterruptCauseFlag|InterruptSTIP || cpu.sepc != pc {
-		t.Fatalf("supervisor trap scause=0x%x sepc=0x%x", cpu.scause, cpu.sepc)
-	}
-}
-
-func TestRunBiosMachineBudget_SupervisorTimerInterruptUsesVectoredStvec(t *testing.T) {
-	mem, err := NewGuestMemory(Size64KB)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer mem.Free()
 
 	const (
 		pc   = uint64(0x1000)
@@ -226,7 +116,7 @@ func TestRunBiosMachineBudget_SupervisorTimerInterruptUsesVectoredStvec(t *testi
 	cpu.SetPrivilegeMode(PrivSupervisor)
 	cpu.SetPC(pc)
 	cpu.stvec = base | 1
-	cpu.setMIPCSR(mipSTIP)
+	cpu.stimecmp = 1
 	cpu.mideleg = mipSTIP
 	cpu.sie = mipSTIP
 	cpu.mstatus = statusSIE
@@ -260,7 +150,7 @@ func TestRunBiosMachineBudget_DeliversSupervisorTimerCompareInterrupt(t *testing
 	cpu.SetPrivilegeMode(PrivSupervisor)
 	cpu.SetPC(pc)
 	cpu.stvec = handler
-	cpu.stimecmp = 500
+	cpu.stimecmp = 1
 	cpu.mideleg = mipSTIP
 	cpu.sie = mipSTIP
 	cpu.mstatus = statusSIE
@@ -296,7 +186,7 @@ func TestRunMachineBudget_DoesNotAdvanceSupervisorTimerCompare(t *testing.T) {
 	cpu := NewCPU(*mem)
 	cpu.SetPrivilegeMode(PrivSupervisor)
 	cpu.SetPC(pc)
-	cpu.stimecmp = 500
+	cpu.stimecmp = 1
 	cpu.mideleg = mipSTIP
 	cpu.sie = mipSTIP
 	cpu.mstatus = statusSIE
@@ -319,7 +209,7 @@ func TestRunMachineBudget_DoesNotAdvanceSupervisorTimerCompare(t *testing.T) {
 	}
 }
 
-func TestCPU_STIPSourcesAreIndependent(t *testing.T) {
+func TestCPU_STimecmpOwnsSTIP(t *testing.T) {
 	mem, err := NewGuestMemory(Size64KB)
 	if err != nil {
 		t.Fatal(err)
@@ -327,29 +217,55 @@ func TestCPU_STIPSourcesAreIndependent(t *testing.T) {
 	defer mem.Free()
 	cpu := NewCPU(*mem)
 
-	cpu.setMIPCSR(mipSTIP)
+	cpu.writeCSR(0x344, mipSTIP)
+	if got := cpu.mipValue(); got&mipSTIP != 0 {
+		t.Fatalf("mip.STIP write asserted STIP outside stimecmp: mip=0x%x", got)
+	}
+
 	cpu.stimecmp = 2000
 	cpu.refreshSupervisorTimerPendingAt(1000)
-	if got := cpu.mipValue(); got&mipSTIP == 0 {
-		t.Fatalf("OpenSBI STIP source was clobbered by inactive Sstc source: mip=0x%x", got)
-	}
-
-	cpu.writeCSR(0x14d, 500)
-	cpu.refreshSupervisorTimerPendingAt(1000)
-	cpu.setMIPCSR(0)
-	if got := cpu.mipValue(); got&mipSTIP == 0 {
-		t.Fatalf("Sstc STIP source was clobbered by clearing mip CSR source: mip=0x%x", got)
-	}
-
-	cpu.setMIPCSR(mipSTIP)
-	cpu.writeCSR(0x14d, ^uint64(0))
-	if got := cpu.mipValue(); got&mipSTIP == 0 {
-		t.Fatalf("OpenSBI STIP source was clobbered by disabling stimecmp: mip=0x%x", got)
-	}
-
-	cpu.setMIPCSR(0)
 	if got := cpu.mipValue(); got&mipSTIP != 0 {
-		t.Fatalf("STIP still visible after clearing both sources: mip=0x%x", got)
+		t.Fatalf("inactive stimecmp asserted STIP: mip=0x%x", got)
+	}
+
+	cpu.refreshSupervisorTimerPendingAt(2000)
+	if got := cpu.mipValue(); got&mipSTIP == 0 {
+		t.Fatalf("ready stimecmp did not assert STIP: mip=0x%x", got)
+	}
+
+	cpu.writeCSR(0x344, 0)
+	if got := cpu.mipValue(); got&mipSTIP == 0 {
+		t.Fatalf("mip write cleared comparator-owned STIP: mip=0x%x", got)
+	}
+
+	cpu.writeCSR(0x14d, ^uint64(0))
+	if got := cpu.mipValue(); got&mipSTIP != 0 {
+		t.Fatalf("disabled stimecmp still asserted STIP: mip=0x%x", got)
+	}
+}
+
+func TestCPU_StrictFirmwareCSRsForSstcProbe(t *testing.T) {
+	mem, err := NewGuestMemory(Size64KB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mem.Free()
+	cpu := NewCPU(*mem)
+	cpu.EnableStrictCSR()
+
+	for _, csr := range []uint32{0x30a, 0x320, 0x14d} {
+		if _, ok := cpu.readCSR(csr); !ok {
+			t.Fatalf("strict CSR read %#x failed", csr)
+		}
+	}
+	if !cpu.writeCSR(0x30a, uint64(1)<<63) {
+		t.Fatal("strict menvcfg write failed")
+	}
+	if !cpu.writeCSR(0x320, 0xff) {
+		t.Fatal("strict mcountinhibit write failed")
+	}
+	if cpu.menvcfg != uint64(1)<<63 || cpu.mcountinh != 0xff {
+		t.Fatalf("firmware CSR values menvcfg=0x%x mcountinhibit=0x%x", cpu.menvcfg, cpu.mcountinh)
 	}
 }
 
