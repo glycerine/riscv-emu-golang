@@ -8,6 +8,9 @@ require (
 	github.com/tetratelabs/wazero v1.11.0
 	golang.org/x/arch v0.26.0
 	golang.org/x/sys v0.38.0
+	tailscale.com v0.0.0
 )
 
 require 4d63.com/embedfiles v0.0.0-20190311033909-995e0740726f // indirect
+
+replace tailscale.com => /Users/jaten/go/src/github.com/tailscale/tailscale

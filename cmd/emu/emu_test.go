@@ -150,6 +150,7 @@ func TestEmuBiosBootFlagsParse(t *testing.T) {
 		"-machine", "virt",
 		"-mem", "512mb",
 		"-hostio",
+		"-net",
 	)
 	if cfg.BiosPath == "" || cfg.RunPath != "" {
 		t.Fatalf("parsed BiosPath=%q RunPath=%q", cfg.BiosPath, cfg.RunPath)
@@ -177,6 +178,9 @@ func TestEmuBiosBootFlagsParse(t *testing.T) {
 	}
 	if !cfg.HostIO {
 		t.Fatal("HostIO = false, want true")
+	}
+	if !cfg.Net {
+		t.Fatal("Net = false, want true")
 	}
 	budget, err := cfg.schedulerBudget()
 	if err != nil {
@@ -657,6 +661,242 @@ func TestBiosHostIOPathCommands(t *testing.T) {
 	}
 }
 
+func TestBiosVirtioNetFDTAdvertisedWhenEnabled(t *testing.T) {
+	without, err := buildVirtFDT(riscv.Size4GB, virtFDTOptions{})
+	if err != nil {
+		t.Fatalf("build FDT without net: %v", err)
+	}
+	if bytes.Contains(without, []byte("virtio_net@10008000")) {
+		t.Fatal("virtio-net node appeared without Net")
+	}
+
+	with, err := buildVirtFDT(riscv.Size4GB, virtFDTOptions{Net: true})
+	if err != nil {
+		t.Fatalf("build FDT with net: %v", err)
+	}
+	if !bytes.Contains(with, []byte("virtio_net@10008000")) {
+		t.Fatal("virtio-net node missing from FDT")
+	}
+	if !bytes.Contains(with, []byte("virtio,mmio")) {
+		t.Fatal("virtio-mmio compatible missing from FDT")
+	}
+	if !bytes.Contains(with, fdtU64(biosVirtioNetBase)) {
+		t.Fatal("virtio-net base missing from FDT")
+	}
+}
+
+func TestBiosVirtioNetMMIOProbeAndConfig(t *testing.T) {
+	mem, _, _ := newVirtioNetTestDevice(t)
+
+	if got := mustLoad32Emu(t, mem, biosVirtioNetBase+virtioMMIOMagicValue); got != virtioMMIOMagic {
+		t.Fatalf("virtio magic = %#x, want %#x", got, virtioMMIOMagic)
+	}
+	if got := mustLoad32Emu(t, mem, biosVirtioNetBase+virtioMMIOVersion); got != 2 {
+		t.Fatalf("virtio version = %d, want 2", got)
+	}
+	if got := mustLoad32Emu(t, mem, biosVirtioNetBase+virtioMMIODeviceID); got != virtioDeviceIDNet {
+		t.Fatalf("virtio device id = %d, want net", got)
+	}
+	if got := mustLoad32Emu(t, mem, biosVirtioNetBase+virtioMMIOQueueNumMax); got != uint32(virtioQueueSize) {
+		t.Fatalf("default queue max = %d, want %d", got, virtioQueueSize)
+	}
+	mustStore32Emu(t, mem, biosVirtioNetBase+virtioMMIODeviceFeaturesSel, 1)
+	if got := mustLoad32Emu(t, mem, biosVirtioNetBase+virtioMMIODeviceFeatures); got&1 == 0 {
+		t.Fatalf("high feature word %#x does not advertise VIRTIO_F_VERSION_1", got)
+	}
+	if status := mustLoad16Emu(t, mem, biosVirtioNetBase+virtioMMIOConfig+6); status != virtioNetStatusLinkUp {
+		t.Fatalf("virtio-net status = %#x, want link up", status)
+	}
+	if mtu := mustLoad16Emu(t, mem, biosVirtioNetBase+virtioMMIOConfig+10); mtu != virtioNetMTU {
+		t.Fatalf("virtio-net MTU = %d, want %d", mtu, virtioNetMTU)
+	}
+}
+
+func TestBiosVirtioNetTXQueueNotifyInjectsFrame(t *testing.T) {
+	mem, stack, _ := newVirtioNetTestDevice(t)
+	const (
+		desc  = uint64(0x20000)
+		avail = uint64(0x21000)
+		used  = uint64(0x22000)
+		buf   = uint64(0x30000)
+	)
+	setupVirtioQueueTest(t, mem, virtioNetQueueTX, 8, desc, avail, used)
+
+	frame := []byte{
+		0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+		0x02, 0x72, 0x69, 0x73, 0x00, 0x02,
+		0x08, 0x00,
+		0x45, 0x00, 0x00, 0x14,
+	}
+	packet := append(make([]byte, virtioNetHeaderSize), frame...)
+	if fault := mem.WriteBytes(buf, packet); fault != nil {
+		t.Fatalf("write TX packet: %v", fault)
+	}
+	writeVirtqDescTest(t, mem, desc, 0, buf, uint32(len(packet)), 0, 0)
+	addVirtqAvailTest(t, mem, avail, 8, 0, 0)
+
+	mustStore32Emu(t, mem, biosVirtioNetBase+virtioMMIOQueueNotify, uint32(virtioNetQueueTX))
+
+	frames := stack.Frames()
+	if len(frames) != 1 {
+		t.Fatalf("injected frames len = %d, want 1", len(frames))
+	}
+	if !bytes.Equal(frames[0], frame) {
+		t.Fatalf("injected frame = %x, want %x", frames[0], frame)
+	}
+	if got := mustLoad16Emu(t, mem, used+2); got != 1 {
+		t.Fatalf("used idx = %d, want 1", got)
+	}
+	if got := mustLoad32Emu(t, mem, used+4); got != 0 {
+		t.Fatalf("used id = %d, want 0", got)
+	}
+	if got := mustLoad32Emu(t, mem, biosVirtioNetBase+virtioMMIOInterruptStatus); got&virtioMMIOIntVring == 0 {
+		t.Fatalf("interrupt status = %#x, want vring bit", got)
+	}
+}
+
+func TestBiosVirtioNetRXInjectsGuestFrameAndInterrupts(t *testing.T) {
+	mem, _, mmio := newVirtioNetTestDevice(t)
+	const (
+		desc  = uint64(0x20000)
+		avail = uint64(0x21000)
+		used  = uint64(0x22000)
+		buf   = uint64(0x30000)
+	)
+	setupVirtioQueueTest(t, mem, virtioNetQueueRX, 8, desc, avail, used)
+	writeVirtqDescTest(t, mem, desc, 0, buf, 2048, virtqDescFWrite, 0)
+	addVirtqAvailTest(t, mem, avail, 8, 0, 0)
+
+	mmio.storePLIC(4*uint64(biosVirtioNetIRQ), 4, 1)
+	mmio.storePLIC(0x2000+0x80*uint64(plicSContext), 4, uint64(1)<<biosVirtioNetIRQ)
+	mmio.storePLIC(0x200000+0x1000*uint64(plicSContext), 4, 0)
+
+	frame := []byte{
+		0x02, 0x72, 0x69, 0x73, 0x00, 0x02,
+		0x02, 0x72, 0x69, 0x73, 0x00, 0x01,
+		0x08, 0x00,
+		0x45, 0x00, 0x00, 0x14,
+	}
+	if ok := mmio.virtioNet.InjectGuestFrame(frame); !ok {
+		t.Fatal("InjectGuestFrame returned false")
+	}
+
+	got := make([]byte, virtioNetHeaderSize+len(frame))
+	if fault := mem.ReadBytes(buf, got); fault != nil {
+		t.Fatalf("read RX packet: %v", fault)
+	}
+	if !bytes.Equal(got[:virtioNetHeaderSize], make([]byte, virtioNetHeaderSize)) {
+		t.Fatalf("virtio-net RX header = %x, want zero", got[:virtioNetHeaderSize])
+	}
+	if !bytes.Equal(got[virtioNetHeaderSize:], frame) {
+		t.Fatalf("RX frame = %x, want %x", got[virtioNetHeaderSize:], frame)
+	}
+	if got := mustLoad16Emu(t, mem, used+2); got != 1 {
+		t.Fatalf("used idx = %d, want 1", got)
+	}
+	if got := mustLoad32Emu(t, mem, used+4); got != 0 {
+		t.Fatalf("used id = %d, want 0", got)
+	}
+	if got := mustLoad32Emu(t, mem, used+8); got != uint32(virtioNetHeaderSize+len(frame)) {
+		t.Fatalf("used len = %d, want %d", got, virtioNetHeaderSize+len(frame))
+	}
+	if !mmio.SupervisorExternalInterruptPending() {
+		t.Fatal("PLIC did not report virtio-net interrupt")
+	}
+	if got := mmio.loadPLIC(0x200000+0x1000*uint64(plicSContext)+4, 4); got != uint64(biosVirtioNetIRQ) {
+		t.Fatalf("PLIC claim = %d, want virtio-net IRQ %d", got, biosVirtioNetIRQ)
+	}
+	mustStore32Emu(t, mem, biosVirtioNetBase+virtioMMIOInterruptACK, virtioMMIOIntVring)
+	mmio.storePLIC(0x200000+0x1000*uint64(plicSContext)+4, 4, uint64(biosVirtioNetIRQ))
+	if mmio.SupervisorExternalInterruptPending() {
+		t.Fatal("virtio-net interrupt still pending after ack and PLIC complete")
+	}
+}
+
+func newVirtioNetTestDevice(t *testing.T) (*riscv.GuestMemory, *virtioNetMemoryStack, *biosMMIO) {
+	t.Helper()
+	mem, err := riscv.NewGuestMemory(riscv.Size512MB)
+	if err != nil {
+		t.Fatalf("NewGuestMemory: %v", err)
+	}
+	stack := newVirtioNetMemoryStack()
+	m := newBiosMMIO(nil, io.Discard, nil)
+	m.enableVirtioNet(mem, stack)
+	mem.SetMMIO(m)
+	t.Cleanup(func() {
+		m.closeVirtioNet()
+		mem.Free()
+	})
+	return mem, stack, m
+}
+
+func setupVirtioQueueTest(t *testing.T, mem *riscv.GuestMemory, queue uint16, num uint16, desc, avail, used uint64) {
+	t.Helper()
+	mustStore32Emu(t, mem, biosVirtioNetBase+virtioMMIOQueueSel, uint32(queue))
+	mustStore32Emu(t, mem, biosVirtioNetBase+virtioMMIOQueueNum, uint32(num))
+	mustStore32Emu(t, mem, biosVirtioNetBase+virtioMMIOQueueDescLow, uint32(desc))
+	mustStore32Emu(t, mem, biosVirtioNetBase+virtioMMIOQueueDescHigh, uint32(desc>>32))
+	mustStore32Emu(t, mem, biosVirtioNetBase+virtioMMIOQueueAvailLow, uint32(avail))
+	mustStore32Emu(t, mem, biosVirtioNetBase+virtioMMIOQueueAvailHigh, uint32(avail>>32))
+	mustStore32Emu(t, mem, biosVirtioNetBase+virtioMMIOQueueUsedLow, uint32(used))
+	mustStore32Emu(t, mem, biosVirtioNetBase+virtioMMIOQueueUsedHigh, uint32(used>>32))
+	mustStore16Emu(t, mem, avail, 0)
+	mustStore16Emu(t, mem, avail+2, 0)
+	mustStore16Emu(t, mem, used, 0)
+	mustStore16Emu(t, mem, used+2, 0)
+	mustStore32Emu(t, mem, biosVirtioNetBase+virtioMMIOQueueReady, 1)
+}
+
+func writeVirtqDescTest(t *testing.T, mem *riscv.GuestMemory, table uint64, id uint16, addr uint64, length uint32, flags uint16, next uint16) {
+	t.Helper()
+	var raw [16]byte
+	binary.LittleEndian.PutUint64(raw[0:8], addr)
+	binary.LittleEndian.PutUint32(raw[8:12], length)
+	binary.LittleEndian.PutUint16(raw[12:14], flags)
+	binary.LittleEndian.PutUint16(raw[14:16], next)
+	if fault := mem.WriteBytes(table+uint64(id)*16, raw[:]); fault != nil {
+		t.Fatalf("write virtq desc %d: %v", id, fault)
+	}
+}
+
+func addVirtqAvailTest(t *testing.T, mem *riscv.GuestMemory, avail uint64, num uint16, idx uint16, head uint16) {
+	t.Helper()
+	mustStore16Emu(t, mem, avail+4+2*uint64(idx%num), head)
+	mustStore16Emu(t, mem, avail+2, idx+1)
+}
+
+func mustLoad16Emu(t *testing.T, mem *riscv.GuestMemory, addr uint64) uint16 {
+	t.Helper()
+	got, fault := mem.Load16(addr)
+	if fault != nil {
+		t.Fatalf("Load16(%#x): %v", addr, fault)
+	}
+	return got
+}
+
+func mustLoad32Emu(t *testing.T, mem *riscv.GuestMemory, addr uint64) uint32 {
+	t.Helper()
+	got, fault := mem.Load32(addr)
+	if fault != nil {
+		t.Fatalf("Load32(%#x): %v", addr, fault)
+	}
+	return got
+}
+
+func mustStore16Emu(t *testing.T, mem *riscv.GuestMemory, addr uint64, value uint16) {
+	t.Helper()
+	if fault := mem.Store16(addr, value); fault != nil {
+		t.Fatalf("Store16(%#x): %v", addr, fault)
+	}
+}
+
+func mustStore32Emu(t *testing.T, mem *riscv.GuestMemory, addr uint64, value uint32) {
+	t.Helper()
+	if fault := mem.Store32(addr, value); fault != nil {
+		t.Fatalf("Store32(%#x): %v", addr, fault)
+	}
+}
+
 func newHostIOTestDevice(t *testing.T) (*riscv.GuestMemory, *biosMMIO) {
 	t.Helper()
 	mem, err := riscv.NewGuestMemory(riscv.Size512MB)
@@ -945,6 +1185,7 @@ func TestRunEmuBiosFWDynamicHandBuiltLinuxBootsToInitUnder8s(t *testing.T) {
 		Append:     linuxMakeBootArgs,
 		Memory:     "256MB",
 		HostIO:     true,
+		Net:        true,
 		Stdin:      strings.NewReader(""),
 		Stdout:     &stdout,
 		Stderr:     &stderr,
@@ -1027,6 +1268,7 @@ func TestRunEmuBiosFWDynamicHandBuiltLinuxHostFSMountReadWrite(t *testing.T) {
 		Append:     linuxMakeBootArgs,
 		Memory:     "256MB",
 		HostIO:     true,
+		Net:        true,
 		Stdin:      stdinR,
 		Stdout:     &stdout,
 		Stderr:     &stderr,
@@ -1055,6 +1297,68 @@ func TestRunEmuBiosFWDynamicHandBuiltLinuxHostFSMountReadWrite(t *testing.T) {
 		t.Fatalf("guest-created file = %q, want %q", got, "hello-from-hostfs-guest\n")
 	}
 	t.Logf("hand-built Linux mounted hostfs and round-tripped host files in %s", elapsed)
+}
+
+func TestRunEmuBiosFWDynamicHandBuiltLinuxVirtioNetRegistersEth0(t *testing.T) {
+	const bootWallBudget = 15 * time.Second
+	const biosPath = "../../xendor/opensbi/build/platform/generic/firmware/fw_dynamic.elf"
+	const kernelPath = "../../xendor/linux-6.17-hand-built/Image"
+	const initrdPath = "../../xendor/linux/initramfs.cpio.gz"
+	for _, path := range []string{biosPath, kernelPath, initrdPath} {
+		if !fileExists(path) {
+			t.Skipf("hand-built Linux BIOS fixture not present: %s", path)
+		}
+	}
+
+	const doneMarker = "NET-SMOKE-42"
+	script := strings.Join([]string{
+		"cat /proc/net/dev",
+		"echo NET-SMOKE-4''2",
+	}, "\n") + "\n"
+
+	var stdout safeStringWriter
+	var stderr bytes.Buffer
+	stdinR, stdinW := io.Pipe()
+	defer stdinR.Close()
+	go func() {
+		defer stdinW.Close()
+		deadline := time.Now().Add(bootWallBudget)
+		for time.Now().Before(deadline) {
+			if strings.Contains(stdout.String(), "=== RISC-V initramfs booted ===") {
+				_, _ = io.WriteString(stdinW, script)
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}()
+
+	start := time.Now()
+	ok, err := runBiosUntilOutputWithin(EmuConfig{
+		BiosPath:   biosPath,
+		KernelPath: kernelPath,
+		InitrdPath: initrdPath,
+		Append:     linuxMakeBootArgs,
+		Memory:     "256MB",
+		HostIO:     true,
+		Net:        true,
+		Stdin:      stdinR,
+		Stdout:     &stdout,
+		Stderr:     &stderr,
+	}, doneMarker, 2_500_000_000, bootWallBudget)
+	elapsed := time.Since(start)
+	out := stdout.String()
+	if err != nil {
+		t.Fatalf("hand-built Linux virtio-net smoke err after %s = %v\nstdout tail:\n%s\nstderr:\n%s",
+			elapsed, err, tailString(out, 8192), stderr.String())
+	}
+	if !ok {
+		t.Fatalf("hand-built Linux virtio-net smoke marker missing after %s\nstdout tail:\n%s\nstderr:\n%s",
+			elapsed, tailString(out, 8192), stderr.String())
+	}
+	if !strings.Contains(out, "eth0:") {
+		t.Fatalf("guest /proc/net/dev did not list eth0\nstdout tail:\n%s", tailString(out, 8192))
+	}
+	t.Logf("hand-built Linux registered virtio-net eth0 in %s", elapsed)
 }
 
 func TestDiagRunEmuBiosFWDynamicHandBuiltLinuxInitcallDebug(t *testing.T) {
@@ -1223,6 +1527,7 @@ func runBiosUntilOutputWithin(cfg EmuConfig, marker string, maxInstructions uint
 	defer guest.mem.Free()
 	defer guest.mmio.closeUARTOutput()
 	defer guest.mmio.closeHostIO()
+	defer guest.mmio.closeVirtioNet()
 
 	const chunk = uint64(100_000)
 	start := time.Now()

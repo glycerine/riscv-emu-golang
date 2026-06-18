@@ -41,10 +41,13 @@ const (
 	biosUARTSize          = uint64(0x100)
 	biosHostIOBase        = uint64(0x10001000)
 	biosHostIOSize        = uint64(0x1000)
+	biosVirtioNetBase     = uint64(0x10008000)
+	biosVirtioNetSize     = uint64(0x1000)
 	biosCLINTBase         = uint64(0x02000000)
 	biosCLINTSize         = uint64(0x00010000)
 	biosPLICBase          = uint64(0x0c000000)
 	biosPLICSize          = uint64(0x04000000)
+	biosVirtioNetIRQ      = uint32(1)
 	biosUARTIRQ           = uint32(10)
 	plicSContext          = uint32(1)
 )
@@ -104,6 +107,7 @@ func runEmuBios(cfg EmuConfig, budget uint64) (int, error) {
 	defer guest.mem.Free()
 	defer guest.mmio.closeUARTOutput()
 	defer guest.mmio.closeHostIO()
+	defer guest.mmio.closeVirtioNet()
 
 	res, err := riscv.RunBiosMachineBudget(guest.cpu, &guest.cpu.Notes, budget)
 	if err != nil {
@@ -194,6 +198,14 @@ func prepareBiosGuestWithReset(cfg EmuConfig, onSystemReset func()) (*biosGuest,
 	mmio := newBiosMMIO(cfg.Stdin, cfg.Stdout, onSystemReset)
 	if cfg.HostIO {
 		mmio.enableHostIO(mem)
+	}
+	if cfg.Net {
+		stack, err := newVirtioNetPacketStack(cfg)
+		if err != nil {
+			mem.Free()
+			return nil, err
+		}
+		mmio.enableVirtioNet(mem, stack)
 	}
 	mem.SetMMIO(mmio)
 	cpu := riscv.NewCPU(*mem)
@@ -320,6 +332,7 @@ func loadBiosFDT(cfg EmuConfig, initrd biosBlob) ([]byte, bool, error) {
 		InitrdStart: initrd.addr,
 		InitrdEnd:   initrd.end,
 		HostIO:      cfg.HostIO,
+		Net:         cfg.Net,
 	})
 	return fdt, false, err
 }
@@ -340,6 +353,7 @@ type biosMMIO struct {
 	uartOut       *asyncUARTOutput
 	onSystemReset func()
 	hostio        *hostIODevice
+	virtioNet     *virtioNetDevice
 
 	uart            [0x100]byte
 	uartTXInterrupt bool
@@ -370,6 +384,13 @@ func newBiosMMIO(stdin io.Reader, stdout io.Writer, onSystemReset func()) *biosM
 
 func (m *biosMMIO) enableHostIO(mem *riscv.GuestMemory) {
 	m.hostio = newHostIODevice(mem)
+}
+
+func (m *biosMMIO) enableVirtioNet(mem *riscv.GuestMemory, stack virtioNetPacketStack) {
+	m.virtioNet = newVirtioNetDevice(mem, stack)
+	if attach, ok := stack.(interface{ attachVirtioNet(*virtioNetDevice) }); ok {
+		attach.attachVirtioNet(m.virtioNet)
+	}
 }
 
 func (m *biosMMIO) startUARTInput(stdin io.Reader) {
@@ -404,6 +425,11 @@ func (m *biosMMIO) Load(addr, width uint64) (uint64, bool, *riscv.MemFault) {
 			return m.hostio.Load(off, width), true, nil
 		}
 	}
+	if m.virtioNet != nil {
+		if off, ok := mmioRangeOffset(addr, width, biosVirtioNetBase, biosVirtioNetSize); ok {
+			return m.virtioNet.Load(off, width), true, nil
+		}
+	}
 	if off, ok := mmioRangeOffset(addr, width, biosCLINTBase, biosCLINTSize); ok {
 		return m.loadCLINT(off, width), true, nil
 	}
@@ -413,6 +439,7 @@ func (m *biosMMIO) Load(addr, width uint64) (uint64, bool, *riscv.MemFault) {
 	if mmioRangeTouches(addr, width, biosSysconBase, biosSysconSize) ||
 		mmioRangeTouches(addr, width, biosUARTBase, biosUARTSize) ||
 		(m.hostio != nil && mmioRangeTouches(addr, width, biosHostIOBase, biosHostIOSize)) ||
+		(m.virtioNet != nil && mmioRangeTouches(addr, width, biosVirtioNetBase, biosVirtioNetSize)) ||
 		mmioRangeTouches(addr, width, biosCLINTBase, biosCLINTSize) ||
 		mmioRangeTouches(addr, width, biosPLICBase, biosPLICSize) {
 		return 0, true, &riscv.MemFault{Addr: addr, Width: width, Kind: riscv.FaultLoad}
@@ -434,6 +461,11 @@ func (m *biosMMIO) Store(addr, width, value uint64) (bool, *riscv.MemFault) {
 			return true, m.hostio.Store(off, width, value)
 		}
 	}
+	if m.virtioNet != nil {
+		if off, ok := mmioRangeOffset(addr, width, biosVirtioNetBase, biosVirtioNetSize); ok {
+			return true, m.virtioNet.Store(off, width, value)
+		}
+	}
 	if off, ok := mmioRangeOffset(addr, width, biosCLINTBase, biosCLINTSize); ok {
 		m.storeCLINT(off, width, value)
 		return true, nil
@@ -445,6 +477,7 @@ func (m *biosMMIO) Store(addr, width, value uint64) (bool, *riscv.MemFault) {
 	if mmioRangeTouches(addr, width, biosSysconBase, biosSysconSize) ||
 		mmioRangeTouches(addr, width, biosUARTBase, biosUARTSize) ||
 		(m.hostio != nil && mmioRangeTouches(addr, width, biosHostIOBase, biosHostIOSize)) ||
+		(m.virtioNet != nil && mmioRangeTouches(addr, width, biosVirtioNetBase, biosVirtioNetSize)) ||
 		mmioRangeTouches(addr, width, biosCLINTBase, biosCLINTSize) ||
 		mmioRangeTouches(addr, width, biosPLICBase, biosPLICSize) {
 		return true, &riscv.MemFault{Addr: addr, Width: width, Kind: riscv.FaultStore}
@@ -456,6 +489,7 @@ func (m *biosMMIO) MMIOOverlaps(addr, size uint64) bool {
 	return rangesOverlap(addr, addr+size, biosSysconBase, biosSysconBase+biosSysconSize) ||
 		rangesOverlap(addr, addr+size, biosUARTBase, biosUARTBase+biosUARTSize) ||
 		(m.hostio != nil && rangesOverlap(addr, addr+size, biosHostIOBase, biosHostIOBase+biosHostIOSize)) ||
+		(m.virtioNet != nil && rangesOverlap(addr, addr+size, biosVirtioNetBase, biosVirtioNetBase+biosVirtioNetSize)) ||
 		rangesOverlap(addr, addr+size, biosCLINTBase, biosCLINTBase+biosCLINTSize) ||
 		rangesOverlap(addr, addr+size, biosPLICBase, biosPLICBase+biosPLICSize)
 }
@@ -566,6 +600,14 @@ func (m *biosMMIO) closeHostIO() {
 	}
 	m.hostio.Close()
 	m.hostio = nil
+}
+
+func (m *biosMMIO) closeVirtioNet() {
+	if m.virtioNet == nil {
+		return
+	}
+	m.virtioNet.Close()
+	m.virtioNet = nil
 }
 
 type asyncUARTOutput struct {
@@ -746,10 +788,14 @@ func (m *biosMMIO) storePLIC(off, width, value uint64) {
 }
 
 func (m *biosMMIO) plicPendingBits() uint32 {
+	pending := uint32(0)
 	if m.uartInterruptPending() {
-		return uint32(1) << biosUARTIRQ
+		pending |= uint32(1) << biosUARTIRQ
 	}
-	return 0
+	if m.virtioNet != nil && m.virtioNet.InterruptPending() {
+		pending |= uint32(1) << biosVirtioNetIRQ
+	}
+	return pending
 }
 
 func (m *biosMMIO) plicPendingForContext(ctx uint32) uint32 {
@@ -949,6 +995,7 @@ type virtFDTOptions struct {
 	InitrdStart uint64
 	InitrdEnd   uint64
 	HostIO      bool
+	Net         bool
 }
 
 func buildVirtFDT(memSize uint64, opts virtFDTOptions) ([]byte, error) {
@@ -1064,6 +1111,15 @@ func buildVirtFDT(memSize uint64, opts virtFDTOptions) ([]byte, error) {
 		b.beginNode("hostio@10001000")
 		b.propString("compatible", "glycerine,riscv-hostio-v1")
 		b.propCells64("reg", biosHostIOBase, biosHostIOSize)
+		b.endNode()
+	}
+
+	if opts.Net {
+		b.beginNode("virtio_net@10008000")
+		b.propString("compatible", "virtio,mmio")
+		b.propCells64("reg", biosVirtioNetBase, biosVirtioNetSize)
+		b.propCells("interrupt-parent", virtPLICPH)
+		b.propCells("interrupts", biosVirtioNetIRQ)
 		b.endNode()
 	}
 
