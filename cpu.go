@@ -2282,6 +2282,9 @@ func (c *CPU) writeCSR(addr uint32, val uint64) bool {
 		c.stimecmp = val // stimecmp
 		c.refreshSupervisorTimerPending()
 	case 0x180:
+		if !satpWriteSupported(val) {
+			return true
+		}
 		if c.satp != val {
 			c.satp = val // satp
 			c.flushTLB()

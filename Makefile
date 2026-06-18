@@ -77,6 +77,14 @@ GUEST_CFLAGS := -O2 -target $(ZIG_TARGET) -static -mcpu=generic_rv64+m+a+f+d+c \
             -I riscv-elf-tests/isa/macros/scalar \
             -nostdlib
 
+GUEST_CFLAGS_WITH_STDLIB := -O2 -target $(ZIG_TARGET) -static -mcpu=generic_rv64+m+a+f+d+c \
+            -mabi=lp64d \
+            -fPIC \
+            -mcmodel=medany \
+            -T riscv-elf-tests/env/p/link.ld \
+            -I riscv-elf-tests/env/p \
+            -I riscv-elf-tests/isa/macros/scalar
+
 ARM64_QEMU_BENCH ?= ^BenchmarkRVTests_UI_(Interp2|LazyJIT2|LazyJIT2_RV8|LazyJIT2_Hot|LazyJIT2_Hot_RV8|RunOnlyInterp2|RunOnlyLazyJIT2_Hot|RunOnlyLazyJIT2_Hot_RV8)$$
 ARM64_QEMU_BENCHTIME ?= 3x
 ARM64_QEMU_COMPARE_BENCHTIME ?= 1x
@@ -322,6 +330,12 @@ $(GUEST_ELF): $(GUEST_SRC)
 	@echo "  target=$(ZIG_TARGET)"
 	$(ZIG_CC) cc $(subst -T riscv-elf-tests/env/p/link.ld,-T $(GUEST_DIR)/link.ld,$(GUEST_CFLAGS)) -o $(GUEST_ELF) $(GUEST_SRC)
 	@test -f $(GUEST_ELF) || { echo "  ✗ guest ELF not produced"; exit 1; }
+	@echo "  ✓ $$(file $(GUEST_ELF) | cut -d: -f2 | xargs)"
+	@echo "  ✓ size: $$(du -h $(GUEST_ELF) | cut -f1)"
+
+timing.elf:
+	$(ZIG_CC) cc $(subst -T riscv-elf-tests/env/p/link.ld,-T $(GUEST_DIR)/link.ld,$(GUEST_CFLAGS_WITH_STDLIB)) -o bench/timing.elf bench/timing_guest/timer.c
+	@test -f bench/timing.elf || { echo "  ✗ guest ELF not produced"; exit 1; }
 	@echo "  ✓ $$(file $(GUEST_ELF) | cut -d: -f2 | xargs)"
 	@echo "  ✓ size: $$(du -h $(GUEST_ELF) | cut -f1)"
 

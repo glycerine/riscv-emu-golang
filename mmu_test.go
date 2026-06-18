@@ -146,6 +146,41 @@ func TestMMU_SatpWriteFlushesTLB(t *testing.T) {
 	}
 }
 
+func TestMMU_SatpWriteRejectsUnsupportedMode(t *testing.T) {
+	mem, err := NewGuestMemory(Size64MB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mem.Free()
+
+	cpu := NewCPU(*mem)
+	cpu.EnableMMU()
+
+	unsupportedSv57 := (uint64(10) << 60) | 0x12345
+	if !cpu.writeCSR(0x180, unsupportedSv57) {
+		t.Fatal("unsupported satp mode should be WARL, not illegal")
+	}
+	if got := cpu.satp; got != 0 {
+		t.Fatalf("satp after unsupported write from zero = %#x, want unchanged zero", got)
+	}
+
+	const root = uint64(0x4000)
+	want := sv39SATP(root)
+	if !cpu.writeCSR(0x180, want) {
+		t.Fatal("Sv39 satp write rejected")
+	}
+	if got := cpu.satp; got != want {
+		t.Fatalf("satp after Sv39 write = %#x, want %#x", got, want)
+	}
+
+	if !cpu.writeCSR(0x180, unsupportedSv57) {
+		t.Fatal("unsupported satp mode should be WARL, not illegal")
+	}
+	if got := cpu.satp; got != want {
+		t.Fatalf("satp after unsupported write = %#x, want unchanged %#x", got, want)
+	}
+}
+
 func TestRunMachineBudget_DelegatesMMUPageFault(t *testing.T) {
 	mem, err := NewGuestMemory(Size64MB)
 	if err != nil {

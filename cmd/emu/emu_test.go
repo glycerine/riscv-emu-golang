@@ -522,6 +522,93 @@ func TestPrepareBiosGuestFWDynamicSetsInfoBlock(t *testing.T) {
 	}
 }
 
+func TestRunEmuBiosFWDynamicHandsOffToTinySModeImage(t *testing.T) {
+	const biosPath = "../../xendor/opensbi/build/platform/generic/firmware/fw_dynamic.elf"
+	if !fileExists(biosPath) {
+		t.Skipf("OpenSBI fw_dynamic fixture not present: %s", biosPath)
+	}
+
+	const (
+		sentinelOffset = uint64(64)
+		sentinelMagic  = uint64(0x12345678)
+	)
+	dir := t.TempDir()
+	kernelPath := filepath.Join(dir, "Image")
+	if err := os.WriteFile(kernelPath, tinySModeSentinelImage(sentinelOffset), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	guest, err := prepareBiosGuest(EmuConfig{
+		BiosPath:   biosPath,
+		KernelPath: kernelPath,
+		Memory:     "512MB",
+		Stdin:      strings.NewReader(""),
+		Stdout:     &stdout,
+		Stderr:     &stderr,
+	}.withDefaults())
+	if err != nil {
+		t.Fatalf("prepareBiosGuest: %v", err)
+	}
+	defer guest.mem.Free()
+
+	sentinelAddr := defaultBiosKernelAddr + sentinelOffset
+	if got := loadLittleEndianU64(t, guest.mem, sentinelAddr); got == sentinelMagic {
+		t.Fatalf("sentinel at %#x already equals magic before OpenSBI runs", sentinelAddr)
+	}
+	if err := runBiosUntilMagic(guest, sentinelAddr, sentinelMagic, 25_000_000); err != nil {
+		t.Fatalf("OpenSBI did not hand off to tiny S-mode Image: %v\nstdout tail:\n%s\nstderr:\n%s",
+			err, tailString(stdout.String(), 4096), stderr.String())
+	}
+	if got := guest.cpu.PrivilegeMode(); got != riscv.PrivSupervisor {
+		t.Fatalf("privilege after sentinel = %v, want supervisor; state=%+v", got, guest.cpu.DebugSnapshot())
+	}
+	if got := guest.cpu.Reg(10); got != 0 {
+		t.Fatalf("a0/hartid after handoff = %#x, want 0", got)
+	}
+	if got := guest.cpu.Reg(11); got != guest.fdtAddr {
+		t.Fatalf("a1/FDT after handoff = %#x, want %#x", got, guest.fdtAddr)
+	}
+	if got := guest.cpu.PC(); got < defaultBiosKernelAddr || got >= defaultBiosKernelAddr+uint64(len(guest.kernel.data)) {
+		t.Fatalf("PC after sentinel = %#x, want inside tiny Image [%#x,%#x); state=%+v",
+			got, defaultBiosKernelAddr, defaultBiosKernelAddr+uint64(len(guest.kernel.data)), guest.cpu.DebugSnapshot())
+	}
+	if !strings.Contains(stdout.String(), "Domain0 Next Mode           : S-mode") {
+		t.Fatalf("OpenSBI did not report S-mode handoff\nstdout tail:\n%s", tailString(stdout.String(), 4096))
+	}
+}
+
+func TestRunEmuBiosFWDynamicHandBuiltLinuxPrintsBanner(t *testing.T) {
+	const biosPath = "../../xendor/opensbi/build/platform/generic/firmware/fw_dynamic.elf"
+	const kernelPath = "../../xendor/linux-6.17-hand-built/Image"
+	const initrdPath = "../../xendor/linux/initramfs.cpio.gz"
+	for _, path := range []string{biosPath, kernelPath, initrdPath} {
+		if !fileExists(path) {
+			t.Skipf("hand-built Linux BIOS fixture not present: %s", path)
+		}
+	}
+
+	var stdout, stderr bytes.Buffer
+	ok, err := runBiosUntilOutput(EmuConfig{
+		BiosPath:   biosPath,
+		KernelPath: kernelPath,
+		InitrdPath: initrdPath,
+		Append:     linuxUARTBootArgs,
+		Memory:     "512MB",
+		Stdin:      strings.NewReader(""),
+		Stdout:     &stdout,
+		Stderr:     &stderr,
+	}, "Linux version 6.17.0", 10_000_000)
+	if err != nil {
+		t.Fatalf("hand-built Linux banner err = %v\nstdout tail:\n%s\nstderr:\n%s",
+			err, tailString(stdout.String(), 4096), stderr.String())
+	}
+	if !ok {
+		t.Fatalf("hand-built Linux banner missing\nstdout tail:\n%s\nstderr:\n%s",
+			tailString(stdout.String(), 4096), stderr.String())
+	}
+}
+
 func TestRunEmuBiosFWDynamicLinuxSmoke(t *testing.T) {
 	const biosPath = "../../xendor/opensbi/build/platform/generic/firmware/fw_dynamic.elf"
 	const kernelPath = "../../xendor/linux/boot/vmlinuz-6.17.0-35-generic"
@@ -690,6 +777,82 @@ func guestInsnForTest(mem *riscv.GuestMemory, pc uint64) uint32 {
 		return 0
 	}
 	return insn
+}
+
+func runBiosUntilMagic(guest *biosGuest, addr, magic, maxInstructions uint64) error {
+	const chunk = uint64(100_000)
+	var used uint64
+	for used < maxInstructions {
+		step := chunk
+		if rem := maxInstructions - used; rem < step {
+			step = rem
+		}
+		res, err := riscv.RunBiosMachineBudget(guest.cpu, &guest.cpu.Notes, step)
+		used += step
+		got, fault := guest.mem.Load64(addr)
+		if fault != nil {
+			return fmt.Errorf("loading sentinel at %#x: %w", addr, fault)
+		}
+		if got == magic {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("%w after %d instructions at pc=%#x insn=%#x state=%+v sentinel=%#x",
+				err, used, guest.cpu.PC(), guestInsnForTest(guest.mem, guest.cpu.PC()), guest.cpu.DebugSnapshot(), got)
+		}
+		if res == riscv.RunBudgetExit {
+			return fmt.Errorf("BIOS exited after %d instructions before sentinel %#x became %#x; pc=%#x state=%+v sentinel=%#x",
+				used, addr, magic, guest.cpu.PC(), guest.cpu.DebugSnapshot(), got)
+		}
+	}
+	got, fault := guest.mem.Load64(addr)
+	if fault != nil {
+		return fmt.Errorf("loading sentinel at %#x: %w", addr, fault)
+	}
+	return fmt.Errorf("%w after %d instructions at pc=%#x insn=%#x state=%+v sentinel=%#x want=%#x",
+		errBiosBudgetExpired, maxInstructions, guest.cpu.PC(), guestInsnForTest(guest.mem, guest.cpu.PC()), guest.cpu.DebugSnapshot(), got, magic)
+}
+
+func tinySModeSentinelImage(sentinelOffset uint64) []byte {
+	var image [72]byte
+	putRV32(image[0:4], rvAUIPC(5, 0))                       // auipc t0, 0
+	putRV32(image[4:8], rvADDI(5, 5, int32(sentinelOffset))) // addi  t0, t0, sentinelOffset
+	putRV32(image[8:12], rvLUI(6, 0x12345))                  // lui   t1, 0x12345
+	putRV32(image[12:16], rvADDI(6, 6, 0x678))               // addi  t1, t1, 0x678
+	putRV32(image[16:20], rvSD(5, 6, 0))                     // sd    t1, 0(t0)
+	putRV32(image[20:24], rvJAL(0, 0))                       // jal   x0, 0
+	return image[:]
+}
+
+func putRV32(dst []byte, insn uint32) {
+	binary.LittleEndian.PutUint32(dst, insn)
+}
+
+func rvAUIPC(rd uint8, imm20 uint32) uint32 {
+	return (imm20 << 12) | (uint32(rd) << 7) | 0x17
+}
+
+func rvLUI(rd uint8, imm20 uint32) uint32 {
+	return (imm20 << 12) | (uint32(rd) << 7) | 0x37
+}
+
+func rvADDI(rd, rs1 uint8, imm int32) uint32 {
+	return ((uint32(imm) & 0xfff) << 20) | (uint32(rs1) << 15) | (uint32(rd) << 7) | 0x13
+}
+
+func rvSD(rs1, rs2 uint8, imm int32) uint32 {
+	imm12 := uint32(imm) & 0xfff
+	return ((imm12 >> 5) << 25) | (uint32(rs2) << 20) | (uint32(rs1) << 15) | (3 << 12) | ((imm12 & 0x1f) << 7) | 0x23
+}
+
+func rvJAL(rd uint8, imm int32) uint32 {
+	uimm := uint32(imm)
+	return (((uimm >> 20) & 0x1) << 31) |
+		(((uimm >> 1) & 0x3ff) << 21) |
+		(((uimm >> 11) & 0x1) << 20) |
+		(((uimm >> 12) & 0xff) << 12) |
+		(uint32(rd) << 7) |
+		0x6f
 }
 
 func TestRunEmuBiosOpenSBIFwJumpGetsFDT(t *testing.T) {

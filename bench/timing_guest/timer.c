@@ -10,6 +10,8 @@ If your emulator doesn't have an emulated CLINT that updates mtime and checks ag
 To see if this is the issue, you can try disabling the timer dependency by adding clocksource=dummy to your kernel boot arguments.
 
 Note: This is a debugging step, not a permanent fix. If it boots faster, it confirms that your timer/interrupt infrastructure is failing to provide a signal to the kernel.
+
+DOH: problem is that we have no stdlib?
 */
 #include <stdio.h>
 

@@ -534,6 +534,16 @@ func satpMode(satp uint64) uint64 {
 	return satp >> 60
 }
 
+// SATP MODE is WARL: unsupported paging modes leave the whole CSR unchanged.
+func satpWriteSupported(satp uint64) bool {
+	switch satpMode(satp) {
+	case satpModeBare, satpModeSv39, satpModeSv48:
+		return true
+	default:
+		return false
+	}
+}
+
 func canonicalVA(addr uint64, levels int) bool {
 	switch levels {
 	case 3:
