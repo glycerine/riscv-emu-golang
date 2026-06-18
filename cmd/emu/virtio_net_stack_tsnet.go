@@ -88,6 +88,7 @@ type tsnetVirtioStack struct {
 	natByIn   map[emunetNATInKey]*emunetNATEntry
 	nextNATID uint16
 	now       func() time.Time
+	counters  emunetCounters
 }
 
 var (
@@ -544,6 +545,7 @@ func (s *tsnetVirtioStack) InjectInboundPacket(frame []byte) {
 
 func (s *tsnetVirtioStack) handleGuestFrameForPort(portID string, frame []byte, emit func([]byte)) {
 	if len(frame) < 14 {
+		s.incDrop(emunetDropMalformedEthernet)
 		return
 	}
 	etherType := binary.BigEndian.Uint16(frame[12:14])
@@ -566,7 +568,9 @@ func (s *tsnetVirtioStack) handleGuestFrameForPort(portID string, frame []byte, 
 	case etherTypeIPv6:
 		if s.directTailnetGuest {
 			s.tun.InjectIPPacket(frame[14:])
+			return
 		}
+		s.incDrop(emunetDropUnsupportedEth)
 	case etherTypeARP:
 		if s.directTailnetGuest {
 			if reply := s.arpReply(frame); len(reply) != 0 {
@@ -577,6 +581,8 @@ func (s *tsnetVirtioStack) handleGuestFrameForPort(portID string, frame []byte, 
 		if reply := s.arpReplyForPort(portID, frame, emit); len(reply) != 0 {
 			emit(reply)
 		}
+	default:
+		s.incDrop(emunetDropUnsupportedEth)
 	}
 }
 
@@ -773,6 +779,7 @@ func (s *tsnetVirtioStack) handleDHCP(portID string, frame []byte, emit func([]b
 	reply := s.dhcpReply(dhcp, replyType, guestIP, serverIP, dnsIP, subnet)
 	if len(reply) != 0 {
 		emit(reply)
+		s.incDHCPReply(replyType)
 	}
 	return true
 }

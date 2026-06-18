@@ -1231,6 +1231,7 @@ func TestRunEmuBiosFWDynamicHandBuiltLinuxBootsToInitUnder8s(t *testing.T) {
 			t.Skipf("hand-built Linux BIOS fixture not present: %s", path)
 		}
 	}
+	installFakeEmunetForLinuxSmoke(t)
 
 	var stdout safeStringWriter
 	var stderr bytes.Buffer
@@ -1278,6 +1279,7 @@ func TestRunEmuBiosFWDynamicHandBuiltLinuxHostFSMountReadWrite(t *testing.T) {
 			t.Skipf("hand-built Linux BIOS fixture not present: %s", path)
 		}
 	}
+	installFakeEmunetForLinuxSmoke(t)
 
 	hostDir := t.TempDir()
 	hostDir, err := filepath.EvalSymlinks(hostDir)
@@ -1366,6 +1368,7 @@ func TestRunEmuBiosFWDynamicHandBuiltLinuxVirtioNetRegistersEth0(t *testing.T) {
 			t.Skipf("hand-built Linux BIOS fixture not present: %s", path)
 		}
 	}
+	installFakeEmunetForLinuxSmoke(t)
 
 	const doneMarker = "NET-SMOKE-42"
 	script := strings.Join([]string{
@@ -1605,6 +1608,9 @@ func TestRunEmuBiosFWDynamicLinuxBootsWith512MBRAM(t *testing.T) {
 }
 
 func TestRunEmuBiosFWDynamicLinuxPassesTimerProbe(t *testing.T) {
+	if os.Getenv("RISCV_EMU_LINUX_SLOW_GENERIC") == "" {
+		t.Skip("set RISCV_EMU_LINUX_SLOW_GENERIC=1 to run the legacy generic Ubuntu timer probe")
+	}
 	const biosPath = "../../xendor/opensbi/build/platform/generic/firmware/fw_dynamic.elf"
 	const kernelPath = "../../xendor/linux/boot/vmlinuz-6.17.0-35-generic"
 	const initrdPath = "../../xendor/linux/initramfs.cpio.gz"

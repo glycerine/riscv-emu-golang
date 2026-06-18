@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -512,6 +513,141 @@ func TestTsnetVirtioStackRemoveEmunetPortRemovesLeaseAndNAT(t *testing.T) {
 	}
 	if len(stack.natByIn) != 0 {
 		t.Fatalf("inbound NAT mappings = %d, want 0 after removing only port", len(stack.natByIn))
+	}
+}
+
+func TestTsnetVirtioStackEmunetCountersRecordSuccessesAndDrops(t *testing.T) {
+	stack := &tsnetVirtioStack{hostMAC: emunetRouterMAC}
+	tailIP := netip.MustParseAddr("100.64.12.34")
+	stack.setTailIPv4(tailIP)
+	guestMAC := [6]byte{0x02, 0, 0, 0, 1, 0x1b}
+	stack.learnPortMAC("counter-port", guestMAC, func([]byte) {})
+
+	stack.InjectInboundPacket(dhcpTestFrame(t, dhcpDiscover, 0x77777777, guestMAC))
+	_ = onlyPendingEthernetFrame(t, stack)
+	stack.mu.Lock()
+	stack.pending = nil
+	stack.mu.Unlock()
+	stack.InjectInboundPacket(dhcpTestFrame(t, dhcpRequest, 0x88888888, guestMAC))
+	_ = onlyPendingEthernetFrame(t, stack)
+	stack.mu.Lock()
+	stack.pending = nil
+	stack.mu.Unlock()
+	stack.InjectInboundPacket(arpRequestFrame(guestMAC, [4]byte{10, 77, 0, 2}, [4]byte{10, 77, 0, 1}))
+	_ = onlyPendingEthernetFrame(t, stack)
+	stack.mu.Lock()
+	stack.pending = nil
+	stack.mu.Unlock()
+	stack.InjectInboundPacket(icmpEchoFrame(guestMAC, [4]byte{10, 77, 0, 2}, [4]byte{10, 77, 0, 1}, 0x1234, 1))
+	_ = onlyPendingEthernetFrame(t, stack)
+
+	udpOut := stack.translateOutboundIPv4("counter-port", udpIPv4Packet([4]byte{10, 77, 0, 2}, [4]byte{8, 8, 8, 8}, 1234, 53, []byte("udp")), tailIP, func([]byte) {})
+	tcpOut := stack.translateOutboundIPv4("counter-port", tcpIPv4Packet([4]byte{10, 77, 0, 2}, [4]byte{8, 8, 4, 4}, 2345, 443, 0x02, nil), tailIP, func([]byte) {})
+	icmpOut := stack.translateOutboundIPv4("counter-port", icmpIPv4Packet([4]byte{10, 77, 0, 2}, [4]byte{1, 1, 1, 1}, icmpEchoRequest, 0x3456, 1), tailIP, func([]byte) {})
+	if len(udpOut) == 0 || len(tcpOut) == 0 || len(icmpOut) == 0 {
+		t.Fatalf("NAT success counter setup dropped packet lengths udp=%d tcp=%d icmp=%d", len(udpOut), len(tcpOut), len(icmpOut))
+	}
+	_, _, _, _, _ = stack.natInbound(udpIPv4Packet([4]byte{8, 8, 8, 8}, tailIP.As4(), 53, binary.BigEndian.Uint16(udpOut[20:22]), []byte("reply")))
+	_, _, _, _, _ = stack.natInbound(tcpIPv4Packet([4]byte{8, 8, 4, 4}, tailIP.As4(), 443, binary.BigEndian.Uint16(tcpOut[20:22]), 0x12, nil))
+	_, _, _, _, _ = stack.natInbound(icmpIPv4Packet([4]byte{1, 1, 1, 1}, tailIP.As4(), icmpEchoReply, binary.BigEndian.Uint16(icmpOut[24:26]), 1))
+
+	fragment := udpIPv4Packet([4]byte{10, 77, 0, 2}, [4]byte{9, 9, 9, 9}, 3456, 53, []byte("drop"))
+	binary.BigEndian.PutUint16(fragment[6:8], 0x2000)
+	_ = stack.translateOutboundIPv4("counter-port", fragment, tailIP, func([]byte) {})
+	_ = stack.translateOutboundIPv4("counter-port", ipv4Packet([4]byte{10, 77, 0, 2}, [4]byte{9, 9, 9, 9}, 99, []byte("drop")), tailIP, func([]byte) {})
+	_, _, _, _, _ = stack.natInbound(udpIPv4Packet([4]byte{9, 9, 9, 9}, tailIP.As4(), 53, 49999, []byte("drop")))
+
+	counters := stack.counterSnapshot()
+	if counters.DHCPOffers != 1 || counters.DHCPAcks != 1 || counters.ARPReplies != 1 || counters.GatewayICMPReplies != 1 {
+		t.Fatalf("LAN counters = offers:%d acks:%d arp:%d gwicmp:%d, want all 1",
+			counters.DHCPOffers, counters.DHCPAcks, counters.ARPReplies, counters.GatewayICMPReplies)
+	}
+	if counters.NATOutboundUDP != 1 || counters.NATOutboundTCP != 1 || counters.NATOutboundICMP != 1 {
+		t.Fatalf("NAT outbound counters = udp:%d tcp:%d icmp:%d, want all 1",
+			counters.NATOutboundUDP, counters.NATOutboundTCP, counters.NATOutboundICMP)
+	}
+	if counters.NATInboundUDP != 1 || counters.NATInboundTCP != 1 || counters.NATInboundICMP != 1 {
+		t.Fatalf("NAT inbound counters = udp:%d tcp:%d icmp:%d, want all 1",
+			counters.NATInboundUDP, counters.NATInboundTCP, counters.NATInboundICMP)
+	}
+	if counters.Drops[emunetDropIPv4Fragment] != 1 ||
+		counters.Drops[emunetDropUnsupportedProto] != 1 ||
+		counters.Drops[emunetDropNoNATMapping] != 1 {
+		t.Fatalf("drop counters = %#v, want fragment/unsupported/no mapping each 1", counters.Drops)
+	}
+	counters.Drops[emunetDropIPv4Fragment] = 999
+	if got := stack.counterSnapshot().Drops[emunetDropIPv4Fragment]; got != 1 {
+		t.Fatalf("counter snapshot was not isolated: got fragment count %d, want 1", got)
+	}
+}
+
+func TestTsnetVirtioStackEmunetTraceLogsDrops(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("RISCV_EMU_EMUNET_TRACE", "1")
+	stack := &tsnetVirtioStack{hostMAC: emunetRouterMAC}
+	tailIP := netip.MustParseAddr("100.64.12.34")
+	fragment := udpIPv4Packet([4]byte{10, 77, 0, 2}, [4]byte{8, 8, 8, 8}, 1234, 53, []byte("hello"))
+	binary.BigEndian.PutUint16(fragment[6:8], 0x2000)
+
+	_ = stack.translateOutboundIPv4("trace-port", fragment, tailIP, func([]byte) {})
+
+	got, err := os.ReadFile(tsnetOpLogPath())
+	if err != nil {
+		t.Fatalf("read trace oplog: %v", err)
+	}
+	text := string(got)
+	if !strings.Contains(text, "emunet_trace drop") || !strings.Contains(text, emunetDropIPv4Fragment) {
+		t.Fatalf("trace oplog missing emunet drop line: %q", text)
+	}
+}
+
+func TestTsnetVirtioStackEmunetCounterSnapshotsDuringTraffic(t *testing.T) {
+	stack := &tsnetVirtioStack{hostMAC: emunetRouterMAC}
+	tailIP := netip.MustParseAddr("100.64.12.34")
+	stack.setTailIPv4(tailIP)
+	workersDone := make(chan struct{})
+	errCh := make(chan string, 1)
+
+	var wg sync.WaitGroup
+	for worker := range 8 {
+		wg.Add(1)
+		go func(worker int) {
+			defer wg.Done()
+			for i := range 100 {
+				portID := fmt.Sprintf("worker-%d", worker)
+				src := [4]byte{10, 77, byte(worker), byte(i + 2)}
+				dst := [4]byte{8, 8, 8, byte(worker + 1)}
+				packet := udpIPv4Packet(src, dst, uint16(1000+i), 53, []byte("traffic"))
+				if out := stack.translateOutboundIPv4(portID, packet, tailIP, func([]byte) {}); len(out) == 0 {
+					select {
+					case errCh <- fmt.Sprintf("worker %d packet %d dropped", worker, i):
+					default:
+					}
+					return
+				}
+				_ = stack.counterSnapshot()
+			}
+		}(worker)
+	}
+	go func() {
+		wg.Wait()
+		close(workersDone)
+	}()
+
+	for {
+		select {
+		case msg := <-errCh:
+			t.Fatal(msg)
+		case <-workersDone:
+			if got := stack.counterSnapshot().NATOutboundUDP; got == 0 {
+				t.Fatalf("NATOutboundUDP = 0, want concurrent traffic to increment it")
+			}
+			return
+		default:
+			_ = stack.counterSnapshot()
+			time.Sleep(time.Millisecond)
+		}
 	}
 }
 

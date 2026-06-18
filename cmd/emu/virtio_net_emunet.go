@@ -5,6 +5,7 @@ package main
 import (
 	"encoding/binary"
 	"net/netip"
+	"os"
 	"time"
 )
 
@@ -21,6 +22,33 @@ const (
 	emunetUDPIdleTimeout  = 2 * time.Minute
 	emunetTCPIdleTimeout  = 10 * time.Minute
 )
+
+const (
+	emunetDropNoTailIPv4        = "no_tail_ipv4"
+	emunetDropNoNATMapping      = "no_nat_mapping"
+	emunetDropIPv4Fragment      = "ipv4_fragment"
+	emunetDropUnsupportedProto  = "unsupported_protocol"
+	emunetDropBadPacketLength   = "bad_packet_length"
+	emunetDropBadHeaderLength   = "bad_header_length"
+	emunetDropTTLExpired        = "ttl_expired"
+	emunetDropClosedEmunetPort  = "closed_emunet_port"
+	emunetDropUnsupportedEth    = "unsupported_ethertype"
+	emunetDropMalformedEthernet = "malformed_ethernet"
+)
+
+type emunetCounters struct {
+	DHCPOffers         uint64
+	DHCPAcks           uint64
+	ARPReplies         uint64
+	GatewayICMPReplies uint64
+	NATOutboundUDP     uint64
+	NATOutboundTCP     uint64
+	NATOutboundICMP    uint64
+	NATInboundUDP      uint64
+	NATInboundTCP      uint64
+	NATInboundICMP     uint64
+	Drops              map[string]uint64
+}
 
 var (
 	emunetRouterIPv4 = netip.MustParseAddr("10.77.0.1")
@@ -147,6 +175,7 @@ func (s *tsnetVirtioStack) arpReplyForPort(portID string, req []byte, emit func(
 	copy(reply[28:32], router4[:])
 	copy(reply[32:38], req[22:28])
 	copy(reply[38:42], req[28:32])
+	s.incARPReply()
 	return reply
 }
 
@@ -186,12 +215,14 @@ func (s *tsnetVirtioStack) gatewayICMPEchoReply(portID string, frame []byte, emi
 	icmp[0] = icmpEchoReply
 	icmp[2], icmp[3] = 0, 0
 	binary.BigEndian.PutUint16(icmp[2:4], internetChecksum(icmp[:totalLen-ihl]))
+	s.incGatewayICMPReply()
 	return reply
 }
 
 func (s *tsnetVirtioStack) natOutbound(portID string, packet []byte, emit func([]byte)) []byte {
 	tailIP, ok := s.tailscaleIPv4()
 	if !ok || !tailIP.Is4() {
+		s.incDrop(emunetDropNoTailIPv4)
 		return nil
 	}
 	return s.translateOutboundIPv4(portID, packet, tailIP, emit)
@@ -199,21 +230,26 @@ func (s *tsnetVirtioStack) natOutbound(portID string, packet []byte, emit func([
 
 func (s *tsnetVirtioStack) translateOutboundIPv4(portID string, packet []byte, tailIP netip.Addr, emit func([]byte)) []byte {
 	if len(packet) < 20 || packet[0]>>4 != 4 {
+		s.incDrop(emunetDropBadPacketLength)
 		return nil
 	}
 	ihl := int(packet[0]&0x0f) * 4
 	if ihl < 20 || len(packet) < ihl {
+		s.incDrop(emunetDropBadHeaderLength)
 		return nil
 	}
 	totalLen := int(binary.BigEndian.Uint16(packet[2:4]))
 	if totalLen < ihl || totalLen > len(packet) {
+		s.incDrop(emunetDropBadPacketLength)
 		return nil
 	}
 	frag := binary.BigEndian.Uint16(packet[6:8])
 	if frag&0x3fff != 0 {
+		s.incDrop(emunetDropIPv4Fragment)
 		return nil
 	}
 	if packet[8] <= 1 {
+		s.incDrop(emunetDropTTLExpired)
 		return nil
 	}
 	guestIP := netip.AddrFrom4([4]byte{packet[12], packet[13], packet[14], packet[15]})
@@ -227,6 +263,7 @@ func (s *tsnetVirtioStack) translateOutboundIPv4(portID string, packet []byte, t
 	switch proto {
 	case ipProtoUDP:
 		if totalLen < ihl+8 {
+			s.incDrop(emunetDropBadPacketLength)
 			return nil
 		}
 		udp := out[ihl:]
@@ -240,11 +277,13 @@ func (s *tsnetVirtioStack) translateOutboundIPv4(portID string, packet []byte, t
 		}
 	case ipProtoTCP:
 		if totalLen < ihl+20 {
+			s.incDrop(emunetDropBadPacketLength)
 			return nil
 		}
 		tcp := out[ihl:]
 		tcpHeaderLen := int(tcp[12]>>4) * 4
 		if tcpHeaderLen < 20 || len(tcp) < tcpHeaderLen {
+			s.incDrop(emunetDropBadHeaderLength)
 			return nil
 		}
 		guestPort := binary.BigEndian.Uint16(tcp[0:2])
@@ -255,6 +294,7 @@ func (s *tsnetVirtioStack) translateOutboundIPv4(portID string, packet []byte, t
 		binary.BigEndian.PutUint16(tcp[16:18], transportChecksum(out[:ihl], tcp, proto))
 	case ipProtoICMP:
 		if totalLen < ihl+8 || out[ihl] != icmpEchoRequest {
+			s.incDrop(emunetDropUnsupportedProto)
 			return nil
 		}
 		icmp := out[ihl:]
@@ -264,10 +304,12 @@ func (s *tsnetVirtioStack) translateOutboundIPv4(portID string, packet []byte, t
 		icmp[2], icmp[3] = 0, 0
 		binary.BigEndian.PutUint16(icmp[2:4], internetChecksum(icmp))
 	default:
+		s.incDrop(emunetDropUnsupportedProto)
 		return nil
 	}
 	out[10], out[11] = 0, 0
 	binary.BigEndian.PutUint16(out[10:12], ipv4HeaderChecksum(out[:ihl]))
+	s.incNATOutbound(proto)
 	return out
 }
 
@@ -325,16 +367,23 @@ func (s *tsnetVirtioStack) nextNATLocked() uint16 {
 
 func (s *tsnetVirtioStack) natInbound(packet []byte) (string, [6]byte, []byte, func([]byte), bool) {
 	tailIP, ok := s.tailscaleIPv4()
-	if !ok || !tailIP.Is4() || len(packet) < 20 || packet[0]>>4 != 4 {
+	if !ok || !tailIP.Is4() {
+		s.incDrop(emunetDropNoTailIPv4)
+		return "", [6]byte{}, nil, nil, false
+	}
+	if len(packet) < 20 || packet[0]>>4 != 4 {
+		s.incDrop(emunetDropBadPacketLength)
 		return "", [6]byte{}, nil, nil, false
 	}
 	ihl := int(packet[0]&0x0f) * 4
 	totalLen := int(binary.BigEndian.Uint16(packet[2:4]))
 	if ihl < 20 || totalLen < ihl || totalLen > len(packet) {
+		s.incDrop(emunetDropBadPacketLength)
 		return "", [6]byte{}, nil, nil, false
 	}
 	dst := netip.AddrFrom4([4]byte{packet[16], packet[17], packet[18], packet[19]})
 	if dst != tailIP {
+		s.incDrop(emunetDropNoNATMapping)
 		return "", [6]byte{}, nil, nil, false
 	}
 	proto := packet[9]
@@ -343,22 +392,26 @@ func (s *tsnetVirtioStack) natInbound(packet []byte) (string, [6]byte, []byte, f
 	switch proto {
 	case ipProtoUDP:
 		if totalLen < ihl+8 {
+			s.incDrop(emunetDropBadPacketLength)
 			return "", [6]byte{}, nil, nil, false
 		}
 		udp := packet[ihl:]
 		key = emunetNATInKey{proto: proto, external: binary.BigEndian.Uint16(udp[2:4]), remoteIP: remoteIP, remotePort: binary.BigEndian.Uint16(udp[0:2])}
 	case ipProtoTCP:
 		if totalLen < ihl+20 {
+			s.incDrop(emunetDropBadPacketLength)
 			return "", [6]byte{}, nil, nil, false
 		}
 		tcp := packet[ihl:]
 		key = emunetNATInKey{proto: proto, external: binary.BigEndian.Uint16(tcp[2:4]), remoteIP: remoteIP, remotePort: binary.BigEndian.Uint16(tcp[0:2])}
 	case ipProtoICMP:
 		if totalLen < ihl+8 || packet[ihl] != icmpEchoReply {
+			s.incDrop(emunetDropUnsupportedProto)
 			return "", [6]byte{}, nil, nil, false
 		}
 		key = emunetNATInKey{proto: proto, external: binary.BigEndian.Uint16(packet[ihl+4 : ihl+6]), remoteIP: remoteIP}
 	default:
+		s.incDrop(emunetDropUnsupportedProto)
 		return "", [6]byte{}, nil, nil, false
 	}
 
@@ -368,12 +421,14 @@ func (s *tsnetVirtioStack) natInbound(packet []byte) (string, [6]byte, []byte, f
 	ent := s.natByIn[key]
 	if ent == nil {
 		s.mu.Unlock()
+		s.incDrop(emunetDropNoNATMapping)
 		return "", [6]byte{}, nil, nil, false
 	}
 	ent.lastUsed = now
 	p := s.ports[ent.portID]
 	if p == nil || p.emit == nil {
 		s.mu.Unlock()
+		s.incDrop(emunetDropClosedEmunetPort)
 		return "", [6]byte{}, nil, nil, false
 	}
 	guestMAC := p.guestMAC
@@ -404,6 +459,7 @@ func (s *tsnetVirtioStack) natInbound(packet []byte) (string, [6]byte, []byte, f
 	}
 	out[10], out[11] = 0, 0
 	binary.BigEndian.PutUint16(out[10:12], ipv4HeaderChecksum(out[:ihl]))
+	s.incNATInbound(proto)
 	return ent.portID, guestMAC, out, emit, true
 }
 
@@ -446,6 +502,81 @@ func emunetNATIdleTimeout(proto byte) time.Duration {
 		return emunetTCPIdleTimeout
 	default:
 		return emunetUDPIdleTimeout
+	}
+}
+
+func (s *tsnetVirtioStack) counterSnapshot() emunetCounters {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := s.counters
+	if s.counters.Drops != nil {
+		out.Drops = make(map[string]uint64, len(s.counters.Drops))
+		for reason, count := range s.counters.Drops {
+			out.Drops[reason] = count
+		}
+	}
+	return out
+}
+
+func (s *tsnetVirtioStack) incDHCPReply(replyType byte) {
+	s.mu.Lock()
+	switch replyType {
+	case dhcpOffer:
+		s.counters.DHCPOffers++
+	case dhcpAck:
+		s.counters.DHCPAcks++
+	}
+	s.mu.Unlock()
+}
+
+func (s *tsnetVirtioStack) incARPReply() {
+	s.mu.Lock()
+	s.counters.ARPReplies++
+	s.mu.Unlock()
+}
+
+func (s *tsnetVirtioStack) incGatewayICMPReply() {
+	s.mu.Lock()
+	s.counters.GatewayICMPReplies++
+	s.mu.Unlock()
+}
+
+func (s *tsnetVirtioStack) incNATOutbound(proto byte) {
+	s.mu.Lock()
+	switch proto {
+	case ipProtoUDP:
+		s.counters.NATOutboundUDP++
+	case ipProtoTCP:
+		s.counters.NATOutboundTCP++
+	case ipProtoICMP:
+		s.counters.NATOutboundICMP++
+	}
+	s.mu.Unlock()
+}
+
+func (s *tsnetVirtioStack) incNATInbound(proto byte) {
+	s.mu.Lock()
+	switch proto {
+	case ipProtoUDP:
+		s.counters.NATInboundUDP++
+	case ipProtoTCP:
+		s.counters.NATInboundTCP++
+	case ipProtoICMP:
+		s.counters.NATInboundICMP++
+	}
+	s.mu.Unlock()
+}
+
+func (s *tsnetVirtioStack) incDrop(reason string) {
+	s.mu.Lock()
+	if s.counters.Drops == nil {
+		s.counters.Drops = make(map[string]uint64)
+	}
+	s.counters.Drops[reason]++
+	count := s.counters.Drops[reason]
+	s.mu.Unlock()
+	if os.Getenv("RISCV_EMU_EMUNET_TRACE") != "" {
+		appendTsnetOpLog("emunet_trace drop reason=%q count=%d", reason, count)
 	}
 }
 
