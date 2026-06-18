@@ -47,6 +47,9 @@ Author: Jason E. Aten, Ph.D.
 
 License: BSD 3-Clause, same as Go.
 
+---------
+![the emu!](emu_head_small.png)
+
 ## notes
 
 note: macOS uses a different RISC-V toolchain from linux.
