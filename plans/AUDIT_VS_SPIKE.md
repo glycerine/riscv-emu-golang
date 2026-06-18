@@ -368,3 +368,7 @@ This section supersedes the "outstanding" wording above for the current tree.
 * Existing strict CSR/SRET tests were adjusted to opt into strict firmware semantics.
 * BIOS FDT tests now require `zicond` in both `riscv,isa-extensions` and the legacy
   `riscv,isa` string.
+* The ARM64 QEMU red-test log was traced to the same process-mode CSR regression, not
+  to an ARM64 lowerer mismatch. Re-running the focused ARM64 QEMU main lane after the
+  strict-CSR scoping fix passed the interpreter riscv-tests, AOT JIT riscv-tests, lazy
+  JIT riscv-tests, and `TestJITIC_MatchesInterpreter`.
