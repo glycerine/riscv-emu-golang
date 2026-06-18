@@ -363,6 +363,39 @@ func TestBiosUARTTransmitInterruptThroughPLIC(t *testing.T) {
 	}
 }
 
+func TestBiosUARTAsyncOutputFlushesPromptWithoutNewline(t *testing.T) {
+	pr, pw := io.Pipe()
+	defer pr.Close()
+	m := newBiosMMIO(nil, pw, nil)
+	defer func() {
+		m.closeUARTOutput()
+		_ = pw.Close()
+	}()
+
+	gotCh := make(chan string, 1)
+	go func() {
+		buf := make([]byte, len("prompt> "))
+		n, err := io.ReadFull(pr, buf)
+		if err != nil {
+			gotCh <- fmt.Sprintf("read error after %d bytes: %v", n, err)
+			return
+		}
+		gotCh <- string(buf)
+	}()
+
+	for _, b := range []byte("prompt> ") {
+		m.storeUART(0, 1, uint64(b))
+	}
+	select {
+	case got := <-gotCh:
+		if got != "prompt> " {
+			t.Fatalf("async UART output = %q, want prompt", got)
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("async UART output did not flush prompt without newline")
+	}
+}
+
 func TestBiosUARTReceiveInterruptThroughPLIC(t *testing.T) {
 	m := newBiosMMIO(nil, io.Discard, nil)
 	m.uartRX = append(m.uartRX, "ls\n"...)

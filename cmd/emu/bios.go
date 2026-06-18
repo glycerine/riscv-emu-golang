@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/binary"
 	"errors"
@@ -10,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	riscv "github.com/glycerine/riscv-emu-golang"
 )
@@ -62,6 +64,7 @@ type biosGuest struct {
 	mem         *riscv.GuestMemory
 	cpu         *riscv.CPU
 	elf         *riscv.ELF
+	mmio        *biosMMIO
 	fdt         []byte
 	fdtAddr     uint64
 	dynamicAddr uint64
@@ -97,6 +100,7 @@ func runEmuBios(cfg EmuConfig, budget uint64) (int, error) {
 		return 0, err
 	}
 	defer guest.mem.Free()
+	defer guest.mmio.closeUARTOutput()
 
 	res, err := riscv.RunBiosMachineBudget(guest.cpu, &guest.cpu.Notes, budget)
 	if err != nil {
@@ -184,7 +188,8 @@ func prepareBiosGuestWithReset(cfg EmuConfig, onSystemReset func()) (*biosGuest,
 		}
 	}
 
-	mem.SetMMIO(newBiosMMIO(cfg.Stdin, cfg.Stdout, onSystemReset))
+	mmio := newBiosMMIO(cfg.Stdin, cfg.Stdout, onSystemReset)
+	mem.SetMMIO(mmio)
 	cpu := riscv.NewCPU(*mem)
 	cpu.EnableStrictCSR()
 	cpu.SetPrivilegeMode(riscv.PrivMachine)
@@ -198,6 +203,7 @@ func prepareBiosGuestWithReset(cfg EmuConfig, onSystemReset func()) (*biosGuest,
 		mem:         mem,
 		cpu:         cpu,
 		elf:         elf,
+		mmio:        mmio,
 		fdt:         fdt,
 		fdtAddr:     fdtAddr,
 		dynamicAddr: dynamicAddr,
@@ -324,6 +330,7 @@ func (c EmuConfig) biosBootArgs() string {
 
 type biosMMIO struct {
 	stdout        io.Writer
+	uartOut       *asyncUARTOutput
 	onSystemReset func()
 
 	uart            [0x100]byte
@@ -343,6 +350,9 @@ func newBiosMMIO(stdin io.Reader, stdout io.Writer, onSystemReset func()) *biosM
 		stdout = io.Discard
 	}
 	m := &biosMMIO{stdout: stdout, onSystemReset: onSystemReset}
+	if _, ok := stdout.(*bytes.Buffer); !ok && stdout != io.Discard {
+		m.uartOut = newAsyncUARTOutput(stdout)
+	}
 	m.uart[2] = 0x01 // IIR: no interrupt pending
 	m.uart[5] = 0x60 // LSR: transmitter holding register empty, idle
 	storeLittleEndian(m.clint[:], 0x4000, 8, ^uint64(0))
@@ -433,6 +443,7 @@ func (m *biosMMIO) storeSyscon(off, width, value uint64) {
 	if !mmioRangeTouches(off, width, uint64(biosSysconResetOffset), 4) {
 		return
 	}
+	m.closeUARTOutput()
 	if m.onSystemReset != nil {
 		m.onSystemReset()
 	}
@@ -490,7 +501,7 @@ func (m *biosMMIO) storeUART(off, width, value uint64) {
 		dlab := m.uart[3]&uartLCRDLAB != 0
 		m.uart[idx] = b
 		if idx == 0 && !dlab {
-			_, _ = m.stdout.Write([]byte{b})
+			m.writeUARTOutput(b)
 			if m.uart[1]&uartIERTHRI != 0 {
 				m.uartTXInterrupt = true
 			}
@@ -504,6 +515,74 @@ func (m *biosMMIO) storeUART(off, width, value uint64) {
 		}
 	}
 	m.uart[5] = uartLSRTHRE | uartLSRTEMT
+}
+
+func (m *biosMMIO) writeUARTOutput(b byte) {
+	if m.uartOut != nil {
+		m.uartOut.WriteByte(b)
+		return
+	}
+	var one [1]byte
+	one[0] = b
+	_, _ = m.stdout.Write(one[:])
+}
+
+func (m *biosMMIO) closeUARTOutput() {
+	if m.uartOut == nil {
+		return
+	}
+	m.uartOut.Close()
+	m.uartOut = nil
+}
+
+type asyncUARTOutput struct {
+	ch   chan byte
+	done chan struct{}
+}
+
+func newAsyncUARTOutput(w io.Writer) *asyncUARTOutput {
+	out := &asyncUARTOutput{
+		ch:   make(chan byte, 64*1024),
+		done: make(chan struct{}),
+	}
+	go out.run(w)
+	return out
+}
+
+func (o *asyncUARTOutput) WriteByte(b byte) {
+	o.ch <- b
+}
+
+func (o *asyncUARTOutput) Close() {
+	close(o.ch)
+	<-o.done
+}
+
+func (o *asyncUARTOutput) run(w io.Writer) {
+	defer close(o.done)
+	bw := bufio.NewWriterSize(w, 4096)
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
+	flush := func() {
+		if bw.Buffered() != 0 {
+			_ = bw.Flush()
+		}
+	}
+	for {
+		select {
+		case b, ok := <-o.ch:
+			if !ok {
+				flush()
+				return
+			}
+			_ = bw.WriteByte(b)
+			if b == '\n' || bw.Buffered() >= 2048 {
+				flush()
+			}
+		case <-ticker.C:
+			flush()
+		}
+	}
 }
 
 func (m *biosMMIO) uartInterruptPending() bool {
