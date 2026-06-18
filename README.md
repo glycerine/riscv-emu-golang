@@ -1,5 +1,7 @@
-A RISC-V 64 emulator in Golang (Go)
+emunet: RISC-V 64 emulator and network in Golang (Go)
 ==============
+
+![emunet](emunet_grid2.png)
 
 * News 2026 June 17:
 

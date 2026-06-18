@@ -24,7 +24,6 @@ import (
 const (
 	defaultTailemuSubdir    = ".tailemu"
 	defaultTsnetStateSubdir = "riscv-emu"
-	tsnetOpLogName          = "oplog.txt"
 
 	etherTypeIPv4 = uint16(0x0800)
 	etherTypeARP  = uint16(0x0806)
@@ -272,7 +271,7 @@ func (s *emunetVirtioStack) readEmunetEvents(ctx context.Context) {
 		select {
 		case ev := <-s.node.Events():
 			if ev.Err != nil {
-				appendTsnetOpLog("emunet_circuit_error error=%q", ev.Err)
+				appendTsnetOpLog("emunet_circuit_error role=%q error=%q", s.role, ev.Err)
 				continue
 			}
 			s.handleEmunetMessage(ev)
@@ -289,7 +288,7 @@ func (s *emunetVirtioStack) handleEmunetMessage(ev emunetpkg.Event) {
 			s.mu.Lock()
 			s.followerURLs[ev.Message.PeerURL] = struct{}{}
 			s.mu.Unlock()
-			appendTsnetOpLog("emunet_client_connected peer_url=%q", ev.Message.PeerURL)
+			appendTsnetOpLog("emunet_client_connected role=%q peer_url=%q", s.role, ev.Message.PeerURL)
 		}
 	case emunetpkg.MessageKindEthernetFrame:
 		s.mu.Lock()
@@ -785,7 +784,11 @@ func tailemuDir() string {
 }
 
 func tsnetOpLogPath() string {
-	return filepath.Join(tailemuDir(), tsnetOpLogName)
+	name := fmt.Sprintf("oplog.%d", os.Getpid())
+	if home := os.Getenv("HOME"); home != "" {
+		return filepath.Join(home, ".local", "state", "emunet", name)
+	}
+	return filepath.Join(os.TempDir(), ".local", "state", "emunet", name)
 }
 
 func appendTsnetOpLog(format string, args ...any) {

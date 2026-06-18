@@ -36,7 +36,8 @@ Default behavior:
 - DNS DHCP option: `100.100.100.100`, with the existing DNS env override still
   respected.
 - Tailscale state: `$HOME/.tailemu/riscv-emu/tailscaled.state`.
-- Operations log: `$HOME/.tailemu/oplog.txt`.
+- Operations log: each emulator node writes its own
+  `$HOME/.local/state/emunet/oplog.${PID}`.
 - The leader also writes their pid to $HOME/.tailemu/leader.${PID} file upon
 winning the election, and deletes any other stale leader.${PID} files
 at the same time. here ${PID} stands for the leader process's own process ID.
@@ -518,8 +519,10 @@ Implementation details:
   - only leader uses `$HOME/.tailemu/riscv-emu/tailscaled.state`;
   - followers never touch tsnet state.
 - Preserve auth behavior:
-  - `TS_AUTHKEY`, `RISCV_EMU_TSNET_EPHEMERAL`, hostname env, and oplog are
-    leader-only.
+  - `TS_AUTHKEY`, `RISCV_EMU_TSNET_EPHEMERAL`, and hostname env affect only the
+    elected leader's `tsnet.Server`.
+  - per-node emunet runtime oplogs are written by every emulator process to its
+    own PID-suffixed file.
 - Optional exit-node support:
   - do not require exit-node configuration for this stage;
   - keep `tailsocks` helper available for a later explicit env such as
@@ -731,7 +734,7 @@ without the pure NAT and fake emunet-port router tests first.
 - Existing tsnet state persistence remains canonical:
   `$HOME/.tailemu/riscv-emu/tailscaled.state`. This is only ever
   written and read by the elected leader who holds the bind on port 7557.
-- The operations log remains canonical:
-  `$HOME/.tailemu/oplog.txt`, with timestamps using
+- The operations log is per emulator process:
+  `$HOME/.local/state/emunet/oplog.${PID}`, with timestamps using
   `2006-01-02T15:04:05.000Z07:00`.
-  Similarly, the oplog is only written by the leader.
+  Every emulator process can write its own log file.

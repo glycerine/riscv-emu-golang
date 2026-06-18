@@ -5,6 +5,7 @@ package main
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -151,11 +152,11 @@ func TestTsnetDirDefaultsToHostPersistentStateDir(t *testing.T) {
 	}
 }
 
-func TestTsnetOpLogDefaultsToHostTailemuDir(t *testing.T) {
+func TestTsnetOpLogDefaultsToPerProcessEmunetStateDir(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
-	if got, want := tsnetOpLogPath(), filepath.Join(home, ".tailemu", "oplog.txt"); got != want {
+	if got, want := tsnetOpLogPath(), filepath.Join(home, ".local", "state", "emunet", fmt.Sprintf("oplog.%d", os.Getpid())); got != want {
 		t.Fatalf("tsnetOpLogPath = %q, want %q", got, want)
 	}
 	appendTsnetOpLog("test_event value=%d", 42)
