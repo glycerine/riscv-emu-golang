@@ -1,0 +1,2 @@
+#!/bin/sh
+exec /bin/busybox udhcpc -i eth0 -q -s /usr/share/udhcpc/default.script "$@"

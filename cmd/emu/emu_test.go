@@ -1312,6 +1312,8 @@ func TestRunEmuBiosFWDynamicHandBuiltLinuxVirtioNetRegistersEth0(t *testing.T) {
 
 	const doneMarker = "NET-SMOKE-42"
 	script := strings.Join([]string{
+		"test -x /bin/netup",
+		"test -x /usr/share/udhcpc/default.script",
 		"cat /proc/net/dev",
 		"echo NET-SMOKE-4''2",
 	}, "\n") + "\n"

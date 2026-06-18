@@ -3,10 +3,12 @@
 package main
 
 import (
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -21,6 +23,23 @@ const (
 	etherTypeIPv4 = uint16(0x0800)
 	etherTypeARP  = uint16(0x0806)
 	etherTypeIPv6 = uint16(0x86dd)
+
+	ipProtoUDP        = byte(17)
+	bootpServerPort   = uint16(67)
+	bootpClientPort   = uint16(68)
+	dhcpOptionMessage = byte(53)
+	dhcpOptionSubnet  = byte(1)
+	dhcpOptionRouter  = byte(3)
+	dhcpOptionDNS     = byte(6)
+	dhcpOptionMTU     = byte(26)
+	dhcpOptionLease   = byte(51)
+	dhcpOptionServer  = byte(54)
+	dhcpOptionEnd     = byte(255)
+
+	dhcpDiscover = byte(1)
+	dhcpOffer    = byte(2)
+	dhcpRequest  = byte(3)
+	dhcpAck      = byte(5)
 )
 
 type tsnetVirtioStack struct {
@@ -28,10 +47,12 @@ type tsnetVirtioStack struct {
 	tun *virtioNetMemoryTUN
 
 	mu       sync.Mutex
+	cancel   context.CancelFunc
 	dev      *virtioNetDevice
 	pending  [][]byte
 	hostMAC  [6]byte
 	guestMAC [6]byte
+	tailIPv4 netip.Addr
 }
 
 func newVirtioNetPacketStack(cfg EmuConfig) (virtioNetPacketStack, error) {
@@ -53,6 +74,12 @@ func newVirtioNetPacketStack(cfg EmuConfig) (virtioNetPacketStack, error) {
 		stack.tun.Close()
 		return nil, err
 	}
+	ctx, cancel := context.WithCancel(context.Background())
+	stack.cancel = cancel
+	if ip := tsnetEnvAddr("RISCV_EMU_TSNET_GUEST_IPV4"); ip.Is4() {
+		stack.setTailIPv4(ip)
+	}
+	go stack.waitTsnetUp(ctx)
 	return stack, nil
 }
 
@@ -75,7 +102,12 @@ func (s *tsnetVirtioStack) InjectInboundPacket(frame []byte) {
 	}
 	etherType := binary.BigEndian.Uint16(frame[12:14])
 	switch etherType {
-	case etherTypeIPv4, etherTypeIPv6:
+	case etherTypeIPv4:
+		if s.handleDHCP(frame) {
+			return
+		}
+		s.tun.InjectIPPacket(frame[14:])
+	case etherTypeIPv6:
 		s.tun.InjectIPPacket(frame[14:])
 	case etherTypeARP:
 		if reply := s.arpReply(frame); len(reply) != 0 {
@@ -86,6 +118,9 @@ func (s *tsnetVirtioStack) InjectInboundPacket(frame []byte) {
 
 func (s *tsnetVirtioStack) Close() error {
 	var err error
+	if s.cancel != nil {
+		s.cancel()
+	}
 	if s.srv != nil {
 		err = errors.Join(err, s.srv.Close())
 	}
@@ -93,6 +128,51 @@ func (s *tsnetVirtioStack) Close() error {
 		err = errors.Join(err, s.tun.Close())
 	}
 	return err
+}
+
+func (s *tsnetVirtioStack) waitTsnetUp(ctx context.Context) {
+	if s.srv == nil {
+		return
+	}
+	status, err := s.srv.Up(ctx)
+	if err != nil {
+		if ctx.Err() == nil {
+			fmt.Fprintf(os.Stderr, "tsnet: up: %v\n", err)
+		}
+		return
+	}
+	for _, ip := range status.TailscaleIPs {
+		if ip.Is4() {
+			s.setTailIPv4(ip)
+			return
+		}
+	}
+}
+
+func (s *tsnetVirtioStack) setTailIPv4(ip netip.Addr) {
+	if !ip.Is4() {
+		return
+	}
+	s.mu.Lock()
+	s.tailIPv4 = ip
+	s.mu.Unlock()
+}
+
+func (s *tsnetVirtioStack) tailscaleIPv4() (netip.Addr, bool) {
+	s.mu.Lock()
+	ip := s.tailIPv4
+	s.mu.Unlock()
+	if ip.Is4() {
+		return ip, true
+	}
+	if s.srv != nil {
+		ip, _ = s.srv.TailscaleIPs()
+		if ip.Is4() {
+			s.setTailIPv4(ip)
+			return ip, true
+		}
+	}
+	return netip.Addr{}, false
 }
 
 func (s *tsnetVirtioStack) handleTsnetPacket(pkt []byte) {
@@ -155,6 +235,163 @@ func (s *tsnetVirtioStack) arpReply(req []byte) []byte {
 	copy(reply[32:38], req[22:28])
 	copy(reply[38:42], req[28:32])
 	return reply
+}
+
+func (s *tsnetVirtioStack) handleDHCP(frame []byte) bool {
+	if len(frame) < 14+20 {
+		return false
+	}
+	ip := frame[14:]
+	if ip[0]>>4 != 4 {
+		return false
+	}
+	ihl := int(ip[0]&0x0f) * 4
+	if ihl < 20 || len(ip) < ihl+8 || ip[9] != ipProtoUDP {
+		return false
+	}
+	udp := ip[ihl:]
+	srcPort := binary.BigEndian.Uint16(udp[0:2])
+	dstPort := binary.BigEndian.Uint16(udp[2:4])
+	if srcPort != bootpClientPort || dstPort != bootpServerPort {
+		return false
+	}
+	if len(udp) < 8+240 {
+		return true
+	}
+	dhcp := udp[8:]
+	msgType, ok := dhcpMessageType(dhcp)
+	if !ok {
+		return true
+	}
+
+	var replyType byte
+	switch msgType {
+	case dhcpDiscover:
+		replyType = dhcpOffer
+	case dhcpRequest:
+		replyType = dhcpAck
+	default:
+		return true
+	}
+	guestIP, ok := s.tailscaleIPv4()
+	if !ok {
+		return true
+	}
+	reply := s.dhcpReply(dhcp, replyType, guestIP)
+	if len(reply) != 0 {
+		s.injectGuestEthernet(reply)
+	}
+	return true
+}
+
+func (s *tsnetVirtioStack) dhcpReply(reqDHCP []byte, replyType byte, guestIP netip.Addr) []byte {
+	if len(reqDHCP) < 240 || !guestIP.Is4() {
+		return nil
+	}
+	var guestMAC [6]byte
+	copy(guestMAC[:], reqDHCP[28:34])
+	s.mu.Lock()
+	s.guestMAC = guestMAC
+	hostMAC := s.hostMAC
+	s.mu.Unlock()
+
+	serverIP := tsnetDHCPServerIPv4()
+	dnsIP := tsnetDNSIPv4()
+	guest4 := guestIP.As4()
+	server4 := serverIP.As4()
+	dns4 := dnsIP.As4()
+
+	options := make([]byte, 0, 64)
+	options = append(options, dhcpOptionMessage, 1, replyType)
+	options = append(options, dhcpOptionServer, 4)
+	options = append(options, server4[:]...)
+	options = append(options, dhcpOptionLease, 4, 0x00, 0x01, 0x51, 0x80) // 86400 seconds.
+	options = append(options, dhcpOptionSubnet, 4, 255, 0, 0, 0)
+	options = append(options, dhcpOptionRouter, 4)
+	options = append(options, server4[:]...)
+	options = append(options, dhcpOptionDNS, 4)
+	options = append(options, dns4[:]...)
+	options = append(options, dhcpOptionMTU, 2, byte(uint16(virtioNetMTU)>>8), byte(uint16(virtioNetMTU)&0xff))
+	options = append(options, dhcpOptionEnd)
+
+	dhcpLen := 240 + len(options)
+	if dhcpLen < 300 {
+		dhcpLen = 300
+	}
+	dhcp := make([]byte, dhcpLen)
+	dhcp[0] = 2 // BOOTREPLY
+	copy(dhcp[1:4], reqDHCP[1:4])
+	copy(dhcp[4:12], reqDHCP[4:12])
+	copy(dhcp[16:20], guest4[:])
+	copy(dhcp[20:24], server4[:])
+	copy(dhcp[28:44], reqDHCP[28:44])
+	copy(dhcp[236:240], []byte{99, 130, 83, 99})
+	copy(dhcp[240:], options)
+
+	udpLen := 8 + len(dhcp)
+	ipLen := 20 + udpLen
+	frame := make([]byte, 14+ipLen)
+	for i := 0; i < 6; i++ {
+		frame[i] = 0xff
+	}
+	copy(frame[6:12], hostMAC[:])
+	binary.BigEndian.PutUint16(frame[12:14], etherTypeIPv4)
+
+	ip := frame[14:]
+	ip[0] = 0x45
+	ip[8] = 64
+	ip[9] = ipProtoUDP
+	binary.BigEndian.PutUint16(ip[2:4], uint16(ipLen))
+	copy(ip[12:16], server4[:])
+	copy(ip[16:20], []byte{255, 255, 255, 255})
+	binary.BigEndian.PutUint16(ip[10:12], ipv4HeaderChecksum(ip[:20]))
+
+	udp := ip[20:]
+	binary.BigEndian.PutUint16(udp[0:2], bootpServerPort)
+	binary.BigEndian.PutUint16(udp[2:4], bootpClientPort)
+	binary.BigEndian.PutUint16(udp[4:6], uint16(udpLen))
+	copy(udp[8:], dhcp)
+	return frame
+}
+
+func dhcpMessageType(dhcp []byte) (byte, bool) {
+	if len(dhcp) < 240 || dhcp[236] != 99 || dhcp[237] != 130 || dhcp[238] != 83 || dhcp[239] != 99 {
+		return 0, false
+	}
+	for i := 240; i < len(dhcp); {
+		code := dhcp[i]
+		i++
+		switch code {
+		case 0:
+			continue
+		case dhcpOptionEnd:
+			return 0, false
+		}
+		if i >= len(dhcp) {
+			return 0, false
+		}
+		n := int(dhcp[i])
+		i++
+		if i+n > len(dhcp) {
+			return 0, false
+		}
+		if code == dhcpOptionMessage && n == 1 {
+			return dhcp[i], true
+		}
+		i += n
+	}
+	return 0, false
+}
+
+func ipv4HeaderChecksum(h []byte) uint16 {
+	sum := uint32(0)
+	for i := 0; i+1 < len(h); i += 2 {
+		sum += uint32(binary.BigEndian.Uint16(h[i:]))
+	}
+	for sum > 0xffff {
+		sum = (sum & 0xffff) + (sum >> 16)
+	}
+	return ^uint16(sum)
 }
 
 type virtioNetMemoryTUN struct {
@@ -266,4 +503,30 @@ func tsnetEnvBool(name string) bool {
 	}
 	ok, err := strconv.ParseBool(v)
 	return err == nil && ok
+}
+
+func tsnetEnvAddr(name string) netip.Addr {
+	v := strings.TrimSpace(os.Getenv(name))
+	if v == "" {
+		return netip.Addr{}
+	}
+	ip, err := netip.ParseAddr(v)
+	if err != nil {
+		return netip.Addr{}
+	}
+	return ip
+}
+
+func tsnetDHCPServerIPv4() netip.Addr {
+	if ip := tsnetEnvAddr("RISCV_EMU_TSNET_DHCP_SERVER_IPV4"); ip.Is4() {
+		return ip
+	}
+	return netip.MustParseAddr("100.100.100.100")
+}
+
+func tsnetDNSIPv4() netip.Addr {
+	if ip := tsnetEnvAddr("RISCV_EMU_TSNET_DNS_IPV4"); ip.Is4() {
+		return ip
+	}
+	return tsnetDHCPServerIPv4()
 }
