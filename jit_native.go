@@ -226,15 +226,18 @@ func (j *JIT) jitCompile(res *emitResult, mem ...*GuestMemory) (*compiledBlock, 
 		codeBase = committedBase
 		code = execMem
 		blk = &compiledBlock{
-			fn:       codeBase,
-			hasFP:    allocHasFP(alloc),
-			numInsns: res.numInsns,
+			fn:             codeBase,
+			hasFP:          allocHasFP(alloc),
+			fpStaticNonRNE: res.fpStaticNonRNE,
+			numInsns:       res.numInsns,
 		}
 
 		// Step 5: Block chaining setup — backpatch MOVABS sentinels and record metadata.
 		if lowerResult != nil && lowerResult.ChainEntryProg != nil {
-			blk.chainEntry = codeBase + uintptr(lowerResult.ChainEntryProg.Pc)
-			if lowerResult.LiveChainEntryProg != nil {
+			if !blk.hasFP {
+				blk.chainEntry = codeBase + uintptr(lowerResult.ChainEntryProg.Pc)
+			}
+			if !blk.hasFP && lowerResult.LiveChainEntryProg != nil {
 				blk.liveChainEntry = codeBase + uintptr(lowerResult.LiveChainEntryProg.Pc)
 				blk.liveChain = lowerResult.LiveChain
 			}
@@ -428,7 +431,7 @@ func (j *JIT) jitCompileDebug(res *emitResult) (*compiledBlock, *compileDebugInf
 		}
 		codeBase = committedBase
 		code = execMem
-		blk = &compiledBlock{fn: codeBase, hasFP: allocHasFP(alloc)}
+		blk = &compiledBlock{fn: codeBase, hasFP: allocHasFP(alloc), fpStaticNonRNE: res.fpStaticNonRNE}
 		if lowerResult != nil && lowerResult.ChainEntryProg != nil {
 			blk.chainEntry = codeBase + uintptr(lowerResult.ChainEntryProg.Pc)
 			if lowerResult.LiveChainEntryProg != nil {

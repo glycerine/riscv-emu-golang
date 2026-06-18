@@ -31,11 +31,12 @@ func isLazySplitStoppingFlow(fc flowClass) bool {
 
 // emitResult holds the generated IR block and metadata.
 type emitResult struct {
-	block         *Block
-	startPC       uint64
-	endPC         uint64
-	numInsns      int
-	numChainExits int // number of IRChainExit instructions emitted
+	block          *Block
+	startPC        uint64
+	endPC          uint64
+	numInsns       int
+	numChainExits  int // number of IRChainExit instructions emitted
+	fpStaticNonRNE bool
 }
 
 // deferredExit holds an external branch exit to emit at finalize time.
@@ -95,6 +96,7 @@ type emitter struct {
 	sharedBudgetExit Label
 	deferredExits    []deferredExit
 	deferredFaults   []deferredFault
+	fpStaticNonRNE   bool
 	exitIdx          int      // counter for chain exit indices
 	jalrSiteIdx      int      // counter for JALR inline-cache site indices
 	callStack        []uint64 // RAS: expected return addresses for inlined calls
@@ -327,6 +329,21 @@ func (e *emitter) emitBudgetReserve(n int) {
 
 func (e *emitter) undoBudgetCheck() {
 	e.irEm.IncIC()
+}
+
+func (e *emitter) markFPRounding(rm uint32) {
+	if rm != uint32(rmRNE) && rm != uint32(rmDYN) {
+		e.fpStaticNonRNE = true
+	}
+}
+
+func fpOpUsesRM(funct5 uint32) bool {
+	switch funct5 {
+	case 0x00, 0x01, 0x02, 0x03, 0x0B, 0x08, 0x18, 0x1A:
+		return true
+	default:
+		return false
+	}
 }
 
 // peek32 fetches the 32-bit instruction at the given PC without
@@ -803,11 +820,12 @@ func (e *emitter) finalize() *emitResult {
 	//}
 
 	return &emitResult{
-		block:         e.irEm.Block,
-		startPC:       e.startPC,
-		endPC:         e.pc,
-		numInsns:      e.numInsns,
-		numChainExits: e.exitIdx,
+		block:          e.irEm.Block,
+		startPC:        e.startPC,
+		endPC:          e.pc,
+		numInsns:       e.numInsns,
+		numChainExits:  e.exitIdx,
+		fpStaticNonRNE: e.fpStaticNonRNE,
 	}
 }
 
@@ -1063,6 +1081,9 @@ func (j *JIT) emitBlockRange(mem *GuestMemory, pc, endPC uint64) *emitResult {
 			insn, f := mem.Fetch32(e.pc)
 			if f != nil {
 				if f.Kind == FaultMisalign {
+					// Strict Spike-style behavior would leave this as a fault.
+					// The JIT mirrors the interpreter's intentional permissive
+					// bytewise fetch path for compatibility tests.
 					insn, f = mem.Fetch32U(e.pc)
 				}
 				if f != nil {
@@ -1306,6 +1327,7 @@ func (e *emitter) emit32(insn uint32) {
 	case 0x43, 0x47, 0x4B, 0x4F: // FMA
 		rs3 := insn >> 27
 		fpfmt := (insn >> 25) & 0x3
+		e.markFPRounding(funct3)
 		e.emitFMA(opcode, rd, rs1, rs2, rs3, fpfmt)
 		if !e.terminated {
 			e.advancePC(4)
@@ -1314,6 +1336,9 @@ func (e *emitter) emit32(insn uint32) {
 	case 0x53: // FP-OP
 		funct5 := insn >> 27
 		fpfmt := (insn >> 25) & 0x3
+		if fpfmt <= 1 && fpOpUsesRM(funct5) {
+			e.markFPRounding(funct3)
+		}
 		e.emitFPOp(rd, rs1, rs2, funct3, funct5, fpfmt)
 		if !e.terminated {
 			e.advancePC(4)
@@ -1722,6 +1747,8 @@ func (e *emitter) emitOp(rd, rs1, rs2, funct3, funct7 uint32) {
 			t := e.irEm.Tmp()
 			e.irEm.Not(t, b)
 			e.irEm.And(dst, a, t)
+		default:
+			e.terminated = true
 		}
 	case 0x01: // M extension
 		switch funct3 {
@@ -1894,6 +1921,10 @@ func (e *emitter) emitOp(rd, rs1, rs2, funct3, funct7 uint32) {
 			e.terminated = true
 		}
 	case 0x34: // Zbs: BINV
+		if funct3 != 1 {
+			e.terminated = true
+			return
+		}
 		t := e.irEm.Tmp()
 		one := e.irEm.Tmp()
 		e.irEm.Const(one, 1)
@@ -2352,6 +2383,9 @@ func (e *emitter) emitLoad(rd, rs1 uint32, imm int64, funct3 uint32) {
 		alignBits := e.irEm.Tmp()
 		e.irEm.AndImm(alignBits, addr, int64(width-1))
 		e.irEm.Branch(alignBits, VRegZero, EQ, alignedLabel)
+		// Strict Spike-style behavior would return jitMisalign here. GoCPU
+		// intentionally emits bytewise accesses because compatibility tests
+		// rely on permissive misaligned scalar loads.
 		// OOB check for misaligned path (same as MaskedLoadAddr does for aligned).
 		if CheckSandboxBounds {
 			e.emitOOBCheck(addr, width, faultLabel)
@@ -2473,6 +2507,8 @@ func (e *emitter) emitStore(rs1, rs2 uint32, imm int64, funct3 uint32) {
 		alignBits := e.irEm.Tmp()
 		e.irEm.AndImm(alignBits, addr, int64(width-1))
 		e.irEm.Branch(alignBits, VRegZero, EQ, alignedLabel)
+		// Strict Spike-style behavior would return jitMisalign here. The
+		// bytewise store path is intentionally kept for compatibility.
 		if CheckSandboxBounds {
 			e.emitOOBCheck(addr, width, faultLabel)
 		}

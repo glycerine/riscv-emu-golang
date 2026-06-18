@@ -3,6 +3,7 @@ package riscv
 import (
 	"errors"
 	"math/bits"
+	"runtime"
 	"unsafe"
 
 	"github.com/glycerine/riscv-emu-golang/internal/fenv"
@@ -45,9 +46,37 @@ const (
 	statusMPRV = uint64(1) << 17
 	statusSUM  = uint64(1) << 18
 	statusMXR  = uint64(1) << 19
+	statusTVM  = uint64(1) << 20
+	statusTW   = uint64(1) << 21
+	statusTSR  = uint64(1) << 22
 	statusUXL  = uint64(3) << 32
+	statusSD   = uint64(1) << 63
 
-	sstatusMask = statusSIE | statusSPIE | statusSPP | statusFS | statusXS | statusSUM | statusMXR | statusUXL
+	sstatusMask         = statusSIE | statusSPIE | statusSPP | statusFS | statusXS | statusSUM | statusMXR | statusUXL
+	sstatusReadable     = sstatusMask | statusSD
+	mstatusWritable     = sstatusMask | statusMIE | statusMPIE | statusMPRV | statusMPP | statusTVM | statusTW | statusTSR
+	supervisorIPMask    = mipSSIP | mipSTIP | mipSEIP
+	machineIPMask       = supervisorIPMask | mipMSIP | mipMTIP | mipMEIP
+	counterCycleBit     = uint64(1) << 0
+	counterTimeBit      = uint64(1) << 1
+	counterInstretBit   = uint64(1) << 2
+	counterCSRMask      = counterCycleBit | counterTimeBit | counterInstretBit
+	implementedMideleg  = supervisorIPMask
+	implementedMedeleg  = uint64(0x000000000004b109)
+	implementedMieMask  = machineIPMask
+	implementedSieMask  = supervisorIPMask
+	implementedMipMask  = mipSSIP | mipMSIP | mipSEIP | mipMEIP
+	implementedSipMask  = mipSSIP | mipSEIP
+	implementedCountinh = counterCSRMask
+)
+
+const (
+	rmRNE = uint8(0)
+	rmRTZ = uint8(1)
+	rmRDN = uint8(2)
+	rmRUP = uint8(3)
+	rmRMM = uint8(4)
+	rmDYN = uint8(7)
 )
 
 // CPU is a single RV64I hart.
@@ -74,8 +103,8 @@ type CPU struct {
 	watchAddr uint64
 	ExitCode  int // set by OS handler on guest exit; read after RunJIT/RunWithChain returns *ExitError
 	// M-mode trap CSRs — minimal support for riscv-tests.
-	// When mtvec != 0, ECALL traps through the guest's own handler
-	// instead of returning ErrEcall to the NoteChain.
+	// Privileged guests may trap through mtvec, including mtvec==0. Plain
+	// process-mode user CPUs keep mtvec==0 as a host NoteChain escape hatch.
 	mtvec      uint64 // 0x305: trap vector base address
 	mscratch   uint64 // 0x340: machine scratch
 	mepc       uint64 // 0x341: exception program counter
@@ -142,7 +171,115 @@ type CPU struct {
 // `cache *DecoderCache` field; bisection proved the field is innocent and
 // the direct in-file runCached call is the actual cause.
 
-func NewCPU(mem GuestMemory) *CPU { return &CPU{mem: mem, stimecmp: ^uint64(0)} }
+func NewCPU(mem GuestMemory) *CPU {
+	return &CPU{
+		mem:        mem,
+		mstatus:    sanitizeMstatus(0, statusFS),
+		mcounteren: counterCSRMask,
+		scounteren: counterCSRMask,
+		stimecmp:   ^uint64(0),
+	}
+}
+
+func (c *CPU) fpEnabled() bool {
+	return c.mstatus&statusFS != 0
+}
+
+func (c *CPU) requireFP() error {
+	if !c.fpEnabled() {
+		return ErrIllegalInstruction
+	}
+	return nil
+}
+
+func (c *CPU) markFPDirty() {
+	c.mstatus = sanitizeMstatus(c.mstatus, c.mstatus|statusFS)
+}
+
+func (c *CPU) resolveRoundingMode(encoded uint8) (uint8, error) {
+	rm := encoded
+	if rm == rmDYN {
+		rm = uint8((c.fcsr >> 5) & 0x7)
+	}
+	if rm > rmRMM {
+		return 0, ErrIllegalInstruction
+	}
+	return rm, nil
+}
+
+func (c *CPU) withRoundingMode(rm uint8, fn func()) {
+	if rm == rmRNE {
+		fn()
+		return
+	}
+	runtime.LockOSThread()
+	old, ok := fenv.SetRoundingMode(rm)
+	if ok {
+		fn()
+		fenv.RestoreRoundingMode(old)
+	} else {
+		fn()
+	}
+	runtime.UnlockOSThread()
+}
+
+func sanitizeMstatus(old, val uint64) uint64 {
+	next := (old &^ (mstatusWritable | statusSD)) | (val & mstatusWritable)
+	if next&statusMPP == uint64(2)<<11 {
+		next &^= statusMPP
+	}
+	if next&statusFS == statusFS || next&statusXS == statusXS {
+		next |= statusSD
+	}
+	return next
+}
+
+func csrRequiredPrivilege(addr uint32) PrivilegeMode {
+	return PrivilegeMode((addr >> 8) & 3)
+}
+
+func csrIsReadOnly(addr uint32) bool {
+	return addr&0xC00 == 0xC00
+}
+
+func csrIsCounter(addr uint32) bool {
+	return addr == 0xC00 || addr == 0xC01 || addr == 0xC02
+}
+
+func csrCounterBit(addr uint32) uint64 {
+	return uint64(1) << (addr & 31)
+}
+
+func (c *CPU) counterCSRAllowed(addr uint32) bool {
+	bit := csrCounterBit(addr)
+	if c.priv < PrivMachine && c.mcounteren&bit == 0 {
+		return false
+	}
+	if c.priv < PrivSupervisor && c.scounteren&bit == 0 {
+		return false
+	}
+	return true
+}
+
+func (c *CPU) checkCSRAccess(addr uint32, write bool) bool {
+	req := csrRequiredPrivilege(addr)
+	if req == 2 || c.priv < req {
+		return false
+	}
+	if write && csrIsReadOnly(addr) {
+		return false
+	}
+	switch addr {
+	case 0x001, 0x002, 0x003:
+		if !c.fpEnabled() {
+			return false
+		}
+	}
+	if csrIsCounter(addr) && !c.counterCSRAllowed(addr) {
+		return false
+	}
+	return true
+}
 
 func (c *CPU) SetPC(addr uint64) { c.pc = addr }
 func (c *CPU) PC() uint64        { return c.pc }
@@ -267,7 +404,9 @@ func (c *CPU) trapToSupervisorAt(pc, cause, tval uint64) {
 }
 
 func (c *CPU) trapToMachineAt(pc, cause, tval uint64) bool {
-	if c.mtvec == 0 {
+	if c.mtvec == 0 && c.priv == PrivUser && c.mmu == nil {
+		// Process-mode tests historically use mtvec==0 as "return the note to
+		// the host"; privileged guests may legitimately vector traps to address 0.
 		return false
 	}
 	mie := c.mstatus & statusMIE
@@ -352,6 +491,9 @@ func (c *CPU) step() error {
 	insn, f := c.fetch32(c.pc)
 	if f != nil {
 		if f.Kind == FaultMisalign {
+			// Strict Spike-style behavior would return the misaligned fetch fault.
+			// This emulator intentionally allows bytewise misaligned access paths;
+			// several real tests depend on that permissiveness.
 			insn, f = c.fetch32U(c.pc)
 		}
 		if f != nil {
@@ -385,6 +527,10 @@ func (c *CPU) stepFromInsn(insn uint32) error {
 	case 0x03:
 		addr := c.Reg(rs1) + uint64(iimm)
 		var v uint64
+		// Strict Spike-style behavior would return FaultMisalign from the
+		// aligned helpers below instead of retrying with the U bytewise helpers.
+		// The permissive retry is intentional here; actual compatibility tests
+		// rely on accepting misaligned scalar memory accesses.
 		switch funct3 {
 		case 0x0: // LB — sign-extend 8→64
 			u, f := c.load8(addr)
@@ -452,6 +598,9 @@ func (c *CPU) stepFromInsn(insn uint32) error {
 	case 0x23:
 		simm := int64(int32(insn&0xFE000000)>>20) | int64((insn>>7)&0x1F)
 		addr := c.Reg(rs1) + uint64(simm)
+		// Strict correctness would propagate FaultMisalign from store16/32/64.
+		// We keep the bytewise fallback for the same compatibility reason as
+		// the load path above.
 		switch funct3 {
 		case 0x0: // SB
 			if f := c.store8(addr, uint8(c.Reg(rs2))); f != nil {
@@ -732,6 +881,8 @@ func (c *CPU) stepFromInsn(insn uint32) error {
 				} else {
 					v = a
 				} // CZERO.NEZ
+			default:
+				return ErrIllegalInstruction
 			}
 		case 0x10: // Zba: SH1ADD/SH2ADD/SH3ADD
 			switch funct3 {
@@ -741,6 +892,8 @@ func (c *CPU) stepFromInsn(insn uint32) error {
 				v = b + (a << 2)
 			case 6:
 				v = b + (a << 3)
+			default:
+				return ErrIllegalInstruction
 			}
 		case 0x14: // Zbs: BSET
 			switch funct3 {
@@ -761,6 +914,8 @@ func (c *CPU) stepFromInsn(insn uint32) error {
 				v = a | ^b // ORN
 			case 7:
 				v = a & ^b // ANDN
+			default:
+				return ErrIllegalInstruction
 			}
 		case 0x24: // Zbs: BCLR/BEXT
 			switch funct3 {
@@ -768,6 +923,8 @@ func (c *CPU) stepFromInsn(insn uint32) error {
 				v = a &^ (1 << (b & 63)) // BCLR
 			case 5:
 				v = (a >> (b & 63)) & 1 // BEXT
+			default:
+				return ErrIllegalInstruction
 			}
 		case 0x30: // Zbb: ROL/ROR
 			switch funct3 {
@@ -779,15 +936,17 @@ func (c *CPU) stepFromInsn(insn uint32) error {
 				return ErrIllegalInstruction
 			}
 		case 0x34: // Zbs: BINV
+			if funct3 != 1 {
+				return ErrIllegalInstruction
+			}
 			v = a ^ (1 << (b & 63))
 		default: // ── RV64I ─────────────────────────────────────────────────
+			if funct7 != 0x00 {
+				return ErrIllegalInstruction
+			}
 			switch funct3 {
 			case 0x0:
-				if funct7 == 0x20 {
-					v = a - b
-				} else {
-					v = a + b
-				} // SUB / ADD
+				v = a + b // ADD
 			case 0x1:
 				v = a << (b & 0x3F) // SLL
 			case 0x2:
@@ -801,15 +960,13 @@ func (c *CPU) stepFromInsn(insn uint32) error {
 			case 0x4:
 				v = a ^ b // XOR
 			case 0x5:
-				if funct7 == 0x20 {
-					v = uint64(int64(a) >> (b & 0x3F))
-				} else {
-					v = a >> (b & 0x3F)
-				} // SRA/SRL
+				v = a >> (b & 0x3F) // SRL
 			case 0x6:
 				v = a | b // OR
 			case 0x7:
 				v = a & b // AND
+			default:
+				return ErrIllegalInstruction
 			}
 		}
 		c.SetReg(rd, v)
@@ -901,16 +1058,23 @@ func (c *CPU) stepFromInsn(insn uint32) error {
 			case 0x0:
 				if funct7 == 0x20 {
 					v = int32(a32 - b32)
-				} else {
+				} else if funct7 == 0x00 {
 					v = int32(a32 + b32)
+				} else {
+					return ErrIllegalInstruction
 				}
 			case 0x1:
+				if funct7 != 0x00 {
+					return ErrIllegalInstruction
+				}
 				v = int32(a32 << (b32 & 0x1F))
 			case 0x5:
 				if funct7 == 0x20 {
 					v = int32(a32) >> (b32 & 0x1F)
-				} else {
+				} else if funct7 == 0x00 {
 					v = int32(a32 >> (b32 & 0x1F))
+				} else {
+					return ErrIllegalInstruction
 				}
 			default:
 				return ErrIllegalInstruction
@@ -1078,6 +1242,9 @@ func (c *CPU) stepFromInsn(insn uint32) error {
 			}
 			return ErrEcall
 		case insn == 0x30200073: // MRET
+			if c.priv != PrivMachine {
+				return ErrIllegalInstruction
+			}
 			nextPriv := PrivilegeMode((c.mstatus >> 11) & 3)
 			if nextPriv == 2 {
 				nextPriv = PrivUser
@@ -1086,12 +1253,16 @@ func (c *CPU) stepFromInsn(insn uint32) error {
 			c.mstatus &^= (uint64(1) << 3) | (uint64(3) << 11)
 			c.mstatus |= mpie << 3
 			c.mstatus |= uint64(1) << 7
+			if nextPriv != PrivMachine {
+				c.mstatus &^= statusMPRV
+			}
+			c.mstatus = sanitizeMstatus(c.mstatus, c.mstatus)
 			c.priv = nextPriv
 			c.pc = c.mepc
 			c.retireInsn()
 			return nil
 		case insn == 0x10200073: // SRET
-			if c.priv == PrivUser {
+			if c.priv == PrivUser || (c.priv < PrivMachine && c.mstatus&statusTSR != 0) {
 				return ErrIllegalInstruction
 			}
 			nextPriv := PrivUser
@@ -1104,27 +1275,40 @@ func (c *CPU) stepFromInsn(insn uint32) error {
 				c.mstatus |= statusSIE
 			}
 			c.mstatus |= statusSPIE
+			c.mstatus &^= statusMPRV
+			c.mstatus = sanitizeMstatus(c.mstatus, c.mstatus)
 			c.priv = nextPriv
 			c.pc = c.sepc
 			c.retireInsn()
 			return nil
 		case insn == 0x10500073: // WFI — no-op in user-mode emulation
-		case funct3 == 0 && insn>>25 == 0x09: // SFENCE.VMA
-			c.flushTLB()
-		case funct3 >= 1 && funct3 <= 7 && funct3 != 4: // Zicsr
-			// Read old CSR value
-			old, ok := c.readCSR(csrAddr)
-			if !ok {
+			if c.priv == PrivUser || (c.priv < PrivMachine && c.mstatus&statusTW != 0) {
 				return ErrIllegalInstruction
 			}
-			// Compute new value and write if applicable
+		case funct3 == 0 && insn>>25 == 0x09: // SFENCE.VMA
+			if c.priv == PrivUser || (c.priv < PrivMachine && c.mstatus&statusTVM != 0) {
+				return ErrIllegalInstruction
+			}
+			c.flushTLB()
+		case funct3 >= 1 && funct3 <= 7 && funct3 != 4: // Zicsr
 			var src uint64
 			if funct3 >= 5 { // immediate forms (funct3=5/6/7)
 				src = uint64(rs1) // rs1 field is the uimm5
 			} else {
 				src = c.Reg(rs1)
 			}
-			c.SetReg(rd, old)
+			write := funct3 == 1 || funct3 == 5 || rs1 != 0
+			if !c.checkCSRAccess(csrAddr, write) {
+				return ErrIllegalInstruction
+			}
+			var old uint64
+			if rd != 0 || funct3 != 1 && funct3 != 5 {
+				var ok bool
+				old, ok = c.readCSR(csrAddr)
+				if !ok {
+					return ErrIllegalInstruction
+				}
+			}
 			var newVal uint64
 			switch funct3 {
 			case 1, 5:
@@ -1134,19 +1318,25 @@ func (c *CPU) stepFromInsn(insn uint32) error {
 			case 3, 7:
 				newVal = old &^ src // CSRRC/CSRRCI: clear bits
 			}
-			// Only write if rs1 != x0 (or uimm5 != 0 for immediate forms)
-			if src != 0 || funct3 == 1 || funct3 == 5 {
+			if write {
 				if !c.writeCSR(csrAddr, newVal) {
 					return ErrIllegalInstruction
 				}
 			}
+			c.SetReg(rd, old)
 		default:
 			return ErrIllegalInstruction
 		}
 
 	// ── FLW / FLD — float loads ──────────────────────────────────────────
 	case 0x07:
+		if err := c.requireFP(); err != nil {
+			return err
+		}
 		addr := uint64(int64(c.Reg(rs1)) + iimm)
+		// Strict Spike-style behavior would propagate FaultMisalign from the
+		// aligned helpers. We intentionally preserve bytewise misaligned FP
+		// loads for compatibility with existing guests/tests.
 		switch funct3 {
 		case 0b010: // FLW
 			v, f := c.load32(addr)
@@ -1169,11 +1359,17 @@ func (c *CPU) stepFromInsn(insn uint32) error {
 		default:
 			return ErrIllegalInstruction
 		}
+		c.markFPDirty()
 
 	// ── FSW / FSD — float stores ──────────────────────────────────────────
 	case 0x27:
+		if err := c.requireFP(); err != nil {
+			return err
+		}
 		simm := int64(int32(insn&0xFE000000)>>20) | int64((insn>>7)&0x1F)
 		addr := uint64(int64(c.Reg(rs1)) + simm)
+		// Strict Spike-style behavior would trap on FaultMisalign here. The
+		// permissive bytewise retry is intentional, matching scalar stores.
 		switch funct3 {
 		case 0b010: // FSW
 			f := c.store32(addr, uint32(c.FReg(rs2)))
@@ -1197,6 +1393,13 @@ func (c *CPU) stepFromInsn(insn uint32) error {
 
 	// ── FMADD/FMSUB/FNMSUB/FNMADD — fused multiply-add (R4-type) ─────────
 	case 0x43, 0x47, 0x4B, 0x4F:
+		if err := c.requireFP(); err != nil {
+			return err
+		}
+		rm, err := c.resolveRoundingMode(funct3)
+		if err != nil {
+			return err
+		}
 		rs3 := uint8(insn >> 27)
 		fmt := uint8((insn >> 25) & 0x3)
 		if fmt == 0 { // .S single-precision
@@ -1205,16 +1408,18 @@ func (c *CPU) stepFromInsn(insn uint32) error {
 			d := f32frombits(unboxF32(c.FReg(rs3)))
 			var v float32
 			var fl uint32
-			switch opcode {
-			case 0x43:
-				v, fl = fenv.MAddF32(a, b, d)
-			case 0x47:
-				v, fl = fenv.MSubF32(a, b, d)
-			case 0x4B:
-				v, fl = fenv.NMSubF32(a, b, d)
-			case 0x4F:
-				v, fl = fenv.NMAddF32(a, b, d)
-			}
+			c.withRoundingMode(rm, func() {
+				switch opcode {
+				case 0x43:
+					v, fl = fenv.MAddF32(a, b, d)
+				case 0x47:
+					v, fl = fenv.MSubF32(a, b, d)
+				case 0x4B:
+					v, fl = fenv.NMSubF32(a, b, d)
+				case 0x4F:
+					v, fl = fenv.NMAddF32(a, b, d)
+				}
+			})
 			c.fcsr |= fl
 			c.SetFReg(rd, boxF32(canonNaN32(f32bits(v))))
 		} else if fmt == 1 { // .D double-precision
@@ -1223,24 +1428,30 @@ func (c *CPU) stepFromInsn(insn uint32) error {
 			d := f64frombits(c.FReg(rs3))
 			var v float64
 			var fl uint32
-			switch opcode {
-			case 0x43:
-				v, fl = fenv.MAddF64(a, b, d)
-			case 0x47:
-				v, fl = fenv.MSubF64(a, b, d)
-			case 0x4B:
-				v, fl = fenv.NMSubF64(a, b, d)
-			case 0x4F:
-				v, fl = fenv.NMAddF64(a, b, d)
-			}
+			c.withRoundingMode(rm, func() {
+				switch opcode {
+				case 0x43:
+					v, fl = fenv.MAddF64(a, b, d)
+				case 0x47:
+					v, fl = fenv.MSubF64(a, b, d)
+				case 0x4B:
+					v, fl = fenv.NMSubF64(a, b, d)
+				case 0x4F:
+					v, fl = fenv.NMAddF64(a, b, d)
+				}
+			})
 			c.fcsr |= fl
 			c.SetFReg(rd, boxF64(canonNaN64(f64bits(v))))
 		} else {
 			return ErrIllegalInstruction
 		}
+		c.markFPDirty()
 
 	// ── FPFUNC — all other float ops (opcode=0x53) ────────────────────────
 	case 0x53:
+		if err := c.requireFP(); err != nil {
+			return err
+		}
 		funct5 := uint8(insn >> 27)
 		fmt := uint8((insn >> 25) & 0x3)
 		if fmt == 0 { // ── single-precision ────────────────────────────────
@@ -1249,23 +1460,53 @@ func (c *CPU) stepFromInsn(insn uint32) error {
 			af, bf := f32frombits(a), f32frombits(b)
 			switch funct5 {
 			case 0x00:
-				r32, fl := fenv.AddF32(af, bf)
+				rm, err := c.resolveRoundingMode(funct3)
+				if err != nil {
+					return err
+				}
+				var r32 float32
+				var fl uint32
+				c.withRoundingMode(rm, func() { r32, fl = fenv.AddF32(af, bf) })
 				c.fcsr |= fl
 				c.SetFReg(rd, boxF32(canonNaN32(f32bits(r32))))
 			case 0x01:
-				r32, fl := fenv.SubF32(af, bf)
+				rm, err := c.resolveRoundingMode(funct3)
+				if err != nil {
+					return err
+				}
+				var r32 float32
+				var fl uint32
+				c.withRoundingMode(rm, func() { r32, fl = fenv.SubF32(af, bf) })
 				c.fcsr |= fl
 				c.SetFReg(rd, boxF32(canonNaN32(f32bits(r32))))
 			case 0x02:
-				r32, fl := fenv.MulF32(af, bf)
+				rm, err := c.resolveRoundingMode(funct3)
+				if err != nil {
+					return err
+				}
+				var r32 float32
+				var fl uint32
+				c.withRoundingMode(rm, func() { r32, fl = fenv.MulF32(af, bf) })
 				c.fcsr |= fl
 				c.SetFReg(rd, boxF32(canonNaN32(f32bits(r32))))
 			case 0x03:
-				r32, fl := fenv.DivF32(af, bf)
+				rm, err := c.resolveRoundingMode(funct3)
+				if err != nil {
+					return err
+				}
+				var r32 float32
+				var fl uint32
+				c.withRoundingMode(rm, func() { r32, fl = fenv.DivF32(af, bf) })
 				c.fcsr |= fl
 				c.SetFReg(rd, boxF32(canonNaN32(f32bits(r32))))
 			case 0x0B:
-				r32, fl := fenv.SqrtF32(af)
+				rm, err := c.resolveRoundingMode(funct3)
+				if err != nil {
+					return err
+				}
+				var r32 float32
+				var fl uint32
+				c.withRoundingMode(rm, func() { r32, fl = fenv.SqrtF32(af) })
 				c.fcsr |= fl
 				c.SetFReg(rd, boxF32(canonNaN32(f32bits(r32))))
 			case 0x04: // FSGNJ.S / FSGNJN.S / FSGNJX.S
@@ -1292,8 +1533,17 @@ func (c *CPU) stepFromInsn(insn uint32) error {
 					return ErrIllegalInstruction
 				}
 			case 0x08: // FCVT.S.D  (rs2=1 = from D)
+				if rs2 != 1 {
+					return ErrIllegalInstruction
+				}
+				rm, err := c.resolveRoundingMode(funct3)
+				if err != nil {
+					return err
+				}
 				src := c.FReg(rs1)
-				r := float32(f64frombits(src))
+				var r float32
+				fenv.ClearFFlags()
+				c.withRoundingMode(rm, func() { r = float32(f64frombits(src)) })
 				c.fcsr |= fenv.FFlags()
 				c.SetFReg(rd, boxF32(canonNaN32(f32bits(r))))
 			case 0x14: // FEQ.S / FLT.S / FLE.S -> integer rd
@@ -1325,35 +1575,51 @@ func (c *CPU) stepFromInsn(insn uint32) error {
 				}
 				c.SetReg(rd, v)
 			case 0x18: // FCVT.{W,WU,L,LU}.S -> integer rd
+				rm, err := c.resolveRoundingMode(funct3)
+				if err != nil {
+					return err
+				}
 				switch rs2 {
 				case 0:
-					v, fl := fcvtWS(af)
+					v, fl := fcvtWS(af, rm)
 					c.fcsr |= fl
 					c.SetReg(rd, v)
 				case 1:
-					v, fl := fcvtWUS(af)
+					v, fl := fcvtWUS(af, rm)
 					c.fcsr |= fl
 					c.SetReg(rd, v)
 				case 2:
-					v, fl := fcvtLS(af)
+					v, fl := fcvtLS(af, rm)
 					c.fcsr |= fl
 					c.SetReg(rd, v)
 				case 3:
-					v, fl := fcvtLUS(af)
+					v, fl := fcvtLUS(af, rm)
 					c.fcsr |= fl
 					c.SetReg(rd, v)
+				default:
+					return ErrIllegalInstruction
 				}
 			case 0x1A: // FCVT.S.{W,WU,L,LU} <- integer rs1
+				rm, err := c.resolveRoundingMode(funct3)
+				if err != nil {
+					return err
+				}
 				var r float32
-				switch rs2 {
-				case 0:
-					r = float32(int32(c.Reg(rs1))) // FCVT.S.W
-				case 1:
-					r = float32(uint32(c.Reg(rs1))) // FCVT.S.WU
-				case 2:
-					r = float32(int64(c.Reg(rs1))) // FCVT.S.L
-				case 3:
-					r = float32(c.Reg(rs1)) // FCVT.S.LU
+				fenv.ClearFFlags()
+				c.withRoundingMode(rm, func() {
+					switch rs2 {
+					case 0:
+						r = float32(int32(c.Reg(rs1))) // FCVT.S.W
+					case 1:
+						r = float32(uint32(c.Reg(rs1))) // FCVT.S.WU
+					case 2:
+						r = float32(int64(c.Reg(rs1))) // FCVT.S.L
+					case 3:
+						r = float32(c.Reg(rs1)) // FCVT.S.LU
+					}
+				})
+				if rs2 > 3 {
+					return ErrIllegalInstruction
 				}
 				c.fcsr |= fenv.FFlags()
 				c.SetFReg(rd, boxF32(f32bits(r)))
@@ -1377,23 +1643,53 @@ func (c *CPU) stepFromInsn(insn uint32) error {
 			af, bf := f64frombits(a), f64frombits(b)
 			switch funct5 {
 			case 0x00:
-				r64, fl := fenv.AddF64(af, bf)
+				rm, err := c.resolveRoundingMode(funct3)
+				if err != nil {
+					return err
+				}
+				var r64 float64
+				var fl uint32
+				c.withRoundingMode(rm, func() { r64, fl = fenv.AddF64(af, bf) })
 				c.fcsr |= fl
 				c.SetFReg(rd, boxF64(canonNaN64(f64bits(r64))))
 			case 0x01:
-				r64, fl := fenv.SubF64(af, bf)
+				rm, err := c.resolveRoundingMode(funct3)
+				if err != nil {
+					return err
+				}
+				var r64 float64
+				var fl uint32
+				c.withRoundingMode(rm, func() { r64, fl = fenv.SubF64(af, bf) })
 				c.fcsr |= fl
 				c.SetFReg(rd, boxF64(canonNaN64(f64bits(r64))))
 			case 0x02:
-				r64, fl := fenv.MulF64(af, bf)
+				rm, err := c.resolveRoundingMode(funct3)
+				if err != nil {
+					return err
+				}
+				var r64 float64
+				var fl uint32
+				c.withRoundingMode(rm, func() { r64, fl = fenv.MulF64(af, bf) })
 				c.fcsr |= fl
 				c.SetFReg(rd, boxF64(canonNaN64(f64bits(r64))))
 			case 0x03:
-				r64, fl := fenv.DivF64(af, bf)
+				rm, err := c.resolveRoundingMode(funct3)
+				if err != nil {
+					return err
+				}
+				var r64 float64
+				var fl uint32
+				c.withRoundingMode(rm, func() { r64, fl = fenv.DivF64(af, bf) })
 				c.fcsr |= fl
 				c.SetFReg(rd, boxF64(canonNaN64(f64bits(r64))))
 			case 0x0B:
-				r64, fl := fenv.SqrtF64(af)
+				rm, err := c.resolveRoundingMode(funct3)
+				if err != nil {
+					return err
+				}
+				var r64 float64
+				var fl uint32
+				c.withRoundingMode(rm, func() { r64, fl = fenv.SqrtF64(af) })
 				c.fcsr |= fl
 				c.SetFReg(rd, boxF64(canonNaN64(f64bits(r64))))
 			case 0x04: // FSGNJ.D / FSGNJN.D / FSGNJX.D
@@ -1420,8 +1716,21 @@ func (c *CPU) stepFromInsn(insn uint32) error {
 					return ErrIllegalInstruction
 				}
 			case 0x08: // FCVT.D.S  (rs2=0 = from S)
+				if rs2 != 0 {
+					return ErrIllegalInstruction
+				}
+				rm, err := c.resolveRoundingMode(funct3)
+				if err != nil {
+					return err
+				}
 				src := unboxF32(c.FReg(rs1))
-				r := float64(f32frombits(src))
+				if isSNaNF32(src) {
+					c.fcsr |= fflagNV
+				}
+				var r float64
+				fenv.ClearFFlags()
+				c.withRoundingMode(rm, func() { r = float64(f32frombits(src)) })
+				c.fcsr |= fenv.FFlags()
 				c.SetFReg(rd, boxF64(canonNaN64(f64bits(r))))
 			case 0x14: // FEQ.D / FLT.D / FLE.D
 				var v uint64
@@ -1452,35 +1761,51 @@ func (c *CPU) stepFromInsn(insn uint32) error {
 				}
 				c.SetReg(rd, v)
 			case 0x18: // FCVT.{W,WU,L,LU}.D
+				rm, err := c.resolveRoundingMode(funct3)
+				if err != nil {
+					return err
+				}
 				switch rs2 {
 				case 0:
-					v, fl := fcvtWD(af)
+					v, fl := fcvtWD(af, rm)
 					c.fcsr |= fl
 					c.SetReg(rd, v)
 				case 1:
-					v, fl := fcvtWUD(af)
+					v, fl := fcvtWUD(af, rm)
 					c.fcsr |= fl
 					c.SetReg(rd, v)
 				case 2:
-					v, fl := fcvtLD(af)
+					v, fl := fcvtLD(af, rm)
 					c.fcsr |= fl
 					c.SetReg(rd, v)
 				case 3:
-					v, fl := fcvtLUD(af)
+					v, fl := fcvtLUD(af, rm)
 					c.fcsr |= fl
 					c.SetReg(rd, v)
+				default:
+					return ErrIllegalInstruction
 				}
 			case 0x1A: // FCVT.D.{W,WU,L,LU}
+				rm, err := c.resolveRoundingMode(funct3)
+				if err != nil {
+					return err
+				}
 				var r float64
-				switch rs2 {
-				case 0:
-					r = float64(int32(c.Reg(rs1))) // FCVT.D.W
-				case 1:
-					r = float64(uint32(c.Reg(rs1))) // FCVT.D.WU
-				case 2:
-					r = float64(int64(c.Reg(rs1))) // FCVT.D.L
-				case 3:
-					r = float64(c.Reg(rs1)) // FCVT.D.LU
+				fenv.ClearFFlags()
+				c.withRoundingMode(rm, func() {
+					switch rs2 {
+					case 0:
+						r = float64(int32(c.Reg(rs1))) // FCVT.D.W
+					case 1:
+						r = float64(uint32(c.Reg(rs1))) // FCVT.D.WU
+					case 2:
+						r = float64(int64(c.Reg(rs1))) // FCVT.D.L
+					case 3:
+						r = float64(c.Reg(rs1)) // FCVT.D.LU
+					}
+				})
+				if rs2 > 3 {
+					return ErrIllegalInstruction
 				}
 				c.fcsr |= fenv.FFlags()
 				c.SetFReg(rd, boxF64(f64bits(r)))
@@ -1501,6 +1826,7 @@ func (c *CPU) stepFromInsn(insn uint32) error {
 		} else {
 			return ErrIllegalInstruction
 		}
+		c.markFPDirty()
 
 	default:
 		return ErrIllegalInstruction
@@ -1853,7 +2179,7 @@ func (c *CPU) readCSR(addr uint32) (uint64, bool) {
 	case 0x003:
 		return uint64(c.fcsr & 0xFF), true // fcsr
 	case 0x100:
-		return c.mstatus & sstatusMask, true // sstatus
+		return c.mstatus & sstatusReadable, true // sstatus
 	case 0x104:
 		return c.sie | (c.mie & c.mideleg), true // sie
 	case 0x105:
@@ -1926,18 +2252,21 @@ func (c *CPU) writeCSR(addr uint32, val uint64) bool {
 	switch addr {
 	case 0x001:
 		c.fcsr = (c.fcsr &^ 0x1F) | uint32(val&0x1F) // fflags
+		c.markFPDirty()
 	case 0x002:
 		c.fcsr = (c.fcsr &^ 0xE0) | uint32((val&0x7)<<5) // frm
+		c.markFPDirty()
 	case 0x003:
 		c.fcsr = uint32(val & 0xFF) // fcsr
+		c.markFPDirty()
 	case 0x100:
-		c.mstatus = (c.mstatus &^ sstatusMask) | (val & sstatusMask) // sstatus
+		c.mstatus = sanitizeMstatus(c.mstatus, (c.mstatus&^sstatusMask)|(val&sstatusMask)) // sstatus
 	case 0x104:
-		c.sie = val // sie
+		c.sie = val & implementedSieMask // sie
 	case 0x105:
 		c.stvec = val // stvec
 	case 0x106:
-		c.scounteren = val // scounteren
+		c.scounteren = val & counterCSRMask // scounteren
 	case 0x140:
 		c.sscratch = val // sscratch
 	case 0x141:
@@ -1947,7 +2276,7 @@ func (c *CPU) writeCSR(addr uint32, val uint64) bool {
 	case 0x143:
 		c.stval = val // stval
 	case 0x144:
-		c.sip = val &^ mipSTIP // sip
+		c.sip = val & implementedSipMask // sip; Sstc owns STIP.
 	case 0x14d:
 		c.stimecmp = val // stimecmp
 		c.refreshSupervisorTimerPending()
@@ -1958,21 +2287,21 @@ func (c *CPU) writeCSR(addr uint32, val uint64) bool {
 		}
 	// M-mode trap CSRs
 	case 0x300:
-		c.mstatus = val // mstatus
+		c.mstatus = sanitizeMstatus(c.mstatus, val) // mstatus
 	case 0x302:
-		c.medeleg = val // medeleg
+		c.medeleg = val & implementedMedeleg // medeleg
 	case 0x303:
-		c.mideleg = val // mideleg
+		c.mideleg = val & implementedMideleg // mideleg
 	case 0x304:
-		c.mie = val // mie
+		c.mie = val & implementedMieMask // mie
 	case 0x305:
 		c.mtvec = val // mtvec
 	case 0x306:
-		c.mcounteren = val // mcounteren
+		c.mcounteren = val & counterCSRMask // mcounteren
 	case 0x30a:
 		c.menvcfg = val // menvcfg
 	case 0x320:
-		c.mcountinh = val // mcountinhibit
+		c.mcountinh = val & implementedCountinh // mcountinhibit
 	case 0x340:
 		c.mscratch = val // mscratch
 	case 0x341:
@@ -1982,7 +2311,7 @@ func (c *CPU) writeCSR(addr uint32, val uint64) bool {
 	case 0x343:
 		c.mtval = val // mtval
 	case 0x344:
-		c.mip = val &^ mipSTIP // mip; Sstc owns STIP.
+		c.mip = val & implementedMipMask // mip; Sstc owns STIP.
 	// CSRs written by riscv-tests reset_vector — accept silently
 	case 0x3A0: // pmpcfg0
 	case 0x3B0: // pmpaddr0

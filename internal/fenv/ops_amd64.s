@@ -55,6 +55,18 @@ TEXT ·ClearFFlags(SB),NOSPLIT|NOFRAME,$0-0
     CLEAR_FLAGS
     RET
 
+TEXT ·RawMXCSR(SB),NOSPLIT|NOFRAME,$0-4
+    STMXCSR -4(SP)
+    MOVL -4(SP), AX
+    MOVL AX, ret+0(FP)
+    RET
+
+TEXT ·loadMXCSR(SB),NOSPLIT|NOFRAME,$0-4
+    MOVL v+0(FP), AX
+    MOVL AX, -4(SP)
+    LDMXCSR -4(SP)
+    RET
+
 // ── float32 arithmetic ────────────────────────────────────────────────────
 // Arg layout (ABI0, NOFRAME): a+0(FP), b+4(FP), ret+8(FP), flags+12(FP)
 

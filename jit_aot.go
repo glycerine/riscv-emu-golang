@@ -21,16 +21,17 @@ import (
 // aotBlockCompile is the per-block working state carried between
 // the size pass and the final assemble+backpatch pass.
 type aotBlockCompile struct {
-	startPC     uint64
-	endPC       uint64
-	codeSize    int
-	lowerResult *LowerResult
-	baseOffset  int // offset of this block within the unified mmap
-	blk         *compiledBlock
-	block       *Block
-	alloc       *Allocation
-	progs       string // goasm Prog listing (empty when VizJit disabled)
-	hasFP       bool
+	startPC        uint64
+	endPC          uint64
+	codeSize       int
+	lowerResult    *LowerResult
+	baseOffset     int // offset of this block within the unified mmap
+	blk            *compiledBlock
+	block          *Block
+	alloc          *Allocation
+	progs          string // goasm Prog listing (empty when VizJit disabled)
+	hasFP          bool
+	fpStaticNonRNE bool
 }
 
 // jitCompileAOTSegment batch-compiles every block range into one
@@ -76,13 +77,14 @@ func (j *JIT) jitCompileAOTSegment(
 		}
 
 		compiles = append(compiles, &aotBlockCompile{
-			startPC:    r.startPC,
-			endPC:      r.endPC,
-			codeSize:   len(code),
-			baseOffset: totalSize,
-			block:      res.block,
-			alloc:      alloc,
-			hasFP:      allocHasFP(alloc),
+			startPC:        r.startPC,
+			endPC:          r.endPC,
+			codeSize:       len(code),
+			baseOffset:     totalSize,
+			block:          res.block,
+			alloc:          alloc,
+			hasFP:          allocHasFP(alloc),
+			fpStaticNonRNE: res.fpStaticNonRNE,
 		})
 		totalSize += len(code)
 	}
@@ -127,15 +129,17 @@ func (j *JIT) jitCompileAOTSegment(
 			}
 
 			blockBase := codeBase + uintptr(bc.baseOffset)
-			bc.blk = &compiledBlock{fn: blockBase, hasFP: bc.hasFP}
+			bc.blk = &compiledBlock{fn: blockBase, hasFP: bc.hasFP, fpStaticNonRNE: bc.fpStaticNonRNE}
 
 			if bc.lowerResult.ChainEntryProg == nil {
 				// V2 or debug variants don't produce ChainEntryProg; skip.
 				blocks[bc.startPC] = bc.blk
 				continue
 			}
-			bc.blk.chainEntry = blockBase + uintptr(bc.lowerResult.ChainEntryProg.Pc)
-			if bc.lowerResult.LiveChainEntryProg != nil {
+			if !bc.blk.hasFP {
+				bc.blk.chainEntry = blockBase + uintptr(bc.lowerResult.ChainEntryProg.Pc)
+			}
+			if !bc.blk.hasFP && bc.lowerResult.LiveChainEntryProg != nil {
 				bc.blk.liveChainEntry = blockBase + uintptr(bc.lowerResult.LiveChainEntryProg.Pc)
 				bc.blk.liveChain = bc.lowerResult.LiveChain
 			}

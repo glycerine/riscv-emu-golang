@@ -305,6 +305,9 @@ func runCachedDualBudget(cpu *CPU, cache *DecoderCache, nc *NoteChain, attemptBu
 				addr := cpu.x[slot.rs1] + uint64(int64(slot.imm))
 				u, f := (&cpu.mem).Load16(addr)
 				if f != nil && f.Kind == FaultMisalign {
+					// Strict Spike-style behavior would propagate FaultMisalign.
+					// GoCPU intentionally retries bytewise here because existing
+					// compatibility tests depend on permissive misaligned loads.
 					u, f = (&cpu.mem).Load16U(addr)
 				}
 				if f != nil {
@@ -476,6 +479,9 @@ func runCachedDualBudget(cpu *CPU, cache *DecoderCache, nc *NoteChain, attemptBu
 				addr := cpu.x[slot.rs1] + uint64(int64(slot.imm))
 				f := (&cpu.mem).Store16(addr, uint16(cpu.x[slot.rs2]))
 				if f != nil && f.Kind == FaultMisalign {
+					// Strict Spike-style behavior would propagate FaultMisalign.
+					// The bytewise retry is intentional for compatibility with
+					// guests/tests that rely on permissive misaligned stores.
 					f = (&cpu.mem).Store16U(addr, uint16(cpu.x[slot.rs2]))
 				}
 				if f != nil {

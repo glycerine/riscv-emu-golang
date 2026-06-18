@@ -127,6 +127,7 @@ type compiledBlock struct {
 	chainExits     []chainPatchInfo  // chain exits for patching
 	jalrICs        []jalrICPatchInfo // JALR IC sites for patching
 	hasFP          bool              // block-local FP metadata; dispatch must still preserve FP across chains
+	fpStaticNonRNE bool              // block has an FP rm field that native code cannot honor
 	numInsns       int               // static instruction count from emission
 
 	// segment is the DecodedExecuteSegment whose decoder_cache should be
@@ -1076,6 +1077,19 @@ func nativeRetiredDelta(status uint64, attempts uint64) uint64 {
 	}
 }
 
+func jitFPBlockNeedsInterpreter(cpu *CPU, blk *compiledBlock) bool {
+	if cpu == nil || blk == nil || !blk.hasFP {
+		return false
+	}
+	if !cpu.fpEnabled() {
+		return true
+	}
+	if blk.fpStaticNonRNE {
+		return true
+	}
+	return uint8((cpu.fcsr>>5)&0x7) != rmRNE
+}
+
 func (j *JIT) recordEcallTrapPC(cpu *CPU, trapPC uint64) {
 	if cpu == nil {
 		j.DispatchEcallStale++
@@ -1200,6 +1214,12 @@ func (j *JIT) stepBlockWithBudget(cpu *CPU, budget uint64) (ic uint64, err error
 
 	blk := j.lookupBlock(pc)
 	if blk != nil {
+		if jitFPBlockNeedsInterpreter(cpu, blk) {
+			j.DispatchInterp++
+			j.recordInterpreterFallback(&cpu.mem, pc)
+			err = j.stepInterpreted(cpu)
+			return cpu.riscvInstrBegun, err
+		}
 		var res jitcall.Result
 		if j.useABJIT {
 			dcBase, dcMask, vBegin, segSz := j.decoderParamsForBlock(blk)
@@ -1252,14 +1272,10 @@ func (j *JIT) stepBlockWithBudget(cpu *CPU, budget uint64) (ic uint64, err error
 			return cpu.riscvInstrBegun, nil
 		case jitEcall:
 			j.recordEcallTrapPC(cpu, cpu.pc)
-			cpu.setTrap(CauseEcallU, 4)
-			if cpu.mtvec != 0 {
-				cpu.mepc = cpu.pc
-				cpu.mcause = 8
-				cpu.mtval = 0
-				cpu.pc = cpu.mtvec
+			if cpu.trapToPrivilegedAt(cpu.pc, cpu.ecallCause(), 0, 4) {
 				return cpu.riscvInstrBegun, nil
 			}
+			cpu.setTrap(cpu.ecallCause(), 4)
 			return cpu.riscvInstrBegun, ErrEcall
 		case jitEbreak:
 			cpu.setEbreakTrapAtPC()
@@ -1383,6 +1399,21 @@ func (j *JIT) RunJIT(cpu *CPU) (err0 error) {
 		blk := j.lookupBlock(pc)
 		if blk != nil {
 			//vv("lookupBlock cache hit. pc = 0x%x", pc)
+			if jitFPBlockNeedsInterpreter(cpu, blk) {
+				j.DispatchInterp++
+				j.recordInterpreterFallback(&cpu.mem, pc)
+				err := j.stepInterpreted(cpu)
+				if err == nil {
+					continue
+				}
+				n := noteFromCPUError(cpu, err)
+				switch cpu.Notes.Deliver(cpu, n) {
+				case NoteHandled:
+					continue
+				default:
+					return err
+				}
+			}
 
 			var res jitcall.Result
 			if j.useABJIT {
@@ -1447,14 +1478,10 @@ func (j *JIT) RunJIT(cpu *CPU) (err0 error) {
 
 			case jitEcall:
 				j.recordEcallTrapPC(cpu, cpu.pc)
-				cpu.setTrap(CauseEcallU, 4)
-				if cpu.mtvec != 0 {
-					cpu.mepc = cpu.pc
-					cpu.mcause = 8
-					cpu.mtval = 0
-					cpu.pc = cpu.mtvec
+				if cpu.trapToPrivilegedAt(cpu.pc, cpu.ecallCause(), 0, 4) {
 					continue
 				}
+				cpu.setTrap(cpu.ecallCause(), 4)
 				n := noteFromCPUError(cpu, ErrEcall)
 				switch cpu.Notes.Deliver(cpu, n) {
 				case NoteHandled:

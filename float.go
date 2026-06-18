@@ -130,160 +130,188 @@ func unboxF64(freg uint64) uint64 { return freg }
 
 // ── float32 ↔ uint32 bit conversion (inlined by Go compiler) ─────────────
 
-func f32bits(v float32) uint32  { return math.Float32bits(v) }
+func f32bits(v float32) uint32     { return math.Float32bits(v) }
 func f32frombits(b uint32) float32 { return math.Float32frombits(b) }
-func f64bits(v float64) uint64  { return math.Float64bits(v) }
+func f64bits(v float64) uint64     { return math.Float64bits(v) }
 func f64frombits(b uint64) float64 { return math.Float64frombits(b) }
 
 // sext32 sign-extends a 32-bit value to 64 bits (for W-type result writing).
 func sext32(v uint32) uint64 { return uint64(int64(int32(v))) }
 
 // ── Float-to-int conversion helpers (RISC-V saturation + flags) ──────────
-// These implement FCVT.{W,WU,L,LU}.{S,D} with proper RISC-V saturation
-// semantics: NaN → max positive, overflow → saturate, inexact → NX flag.
-// All use RTZ (truncation toward zero) matching Go's int(float) cast.
+// These implement FCVT.{W,WU,L,LU}.{S,D} with RISC-V rounding, saturation,
+// and flags: NaN/overflow -> NV, non-integral rounded inputs -> NX.
 
-func fcvtWS(f float32) (uint64, uint32) {
+func roundFloatForInt(f float64, rm uint8) (float64, bool) {
+	var r float64
+	switch rm {
+	case rmRTZ:
+		r = math.Trunc(f)
+	case rmRDN:
+		r = math.Floor(f)
+	case rmRUP:
+		r = math.Ceil(f)
+	case rmRMM:
+		if f < 0 {
+			r = math.Ceil(f - 0.5)
+		} else {
+			r = math.Floor(f + 0.5)
+		}
+	default:
+		r = math.RoundToEven(f)
+	}
+	return r, r != f
+}
+
+func fcvtWS(f float32, rm uint8) (uint64, uint32) {
 	bits := f32bits(f)
 	if isNaNF32(bits) {
 		return 0x000000007FFFFFFF, fflagNV
 	}
-	if f >= 2147483648.0 { // >= 2^31
+	r, inexact := roundFloatForInt(float64(f), rm)
+	if r >= 2147483648.0 { // >= 2^31
 		return 0x000000007FFFFFFF, fflagNV
 	}
-	if f < -2147483648.0 { // < -2^31
+	if r < -2147483648.0 { // < -2^31
 		return 0xFFFFFFFF80000000, fflagNV
 	}
-	result := int32(f)
-	if float32(result) != f {
+	result := int32(r)
+	if inexact {
 		return sext32(uint32(result)), fflagNX
 	}
 	return sext32(uint32(result)), 0
 }
 
-func fcvtWUS(f float32) (uint64, uint32) {
+func fcvtWUS(f float32, rm uint8) (uint64, uint32) {
 	bits := f32bits(f)
 	if isNaNF32(bits) {
 		return 0xFFFFFFFFFFFFFFFF, fflagNV // 0xFFFFFFFF sign-extended
 	}
-	if f >= 4294967296.0 { // >= 2^32
+	r, inexact := roundFloatForInt(float64(f), rm)
+	if r >= 4294967296.0 { // >= 2^32
 		return 0xFFFFFFFFFFFFFFFF, fflagNV
 	}
-	if f <= -1.0 { // negative (truncating: -0.9 -> 0 is valid)
+	if r < 0 {
 		return 0, fflagNV
 	}
-	result := uint32(f)
-	if float32(result) != f {
+	result := uint32(r)
+	if inexact {
 		return sext32(result), fflagNX
 	}
 	return sext32(result), 0
 }
 
-func fcvtLS(f float32) (uint64, uint32) {
+func fcvtLS(f float32, rm uint8) (uint64, uint32) {
 	bits := f32bits(f)
 	if isNaNF32(bits) {
 		return uint64(int64(0x7FFFFFFFFFFFFFFF)), fflagNV
 	}
 	// 2^63 = 9223372036854775808.0 — float32 can't represent this exactly,
 	// but the nearest float32 is 9223372036854775808.0 (0x5F000000).
-	if f >= 9223372036854775808.0 {
+	r, inexact := roundFloatForInt(float64(f), rm)
+	if r >= 9223372036854775808.0 {
 		return uint64(int64(0x7FFFFFFFFFFFFFFF)), fflagNV
 	}
-	if f < -9223372036854775808.0 {
+	if r < -9223372036854775808.0 {
 		return 0x8000000000000000, fflagNV
 	}
-	result := int64(f)
-	if float32(result) != f {
+	result := int64(r)
+	if inexact {
 		return uint64(result), fflagNX
 	}
 	return uint64(result), 0
 }
 
-func fcvtLUS(f float32) (uint64, uint32) {
+func fcvtLUS(f float32, rm uint8) (uint64, uint32) {
 	bits := f32bits(f)
 	if isNaNF32(bits) {
 		return 0xFFFFFFFFFFFFFFFF, fflagNV
 	}
-	if f >= 18446744073709551616.0 { // >= 2^64
+	r, inexact := roundFloatForInt(float64(f), rm)
+	if r >= 18446744073709551616.0 { // >= 2^64
 		return 0xFFFFFFFFFFFFFFFF, fflagNV
 	}
-	if f <= -1.0 {
+	if r < 0 {
 		return 0, fflagNV
 	}
-	result := uint64(f)
-	if float32(result) != f {
+	result := uint64(r)
+	if inexact {
 		return result, fflagNX
 	}
 	return result, 0
 }
 
-func fcvtWD(f float64) (uint64, uint32) {
+func fcvtWD(f float64, rm uint8) (uint64, uint32) {
 	bits := f64bits(f)
 	if isNaNF64(bits) {
 		return 0x000000007FFFFFFF, fflagNV
 	}
-	if f >= 2147483648.0 {
+	r, inexact := roundFloatForInt(f, rm)
+	if r >= 2147483648.0 {
 		return 0x000000007FFFFFFF, fflagNV
 	}
-	if f < -2147483648.0 {
+	if r < -2147483648.0 {
 		return 0xFFFFFFFF80000000, fflagNV
 	}
-	result := int32(f)
-	if float64(result) != f {
+	result := int32(r)
+	if inexact {
 		return sext32(uint32(result)), fflagNX
 	}
 	return sext32(uint32(result)), 0
 }
 
-func fcvtWUD(f float64) (uint64, uint32) {
+func fcvtWUD(f float64, rm uint8) (uint64, uint32) {
 	bits := f64bits(f)
 	if isNaNF64(bits) {
 		return 0xFFFFFFFFFFFFFFFF, fflagNV
 	}
-	if f >= 4294967296.0 {
+	r, inexact := roundFloatForInt(f, rm)
+	if r >= 4294967296.0 {
 		return 0xFFFFFFFFFFFFFFFF, fflagNV
 	}
-	if f <= -1.0 {
+	if r < 0 {
 		return 0, fflagNV
 	}
-	result := uint32(f)
-	if float64(result) != f {
+	result := uint32(r)
+	if inexact {
 		return sext32(result), fflagNX
 	}
 	return sext32(result), 0
 }
 
-func fcvtLD(f float64) (uint64, uint32) {
+func fcvtLD(f float64, rm uint8) (uint64, uint32) {
 	bits := f64bits(f)
 	if isNaNF64(bits) {
 		return uint64(int64(0x7FFFFFFFFFFFFFFF)), fflagNV
 	}
-	if f >= 9223372036854775808.0 {
+	r, inexact := roundFloatForInt(f, rm)
+	if r >= 9223372036854775808.0 {
 		return uint64(int64(0x7FFFFFFFFFFFFFFF)), fflagNV
 	}
-	if f < -9223372036854775808.0 {
+	if r < -9223372036854775808.0 {
 		return 0x8000000000000000, fflagNV
 	}
-	result := int64(f)
-	if float64(result) != f {
+	result := int64(r)
+	if inexact {
 		return uint64(result), fflagNX
 	}
 	return uint64(result), 0
 }
 
-func fcvtLUD(f float64) (uint64, uint32) {
+func fcvtLUD(f float64, rm uint8) (uint64, uint32) {
 	bits := f64bits(f)
 	if isNaNF64(bits) {
 		return 0xFFFFFFFFFFFFFFFF, fflagNV
 	}
-	if f >= 18446744073709551616.0 {
+	r, inexact := roundFloatForInt(f, rm)
+	if r >= 18446744073709551616.0 {
 		return 0xFFFFFFFFFFFFFFFF, fflagNV
 	}
-	if f <= -1.0 {
+	if r < 0 {
 		return 0, fflagNV
 	}
-	result := uint64(f)
-	if float64(result) != f {
+	result := uint64(r)
+	if inexact {
 		return result, fflagNX
 	}
 	return result, 0
@@ -294,23 +322,33 @@ func fcvtLUD(f float64) (uint64, uint32) {
 // fclassF32 returns the FCLASS result for a single-precision value.
 func fclassF32(bits uint32) uint64 {
 	sign := bits>>31 != 0
-	exp  := (bits & f32ExpMask) >> 23
-	man  := bits & f32ManMask
+	exp := (bits & f32ExpMask) >> 23
+	man := bits & f32ManMask
 	switch {
 	case exp == 0xFF && man != 0:
-		if man&0x00400000 != 0 { return fclassQNaN }
+		if man&0x00400000 != 0 {
+			return fclassQNaN
+		}
 		return fclassSNaN
 	case exp == 0xFF:
-		if sign { return fclassNegInf }
+		if sign {
+			return fclassNegInf
+		}
 		return fclassPosInf
 	case exp == 0 && man != 0:
-		if sign { return fclassNegSub }
+		if sign {
+			return fclassNegSub
+		}
 		return fclassPosSub
 	case exp == 0:
-		if sign { return fclassNegZero }
+		if sign {
+			return fclassNegZero
+		}
 		return fclassPosZero
 	default:
-		if sign { return fclassNegNorm }
+		if sign {
+			return fclassNegNorm
+		}
 		return fclassPosNorm
 	}
 }
@@ -318,23 +356,33 @@ func fclassF32(bits uint32) uint64 {
 // fclassF64 returns the FCLASS result for a double-precision value.
 func fclassF64(bits uint64) uint64 {
 	sign := bits>>63 != 0
-	exp  := (bits & f64ExpMask) >> 52
-	man  := bits & f64ManMask
+	exp := (bits & f64ExpMask) >> 52
+	man := bits & f64ManMask
 	switch {
 	case exp == 0x7FF && man != 0:
-		if man&0x0008000000000000 != 0 { return fclassQNaN }
+		if man&0x0008000000000000 != 0 {
+			return fclassQNaN
+		}
 		return fclassSNaN
 	case exp == 0x7FF:
-		if sign { return fclassNegInf }
+		if sign {
+			return fclassNegInf
+		}
 		return fclassPosInf
 	case exp == 0 && man != 0:
-		if sign { return fclassNegSub }
+		if sign {
+			return fclassNegSub
+		}
 		return fclassPosSub
 	case exp == 0:
-		if sign { return fclassNegZero }
+		if sign {
+			return fclassNegZero
+		}
 		return fclassPosZero
 	default:
-		if sign { return fclassNegNorm }
+		if sign {
+			return fclassNegNorm
+		}
 		return fclassPosNorm
 	}
 }
@@ -347,49 +395,97 @@ func fclassF64(bits uint64) uint64 {
 func fminF32(a, b uint32) uint32 {
 	aNaN := (a&f32ExpMask) == f32ExpMask && (a&f32ManMask) != 0
 	bNaN := (b&f32ExpMask) == f32ExpMask && (b&f32ManMask) != 0
-	if aNaN && bNaN { return f32CanonNaN }
-	if aNaN { return b }
-	if bNaN { return a }
+	if aNaN && bNaN {
+		return f32CanonNaN
+	}
+	if aNaN {
+		return b
+	}
+	if bNaN {
+		return a
+	}
 	// -0.0 < +0.0
-	if a == f32NegZero && b == f32PosZero { return a }
-	if b == f32NegZero && a == f32PosZero { return b }
-	if f32frombits(a) < f32frombits(b) { return a }
+	if a == f32NegZero && b == f32PosZero {
+		return a
+	}
+	if b == f32NegZero && a == f32PosZero {
+		return b
+	}
+	if f32frombits(a) < f32frombits(b) {
+		return a
+	}
 	return b
 }
 
 func fmaxF32(a, b uint32) uint32 {
 	aNaN := (a&f32ExpMask) == f32ExpMask && (a&f32ManMask) != 0
 	bNaN := (b&f32ExpMask) == f32ExpMask && (b&f32ManMask) != 0
-	if aNaN && bNaN { return f32CanonNaN }
-	if aNaN { return b }
-	if bNaN { return a }
-	if a == f32PosZero && b == f32NegZero { return a }
-	if b == f32PosZero && a == f32NegZero { return b }
-	if f32frombits(a) > f32frombits(b) { return a }
+	if aNaN && bNaN {
+		return f32CanonNaN
+	}
+	if aNaN {
+		return b
+	}
+	if bNaN {
+		return a
+	}
+	if a == f32PosZero && b == f32NegZero {
+		return a
+	}
+	if b == f32PosZero && a == f32NegZero {
+		return b
+	}
+	if f32frombits(a) > f32frombits(b) {
+		return a
+	}
 	return b
 }
 
 func fminF64(a, b uint64) uint64 {
 	aNaN := (a&f64ExpMask) == f64ExpMask && (a&f64ManMask) != 0
 	bNaN := (b&f64ExpMask) == f64ExpMask && (b&f64ManMask) != 0
-	if aNaN && bNaN { return f64CanonNaN }
-	if aNaN { return b }
-	if bNaN { return a }
-	if a == f64NegZero && b == f64PosZero { return a }
-	if b == f64NegZero && a == f64PosZero { return b }
-	if f64frombits(a) < f64frombits(b) { return a }
+	if aNaN && bNaN {
+		return f64CanonNaN
+	}
+	if aNaN {
+		return b
+	}
+	if bNaN {
+		return a
+	}
+	if a == f64NegZero && b == f64PosZero {
+		return a
+	}
+	if b == f64NegZero && a == f64PosZero {
+		return b
+	}
+	if f64frombits(a) < f64frombits(b) {
+		return a
+	}
 	return b
 }
 
 func fmaxF64(a, b uint64) uint64 {
 	aNaN := (a&f64ExpMask) == f64ExpMask && (a&f64ManMask) != 0
 	bNaN := (b&f64ExpMask) == f64ExpMask && (b&f64ManMask) != 0
-	if aNaN && bNaN { return f64CanonNaN }
-	if aNaN { return b }
-	if bNaN { return a }
-	if a == f64PosZero && b == f64NegZero { return a }
-	if b == f64PosZero && a == f64NegZero { return b }
-	if f64frombits(a) > f64frombits(b) { return a }
+	if aNaN && bNaN {
+		return f64CanonNaN
+	}
+	if aNaN {
+		return b
+	}
+	if bNaN {
+		return a
+	}
+	if a == f64PosZero && b == f64NegZero {
+		return a
+	}
+	if b == f64PosZero && a == f64NegZero {
+		return b
+	}
+	if f64frombits(a) > f64frombits(b) {
+		return a
+	}
 	return b
 }
 

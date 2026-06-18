@@ -47,9 +47,9 @@ config-dependent.
 | B3 | MED  | FP   | `FCVT.D.S` sets **no fflags at all** (no NV on signaling-NaN input). |
 | B4 | MED  | Priv | `MRET` does **not clear `mstatus.MPRV`** when returning to a privilege < M. |
 | B5 | MED  | Priv | `SRET` does **not clear `mstatus.MPRV`**. |
-| B6 | MED  | FP   | No **`mstatus.FS==0` check** — FP instructions execute even when FP unit is "Off". |
+IGNORE: | B6 | MED  | FP   | No **`mstatus.FS==0` check** — FP instructions execute even when FP unit is "Off". |
 | B7 | MED  | CSR  | **No CSR privilege / read-only access control** — U/S code can read & write M-mode CSRs. |
-| B8 | MED  | Mem  | Misaligned loads/stores are **performed transparently** instead of trapping (Spike default, without Zicclsm, traps). |
+IGNORE: | B8 | MED  | Mem  | Misaligned loads/stores are **performed transparently** instead of trapping (Spike default, without Zicclsm, traps). |
 | B9 | MED  | CSR  | `mstatus`/`sie`/`mie`/`mip` writes are **not masked** (WPRI / read-only / `SD` bit not maintained). |
 | B10| LOW  | CSR  | No `mcounteren`/`scounteren` enforcement on `cycle`/`time`/`instret`. |
 | B11| LOW  | CSR  | `CSRRS`/`CSRRC` suppress the write based on **source value == 0** instead of **`rs1 == x0`**; CSR is read even when `rd == x0`. |
