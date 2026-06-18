@@ -3,6 +3,11 @@ mount -t proc none /proc
 mount -t sysfs none /sys
 mount -t devtmpfs none /dev 2>/dev/null || true
 
+mkdir -p /host
+mount -t hostfs none /host -o /
+
+/bin/busybox --install -s
+
 echo ""
 echo "=== RISC-V initramfs booted ==="
 echo ""

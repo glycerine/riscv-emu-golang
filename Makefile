@@ -1033,3 +1033,8 @@ build-slim-linux:
 	HOSTCFLAGS=\
 	'-I/private/tmp/linux-host-elf-include -include /private/tmp/linux-host-elf-include/darwin_compat.h' \
 	Image
+
+repack-initramfs:
+	cd ~/ris/xendor/linux/initramfs/ && find . -print0 | \
+	cpio --null --create --format=newc --owner=root | \
+	gzip -9 > ../initramfs.cpio.gz
