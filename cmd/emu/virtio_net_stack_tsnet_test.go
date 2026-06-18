@@ -8,6 +8,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"net"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -30,6 +31,11 @@ func TestTsnetVirtioStackEmunetDHCPDiscoverAndRequest(t *testing.T) {
 	stack.InjectInboundPacket(dhcpTestFrame(t, dhcpDiscover, 0x12345678, guestMAC))
 	offer := onlyPendingEthernetFrame(t, stack)
 	assertDHCPReply(t, offer, dhcpOffer, guestIP)
+	assertDHCPOptionIP(t, offer, dhcpOptionServer, netip.MustParseAddr("10.77.0.1"))
+	assertDHCPOptionIP(t, offer, dhcpOptionRouter, netip.MustParseAddr("10.77.0.1"))
+	assertDHCPOptionIP(t, offer, dhcpOptionDNS, netip.MustParseAddr("100.100.100.100"))
+	assertDHCPOptionBytes(t, offer, dhcpOptionSubnet, []byte{255, 255, 255, 0})
+	assertDHCPOptionUint16(t, offer, dhcpOptionMTU, virtioNetMTU)
 
 	stack.mu.Lock()
 	stack.pending = nil
@@ -38,6 +44,38 @@ func TestTsnetVirtioStackEmunetDHCPDiscoverAndRequest(t *testing.T) {
 	stack.InjectInboundPacket(dhcpTestFrame(t, dhcpRequest, 0x12345679, guestMAC))
 	ack := onlyPendingEthernetFrame(t, stack)
 	assertDHCPReply(t, ack, dhcpAck, guestIP)
+}
+
+func TestTsnetVirtioStackEmunetDHCPAllocatesDistinctPortLeases(t *testing.T) {
+	stack := &tsnetVirtioStack{hostMAC: emunetRouterMAC}
+	macA := [6]byte{0x02, 0, 0, 0, 1, 0x01}
+	macB := [6]byte{0x02, 0, 0, 0, 1, 0x02}
+
+	stack.handleGuestFrameForPort("port-a", dhcpTestFrame(t, dhcpDiscover, 0x11111111, macA), stack.injectGuestEthernet)
+	offerA := onlyPendingEthernetFrame(t, stack)
+	assertDHCPReply(t, offerA, dhcpOffer, netip.MustParseAddr("10.77.0.2"))
+
+	stack.mu.Lock()
+	stack.pending = nil
+	stack.mu.Unlock()
+
+	stack.handleGuestFrameForPort("port-b", dhcpTestFrame(t, dhcpDiscover, 0x22222222, macB), stack.injectGuestEthernet)
+	offerB := onlyPendingEthernetFrame(t, stack)
+	assertDHCPReply(t, offerB, dhcpOffer, netip.MustParseAddr("10.77.0.3"))
+}
+
+func TestTsnetVirtioStackEmunetDHCPSafelyConsumesMalformedPackets(t *testing.T) {
+	stack := &tsnetVirtioStack{hostMAC: emunetRouterMAC}
+	frame := dhcpTestFrame(t, dhcpDiscover, 0x33333333, [6]byte{0x02, 0, 0, 0, 1, 0x03})
+	frame = frame[:14+20+8+32]
+
+	stack.InjectInboundPacket(frame)
+	stack.mu.Lock()
+	pending := len(stack.pending)
+	stack.mu.Unlock()
+	if pending != 0 {
+		t.Fatalf("malformed DHCP produced %d pending frames, want 0", pending)
+	}
 }
 
 func TestTsnetVirtioStackDirectTailnetDHCPDiscover(t *testing.T) {
@@ -80,6 +118,19 @@ func TestTsnetVirtioStackEmunetARPForGateway(t *testing.T) {
 	}
 }
 
+func TestTsnetVirtioStackEmunetARPForUnrelatedIPDoesNotReply(t *testing.T) {
+	guestMAC := [6]byte{0x02, 0, 0, 0, 1, 0x20}
+	stack := &tsnetVirtioStack{hostMAC: emunetRouterMAC}
+
+	stack.InjectInboundPacket(arpRequestFrame(guestMAC, [4]byte{10, 77, 0, 2}, [4]byte{8, 8, 8, 8}))
+	stack.mu.Lock()
+	pending := len(stack.pending)
+	stack.mu.Unlock()
+	if pending != 0 {
+		t.Fatalf("ARP for unrelated IP produced %d replies, want 0", pending)
+	}
+}
+
 func TestTsnetVirtioStackEmunetGatewayPing(t *testing.T) {
 	guestMAC := [6]byte{0x02, 0, 0, 0, 1, 0x11}
 	stack := &tsnetVirtioStack{hostMAC: emunetRouterMAC}
@@ -105,6 +156,21 @@ func TestTsnetVirtioStackEmunetGatewayPing(t *testing.T) {
 	}
 }
 
+func TestTsnetVirtioStackEmunetIgnoresNonIPv4Traffic(t *testing.T) {
+	stack := &tsnetVirtioStack{hostMAC: emunetRouterMAC}
+	frame := make([]byte, 14+40)
+	binary.BigEndian.PutUint16(frame[12:14], etherTypeIPv6)
+	frame[14] = 0x60
+
+	stack.InjectInboundPacket(frame)
+	stack.mu.Lock()
+	pending := len(stack.pending)
+	stack.mu.Unlock()
+	if pending != 0 {
+		t.Fatalf("IPv6 frame produced %d pending frames, want 0", pending)
+	}
+}
+
 func TestTsnetVirtioStackEmunetUDPNATRoundTrip(t *testing.T) {
 	stack := &tsnetVirtioStack{hostMAC: emunetRouterMAC}
 	tailIP := netip.MustParseAddr("100.64.12.34")
@@ -116,6 +182,11 @@ func TestTsnetVirtioStackEmunetUDPNATRoundTrip(t *testing.T) {
 	out := stack.translateOutboundIPv4(portID, udpIPv4Packet([4]byte{10, 77, 0, 2}, [4]byte{8, 8, 8, 8}, 1234, 53, []byte("hello")), tailIP, func([]byte) {})
 	if len(out) == 0 {
 		t.Fatal("NAT outbound dropped UDP packet")
+	}
+	assertIPv4ChecksumValid(t, out)
+	assertTransportChecksumValid(t, out, ipProtoUDP)
+	if got := out[8]; got != 63 {
+		t.Fatalf("NAT UDP TTL = %d, want 63", got)
 	}
 	if got := [4]byte{out[12], out[13], out[14], out[15]}; got != tailIP.As4() {
 		t.Fatalf("NAT src IP = %v, want %s", got, tailIP)
@@ -139,8 +210,25 @@ func TestTsnetVirtioStackEmunetUDPNATRoundTrip(t *testing.T) {
 	if got := [4]byte{guestPkt[16], guestPkt[17], guestPkt[18], guestPkt[19]}; got != [4]byte{10, 77, 0, 2} {
 		t.Fatalf("NAT dst IP = %v, want guest", got)
 	}
+	assertIPv4ChecksumValid(t, guestPkt)
+	assertTransportChecksumValid(t, guestPkt, ipProtoUDP)
 	if got := binary.BigEndian.Uint16(guestPkt[22:24]); got != 1234 {
 		t.Fatalf("NAT dst port = %d, want guest port 1234", got)
+	}
+}
+
+func TestTsnetVirtioStackEmunetUDPNATPreservesZeroChecksum(t *testing.T) {
+	stack := &tsnetVirtioStack{hostMAC: emunetRouterMAC}
+	tailIP := netip.MustParseAddr("100.64.12.34")
+	packet := udpIPv4Packet([4]byte{10, 77, 0, 2}, [4]byte{8, 8, 8, 8}, 1234, 53, []byte("hello"))
+	packet[26], packet[27] = 0, 0
+
+	out := stack.translateOutboundIPv4("zero-udp", packet, tailIP, func([]byte) {})
+	if len(out) == 0 {
+		t.Fatal("NAT outbound dropped UDP packet")
+	}
+	if got := binary.BigEndian.Uint16(out[26:28]); got != 0 {
+		t.Fatalf("NAT UDP checksum = %#x, want zero preserved", got)
 	}
 }
 
@@ -247,6 +335,35 @@ func TestTsnetVirtioStackEmunetNATDistinguishesSameGuestPortOnDifferentPorts(t *
 	}
 }
 
+func TestTsnetVirtioStackEmunetNATReusesExistingMappingForSameFlow(t *testing.T) {
+	stack := &tsnetVirtioStack{hostMAC: emunetRouterMAC}
+	tailIP := netip.MustParseAddr("100.64.12.34")
+	packet := udpIPv4Packet([4]byte{10, 77, 0, 2}, [4]byte{8, 8, 8, 8}, 1234, 53, []byte("hello"))
+	outA := stack.translateOutboundIPv4("guest-a", packet, tailIP, func([]byte) {})
+	outB := stack.translateOutboundIPv4("guest-a", packet, tailIP, func([]byte) {})
+	if len(outA) == 0 || len(outB) == 0 {
+		t.Fatalf("NAT dropped repeated flow packets: lenA=%d lenB=%d", len(outA), len(outB))
+	}
+	if extA, extB := binary.BigEndian.Uint16(outA[20:22]), binary.BigEndian.Uint16(outB[20:22]); extA != extB {
+		t.Fatalf("same flow got different external ports %d and %d", extA, extB)
+	}
+}
+
+func TestTsnetVirtioStackEmunetNATAllocatorSkipsUsedExternalPorts(t *testing.T) {
+	stack := &tsnetVirtioStack{hostMAC: emunetRouterMAC, nextNATID: 40000}
+	tailIP := netip.MustParseAddr("100.64.12.34")
+	packetA := udpIPv4Packet([4]byte{10, 77, 0, 2}, [4]byte{8, 8, 8, 8}, 1234, 53, []byte("a"))
+	packetB := udpIPv4Packet([4]byte{10, 77, 0, 3}, [4]byte{8, 8, 8, 8}, 1234, 53, []byte("b"))
+	outA := stack.translateOutboundIPv4("guest-a", packetA, tailIP, func([]byte) {})
+	outB := stack.translateOutboundIPv4("guest-b", packetB, tailIP, func([]byte) {})
+	if len(outA) == 0 || len(outB) == 0 {
+		t.Fatalf("NAT dropped allocator test packets: lenA=%d lenB=%d", len(outA), len(outB))
+	}
+	if extA, extB := binary.BigEndian.Uint16(outA[20:22]), binary.BigEndian.Uint16(outB[20:22]); extA != 40000 || extB != 40001 {
+		t.Fatalf("allocator externals = %d/%d, want 40000/40001", extA, extB)
+	}
+}
+
 func TestTsnetVirtioStackEmunetNATDropsFragmentsTTLAndUnmatchedInbound(t *testing.T) {
 	stack := &tsnetVirtioStack{hostMAC: emunetRouterMAC}
 	tailIP := netip.MustParseAddr("100.64.12.34")
@@ -268,6 +385,34 @@ func TestTsnetVirtioStackEmunetNATDropsFragmentsTTLAndUnmatchedInbound(t *testin
 	reply := udpIPv4Packet([4]byte{8, 8, 8, 8}, tailIP.As4(), 53, 40000, []byte("world"))
 	if _, _, _, _, ok := stack.natInbound(reply); ok {
 		t.Fatalf("unmatched inbound packet unexpectedly matched NAT state")
+	}
+}
+
+func TestTsnetVirtioStackEmunetNATDropsBadLengthsAndUnsupportedProtocol(t *testing.T) {
+	stack := &tsnetVirtioStack{hostMAC: emunetRouterMAC}
+	tailIP := netip.MustParseAddr("100.64.12.34")
+	packet := udpIPv4Packet([4]byte{10, 77, 0, 2}, [4]byte{8, 8, 8, 8}, 1234, 53, []byte("hello"))
+
+	tooShort := packet[:19]
+	if out := stack.translateOutboundIPv4("guest-a", tooShort, tailIP, func([]byte) {}); len(out) != 0 {
+		t.Fatalf("short IPv4 packet translated to %d bytes, want drop", len(out))
+	}
+
+	badIHL := append([]byte(nil), packet...)
+	badIHL[0] = 0x44
+	if out := stack.translateOutboundIPv4("guest-a", badIHL, tailIP, func([]byte) {}); len(out) != 0 {
+		t.Fatalf("bad-IHL packet translated to %d bytes, want drop", len(out))
+	}
+
+	badTotal := append([]byte(nil), packet...)
+	binary.BigEndian.PutUint16(badTotal[2:4], uint16(len(packet)+1))
+	if out := stack.translateOutboundIPv4("guest-a", badTotal, tailIP, func([]byte) {}); len(out) != 0 {
+		t.Fatalf("bad-total-length packet translated to %d bytes, want drop", len(out))
+	}
+
+	unsupported := ipv4Packet([4]byte{10, 77, 0, 2}, [4]byte{8, 8, 8, 8}, 99, []byte("payload"))
+	if out := stack.translateOutboundIPv4("guest-a", unsupported, tailIP, func([]byte) {}); len(out) != 0 {
+		t.Fatalf("unsupported-protocol packet translated to %d bytes, want drop", len(out))
 	}
 }
 
@@ -658,21 +803,162 @@ func TestEmunetLeaderForgetsFollowerCircuitAndPort(t *testing.T) {
 	}
 }
 
+func TestEmunetFollowerDHCPOverCircuit(t *testing.T) {
+	t.Setenv("RPC25519_SERVER_DATA_DIR", t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("RISCV_EMU_EMUNET_ADDR", reserveTestEmunetAddr(t))
+	starts, _ := installFakeEmunetLeaderCoreHook(t, 20*time.Millisecond, nil)
+
+	leaderIf, err := newEmunetVirtioStack(EmuConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	leader := leaderIf.(*emunetVirtioStack)
+	defer leader.Close()
+	followerIf, err := newEmunetVirtioStack(EmuConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	follower := followerIf.(*emunetVirtioStack)
+	defer follower.Close()
+
+	if got := starts.Load(); got != 1 {
+		t.Fatalf("leader starts = %d, want 1", got)
+	}
+	guestMAC := [6]byte{0x02, 0, 0, 0, 2, 0x01}
+	follower.InjectInboundPacket(dhcpTestFrame(t, dhcpDiscover, 0x44444444, guestMAC))
+	reply := waitPendingEmunetFrame(t, follower, time.Second)
+	assertDHCPReply(t, reply, dhcpOffer, netip.MustParseAddr("10.77.0.2"))
+	assertDHCPOptionIP(t, reply, dhcpOptionRouter, netip.MustParseAddr("10.77.0.1"))
+
+	leader.mu.Lock()
+	_, known := leader.followerURLs[follower.node.PeerURL()]
+	leader.mu.Unlock()
+	if !known {
+		t.Fatalf("leader did not publish follower URL %q", follower.node.PeerURL())
+	}
+}
+
+func TestEmunetLeaderRoutesNATReplyOnlyToOwningFollower(t *testing.T) {
+	t.Setenv("RPC25519_SERVER_DATA_DIR", t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("RISCV_EMU_EMUNET_ADDR", reserveTestEmunetAddr(t))
+	tailIP := netip.MustParseAddr("100.64.12.34")
+	_, cores := installFakeEmunetLeaderCoreHook(t, 20*time.Millisecond, func(core *tsnetVirtioStack) {
+		core.setTailIPv4(tailIP)
+	})
+
+	leaderIf, err := newEmunetVirtioStack(EmuConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	leader := leaderIf.(*emunetVirtioStack)
+	defer leader.Close()
+	core := recvLeaderCore(t, cores)
+
+	followerAIf, err := newEmunetVirtioStack(EmuConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	followerA := followerAIf.(*emunetVirtioStack)
+	defer followerA.Close()
+	followerBIf, err := newEmunetVirtioStack(EmuConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	followerB := followerBIf.(*emunetVirtioStack)
+	defer followerB.Close()
+
+	macA := [6]byte{0x02, 0, 0, 0, 2, 0x02}
+	macB := [6]byte{0x02, 0, 0, 0, 2, 0x03}
+	followerA.InjectInboundPacket(dhcpTestFrame(t, dhcpDiscover, 0x55555555, macA))
+	assertDHCPReply(t, waitPendingEmunetFrame(t, followerA, time.Second), dhcpOffer, netip.MustParseAddr("10.77.0.2"))
+	clearEmunetPending(followerA)
+	followerB.InjectInboundPacket(dhcpTestFrame(t, dhcpDiscover, 0x66666666, macB))
+	assertDHCPReply(t, waitPendingEmunetFrame(t, followerB, time.Second), dhcpOffer, netip.MustParseAddr("10.77.0.3"))
+	clearEmunetPending(followerB)
+
+	followerA.InjectInboundPacket(ethernetIPv4Frame(emunetRouterMAC, macA, udpIPv4Packet([4]byte{10, 77, 0, 2}, [4]byte{8, 8, 8, 8}, 1234, 53, []byte("hello"))))
+	ext := waitForNATExternal(t, core, followerA.node.PeerURL(), ipProtoUDP, 1234, [4]byte{8, 8, 8, 8}, 53)
+	core.handleTsnetPacket(udpIPv4Packet([4]byte{8, 8, 8, 8}, tailIP.As4(), 53, ext, []byte("world")))
+
+	reply := waitPendingEmunetFrame(t, followerA, time.Second)
+	if !bytes.Equal(reply[0:6], macA[:]) {
+		t.Fatalf("NAT reply dst MAC = %x, want follower A %x", reply[0:6], macA)
+	}
+	ip := reply[14:]
+	if got := binary.BigEndian.Uint16(ip[22:24]); got != 1234 {
+		t.Fatalf("NAT reply dst port = %d, want 1234", got)
+	}
+	followerB.mu.Lock()
+	pendingB := len(followerB.pending)
+	followerB.mu.Unlock()
+	if pendingB != 0 {
+		t.Fatalf("follower B received %d frames for follower A NAT reply", pendingB)
+	}
+}
+
+func TestEmunetLeaderDropsUnmatchedTUNPacket(t *testing.T) {
+	t.Setenv("RPC25519_SERVER_DATA_DIR", t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("RISCV_EMU_EMUNET_ADDR", reserveTestEmunetAddr(t))
+	tailIP := netip.MustParseAddr("100.64.12.34")
+	_, cores := installFakeEmunetLeaderCoreHook(t, 20*time.Millisecond, func(core *tsnetVirtioStack) {
+		core.setTailIPv4(tailIP)
+	})
+
+	leaderIf, err := newEmunetVirtioStack(EmuConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	leader := leaderIf.(*emunetVirtioStack)
+	defer leader.Close()
+	core := recvLeaderCore(t, cores)
+	followerIf, err := newEmunetVirtioStack(EmuConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	follower := followerIf.(*emunetVirtioStack)
+	defer follower.Close()
+
+	core.handleTsnetPacket(udpIPv4Packet([4]byte{8, 8, 8, 8}, tailIP.As4(), 53, 40000, []byte("world")))
+	time.Sleep(3 * emunetWatchDogInterval)
+	follower.mu.Lock()
+	pending := len(follower.pending)
+	follower.mu.Unlock()
+	if pending != 0 {
+		t.Fatalf("unmatched TUN packet delivered %d follower frames, want 0", pending)
+	}
+}
+
 func installFakeEmunetLeaderHook(t *testing.T, interval time.Duration) *atomic.Int32 {
 	t.Helper()
+	starts, _ := installFakeEmunetLeaderCoreHook(t, interval, nil)
+	return starts
+}
+
+func installFakeEmunetLeaderCoreHook(t *testing.T, interval time.Duration, configure func(*tsnetVirtioStack)) (*atomic.Int32, <-chan *tsnetVirtioStack) {
+	t.Helper()
 	starts := new(atomic.Int32)
+	cores := make(chan *tsnetVirtioStack, 8)
 	oldHook := newEmunetLeaderTsnetVirtioStackHook
 	oldInterval := emunetWatchDogInterval
 	newEmunetLeaderTsnetVirtioStackHook = func(EmuConfig) (*tsnetVirtioStack, error) {
 		starts.Add(1)
-		return &tsnetVirtioStack{hostMAC: emunetRouterMAC}, nil
+		core := &tsnetVirtioStack{hostMAC: emunetRouterMAC}
+		core.tun = newVirtioNetMemoryTUN(core.handleTsnetPacket)
+		if configure != nil {
+			configure(core)
+		}
+		cores <- core
+		return core, nil
 	}
 	emunetWatchDogInterval = interval
 	t.Cleanup(func() {
 		newEmunetLeaderTsnetVirtioStackHook = oldHook
 		emunetWatchDogInterval = oldInterval
 	})
-	return starts
+	return starts, cores
 }
 
 func promotedTestStack(stacks []*emunetVirtioStack) *emunetVirtioStack {
@@ -702,6 +988,78 @@ func promotedTestStackCount(stacks []*emunetVirtioStack) int {
 		stack.mu.Unlock()
 	}
 	return count
+}
+
+func reserveTestEmunetAddr(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	if err := ln.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return addr
+}
+
+func recvLeaderCore(t *testing.T, cores <-chan *tsnetVirtioStack) *tsnetVirtioStack {
+	t.Helper()
+	select {
+	case core := <-cores:
+		return core
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for fake leader core")
+		return nil
+	}
+}
+
+func waitPendingEmunetFrame(t *testing.T, stack *emunetVirtioStack, timeout time.Duration) []byte {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		stack.mu.Lock()
+		if len(stack.pending) != 0 {
+			frame := append([]byte(nil), stack.pending[0]...)
+			copy(stack.pending, stack.pending[1:])
+			stack.pending = stack.pending[:len(stack.pending)-1]
+			stack.mu.Unlock()
+			return frame
+		}
+		stack.mu.Unlock()
+		time.Sleep(5 * time.Millisecond)
+	}
+	stack.mu.Lock()
+	pending := len(stack.pending)
+	stack.mu.Unlock()
+	t.Fatalf("timed out waiting for pending emunet frame; pending=%d", pending)
+	return nil
+}
+
+func clearEmunetPending(stack *emunetVirtioStack) {
+	stack.mu.Lock()
+	stack.pending = nil
+	stack.mu.Unlock()
+}
+
+func waitForNATExternal(t *testing.T, core *tsnetVirtioStack, portID string, proto byte, guestPort uint16, remoteIP [4]byte, remotePort uint16) uint16 {
+	t.Helper()
+	wantRemote := netip.AddrFrom4(remoteIP)
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		core.mu.Lock()
+		for key, ent := range core.natByOut {
+			if key.portID == portID && key.proto == proto && key.guestPort == guestPort && key.remoteIP == wantRemote && key.remotePort == remotePort {
+				ext := ent.external
+				core.mu.Unlock()
+				return ext
+			}
+		}
+		core.mu.Unlock()
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for NAT mapping portID=%q proto=%d guestPort=%d remote=%s:%d", portID, proto, guestPort, wantRemote, remotePort)
+	return 0
 }
 
 func startTestEmunetLeaderDNS(t *testing.T, ctx context.Context) (*emunetpkg.Node, *emunetpkg.DNSServer, string) {
@@ -816,6 +1174,78 @@ func assertDHCPReply(t *testing.T, frame []byte, wantType byte, wantIP netip.Add
 	if gotType != wantType {
 		t.Fatalf("DHCP message type = %d, want %d", gotType, wantType)
 	}
+}
+
+func assertDHCPOptionIP(t *testing.T, frame []byte, code byte, want netip.Addr) {
+	t.Helper()
+	got := dhcpOptionValue(t, frame, code)
+	if len(got) != 4 {
+		t.Fatalf("DHCP option %d length = %d, want 4", code, len(got))
+	}
+	if gotIP := netip.AddrFrom4([4]byte{got[0], got[1], got[2], got[3]}); gotIP != want {
+		t.Fatalf("DHCP option %d IP = %s, want %s", code, gotIP, want)
+	}
+}
+
+func assertDHCPOptionBytes(t *testing.T, frame []byte, code byte, want []byte) {
+	t.Helper()
+	got := dhcpOptionValue(t, frame, code)
+	if !bytes.Equal(got, want) {
+		t.Fatalf("DHCP option %d = %v, want %v", code, got, want)
+	}
+}
+
+func assertDHCPOptionUint16(t *testing.T, frame []byte, code byte, want uint16) {
+	t.Helper()
+	got := dhcpOptionValue(t, frame, code)
+	if len(got) != 2 {
+		t.Fatalf("DHCP option %d length = %d, want 2", code, len(got))
+	}
+	if gotU16 := binary.BigEndian.Uint16(got); gotU16 != want {
+		t.Fatalf("DHCP option %d uint16 = %d, want %d", code, gotU16, want)
+	}
+}
+
+func dhcpOptionValue(t *testing.T, frame []byte, wantCode byte) []byte {
+	t.Helper()
+	dhcp := dhcpPayload(t, frame)
+	for i := 240; i < len(dhcp); {
+		code := dhcp[i]
+		i++
+		switch code {
+		case 0:
+			continue
+		case dhcpOptionEnd:
+			t.Fatalf("DHCP option %d not found", wantCode)
+		}
+		if i >= len(dhcp) {
+			t.Fatalf("DHCP option %d has no length byte", code)
+		}
+		n := int(dhcp[i])
+		i++
+		if i+n > len(dhcp) {
+			t.Fatalf("DHCP option %d length %d overruns payload", code, n)
+		}
+		if code == wantCode {
+			return append([]byte(nil), dhcp[i:i+n]...)
+		}
+		i += n
+	}
+	t.Fatalf("DHCP option %d not found before payload end", wantCode)
+	return nil
+}
+
+func dhcpPayload(t *testing.T, frame []byte) []byte {
+	t.Helper()
+	if len(frame) < 14+20+8+240 {
+		t.Fatalf("DHCP frame length = %d, too short", len(frame))
+	}
+	ip := frame[14:]
+	ihl := int(ip[0]&0x0f) * 4
+	if ihl < 20 || len(ip) < ihl+8+240 {
+		t.Fatalf("bad DHCP IPv4 header length %d for IP len %d", ihl, len(ip))
+	}
+	return ip[ihl+8:]
 }
 
 func arpRequestFrame(mac [6]byte, senderIP, targetIP [4]byte) []byte {
