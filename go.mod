@@ -5,8 +5,9 @@ go 1.26.3
 require (
 	4d63.com/tz v1.2.0
 	github.com/armon/go-socks5 v0.0.0-20160902184237-e75332964ef5
+	github.com/glycerine/greenpack v0.541.0
 	github.com/glycerine/rbtree v0.2.1
-	github.com/glycerine/rpc25519 v0.0.0
+	github.com/glycerine/rpc25519 v1.44.5
 	github.com/italypaleale/go-kit v0.0.0-20260529153520-53847368b6d0
 	github.com/lmittmann/tint v1.1.3
 	github.com/mattn/go-isatty v0.0.22
@@ -36,7 +37,6 @@ require (
 	github.com/glycerine/blake2b v0.0.0-20151022103502-3c8c640cd7be // indirect
 	github.com/glycerine/blake3 v1.5.2 // indirect
 	github.com/glycerine/fwd v1.1.4-beta.jea // indirect
-	github.com/glycerine/greenpack v0.541.0 // indirect
 	github.com/glycerine/idem v0.20.7 // indirect
 	github.com/glycerine/ipaddr v0.2.7 // indirect
 	github.com/glycerine/liner v0.0.0-20160121172638-72909af234e0 // indirect

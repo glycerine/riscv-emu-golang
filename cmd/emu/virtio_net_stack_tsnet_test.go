@@ -4,6 +4,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"fmt"
 	"net/netip"
@@ -11,7 +12,11 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
+
+	emunetpkg "github.com/glycerine/riscv-emu-golang/emunet"
 )
 
 func TestTsnetVirtioStackEmunetDHCPDiscoverAndRequest(t *testing.T) {
@@ -178,6 +183,146 @@ func TestTsnetOpLogDefaultsToPerProcessEmunetStateDir(t *testing.T) {
 			t.Fatalf("oplog line has wrong timestamp format: %q", line)
 		}
 	}
+}
+
+func TestEmunetFollowerDoesNotStartTsnetBeforePromotion(t *testing.T) {
+	t.Setenv("RPC25519_SERVER_DATA_DIR", t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	leader, dnsSrv, addr := startTestEmunetLeaderDNS(t, ctx)
+	defer leader.Close()
+	defer dnsSrv.Close()
+	t.Setenv("RISCV_EMU_EMUNET_ADDR", addr)
+
+	var starts atomic.Int32
+	oldHook := newEmunetLeaderTsnetVirtioStackHook
+	oldInterval := emunetWatchDogInterval
+	newEmunetLeaderTsnetVirtioStackHook = func(EmuConfig) (*tsnetVirtioStack, error) {
+		starts.Add(1)
+		return &tsnetVirtioStack{hostMAC: emunetRouterMAC}, nil
+	}
+	emunetWatchDogInterval = 20 * time.Millisecond
+	t.Cleanup(func() {
+		newEmunetLeaderTsnetVirtioStackHook = oldHook
+		emunetWatchDogInterval = oldInterval
+	})
+
+	stackIf, err := newEmunetVirtioStack(EmuConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stack := stackIf.(*emunetVirtioStack)
+	defer stack.Close()
+
+	time.Sleep(3 * emunetWatchDogInterval)
+	if got := starts.Load(); got != 0 {
+		t.Fatalf("leader tsnet starts = %d, want 0 while follower DNS owner is alive", got)
+	}
+	stack.mu.Lock()
+	role := stack.role
+	core := stack.leaderCore
+	leaderCkt := stack.leaderCkt
+	stack.mu.Unlock()
+	if role != "follower" {
+		t.Fatalf("role = %q, want follower", role)
+	}
+	if core != nil {
+		t.Fatalf("follower unexpectedly has leader core: %#v", core)
+	}
+	if leaderCkt == nil {
+		t.Fatalf("follower did not connect to leader circuit")
+	}
+}
+
+func TestEmunetFollowerWatchDogPromotesAfterRendezvousFreed(t *testing.T) {
+	t.Setenv("RPC25519_SERVER_DATA_DIR", t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	leader, dnsSrv, addr := startTestEmunetLeaderDNS(t, ctx)
+	defer leader.Close()
+	t.Setenv("RISCV_EMU_EMUNET_ADDR", addr)
+
+	var starts atomic.Int32
+	oldHook := newEmunetLeaderTsnetVirtioStackHook
+	oldInterval := emunetWatchDogInterval
+	newEmunetLeaderTsnetVirtioStackHook = func(EmuConfig) (*tsnetVirtioStack, error) {
+		starts.Add(1)
+		return &tsnetVirtioStack{hostMAC: emunetRouterMAC}, nil
+	}
+	emunetWatchDogInterval = 10 * time.Millisecond
+	t.Cleanup(func() {
+		newEmunetLeaderTsnetVirtioStackHook = oldHook
+		emunetWatchDogInterval = oldInterval
+	})
+
+	stackIf, err := newEmunetVirtioStack(EmuConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stack := stackIf.(*emunetVirtioStack)
+	defer stack.Close()
+
+	if got := starts.Load(); got != 0 {
+		t.Fatalf("leader tsnet starts before failover = %d, want 0", got)
+	}
+	if err := dnsSrv.Close(); err != nil {
+		t.Fatalf("close leader DNS: %v", err)
+	}
+
+	waitForTestCondition(t, time.Second, func() bool {
+		stack.mu.Lock()
+		defer stack.mu.Unlock()
+		return stack.role == "leader" && stack.leaderCore != nil && stack.dns != nil && stack.leaderCkt == nil
+	})
+	if got := starts.Load(); got != 1 {
+		t.Fatalf("leader tsnet starts after failover = %d, want 1", got)
+	}
+
+	dnsCtx, dnsCancel := context.WithTimeout(context.Background(), time.Second)
+	defer dnsCancel()
+	dns, err := emunetpkg.LookupDNS(dnsCtx, addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dns.LeaderURL != stack.node.PeerURL() {
+		t.Fatalf("promoted DNS leader URL = %q, want %q", dns.LeaderURL, stack.node.PeerURL())
+	}
+}
+
+func startTestEmunetLeaderDNS(t *testing.T, ctx context.Context) (*emunetpkg.Node, *emunetpkg.DNSServer, string) {
+	t.Helper()
+	leader, err := emunetpkg.StartNode(ctx, emunetpkg.NodeOptions{PeerName: "emunet-test-leader"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln, err := emunetpkg.ListenRendezvous(ctx, "127.0.0.1:0")
+	if err != nil {
+		leader.Close()
+		t.Fatal(err)
+	}
+	dnsSrv := emunetpkg.StartDNSServer(ctx, ln, func() emunetpkg.EmunetDNS {
+		return emunetpkg.EmunetDNS{LeaderURL: leader.PeerURL()}
+	})
+	return leader, dnsSrv, ln.Addr().String()
+}
+
+func waitForTestCondition(t *testing.T, timeout time.Duration, fn func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if fn() {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if fn() {
+		return
+	}
+	t.Fatalf("condition was not true within %s", timeout)
 }
 
 func dhcpTestFrame(t *testing.T, msgType byte, xid uint32, mac [6]byte) []byte {

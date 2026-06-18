@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -50,9 +51,10 @@ const (
 type emunetVirtioStack struct {
 	mu sync.Mutex
 
-	node   *emunetpkg.Node
-	cancel context.CancelFunc
-	role   string
+	node      *emunetpkg.Node
+	cancel    context.CancelFunc
+	role      string
+	promoting bool
 
 	leaderCore *tsnetVirtioStack
 	dns        *emunetpkg.DNSServer
@@ -84,6 +86,11 @@ type tsnetVirtioStack struct {
 	natByIn   map[emunetNATInKey]*emunetNATEntry
 	nextNATID uint16
 }
+
+var (
+	newEmunetLeaderTsnetVirtioStackHook = newEmunetLeaderTsnetVirtioStack
+	emunetWatchDogInterval              = 250 * time.Millisecond
+)
 
 func newVirtioNetPacketStack(cfg EmuConfig) (virtioNetPacketStack, error) {
 	if tsnetEnvBool("RISCV_EMU_EMUNET_DISABLE") {
@@ -154,17 +161,11 @@ func newEmunetVirtioStack(cfg EmuConfig) (virtioNetPacketStack, error) {
 
 	ln, listenErr := emunetpkg.ListenRendezvous(ctx, emunetpkg.AddrFromEnv())
 	if listenErr == nil {
-		stack.role = "leader"
-		appendTsnetOpLog("emunet_election role=leader addr=%q peer_url=%q", ln.Addr().String(), node.PeerURL())
-		core, err := newEmunetLeaderTsnetVirtioStack(cfg)
-		if err != nil {
+		if err := stack.promoteToLeader(ctx, cfg, ln, "initial"); err != nil {
 			_ = ln.Close()
 			_ = stack.Close()
 			return nil, err
 		}
-		stack.leaderCore = core
-		stack.dns = emunetpkg.StartDNSServer(ctx, ln, stack.dnsSnapshot)
-		appendTsnetOpLog("emunet_dns_start addr=%q leader_url=%q", ln.Addr().String(), node.PeerURL())
 		return stack, nil
 	}
 
@@ -173,19 +174,149 @@ func newEmunetVirtioStack(cfg EmuConfig) (virtioNetPacketStack, error) {
 		_ = stack.Close()
 		return nil, errors.Join(listenErr, lookupErr)
 	}
-	stack.role = "follower"
 	appendTsnetOpLog("emunet_election role=follower addr=%q leader_url=%q follower_count=%d peer_url=%q",
 		emunetpkg.AddrFromEnv(), dns.LeaderURL, len(dns.KnownFollowerURLs), node.PeerURL())
-	hello := emunetpkg.NewMessage(emunetpkg.MessageKindHello)
-	hello.PeerURL = node.PeerURL()
-	ckt, err := node.Connect(ctx, dns.LeaderURL, &hello)
-	if err != nil {
+	if err := stack.connectToLeader(ctx, dns); err != nil {
 		_ = stack.Close()
 		return nil, err
 	}
-	stack.leaderCkt = ckt
-	appendTsnetOpLog("emunet_circuit_connected role=follower leader_url=%q", dns.LeaderURL)
+	stack.startFollowerWatchDog(ctx, cfg)
 	return stack, nil
+}
+
+func (s *emunetVirtioStack) promoteToLeader(ctx context.Context, cfg EmuConfig, ln net.Listener, reason string) error {
+	s.mu.Lock()
+	if s.role == "leader" || s.promoting {
+		s.mu.Unlock()
+		_ = ln.Close()
+		return nil
+	}
+	s.promoting = true
+	s.mu.Unlock()
+
+	appendTsnetOpLog("emunet_watchDog_promote_start reason=%q addr=%q peer_url=%q", reason, ln.Addr().String(), s.node.PeerURL())
+	core, err := newEmunetLeaderTsnetVirtioStackHook(cfg)
+	if err != nil {
+		s.mu.Lock()
+		s.promoting = false
+		s.mu.Unlock()
+		appendTsnetOpLog("emunet_watchDog_promote_error reason=%q addr=%q error=%q", reason, ln.Addr().String(), err)
+		return err
+	}
+	dns := emunetpkg.StartDNSServer(ctx, ln, s.dnsSnapshot)
+
+	s.mu.Lock()
+	oldCkt := s.leaderCkt
+	dev := s.dev
+	s.leaderCkt = nil
+	s.leaderCore = core
+	s.dns = dns
+	s.role = "leader"
+	s.promoting = false
+	s.mu.Unlock()
+
+	if oldCkt != nil {
+		oldCkt.Close(nil)
+	}
+	if dev != nil {
+		core.attachVirtioNet(dev)
+	}
+	appendTsnetOpLog("emunet_election role=leader reason=%q addr=%q peer_url=%q", reason, ln.Addr().String(), s.node.PeerURL())
+	appendTsnetOpLog("emunet_dns_start addr=%q leader_url=%q", ln.Addr().String(), s.node.PeerURL())
+	return nil
+}
+
+func (s *emunetVirtioStack) connectToLeader(ctx context.Context, dns emunetpkg.EmunetDNS) error {
+	if dns.LeaderURL == "" {
+		return errors.New("emunet dns response missing leader URL")
+	}
+	hello := emunetpkg.NewMessage(emunetpkg.MessageKindHello)
+	hello.PeerURL = s.node.PeerURL()
+	ckt, err := s.node.Connect(ctx, dns.LeaderURL, &hello)
+	if err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	if s.role == "leader" {
+		s.mu.Unlock()
+		ckt.Close(nil)
+		return nil
+	}
+	oldCkt := s.leaderCkt
+	s.leaderCkt = ckt
+	s.role = "follower"
+	s.mu.Unlock()
+
+	if oldCkt != nil {
+		oldCkt.Close(nil)
+	}
+	appendTsnetOpLog("emunet_circuit_connected role=follower leader_url=%q", dns.LeaderURL)
+	return nil
+}
+
+func (s *emunetVirtioStack) startFollowerWatchDog(ctx context.Context, cfg EmuConfig) {
+	appendTsnetOpLog("emunet_watchDog_start role=follower addr=%q interval=%s", emunetpkg.AddrFromEnv(), emunetWatchDogInterval)
+	go s.runFollowerWatchDog(ctx, cfg)
+}
+
+func (s *emunetVirtioStack) runFollowerWatchDog(ctx context.Context, cfg EmuConfig) {
+	ticker := time.NewTicker(emunetWatchDogInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		if !s.isFollower() {
+			return
+		}
+		ln, err := emunetpkg.ListenRendezvous(ctx, emunetpkg.AddrFromEnv())
+		if err == nil {
+			if err := s.promoteToLeader(ctx, cfg, ln, "watchDog"); err != nil {
+				_ = ln.Close()
+				continue
+			}
+			return
+		}
+		if !s.needsLeaderReconnect() {
+			continue
+		}
+		dns, lookupErr := emunetpkg.LookupDNS(ctx, emunetpkg.AddrFromEnv())
+		if lookupErr != nil {
+			appendTsnetOpLog("emunet_watchDog_reconnect_error addr=%q error=%q", emunetpkg.AddrFromEnv(), lookupErr)
+			continue
+		}
+		if err := s.connectToLeader(ctx, dns); err != nil {
+			appendTsnetOpLog("emunet_watchDog_reconnect_error leader_url=%q error=%q", dns.LeaderURL, err)
+			continue
+		}
+		appendTsnetOpLog("emunet_watchDog_reconnected leader_url=%q", dns.LeaderURL)
+	}
+}
+
+func (s *emunetVirtioStack) isFollower() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.role == "follower"
+}
+
+func (s *emunetVirtioStack) needsLeaderReconnect() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.role == "follower" && s.leaderCkt == nil
+}
+
+func (s *emunetVirtioStack) noteLeaderCircuitLost(ckt *emunetpkg.Circuit, cause error) {
+	s.mu.Lock()
+	if s.role != "follower" || s.leaderCkt == nil || (ckt != nil && s.leaderCkt != ckt) {
+		s.mu.Unlock()
+		return
+	}
+	s.leaderCkt = nil
+	s.mu.Unlock()
+	appendTsnetOpLog("emunet_watchDog_leader_circuit_lost error=%q", cause)
 }
 
 func (s *emunetVirtioStack) dnsSnapshot() emunetpkg.EmunetDNS {
@@ -243,7 +374,9 @@ func (s *emunetVirtioStack) InjectInboundPacket(frame []byte) {
 	msg := emunetpkg.NewMessage(emunetpkg.MessageKindEthernetFrame)
 	msg.PeerURL = peerURL
 	msg.MAC = mac
-	_ = node.SendFrame(ckt, msg, frame)
+	if err := node.SendFrame(ckt, msg, frame); err != nil {
+		s.noteLeaderCircuitLost(ckt, err)
+	}
 }
 
 func (s *emunetVirtioStack) Close() error {
@@ -272,6 +405,7 @@ func (s *emunetVirtioStack) readEmunetEvents(ctx context.Context) {
 		case ev := <-s.node.Events():
 			if ev.Err != nil {
 				appendTsnetOpLog("emunet_circuit_error role=%q error=%q", s.role, ev.Err)
+				s.noteLeaderCircuitLost(ev.Circuit, ev.Err)
 				continue
 			}
 			s.handleEmunetMessage(ev)
