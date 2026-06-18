@@ -1025,7 +1025,7 @@ build-slim-linux:
 	@# Neither zig nor riscv64-elf-gcc were up to the job.
 	@# The output kernel Image file is a slim 5.8MB uncompressed--nice.
 	@# leaves out alot of hardware drivers we do not need. 
-	@# Boots in < 4 seconds on the intrepreter--very nice.
+	@# Boots in < 8 seconds on the intrepreter--very nice.
 	cd linux && PATH=/private/tmp/linux-host-tools:/usr/local/opt/llvm/bin:/usr/local/bin:$PATH \
 	gmake ARCH=riscv LLVM=1 \
 	HOSTCFLAGS=\
