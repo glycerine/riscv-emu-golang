@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"net/netip"
 	"os"
@@ -140,6 +141,232 @@ func TestTsnetVirtioStackEmunetUDPNATRoundTrip(t *testing.T) {
 	}
 	if got := binary.BigEndian.Uint16(guestPkt[22:24]); got != 1234 {
 		t.Fatalf("NAT dst port = %d, want guest port 1234", got)
+	}
+}
+
+func TestTsnetVirtioStackEmunetTCPNATRoundTrip(t *testing.T) {
+	stack := &tsnetVirtioStack{hostMAC: emunetRouterMAC}
+	tailIP := netip.MustParseAddr("100.64.12.34")
+	stack.setTailIPv4(tailIP)
+	guestMAC := [6]byte{0x02, 0, 0, 0, 1, 0x15}
+	portID := "tcp-follower"
+	stack.learnPortMAC(portID, guestMAC, func([]byte) {})
+
+	out := stack.translateOutboundIPv4(portID, tcpIPv4Packet([4]byte{10, 77, 0, 2}, [4]byte{100, 100, 100, 100}, 1234, 443, 0x02, nil), tailIP, func([]byte) {})
+	if len(out) == 0 {
+		t.Fatal("NAT outbound dropped TCP packet")
+	}
+	assertIPv4ChecksumValid(t, out)
+	assertTransportChecksumValid(t, out, ipProtoTCP)
+	if got := out[8]; got != 63 {
+		t.Fatalf("NAT TCP TTL = %d, want 63", got)
+	}
+	if got := [4]byte{out[12], out[13], out[14], out[15]}; got != tailIP.As4() {
+		t.Fatalf("NAT TCP src IP = %v, want %s", got, tailIP)
+	}
+	ext := binary.BigEndian.Uint16(out[20:22])
+	if ext < 40000 || ext > 60999 {
+		t.Fatalf("NAT TCP source port = %d, want allocated range", ext)
+	}
+
+	reply := tcpIPv4Packet([4]byte{100, 100, 100, 100}, tailIP.As4(), 443, ext, 0x12, nil)
+	gotPortID, gotMAC, guestPkt, _, ok := stack.natInbound(reply)
+	if !ok {
+		t.Fatal("NAT inbound did not match TCP reply")
+	}
+	if gotPortID != portID {
+		t.Fatalf("NAT TCP port ID = %q, want %q", gotPortID, portID)
+	}
+	if gotMAC != guestMAC {
+		t.Fatalf("NAT TCP guest MAC = %x, want %x", gotMAC, guestMAC)
+	}
+	assertIPv4ChecksumValid(t, guestPkt)
+	assertTransportChecksumValid(t, guestPkt, ipProtoTCP)
+	if got := [4]byte{guestPkt[16], guestPkt[17], guestPkt[18], guestPkt[19]}; got != [4]byte{10, 77, 0, 2} {
+		t.Fatalf("NAT TCP dst IP = %v, want guest", got)
+	}
+	if got := binary.BigEndian.Uint16(guestPkt[22:24]); got != 1234 {
+		t.Fatalf("NAT TCP dst port = %d, want guest port 1234", got)
+	}
+}
+
+func TestTsnetVirtioStackEmunetICMPNATRoundTrip(t *testing.T) {
+	stack := &tsnetVirtioStack{hostMAC: emunetRouterMAC}
+	tailIP := netip.MustParseAddr("100.64.12.34")
+	stack.setTailIPv4(tailIP)
+	guestMAC := [6]byte{0x02, 0, 0, 0, 1, 0x16}
+	portID := "icmp-follower"
+	stack.learnPortMAC(portID, guestMAC, func([]byte) {})
+
+	out := stack.translateOutboundIPv4(portID, icmpIPv4Packet([4]byte{10, 77, 0, 2}, [4]byte{8, 8, 8, 8}, icmpEchoRequest, 0x1234, 1), tailIP, func([]byte) {})
+	if len(out) == 0 {
+		t.Fatal("NAT outbound dropped ICMP echo packet")
+	}
+	assertIPv4ChecksumValid(t, out)
+	assertICMPChecksumValid(t, out)
+	ext := binary.BigEndian.Uint16(out[24:26])
+	if ext == 0x1234 {
+		t.Fatalf("NAT ICMP identifier was not rewritten")
+	}
+
+	reply := icmpIPv4Packet([4]byte{8, 8, 8, 8}, tailIP.As4(), icmpEchoReply, ext, 1)
+	gotPortID, gotMAC, guestPkt, _, ok := stack.natInbound(reply)
+	if !ok {
+		t.Fatal("NAT inbound did not match ICMP echo reply")
+	}
+	if gotPortID != portID {
+		t.Fatalf("NAT ICMP port ID = %q, want %q", gotPortID, portID)
+	}
+	if gotMAC != guestMAC {
+		t.Fatalf("NAT ICMP guest MAC = %x, want %x", gotMAC, guestMAC)
+	}
+	assertIPv4ChecksumValid(t, guestPkt)
+	assertICMPChecksumValid(t, guestPkt)
+	if got := binary.BigEndian.Uint16(guestPkt[24:26]); got != 0x1234 {
+		t.Fatalf("NAT ICMP restored id = %#x, want 0x1234", got)
+	}
+}
+
+func TestTsnetVirtioStackEmunetNATDistinguishesSameGuestPortOnDifferentPorts(t *testing.T) {
+	stack := &tsnetVirtioStack{hostMAC: emunetRouterMAC}
+	tailIP := netip.MustParseAddr("100.64.12.34")
+	stack.setTailIPv4(tailIP)
+	stack.learnPortMAC("guest-a", [6]byte{0x02, 0, 0, 0, 1, 0x17}, func([]byte) {})
+	stack.learnPortMAC("guest-b", [6]byte{0x02, 0, 0, 0, 1, 0x18}, func([]byte) {})
+
+	packet := udpIPv4Packet([4]byte{10, 77, 0, 2}, [4]byte{8, 8, 8, 8}, 1234, 53, []byte("hello"))
+	outA := stack.translateOutboundIPv4("guest-a", packet, tailIP, func([]byte) {})
+	outB := stack.translateOutboundIPv4("guest-b", packet, tailIP, func([]byte) {})
+	if len(outA) == 0 || len(outB) == 0 {
+		t.Fatalf("NAT dropped duplicate-port packets: lenA=%d lenB=%d", len(outA), len(outB))
+	}
+	extA := binary.BigEndian.Uint16(outA[20:22])
+	extB := binary.BigEndian.Uint16(outB[20:22])
+	if extA == extB {
+		t.Fatalf("duplicate guest ports got same external NAT port %d", extA)
+	}
+}
+
+func TestTsnetVirtioStackEmunetNATDropsFragmentsTTLAndUnmatchedInbound(t *testing.T) {
+	stack := &tsnetVirtioStack{hostMAC: emunetRouterMAC}
+	tailIP := netip.MustParseAddr("100.64.12.34")
+	stack.setTailIPv4(tailIP)
+	packet := udpIPv4Packet([4]byte{10, 77, 0, 2}, [4]byte{8, 8, 8, 8}, 1234, 53, []byte("hello"))
+
+	fragment := append([]byte(nil), packet...)
+	binary.BigEndian.PutUint16(fragment[6:8], 0x2000)
+	if out := stack.translateOutboundIPv4("guest-a", fragment, tailIP, func([]byte) {}); len(out) != 0 {
+		t.Fatalf("fragmented packet translated to %d bytes, want drop", len(out))
+	}
+
+	ttlExpired := append([]byte(nil), packet...)
+	ttlExpired[8] = 1
+	if out := stack.translateOutboundIPv4("guest-a", ttlExpired, tailIP, func([]byte) {}); len(out) != 0 {
+		t.Fatalf("TTL-expired packet translated to %d bytes, want drop", len(out))
+	}
+
+	reply := udpIPv4Packet([4]byte{8, 8, 8, 8}, tailIP.As4(), 53, 40000, []byte("world"))
+	if _, _, _, _, ok := stack.natInbound(reply); ok {
+		t.Fatalf("unmatched inbound packet unexpectedly matched NAT state")
+	}
+}
+
+func TestTsnetVirtioStackEmunetNATExpiresIdleMappings(t *testing.T) {
+	now := time.Unix(1000, 0)
+	stack := &tsnetVirtioStack{
+		hostMAC: emunetRouterMAC,
+		now:     func() time.Time { return now },
+	}
+	tailIP := netip.MustParseAddr("100.64.12.34")
+	stack.setTailIPv4(tailIP)
+	guestMAC := [6]byte{0x02, 0, 0, 0, 1, 0x19}
+	portID := "expiring-udp"
+	stack.learnPortMAC(portID, guestMAC, func([]byte) {})
+	out := stack.translateOutboundIPv4(portID, udpIPv4Packet([4]byte{10, 77, 0, 2}, [4]byte{8, 8, 8, 8}, 1234, 53, []byte("hello")), tailIP, func([]byte) {})
+	if len(out) == 0 {
+		t.Fatal("NAT outbound dropped UDP packet")
+	}
+	ext := binary.BigEndian.Uint16(out[20:22])
+
+	now = now.Add(emunetUDPIdleTimeout + time.Nanosecond)
+	if removed := stack.cleanupExpiredNAT(); removed != 1 {
+		t.Fatalf("expired NAT mappings removed = %d, want 1", removed)
+	}
+	reply := udpIPv4Packet([4]byte{8, 8, 8, 8}, tailIP.As4(), 53, ext, []byte("world"))
+	if _, _, _, _, ok := stack.natInbound(reply); ok {
+		t.Fatalf("expired NAT mapping accepted inbound reply")
+	}
+}
+
+func TestTsnetVirtioStackEmunetNATInboundRefreshesIdleTimeout(t *testing.T) {
+	now := time.Unix(2000, 0)
+	stack := &tsnetVirtioStack{
+		hostMAC: emunetRouterMAC,
+		now:     func() time.Time { return now },
+	}
+	tailIP := netip.MustParseAddr("100.64.12.34")
+	stack.setTailIPv4(tailIP)
+	guestMAC := [6]byte{0x02, 0, 0, 0, 1, 0x1a}
+	portID := "refreshing-udp"
+	stack.learnPortMAC(portID, guestMAC, func([]byte) {})
+	out := stack.translateOutboundIPv4(portID, udpIPv4Packet([4]byte{10, 77, 0, 2}, [4]byte{8, 8, 8, 8}, 1234, 53, []byte("hello")), tailIP, func([]byte) {})
+	if len(out) == 0 {
+		t.Fatal("NAT outbound dropped UDP packet")
+	}
+	ext := binary.BigEndian.Uint16(out[20:22])
+	reply := udpIPv4Packet([4]byte{8, 8, 8, 8}, tailIP.As4(), 53, ext, []byte("world"))
+
+	now = now.Add(emunetUDPIdleTimeout - time.Second)
+	if _, _, _, _, ok := stack.natInbound(reply); !ok {
+		t.Fatalf("active NAT mapping did not accept inbound reply")
+	}
+	now = now.Add(emunetUDPIdleTimeout - time.Second)
+	if removed := stack.cleanupExpiredNAT(); removed != 0 {
+		t.Fatalf("refreshed NAT mappings removed = %d, want 0", removed)
+	}
+	if _, _, _, _, ok := stack.natInbound(reply); !ok {
+		t.Fatalf("refreshed NAT mapping did not accept later inbound reply")
+	}
+}
+
+func TestEmunetNATIdleTimeoutsAreProtocolSpecific(t *testing.T) {
+	if got := emunetNATIdleTimeout(ipProtoICMP); got != 30*time.Second {
+		t.Fatalf("ICMP NAT timeout = %s, want 30s", got)
+	}
+	if got := emunetNATIdleTimeout(ipProtoUDP); got != 2*time.Minute {
+		t.Fatalf("UDP NAT timeout = %s, want 2m", got)
+	}
+	if got := emunetNATIdleTimeout(ipProtoTCP); got != 10*time.Minute {
+		t.Fatalf("TCP NAT timeout = %s, want 10m", got)
+	}
+}
+
+func TestTsnetVirtioStackRemoveEmunetPortRemovesLeaseAndNAT(t *testing.T) {
+	stack := &tsnetVirtioStack{hostMAC: emunetRouterMAC}
+	tailIP := netip.MustParseAddr("100.64.12.34")
+	stack.setTailIPv4(tailIP)
+	guestMAC := [6]byte{0x02, 0, 0, 0, 1, 0x13}
+	portID := "follower-to-remove"
+	stack.learnPortMAC(portID, guestMAC, func([]byte) {})
+	out := stack.translateOutboundIPv4(portID, udpIPv4Packet([4]byte{10, 77, 0, 2}, [4]byte{8, 8, 8, 8}, 1234, 53, []byte("hello")), tailIP, func([]byte) {})
+	if len(out) == 0 {
+		t.Fatal("NAT outbound dropped UDP packet")
+	}
+
+	stack.removeEmunetPort(portID)
+
+	stack.mu.Lock()
+	defer stack.mu.Unlock()
+	if _, ok := stack.ports[portID]; ok {
+		t.Fatalf("port %q still exists after remove", portID)
+	}
+	for key := range stack.natByOut {
+		if key.portID == portID {
+			t.Fatalf("outbound NAT key for removed port still exists: %#v", key)
+		}
+	}
+	if len(stack.natByIn) != 0 {
+		t.Fatalf("inbound NAT mappings = %d, want 0 after removing only port", len(stack.natByIn))
 	}
 }
 
@@ -393,6 +620,44 @@ func TestEmunetFollowerCloseStopsWatchDogPromotion(t *testing.T) {
 	}
 }
 
+func TestEmunetLeaderForgetsFollowerCircuitAndPort(t *testing.T) {
+	peerURL := "tcp://127.0.0.1:30002/emunet/follower-a"
+	var ckt emunetpkg.Circuit
+	core := &tsnetVirtioStack{hostMAC: emunetRouterMAC}
+	core.learnPortMAC(peerURL, [6]byte{0x02, 0, 0, 0, 1, 0x14}, func([]byte) {})
+	core.setTailIPv4(netip.MustParseAddr("100.64.12.34"))
+	if out := core.translateOutboundIPv4(peerURL, udpIPv4Packet([4]byte{10, 77, 0, 2}, [4]byte{8, 8, 8, 8}, 1234, 53, []byte("hello")), netip.MustParseAddr("100.64.12.34"), func([]byte) {}); len(out) == 0 {
+		t.Fatal("NAT outbound dropped UDP packet")
+	}
+	stack := &emunetVirtioStack{
+		role:              "leader",
+		leaderCore:        core,
+		followerURLs:      map[string]struct{}{peerURL: {}},
+		followerByCircuit: map[*emunetpkg.Circuit]string{&ckt: peerURL},
+	}
+
+	stack.forgetFollowerCircuit(&ckt, errors.New("closed"))
+
+	stack.mu.Lock()
+	_, stillFollower := stack.followerURLs[peerURL]
+	_, stillCircuit := stack.followerByCircuit[&ckt]
+	stack.mu.Unlock()
+	if stillFollower {
+		t.Fatalf("follower URL %q still published after circuit removal", peerURL)
+	}
+	if stillCircuit {
+		t.Fatalf("follower circuit still tracked after removal")
+	}
+	core.mu.Lock()
+	defer core.mu.Unlock()
+	if _, ok := core.ports[peerURL]; ok {
+		t.Fatalf("core port %q still exists after follower removal", peerURL)
+	}
+	if len(core.natByOut) != 0 || len(core.natByIn) != 0 {
+		t.Fatalf("NAT mappings remain after follower removal: out=%d in=%d", len(core.natByOut), len(core.natByIn))
+	}
+}
+
 func installFakeEmunetLeaderHook(t *testing.T, interval time.Duration) *atomic.Int32 {
 	t.Helper()
 	starts := new(atomic.Int32)
@@ -598,6 +863,29 @@ func udpIPv4Packet(src, dst [4]byte, srcPort, dstPort uint16, payload []byte) []
 	return ip
 }
 
+func tcpIPv4Packet(src, dst [4]byte, srcPort, dstPort uint16, flags byte, payload []byte) []byte {
+	tcp := make([]byte, 20+len(payload))
+	binary.BigEndian.PutUint16(tcp[0:2], srcPort)
+	binary.BigEndian.PutUint16(tcp[2:4], dstPort)
+	tcp[12] = 5 << 4
+	tcp[13] = flags
+	binary.BigEndian.PutUint16(tcp[14:16], 65535)
+	copy(tcp[20:], payload)
+	ip := ipv4Packet(src, dst, ipProtoTCP, tcp)
+	binary.BigEndian.PutUint16(ip[20+16:20+18], transportChecksum(ip[:20], ip[20:], ipProtoTCP))
+	return ip
+}
+
+func icmpIPv4Packet(src, dst [4]byte, typ byte, id, seq uint16) []byte {
+	icmp := make([]byte, 8+4)
+	icmp[0] = typ
+	binary.BigEndian.PutUint16(icmp[4:6], id)
+	binary.BigEndian.PutUint16(icmp[6:8], seq)
+	copy(icmp[8:], []byte("ping"))
+	binary.BigEndian.PutUint16(icmp[2:4], internetChecksum(icmp))
+	return ipv4Packet(src, dst, ipProtoICMP, icmp)
+}
+
 func ipv4Packet(src, dst [4]byte, proto byte, payload []byte) []byte {
 	ip := make([]byte, 20+len(payload))
 	ip[0] = 0x45
@@ -609,4 +897,42 @@ func ipv4Packet(src, dst [4]byte, proto byte, payload []byte) []byte {
 	copy(ip[20:], payload)
 	binary.BigEndian.PutUint16(ip[10:12], ipv4HeaderChecksum(ip[:20]))
 	return ip
+}
+
+func assertIPv4ChecksumValid(t *testing.T, packet []byte) {
+	t.Helper()
+	if len(packet) < 20 {
+		t.Fatalf("packet length = %d, too short for IPv4", len(packet))
+	}
+	ihl := int(packet[0]&0x0f) * 4
+	if ihl < 20 || len(packet) < ihl {
+		t.Fatalf("bad IPv4 header length %d for packet length %d", ihl, len(packet))
+	}
+	if got := internetChecksum(packet[:ihl]); got != 0 {
+		t.Fatalf("IPv4 checksum validation = %#x, want 0", got)
+	}
+}
+
+func assertTransportChecksumValid(t *testing.T, packet []byte, proto byte) {
+	t.Helper()
+	ihl := int(packet[0]&0x0f) * 4
+	totalLen := int(binary.BigEndian.Uint16(packet[2:4]))
+	if totalLen < ihl || totalLen > len(packet) {
+		t.Fatalf("bad IPv4 total length %d for packet length %d", totalLen, len(packet))
+	}
+	if got := transportChecksum(packet[:ihl], packet[ihl:totalLen], proto); got != 0 {
+		t.Fatalf("transport checksum validation = %#x, want 0", got)
+	}
+}
+
+func assertICMPChecksumValid(t *testing.T, packet []byte) {
+	t.Helper()
+	ihl := int(packet[0]&0x0f) * 4
+	totalLen := int(binary.BigEndian.Uint16(packet[2:4]))
+	if totalLen < ihl || totalLen > len(packet) {
+		t.Fatalf("bad IPv4 total length %d for packet length %d", totalLen, len(packet))
+	}
+	if got := internetChecksum(packet[ihl:totalLen]); got != 0 {
+		t.Fatalf("ICMP checksum validation = %#x, want 0", got)
+	}
 }

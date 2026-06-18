@@ -87,6 +87,7 @@ type tsnetVirtioStack struct {
 	natByOut  map[emunetNATOutKey]*emunetNATEntry
 	natByIn   map[emunetNATInKey]*emunetNATEntry
 	nextNATID uint16
+	now       func() time.Time
 }
 
 var (

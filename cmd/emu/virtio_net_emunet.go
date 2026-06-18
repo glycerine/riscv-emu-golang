@@ -16,6 +16,10 @@ const (
 	icmpEchoRequest = byte(8)
 
 	emunetLocalPortID = "local"
+
+	emunetICMPIdleTimeout = 30 * time.Second
+	emunetUDPIdleTimeout  = 2 * time.Minute
+	emunetTCPIdleTimeout  = 10 * time.Minute
 )
 
 var (
@@ -270,12 +274,14 @@ func (s *tsnetVirtioStack) translateOutboundIPv4(portID string, packet []byte, t
 func (s *tsnetVirtioStack) natExternalLocked(key emunetNATOutKey) uint16 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	now := s.nowTime()
 	if s.natByOut == nil {
 		s.natByOut = make(map[emunetNATOutKey]*emunetNATEntry)
 		s.natByIn = make(map[emunetNATInKey]*emunetNATEntry)
 	}
+	s.cleanupExpiredNATLocked(now)
 	if ent := s.natByOut[key]; ent != nil {
-		ent.lastUsed = time.Now()
+		ent.lastUsed = now
 		return ent.external
 	}
 	ext := s.nextNATLocked()
@@ -287,7 +293,7 @@ func (s *tsnetVirtioStack) natExternalLocked(key emunetNATOutKey) uint16 {
 		external:   ext,
 		remoteIP:   key.remoteIP,
 		remotePort: key.remotePort,
-		lastUsed:   time.Now(),
+		lastUsed:   now,
 	}
 	s.natByOut[key] = ent
 	s.natByIn[emunetNATInKey{proto: key.proto, external: ext, remoteIP: key.remoteIP, remotePort: key.remotePort}] = ent
@@ -356,13 +362,15 @@ func (s *tsnetVirtioStack) natInbound(packet []byte) (string, [6]byte, []byte, f
 		return "", [6]byte{}, nil, nil, false
 	}
 
+	now := s.nowTime()
 	s.mu.Lock()
+	s.cleanupExpiredNATLocked(now)
 	ent := s.natByIn[key]
 	if ent == nil {
 		s.mu.Unlock()
 		return "", [6]byte{}, nil, nil, false
 	}
-	ent.lastUsed = time.Now()
+	ent.lastUsed = now
 	p := s.ports[ent.portID]
 	if p == nil || p.emit == nil {
 		s.mu.Unlock()
@@ -397,6 +405,48 @@ func (s *tsnetVirtioStack) natInbound(packet []byte) (string, [6]byte, []byte, f
 	out[10], out[11] = 0, 0
 	binary.BigEndian.PutUint16(out[10:12], ipv4HeaderChecksum(out[:ihl]))
 	return ent.portID, guestMAC, out, emit, true
+}
+
+func (s *tsnetVirtioStack) cleanupExpiredNAT() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.cleanupExpiredNATLocked(s.nowTime())
+}
+
+func (s *tsnetVirtioStack) cleanupExpiredNATLocked(now time.Time) int {
+	removed := 0
+	for key, ent := range s.natByOut {
+		if now.Sub(ent.lastUsed) <= emunetNATIdleTimeout(ent.proto) {
+			continue
+		}
+		delete(s.natByOut, key)
+		delete(s.natByIn, emunetNATInKey{
+			proto:      ent.proto,
+			external:   ent.external,
+			remoteIP:   ent.remoteIP,
+			remotePort: ent.remotePort,
+		})
+		removed++
+	}
+	return removed
+}
+
+func (s *tsnetVirtioStack) nowTime() time.Time {
+	if s.now != nil {
+		return s.now()
+	}
+	return time.Now()
+}
+
+func emunetNATIdleTimeout(proto byte) time.Duration {
+	switch proto {
+	case ipProtoICMP:
+		return emunetICMPIdleTimeout
+	case ipProtoTCP:
+		return emunetTCPIdleTimeout
+	default:
+		return emunetUDPIdleTimeout
+	}
 }
 
 func ethernetIPv4Frame(dst, src [6]byte, packet []byte) []byte {
