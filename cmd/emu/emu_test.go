@@ -712,6 +712,63 @@ func TestBiosVirtioNetMMIOProbeAndConfig(t *testing.T) {
 	}
 }
 
+func TestVirtioNetGeneratedMACEmbedsPIDAndIsLocalUnicast(t *testing.T) {
+	mac, err := generateVirtioNetMAC(bytes.NewReader([]byte{0xff, 0xaa, 0xbb, 0xcc, 0xdd, 0xee}), 0x01020304)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mac[0]&0x02 == 0 {
+		t.Fatalf("local bit not set in MAC %x", mac)
+	}
+	if mac[0]&0x01 != 0 {
+		t.Fatalf("multicast bit set in MAC %x", mac)
+	}
+	if got, want := binary.BigEndian.Uint32(mac[1:5]), uint32(0x01020304); got != want {
+		t.Fatalf("PID bytes = %#x, want %#x", got, want)
+	}
+	if mac[5] != 0xee {
+		t.Fatalf("tail random byte = %#x, want 0xee", mac[5])
+	}
+}
+
+func TestVirtioNetGeneratedMACVariesByPIDAndRandomTail(t *testing.T) {
+	mac1, err := generateVirtioNetMAC(bytes.NewReader([]byte{0, 0, 0, 0, 0, 0x11}), 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mac2, err := generateVirtioNetMAC(bytes.NewReader([]byte{0, 0, 0, 0, 0, 0x11}), 101)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mac1 == mac2 {
+		t.Fatalf("different PIDs produced same MAC %x", mac1)
+	}
+	mac3, err := generateVirtioNetMAC(bytes.NewReader([]byte{0, 0, 0, 0, 0, 0x12}), 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mac1 == mac3 {
+		t.Fatalf("different random tail produced same MAC %x", mac1)
+	}
+}
+
+func TestVirtioNetGeneratedMACRetriesRouterCollision(t *testing.T) {
+	input := []byte{
+		0x02, 0, 0, 0, 0, 0x01,
+		0x00, 0, 0, 0, 0, 0x02,
+	}
+	mac, err := generateVirtioNetMAC(bytes.NewReader(input), 0x726973ff)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mac == emunetRouterMAC {
+		t.Fatalf("MAC generator returned router MAC %x", mac)
+	}
+	if got, want := mac[5], byte(0x02); got != want {
+		t.Fatalf("MAC generator did not retry to second random tail: got %#x want %#x", got, want)
+	}
+}
+
 func TestBiosVirtioNetTXQueueNotifyInjectsFrame(t *testing.T) {
 	mem, stack, _ := newVirtioNetTestDevice(t)
 	const (

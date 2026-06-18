@@ -69,26 +69,42 @@ type tsnetVirtioStack struct {
 	srv *tsnet.Server
 	tun *virtioNetMemoryTUN
 
-	mu       sync.Mutex
-	cancel   context.CancelFunc
-	stateDir string
-	dev      *virtioNetDevice
-	pending  [][]byte
-	hostMAC  [6]byte
-	guestMAC [6]byte
-	tailIPv4 netip.Addr
+	mu                 sync.Mutex
+	cancel             context.CancelFunc
+	stateDir           string
+	dev                *virtioNetDevice
+	pending            [][]byte
+	hostMAC            [6]byte
+	guestMAC           [6]byte
+	tailIPv4           netip.Addr
+	directTailnetGuest bool
+
+	ports     map[string]*emunetPort
+	nextLease byte
+	natByOut  map[emunetNATOutKey]*emunetNATEntry
+	natByIn   map[emunetNATInKey]*emunetNATEntry
+	nextNATID uint16
 }
 
 func newVirtioNetPacketStack(cfg EmuConfig) (virtioNetPacketStack, error) {
 	if tsnetEnvBool("RISCV_EMU_EMUNET_DISABLE") {
-		return newDirectTsnetVirtioStack(cfg)
+		return newTsnetVirtioStack(cfg, true)
 	}
 	return newEmunetVirtioStack(cfg)
 }
 
 func newDirectTsnetVirtioStack(cfg EmuConfig) (*tsnetVirtioStack, error) {
+	return newTsnetVirtioStack(cfg, true)
+}
+
+func newEmunetLeaderTsnetVirtioStack(cfg EmuConfig) (*tsnetVirtioStack, error) {
+	return newTsnetVirtioStack(cfg, false)
+}
+
+func newTsnetVirtioStack(cfg EmuConfig, directTailnetGuest bool) (*tsnetVirtioStack, error) {
 	stack := &tsnetVirtioStack{
-		hostMAC: [6]byte{0x02, 0x72, 0x69, 0x73, 0xff, 0x01},
+		hostMAC:            emunetRouterMAC,
+		directTailnetGuest: directTailnetGuest,
 	}
 	stack.tun = newVirtioNetMemoryTUN(stack.handleTsnetPacket)
 	stateDir := tsnetDir()
@@ -141,7 +157,7 @@ func newEmunetVirtioStack(cfg EmuConfig) (virtioNetPacketStack, error) {
 	if listenErr == nil {
 		stack.role = "leader"
 		appendTsnetOpLog("emunet_election role=leader addr=%q peer_url=%q", ln.Addr().String(), node.PeerURL())
-		core, err := newDirectTsnetVirtioStack(cfg)
+		core, err := newEmunetLeaderTsnetVirtioStack(cfg)
 		if err != nil {
 			_ = ln.Close()
 			_ = stack.Close()
@@ -281,7 +297,11 @@ func (s *emunetVirtioStack) handleEmunetMessage(ev emunetpkg.Event) {
 		node := s.node
 		s.mu.Unlock()
 		if core != nil {
-			core.handleGuestFrame(ev.Message.Frame, func(reply []byte) {
+			portID := ev.Message.PeerURL
+			if portID == "" && ev.Circuit != nil {
+				portID = ev.Circuit.RemoteCircuitURL()
+			}
+			core.handleGuestFrameForPort(portID, ev.Message.Frame, func(reply []byte) {
 				msg := emunetpkg.NewMessage(emunetpkg.MessageKindEthernetFrame)
 				msg.PeerURL = node.PeerURL()
 				_ = node.SendFrame(ev.Circuit, msg, reply)
@@ -318,24 +338,42 @@ func (s *tsnetVirtioStack) attachVirtioNet(dev *virtioNetDevice) {
 }
 
 func (s *tsnetVirtioStack) InjectInboundPacket(frame []byte) {
-	s.handleGuestFrame(frame, s.injectGuestEthernet)
+	s.handleGuestFrameForPort(emunetLocalPortID, frame, s.injectGuestEthernet)
 }
 
-func (s *tsnetVirtioStack) handleGuestFrame(frame []byte, emit func([]byte)) {
+func (s *tsnetVirtioStack) handleGuestFrameForPort(portID string, frame []byte, emit func([]byte)) {
 	if len(frame) < 14 {
 		return
 	}
 	etherType := binary.BigEndian.Uint16(frame[12:14])
 	switch etherType {
 	case etherTypeIPv4:
-		if s.handleDHCP(frame, emit) {
+		if s.handleDHCP(portID, frame, emit) {
 			return
 		}
-		s.tun.InjectIPPacket(frame[14:])
+		if s.directTailnetGuest {
+			s.tun.InjectIPPacket(frame[14:])
+			return
+		}
+		if reply := s.gatewayICMPEchoReply(portID, frame, emit); len(reply) != 0 {
+			emit(reply)
+			return
+		}
+		if pkt := s.natOutbound(portID, frame[14:], emit); len(pkt) != 0 {
+			s.tun.InjectIPPacket(pkt)
+		}
 	case etherTypeIPv6:
-		s.tun.InjectIPPacket(frame[14:])
+		if s.directTailnetGuest {
+			s.tun.InjectIPPacket(frame[14:])
+		}
 	case etherTypeARP:
-		if reply := s.arpReply(frame); len(reply) != 0 {
+		if s.directTailnetGuest {
+			if reply := s.arpReply(frame); len(reply) != 0 {
+				emit(reply)
+			}
+			return
+		}
+		if reply := s.arpReplyForPort(portID, frame, emit); len(reply) != 0 {
 			emit(reply)
 		}
 	}
@@ -408,6 +446,14 @@ func (s *tsnetVirtioStack) handleTsnetPacket(pkt []byte) {
 	if len(pkt) == 0 {
 		return
 	}
+	if !s.directTailnetGuest {
+		_, guestMAC, guestPkt, emit, ok := s.natInbound(pkt)
+		if !ok {
+			return
+		}
+		emit(ethernetIPv4Frame(guestMAC, s.hostMAC, guestPkt))
+		return
+	}
 	etherType := uint16(0)
 	switch pkt[0] >> 4 {
 	case 4:
@@ -466,7 +512,7 @@ func (s *tsnetVirtioStack) arpReply(req []byte) []byte {
 	return reply
 }
 
-func (s *tsnetVirtioStack) handleDHCP(frame []byte, emit func([]byte)) bool {
+func (s *tsnetVirtioStack) handleDHCP(portID string, frame []byte, emit func([]byte)) bool {
 	if len(frame) < 14+20 {
 		return false
 	}
@@ -502,19 +548,36 @@ func (s *tsnetVirtioStack) handleDHCP(frame []byte, emit func([]byte)) bool {
 	default:
 		return true
 	}
-	guestIP, ok := s.tailscaleIPv4()
-	if !ok {
-		return true
+	var guestIP netip.Addr
+	var serverIP netip.Addr
+	var dnsIP netip.Addr
+	subnet := [4]byte{255, 0, 0, 0}
+	if s.directTailnetGuest {
+		var ok bool
+		guestIP, ok = s.tailscaleIPv4()
+		if !ok {
+			return true
+		}
+		serverIP = tsnetDHCPServerIPv4()
+		dnsIP = tsnetDNSIPv4()
+	} else {
+		var guestMAC [6]byte
+		copy(guestMAC[:], dhcp[28:34])
+		s.learnPortMAC(portID, guestMAC, emit)
+		guestIP = s.portLease(portID, emit)
+		serverIP = emunetRouterIPv4
+		dnsIP = emunetDNSIPv4
+		subnet = [4]byte{255, 255, 255, 0}
 	}
-	reply := s.dhcpReply(dhcp, replyType, guestIP)
+	reply := s.dhcpReply(dhcp, replyType, guestIP, serverIP, dnsIP, subnet)
 	if len(reply) != 0 {
 		emit(reply)
 	}
 	return true
 }
 
-func (s *tsnetVirtioStack) dhcpReply(reqDHCP []byte, replyType byte, guestIP netip.Addr) []byte {
-	if len(reqDHCP) < 240 || !guestIP.Is4() {
+func (s *tsnetVirtioStack) dhcpReply(reqDHCP []byte, replyType byte, guestIP, serverIP, dnsIP netip.Addr, subnet [4]byte) []byte {
+	if len(reqDHCP) < 240 || !guestIP.Is4() || !serverIP.Is4() || !dnsIP.Is4() {
 		return nil
 	}
 	var guestMAC [6]byte
@@ -524,8 +587,6 @@ func (s *tsnetVirtioStack) dhcpReply(reqDHCP []byte, replyType byte, guestIP net
 	hostMAC := s.hostMAC
 	s.mu.Unlock()
 
-	serverIP := tsnetDHCPServerIPv4()
-	dnsIP := tsnetDNSIPv4()
 	guest4 := guestIP.As4()
 	server4 := serverIP.As4()
 	dns4 := dnsIP.As4()
@@ -535,7 +596,8 @@ func (s *tsnetVirtioStack) dhcpReply(reqDHCP []byte, replyType byte, guestIP net
 	options = append(options, dhcpOptionServer, 4)
 	options = append(options, server4[:]...)
 	options = append(options, dhcpOptionLease, 4, 0x00, 0x01, 0x51, 0x80) // 86400 seconds.
-	options = append(options, dhcpOptionSubnet, 4, 255, 0, 0, 0)
+	options = append(options, dhcpOptionSubnet, 4)
+	options = append(options, subnet[:]...)
 	options = append(options, dhcpOptionRouter, 4)
 	options = append(options, server4[:]...)
 	options = append(options, dhcpOptionDNS, 4)

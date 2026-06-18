@@ -193,13 +193,19 @@ func (s *peerService) readCircuit(ctx context.Context, ckt *rpc25519.Circuit) {
 	defer ckt.Close(nil)
 	for {
 		select {
-		case frag := <-ckt.Reads:
+		case frag, ok := <-ckt.Reads:
+			if !ok {
+				return
+			}
 			if frag == nil || frag.FragSubject != FragmentSubject {
 				continue
 			}
 			msg, err := UnmarshalMessage(frag.Payload)
 			s.emit(Event{Circuit: ckt, Message: msg, Err: err})
-		case fragErr := <-ckt.Errors:
+		case fragErr, ok := <-ckt.Errors:
+			if !ok {
+				return
+			}
 			if fragErr == nil {
 				continue
 			}

@@ -1,9 +1,12 @@
 package main
 
 import (
+	cryptorand "crypto/rand"
 	"encoding/binary"
 	"io"
+	"os"
 	"sync"
+	"time"
 
 	riscv "github.com/glycerine/riscv-emu-golang"
 )
@@ -60,7 +63,16 @@ const (
 	virtioFVersion1  = uint64(1 << 32)
 
 	virtioNetStatusLinkUp = uint16(1)
+
+	emunetRouterMAC0 = byte(0x02)
+	emunetRouterMAC1 = byte(0x72)
+	emunetRouterMAC2 = byte(0x69)
+	emunetRouterMAC3 = byte(0x73)
+	emunetRouterMAC4 = byte(0xff)
+	emunetRouterMAC5 = byte(0x01)
 )
+
+var emunetRouterMAC = [6]byte{emunetRouterMAC0, emunetRouterMAC1, emunetRouterMAC2, emunetRouterMAC3, emunetRouterMAC4, emunetRouterMAC5}
 
 type virtioNetPacketStack interface {
 	InjectInboundPacket(frame []byte)
@@ -136,12 +148,63 @@ func newVirtioNetDevice(mem *riscv.GuestMemory, stack virtioNetPacketStack) *vir
 	d := &virtioNetDevice{
 		mem:   mem,
 		stack: stack,
-		mac:   [6]byte{0x02, 0x72, 0x69, 0x73, 0x00, 0x01},
+		mac:   newVirtioNetMAC(),
 	}
 	for i := range d.queues {
 		d.queues[i].numMax = virtioQueueSize
 	}
 	return d
+}
+
+func newVirtioNetMAC() [6]byte {
+	mac, err := generateVirtioNetMAC(cryptorand.Reader, os.Getpid())
+	if err == nil {
+		return mac
+	}
+	var fallback [6]byte
+	fallback[0] = 0x02
+	binary.BigEndian.PutUint32(fallback[1:5], uint32(os.Getpid()))
+	fallback[5] = byte(time.Now().UnixNano())
+	if fallback == emunetRouterMAC {
+		fallback[5] ^= 0x5a
+	}
+	return fallback
+}
+
+func generateVirtioNetMAC(r io.Reader, pid int) ([6]byte, error) {
+	var lastErr error
+	for i := 0; i < 16; i++ {
+		var mac [6]byte
+		if _, err := io.ReadFull(r, mac[:]); err != nil {
+			lastErr = err
+			continue
+		}
+		mac[0] = (mac[0] | 0x02) & 0xfe
+		binary.BigEndian.PutUint32(mac[1:5], uint32(pid))
+		if validVirtioNetMAC(mac) {
+			return mac, nil
+		}
+	}
+	if lastErr != nil {
+		return [6]byte{}, lastErr
+	}
+	return [6]byte{}, io.ErrUnexpectedEOF
+}
+
+func validVirtioNetMAC(mac [6]byte) bool {
+	if mac[0]&0x01 != 0 {
+		return false
+	}
+	var zero [6]byte
+	if mac == zero || mac == emunetRouterMAC {
+		return false
+	}
+	for _, b := range mac {
+		if b != 0xff {
+			return true
+		}
+	}
+	return false
 }
 
 func (d *virtioNetDevice) Close() {

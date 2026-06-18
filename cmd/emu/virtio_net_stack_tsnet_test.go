@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/binary"
 	"net/netip"
 	"os"
@@ -12,13 +13,12 @@ import (
 	"testing"
 )
 
-func TestTsnetVirtioStackDHCPDiscoverAndRequest(t *testing.T) {
-	guestIP := netip.MustParseAddr("100.64.12.34")
+func TestTsnetVirtioStackEmunetDHCPDiscoverAndRequest(t *testing.T) {
+	guestIP := netip.MustParseAddr("10.77.0.2")
 	guestMAC := [6]byte{0x02, 0x72, 0x69, 0x73, 0x00, 0x01}
 	stack := &tsnetVirtioStack{
-		hostMAC: [6]byte{0x02, 0x72, 0x69, 0x73, 0xff, 0x01},
+		hostMAC: emunetRouterMAC,
 	}
-	stack.setTailIPv4(guestIP)
 
 	stack.InjectInboundPacket(dhcpTestFrame(t, dhcpDiscover, 0x12345678, guestMAC))
 	offer := onlyPendingEthernetFrame(t, stack)
@@ -31,6 +31,110 @@ func TestTsnetVirtioStackDHCPDiscoverAndRequest(t *testing.T) {
 	stack.InjectInboundPacket(dhcpTestFrame(t, dhcpRequest, 0x12345679, guestMAC))
 	ack := onlyPendingEthernetFrame(t, stack)
 	assertDHCPReply(t, ack, dhcpAck, guestIP)
+}
+
+func TestTsnetVirtioStackDirectTailnetDHCPDiscover(t *testing.T) {
+	guestIP := netip.MustParseAddr("100.64.12.34")
+	guestMAC := [6]byte{0x02, 0x72, 0x69, 0x73, 0x00, 0x01}
+	stack := &tsnetVirtioStack{
+		hostMAC:            emunetRouterMAC,
+		directTailnetGuest: true,
+	}
+	stack.setTailIPv4(guestIP)
+
+	stack.InjectInboundPacket(dhcpTestFrame(t, dhcpDiscover, 0x12345678, guestMAC))
+	offer := onlyPendingEthernetFrame(t, stack)
+	assertDHCPReply(t, offer, dhcpOffer, guestIP)
+}
+
+func TestTsnetVirtioStackEmunetARPForGateway(t *testing.T) {
+	guestMAC := [6]byte{0x02, 0, 0, 0, 1, 0x10}
+	stack := &tsnetVirtioStack{hostMAC: emunetRouterMAC}
+
+	stack.InjectInboundPacket(arpRequestFrame(guestMAC, [4]byte{10, 77, 0, 2}, [4]byte{10, 77, 0, 1}))
+	reply := onlyPendingEthernetFrame(t, stack)
+	if got := binary.BigEndian.Uint16(reply[12:14]); got != etherTypeARP {
+		t.Fatalf("ether type = %#x, want ARP", got)
+	}
+	if !bytes.Equal(reply[0:6], guestMAC[:]) {
+		t.Fatalf("ARP dst MAC = %x, want %x", reply[0:6], guestMAC)
+	}
+	if !bytes.Equal(reply[6:12], emunetRouterMAC[:]) {
+		t.Fatalf("ARP src MAC = %x, want router %x", reply[6:12], emunetRouterMAC)
+	}
+	if got := binary.BigEndian.Uint16(reply[20:22]); got != 2 {
+		t.Fatalf("ARP op = %d, want reply", got)
+	}
+	if !bytes.Equal(reply[22:28], emunetRouterMAC[:]) {
+		t.Fatalf("ARP sender MAC = %x, want router %x", reply[22:28], emunetRouterMAC)
+	}
+	if got := [4]byte{reply[28], reply[29], reply[30], reply[31]}; got != [4]byte{10, 77, 0, 1} {
+		t.Fatalf("ARP sender IP = %v, want 10.77.0.1", got)
+	}
+}
+
+func TestTsnetVirtioStackEmunetGatewayPing(t *testing.T) {
+	guestMAC := [6]byte{0x02, 0, 0, 0, 1, 0x11}
+	stack := &tsnetVirtioStack{hostMAC: emunetRouterMAC}
+
+	stack.InjectInboundPacket(icmpEchoFrame(guestMAC, [4]byte{10, 77, 0, 2}, [4]byte{10, 77, 0, 1}, 0x1234, 1))
+	reply := onlyPendingEthernetFrame(t, stack)
+	if got := binary.BigEndian.Uint16(reply[12:14]); got != etherTypeIPv4 {
+		t.Fatalf("ether type = %#x, want IPv4", got)
+	}
+	if !bytes.Equal(reply[0:6], guestMAC[:]) {
+		t.Fatalf("reply dst MAC = %x, want %x", reply[0:6], guestMAC)
+	}
+	ip := reply[14:]
+	ihl := int(ip[0]&0x0f) * 4
+	if ip[9] != ipProtoICMP || ip[ihl] != icmpEchoReply {
+		t.Fatalf("reply protocol/type = %d/%d, want ICMP echo reply", ip[9], ip[ihl])
+	}
+	if got := [4]byte{ip[12], ip[13], ip[14], ip[15]}; got != [4]byte{10, 77, 0, 1} {
+		t.Fatalf("reply src IP = %v, want gateway", got)
+	}
+	if got := [4]byte{ip[16], ip[17], ip[18], ip[19]}; got != [4]byte{10, 77, 0, 2} {
+		t.Fatalf("reply dst IP = %v, want guest", got)
+	}
+}
+
+func TestTsnetVirtioStackEmunetUDPNATRoundTrip(t *testing.T) {
+	stack := &tsnetVirtioStack{hostMAC: emunetRouterMAC}
+	tailIP := netip.MustParseAddr("100.64.12.34")
+	stack.setTailIPv4(tailIP)
+	guestMAC := [6]byte{0x02, 0, 0, 0, 1, 0x12}
+	portID := "follower-a"
+	stack.learnPortMAC(portID, guestMAC, func([]byte) {})
+
+	out := stack.translateOutboundIPv4(portID, udpIPv4Packet([4]byte{10, 77, 0, 2}, [4]byte{8, 8, 8, 8}, 1234, 53, []byte("hello")), tailIP, func([]byte) {})
+	if len(out) == 0 {
+		t.Fatal("NAT outbound dropped UDP packet")
+	}
+	if got := [4]byte{out[12], out[13], out[14], out[15]}; got != tailIP.As4() {
+		t.Fatalf("NAT src IP = %v, want %s", got, tailIP)
+	}
+	ext := binary.BigEndian.Uint16(out[20:22])
+	if ext < 40000 || ext > 60999 {
+		t.Fatalf("NAT source port = %d, want allocated range", ext)
+	}
+
+	reply := udpIPv4Packet([4]byte{8, 8, 8, 8}, tailIP.As4(), 53, ext, []byte("world"))
+	gotPortID, gotMAC, guestPkt, _, ok := stack.natInbound(reply)
+	if !ok {
+		t.Fatal("NAT inbound did not match UDP reply")
+	}
+	if gotPortID != portID {
+		t.Fatalf("NAT port ID = %q, want %q", gotPortID, portID)
+	}
+	if gotMAC != guestMAC {
+		t.Fatalf("NAT guest MAC = %x, want %x", gotMAC, guestMAC)
+	}
+	if got := [4]byte{guestPkt[16], guestPkt[17], guestPkt[18], guestPkt[19]}; got != [4]byte{10, 77, 0, 2} {
+		t.Fatalf("NAT dst IP = %v, want guest", got)
+	}
+	if got := binary.BigEndian.Uint16(guestPkt[22:24]); got != 1234 {
+		t.Fatalf("NAT dst port = %d, want guest port 1234", got)
+	}
 }
 
 func TestTsnetDirDefaultsToHostPersistentStateDir(t *testing.T) {
@@ -155,4 +259,62 @@ func assertDHCPReply(t *testing.T, frame []byte, wantType byte, wantIP netip.Add
 	if gotType != wantType {
 		t.Fatalf("DHCP message type = %d, want %d", gotType, wantType)
 	}
+}
+
+func arpRequestFrame(mac [6]byte, senderIP, targetIP [4]byte) []byte {
+	frame := make([]byte, 42)
+	for i := 0; i < 6; i++ {
+		frame[i] = 0xff
+	}
+	copy(frame[6:12], mac[:])
+	binary.BigEndian.PutUint16(frame[12:14], etherTypeARP)
+	binary.BigEndian.PutUint16(frame[14:16], 1)
+	binary.BigEndian.PutUint16(frame[16:18], etherTypeIPv4)
+	frame[18] = 6
+	frame[19] = 4
+	binary.BigEndian.PutUint16(frame[20:22], 1)
+	copy(frame[22:28], mac[:])
+	copy(frame[28:32], senderIP[:])
+	copy(frame[38:42], targetIP[:])
+	return frame
+}
+
+func icmpEchoFrame(mac [6]byte, src, dst [4]byte, id, seq uint16) []byte {
+	icmp := make([]byte, 8+4)
+	icmp[0] = icmpEchoRequest
+	binary.BigEndian.PutUint16(icmp[4:6], id)
+	binary.BigEndian.PutUint16(icmp[6:8], seq)
+	copy(icmp[8:], []byte("ping"))
+	binary.BigEndian.PutUint16(icmp[2:4], internetChecksum(icmp))
+	ip := ipv4Packet(src, dst, ipProtoICMP, icmp)
+	frame := make([]byte, 14+len(ip))
+	copy(frame[0:6], emunetRouterMAC[:])
+	copy(frame[6:12], mac[:])
+	binary.BigEndian.PutUint16(frame[12:14], etherTypeIPv4)
+	copy(frame[14:], ip)
+	return frame
+}
+
+func udpIPv4Packet(src, dst [4]byte, srcPort, dstPort uint16, payload []byte) []byte {
+	udp := make([]byte, 8+len(payload))
+	binary.BigEndian.PutUint16(udp[0:2], srcPort)
+	binary.BigEndian.PutUint16(udp[2:4], dstPort)
+	binary.BigEndian.PutUint16(udp[4:6], uint16(len(udp)))
+	copy(udp[8:], payload)
+	ip := ipv4Packet(src, dst, ipProtoUDP, udp)
+	binary.BigEndian.PutUint16(ip[20+6:20+8], transportChecksum(ip[:20], ip[20:], ipProtoUDP))
+	return ip
+}
+
+func ipv4Packet(src, dst [4]byte, proto byte, payload []byte) []byte {
+	ip := make([]byte, 20+len(payload))
+	ip[0] = 0x45
+	ip[8] = 64
+	ip[9] = proto
+	binary.BigEndian.PutUint16(ip[2:4], uint16(len(ip)))
+	copy(ip[12:16], src[:])
+	copy(ip[16:20], dst[:])
+	copy(ip[20:], payload)
+	binary.BigEndian.PutUint16(ip[10:12], ipv4HeaderChecksum(ip[:20]))
+	return ip
 }
