@@ -3,6 +3,7 @@ mount -t proc none /proc
 mount -t sysfs none /sys
 mount -t devtmpfs none /dev 2>/dev/null || true
 
+mkdir -p /bin /sbin /usr/bin /usr/sbin
 mkdir -p /host
 mount -t hostfs none /host -o /
 
@@ -11,4 +12,4 @@ mount -t hostfs none /host -o /
 echo ""
 echo "=== RISC-V initramfs booted ==="
 echo ""
-exec /bin/sh
+exec /bin/busybox setsid /bin/sh -c 'exec /bin/sh -i </dev/ttyS0 >/dev/ttyS0 2>&1'

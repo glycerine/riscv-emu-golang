@@ -14,12 +14,17 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/tailscale/wireguard-go/tun"
 	"tailscale.com/tsnet"
 )
 
 const (
+	defaultTailemuSubdir    = ".tailemu"
+	defaultTsnetStateSubdir = "riscv-emu"
+	tsnetOpLogName          = "oplog.txt"
+
 	etherTypeIPv4 = uint16(0x0800)
 	etherTypeARP  = uint16(0x0806)
 	etherTypeIPv6 = uint16(0x86dd)
@@ -48,6 +53,7 @@ type tsnetVirtioStack struct {
 
 	mu       sync.Mutex
 	cancel   context.CancelFunc
+	stateDir string
 	dev      *virtioNetDevice
 	pending  [][]byte
 	hostMAC  [6]byte
@@ -60,24 +66,33 @@ func newVirtioNetPacketStack(cfg EmuConfig) (virtioNetPacketStack, error) {
 		hostMAC: [6]byte{0x02, 0x72, 0x69, 0x73, 0xff, 0x01},
 	}
 	stack.tun = newVirtioNetMemoryTUN(stack.handleTsnetPacket)
+	stateDir := tsnetDir()
+	hostname := tsnetHostname()
+	ephemeral := tsnetEnvBool("RISCV_EMU_TSNET_EPHEMERAL")
+	stack.stateDir = stateDir
+	appendTsnetOpLog("start state_dir=%q state_file=%q hostname=%q ephemeral=%t authkey_set=%t",
+		stateDir, filepath.Join(stateDir, "tailscaled.state"), hostname, ephemeral, os.Getenv("TS_AUTHKEY") != "")
 	stack.srv = &tsnet.Server{
-		Dir:       tsnetDir(),
-		Hostname:  tsnetHostname(),
+		Dir:       stateDir,
+		Hostname:  hostname,
 		AuthKey:   os.Getenv("TS_AUTHKEY"),
-		Ephemeral: tsnetEnvBool("RISCV_EMU_TSNET_EPHEMERAL"),
+		Ephemeral: ephemeral,
 		Tun:       stack.tun,
 		UserLogf: func(format string, args ...any) {
 			fmt.Fprintf(os.Stderr, "tsnet: "+format+"\n", args...)
 		},
 	}
 	if err := stack.srv.Start(); err != nil {
+		appendTsnetOpLog("start_error state_dir=%q error=%q", stateDir, err)
 		stack.tun.Close()
 		return nil, err
 	}
+	appendTsnetOpLog("started state_dir=%q", stateDir)
 	ctx, cancel := context.WithCancel(context.Background())
 	stack.cancel = cancel
 	if ip := tsnetEnvAddr("RISCV_EMU_TSNET_GUEST_IPV4"); ip.Is4() {
 		stack.setTailIPv4(ip)
+		appendTsnetOpLog("guest_ipv4_override ip=%s", ip)
 	}
 	go stack.waitTsnetUp(ctx)
 	return stack, nil
@@ -138,15 +153,19 @@ func (s *tsnetVirtioStack) waitTsnetUp(ctx context.Context) {
 	if err != nil {
 		if ctx.Err() == nil {
 			fmt.Fprintf(os.Stderr, "tsnet: up: %v\n", err)
+			appendTsnetOpLog("up_error error=%q", err)
 		}
 		return
 	}
+	appendTsnetOpLog("authorized ips=%v state_dir=%q", status.TailscaleIPs, s.stateDir)
 	for _, ip := range status.TailscaleIPs {
 		if ip.Is4() {
 			s.setTailIPv4(ip)
+			appendTsnetOpLog("guest_ipv4_ready ip=%s", ip)
 			return
 		}
 	}
+	appendTsnetOpLog("authorized_no_ipv4 ips=%v", status.TailscaleIPs)
 }
 
 func (s *tsnetVirtioStack) setTailIPv4(ip netip.Addr) {
@@ -483,10 +502,34 @@ func tsnetDir() string {
 	if v := os.Getenv("RISCV_EMU_TSNET_DIR"); v != "" {
 		return v
 	}
-	if cfg, err := os.UserConfigDir(); err == nil {
-		return filepath.Join(cfg, "riscv-emu-golang-tsnet")
+	return filepath.Join(tailemuDir(), defaultTsnetStateSubdir)
+}
+
+func tailemuDir() string {
+	if home := os.Getenv("HOME"); home != "" {
+		return filepath.Join(home, defaultTailemuSubdir)
 	}
-	return filepath.Join(os.TempDir(), "riscv-emu-golang-tsnet")
+	return filepath.Join(os.TempDir(), defaultTailemuSubdir)
+}
+
+func tsnetOpLogPath() string {
+	return filepath.Join(tailemuDir(), tsnetOpLogName)
+}
+
+func appendTsnetOpLog(format string, args ...any) {
+	path := tsnetOpLogPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		fmt.Fprintf(os.Stderr, "tsnet: oplog mkdir: %v\n", err)
+		return
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "tsnet: oplog open: %v\n", err)
+		return
+	}
+	defer f.Close()
+	msg := fmt.Sprintf(format, args...)
+	_, _ = fmt.Fprintf(f, "%s %s\n", time.Now().Format(rfc3339MsecTz0), msg)
 }
 
 func tsnetHostname() string {

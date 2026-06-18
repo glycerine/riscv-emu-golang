@@ -1363,6 +1363,67 @@ func TestRunEmuBiosFWDynamicHandBuiltLinuxVirtioNetRegistersEth0(t *testing.T) {
 	t.Logf("hand-built Linux registered virtio-net eth0 in %s", elapsed)
 }
 
+func TestRunEmuBiosFWDynamicHandBuiltLinuxCtrlCInterruptsPing(t *testing.T) {
+	const bootWallBudget = 15 * time.Second
+	const biosPath = "../../xendor/opensbi/build/platform/generic/firmware/fw_dynamic.elf"
+	const kernelPath = "../../xendor/linux-6.17-hand-built/Image"
+	const initrdPath = "../../xendor/linux/initramfs.cpio.gz"
+	for _, path := range []string{biosPath, kernelPath, initrdPath} {
+		if !fileExists(path) {
+			t.Skipf("hand-built Linux BIOS fixture not present: %s", path)
+		}
+	}
+
+	const doneMarker = "CTRLC-SMOKE-42"
+	var stdout safeStringWriter
+	var stderr bytes.Buffer
+	stdinR, stdinW := io.Pipe()
+	defer stdinR.Close()
+	go func() {
+		defer stdinW.Close()
+		deadline := time.Now().Add(bootWallBudget)
+		for time.Now().Before(deadline) {
+			if strings.Contains(stdout.String(), "=== RISC-V initramfs booted ===") {
+				_, _ = io.WriteString(stdinW, "ifconfig lo up\nping 127.0.0.1\n")
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		for time.Now().Before(deadline) {
+			if strings.Contains(stdout.String(), "PING 127.0.0.1") {
+				time.Sleep(250 * time.Millisecond)
+				_, _ = stdinW.Write([]byte{0x03})
+				_, _ = io.WriteString(stdinW, "echo CTRLC-SMOKE-4''2\n")
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}()
+
+	start := time.Now()
+	ok, err := runBiosUntilOutputWithin(EmuConfig{
+		BiosPath:   biosPath,
+		KernelPath: kernelPath,
+		InitrdPath: initrdPath,
+		Append:     linuxMakeBootArgs,
+		Memory:     "256MB",
+		Stdin:      stdinR,
+		Stdout:     &stdout,
+		Stderr:     &stderr,
+	}, doneMarker, 2_500_000_000, bootWallBudget)
+	elapsed := time.Since(start)
+	out := stdout.String()
+	if err != nil {
+		t.Fatalf("hand-built Linux ctrl-c smoke err after %s = %v\nstdout tail:\n%s\nstderr:\n%s",
+			elapsed, err, tailString(out, 8192), stderr.String())
+	}
+	if !ok {
+		t.Fatalf("hand-built Linux ctrl-c smoke marker missing after %s\nstdout tail:\n%s\nstderr:\n%s",
+			elapsed, tailString(out, 8192), stderr.String())
+	}
+	t.Logf("hand-built Linux interrupted foreground ping with ctrl-c in %s", elapsed)
+}
+
 func TestDiagRunEmuBiosFWDynamicHandBuiltLinuxInitcallDebug(t *testing.T) {
 	if os.Getenv("RISCV_EMU_LINUX_INITCALL_DIAG") == "" {
 		t.Skip("set RISCV_EMU_LINUX_INITCALL_DIAG=1 to profile hand-built Linux initcalls")
