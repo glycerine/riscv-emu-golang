@@ -645,6 +645,44 @@ func TestRunEmuBiosFWDynamicHandBuiltLinuxPrintsBanner(t *testing.T) {
 	}
 }
 
+func TestRunEmuBiosFWDynamicHandBuiltLinuxBootsToInitUnder5s(t *testing.T) {
+	const biosPath = "../../xendor/opensbi/build/platform/generic/firmware/fw_dynamic.elf"
+	const kernelPath = "../../xendor/linux-6.17-hand-built/Image"
+	const initrdPath = "../../xendor/linux/initramfs.cpio.gz"
+	for _, path := range []string{biosPath, kernelPath, initrdPath} {
+		if !fileExists(path) {
+			t.Skipf("hand-built Linux BIOS fixture not present: %s", path)
+		}
+	}
+
+	var stdout, stderr bytes.Buffer
+	start := time.Now()
+	ok, err := runBiosUntilOutputWithin(EmuConfig{
+		BiosPath:   biosPath,
+		KernelPath: kernelPath,
+		InitrdPath: initrdPath,
+		Append:     linuxUARTBootArgs,
+		Memory:     "512MB",
+		Stdin:      strings.NewReader(""),
+		Stdout:     &stdout,
+		Stderr:     &stderr,
+	}, "Run /init as init process", 2_000_000_000, 5*time.Second)
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("hand-built Linux /init boot err after %s = %v\nstdout tail:\n%s\nstderr:\n%s",
+			elapsed, err, tailString(stdout.String(), 4096), stderr.String())
+	}
+	if !ok {
+		t.Fatalf("hand-built Linux /init marker missing after %s\nstdout tail:\n%s\nstderr:\n%s",
+			elapsed, tailString(stdout.String(), 4096), stderr.String())
+	}
+	if elapsed > 5*time.Second {
+		t.Fatalf("hand-built Linux boot to /init took %s, want <= 5s\nstdout tail:\n%s\nstderr:\n%s",
+			elapsed, tailString(stdout.String(), 4096), stderr.String())
+	}
+	t.Logf("hand-built Linux booted to /init in %s", elapsed)
+}
+
 func TestDiagRunEmuBiosFWDynamicHandBuiltLinuxInitcallDebug(t *testing.T) {
 	if os.Getenv("RISCV_EMU_LINUX_INITCALL_DIAG") == "" {
 		t.Skip("set RISCV_EMU_LINUX_INITCALL_DIAG=1 to profile hand-built Linux initcalls")
@@ -799,6 +837,10 @@ func TestRunEmuBiosFWDynamicLinuxPassesTimerProbe(t *testing.T) {
 }
 
 func runBiosUntilOutput(cfg EmuConfig, marker string, maxInstructions uint64) (bool, error) {
+	return runBiosUntilOutputWithin(cfg, marker, maxInstructions, 0)
+}
+
+func runBiosUntilOutputWithin(cfg EmuConfig, marker string, maxInstructions uint64, maxElapsed time.Duration) (bool, error) {
 	guest, err := prepareBiosGuest(cfg.withDefaults())
 	if err != nil {
 		return false, err
@@ -806,6 +848,7 @@ func runBiosUntilOutput(cfg EmuConfig, marker string, maxInstructions uint64) (b
 	defer guest.mem.Free()
 
 	const chunk = uint64(100_000)
+	start := time.Now()
 	var used uint64
 	for used < maxInstructions {
 		step := chunk
@@ -822,6 +865,11 @@ func runBiosUntilOutput(cfg EmuConfig, marker string, maxInstructions uint64) (b
 		}
 		if res == riscv.RunBudgetExit {
 			return strings.Contains(writerString(cfg.Stdout), marker), nil
+		}
+		if maxElapsed > 0 && time.Since(start) > maxElapsed {
+			return false, fmt.Errorf("%w after %d instructions and %s at pc=%#x insn=%#x state=%+v",
+				errBiosBudgetExpired, used, time.Since(start), guest.cpu.PC(),
+				guestInsnForTest(guest.mem, guest.cpu.PC()), guest.cpu.DebugSnapshot())
 		}
 	}
 	return false, fmt.Errorf("%w after %d instructions at pc=%#x insn=%#x state=%+v", errBiosBudgetExpired, maxInstructions, guest.cpu.PC(), guestInsnForTest(guest.mem, guest.cpu.PC()), guest.cpu.DebugSnapshot())
