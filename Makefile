@@ -998,3 +998,36 @@ linux:
 	@# emu -mem 256MB -bios xendor/opensbi/build/platform/generic/firmware/fw_dynamic.elf -kernel xendor/linux/boot/vmlinuz-6.17.0-35-generic -initrd xendor/linux/initramfs.cpio.gz -append "console=ttyS0,115200 earlycon=uart8250,mmio,0x10000000 rdinit=/init panic=1 reboot=t init_on_alloc=0 init_on_free=0 audit=0 lsm=capability cma=0 numa=off slub_debug=- lpj=XXXXX"
 	@# still won't load at all. hangs trying to load linux-6.17-hand-build/Image
 	emu -mem 256MB -bios xendor/opensbi/build/platform/generic/firmware/fw_dynamic.elf -kernel xendor/linux-6.17-hand-built/Image -initrd xendor/linux/initramfs.cpio.gz -append "console=ttyS0,115200 earlycon=uart8250,mmio,0x10000000 rdinit=/init panic=1 reboot=t init_on_alloc=0 init_on_free=0 audit=0 lsm=capability cma=0 numa=off slub_debug=- lpj=XXXXX"
+
+save-linux-config:
+	cd ~/linux && PATH=/private/tmp/linux-host-tools:/usr/local/opt/llvm/bin:/usr/local/bin:$PATH \
+	gmake ARCH=riscv LLVM=1 \
+	HOSTCFLAGS=\
+	'-I/private/tmp/linux-host-elf-include -include /private/tmp/linux-host-elf-include/darwin_compat.h'\
+	savedefconfig
+	cp defconfig ~/ris/xendor/linux-6.17-hand-built/
+	cp .config ~/ris/xendor/linux-6.17-hand-built/dot.config
+
+# to setup the same kernel build again;
+# for a new Linux tree, use
+#
+# either a)
+#   cp ~/ris/xendor/linux-6.17-hand-built/dot.config ~/linux/.config
+#   make ARCH=riscv olddefconfig
+#
+# or b)
+#   if using savedefconfig:
+#   cp ~/ris/xendor/linux-6.17-hand-built/defconfig arch/riscv/configs/ris_fastboot_defconfig
+#   make ARCH=riscv ris_fastboot_defconfig
+
+build-slim-linux:
+	@# note that on darwin we needed to use clang to cross compile to riscv64. 
+	@# Neither zig nor riscv64-elf-gcc were up to the job.
+	@# The output kernel Image file is a slim 5.8MB uncompressed--nice.
+	@# leaves out alot of hardware drivers we do not need. 
+	@# Boots in < 4 seconds on the intrepreter--very nice.
+	cd linux && PATH=/private/tmp/linux-host-tools:/usr/local/opt/llvm/bin:/usr/local/bin:$PATH \
+	gmake ARCH=riscv LLVM=1 \
+	HOSTCFLAGS=\
+	'-I/private/tmp/linux-host-elf-include -include /private/tmp/linux-host-elf-include/darwin_compat.h' \
+	Image
