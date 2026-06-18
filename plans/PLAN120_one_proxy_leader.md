@@ -6,11 +6,13 @@ Build **emunet**, the private guest-side emulator network, around one elected
 local leader process. The leader binds `127.0.0.1:7557`, owns the single
 persistent `tsnet.Server`, gives all local guest Linux instances emunet DHCP
 addresses, NATs outbound IPv4 from emunet to the Tailscale tailnet, and drops
-unsolicited inbound traffic. Follower emulator processes use `127.0.0.1:7557`
-as a local rendezvous endpoint. The elected leader replies with its canonical
-rpc25519 peer URL, and followers then exchange greenpack-encoded emunet
-messages over rpc25519 Peer/Fragment/Circuit circuits instead of registering
-new Tailscale nodes.
+unsolicited inbound traffic. Every emulator process starts its own
+`rpc25519.Server` and local emunet peer. Follower emulator processes use
+`127.0.0.1:7557` as a tiny local DNS/rendezvous endpoint. The elected leader
+replies to `HELLO EMUNET\n` with a greenpack-encoded `EmunetDNS` containing the
+leader's canonical rpc25519 peer URL and known follower peer URLs. Followers
+then exchange greenpack-encoded emunet messages over rpc25519
+Peer/Fragment/Circuit circuits instead of registering new Tailscale nodes.
 
 The security posture is intentionally outbound-only for v1. An emunet guest can
 open connections to the tailnet or, if the selected Tailscale routing permits
@@ -53,8 +55,9 @@ Current code facts this plan depends on:
   DHCP and ARP helpers, persistent tsnet state, and the oplog.
 - `tailsocks` is now a local package, but its existing data path is SOCKS5 over
   `tsnet`, not guest Ethernet.
-- `rpc25519` provides the emunet loopback control/data plane. The election port
-  is only the local rendezvous. Canonical contact is always by rpc25519 peer URL.
+- `rpc25519` provides the emunet loopback control/data plane. Every emulator
+  process starts an rpc25519 server/local peer. The election port is only the
+  local DNS/rendezvous. Canonical contact is always by rpc25519 peer URL.
 
 ## 2. Target Architecture
 
@@ -124,8 +127,15 @@ New helper concepts:
 
 - `DefaultEmunetAddr = "127.0.0.1:7557"`.
 - `EmunetAddrFromEnv()` returns `RISCV_EMU_EMUNET_ADDR` or the default.
-- Bootstrap service: the local rpc25519 server bound to the election address.
-  Its first responsibility is to return the leader's full peer URL.
+- Bootstrap DNS service: a tiny TCP server bound to the election address. A
+  client sends exactly `HELLO EMUNET\n`, receives one greenpack-encoded
+  `EmunetDNS` payload, and closes the socket.
+- `EmunetDNS` begins as:
+  - `LeaderURL string`;
+  - `KnownFollowerURLs []string`.
+- The leader's rpc25519 server is separate from the bootstrap DNS socket and may
+  bind an ephemeral local port. Followers also start their own rpc25519 servers
+  and advertise their own peer URLs to the leader over emunet circuits.
 - Canonical peer URL: once learned, a follower uses the returned URL for emunet
   circuits. The bootstrap address can later move to a replacement leader
   without changing established rpc25519 circuit identity rules.
@@ -140,16 +150,20 @@ Leader/follower construction behavior:
 
 - `newVirtioNetPacketStack` with the `tsnet` build tag first attempts to listen
   on the emunet address.
+- Before election, every process starts an rpc25519 server and local emunet peer
+  and obtains its own canonical peer URL.
 - If listen succeeds, this process is leader:
   - start the `tsnet.Server`;
   - create the `emunetRouter`;
   - create the local in-process emunet port;
-  - start the rpc25519 peer service and answer bootstrap `hello` messages with
-    the leader peer URL.
+  - start the simple TCP bootstrap DNS server on the already-acquired election
+    listener;
+  - answer `HELLO EMUNET\n` with greenpack `EmunetDNS{LeaderURL: ownPeerURL,
+    KnownFollowerURLs: ...}`.
 - If listen fails because the address is in use, this process is follower:
   - dial the bootstrap service;
-  - send a greenpack `hello`;
-  - receive the current leader's canonical peer URL;
+  - send `HELLO EMUNET\n`;
+  - receive the greenpack `EmunetDNS`;
   - establish an emunet circuit to that peer URL;
   - create a follower stack that implements `virtioNetPacketStack`;
   - do not construct or start `tsnet.Server`.
@@ -178,17 +192,20 @@ Leader behavior:
 
 ## 4. Stage 1: Emunet Rendezvous And Circuit Transport
 
-Goal: make a process become either leader or follower, prove the local bootstrap
-endpoint returns the canonical leader peer URL, and prove Ethernet frames can
-move over rpc25519 circuits without involving Tailscale, DHCP, or NAT yet.
+Goal: make every process start a canonical rpc25519 peer, then become either
+leader or follower. Prove the local bootstrap DNS endpoint returns the canonical
+leader peer URL plus known follower URLs, and prove Ethernet frames can move
+over rpc25519 circuits without involving Tailscale, DHCP, or NAT yet.
 
 Implementation details:
 
-- Add greenpack message envelope helpers in the new root `emunet` package.
+- Add greenpack `EmunetDNS` and message envelope helpers in the new root
+  `emunet` package.
 - Add an rpc25519 transport helper that accepts an address and either:
-  - starts the elected leader's rpc25519 server and local peer service, or
-  - connects as a client, obtains the leader peer URL, and opens an emunet
-    circuit to it.
+  - starts this node's rpc25519 server and local peer service;
+  - wins the bootstrap DNS listener and serves `EmunetDNS`; or
+  - connects to the bootstrap DNS listener, obtains the leader peer URL, and
+    opens an emunet circuit to it.
 - Use `net.ListenConfig` and `net.Dialer` so tests can use contexts and short
   timeouts for preflight bind/dial checks. This preflight is required because
   `rpc25519.Server.Start()` currently fatal-exits on bind failure.
@@ -196,10 +213,11 @@ Implementation details:
   later added for tests permits it. The default must stay local-only.
 - `127.0.0.1:7557` remains the election medium. Follower failover polling uses
   bind preflight; only the process that wins preflight may construct the
-  rpc25519 leader server on that address.
+  simple bootstrap DNS server on that address.
 - Add oplog events:
   - `emunet_election role=leader addr=...`
   - `emunet_election role=client addr=...`
+  - `emunet_dns_lookup leader_url=... follower_count=...`
   - `emunet_leader_url url=...`
   - `emunet_circuit_connected remote=...`
   - `emunet_circuit_disconnected remote=... error=...`
@@ -208,21 +226,24 @@ Implementation details:
 
 Stage 1 tests:
 
-1. Greenpack envelope round-trips a representative Ethernet frame byte-for-byte.
-2. Greenpack envelope round-trips a payload larger than `virtioNetMaxFrameLen`
+1. Greenpack `EmunetDNS` round-trips leader URL and known follower URLs.
+2. Greenpack envelope round-trips a representative Ethernet frame byte-for-byte.
+3. Greenpack envelope round-trips a payload larger than `virtioNetMaxFrameLen`
    to prove emunet does not impose an Ethernet frame cap.
-3. Greenpack decode returns a clean error on truncated payload.
-4. Unknown future greenpack fields are ignored by older readers.
-5. First bind preflight on a free loopback address returns available.
-6. Second bind preflight against an occupied address returns unavailable without
+4. Greenpack decode returns a clean error on truncated payload.
+5. Unknown future greenpack fields are ignored by older readers.
+6. First bind preflight on a free loopback address returns available.
+7. Second bind preflight against an occupied address returns unavailable without
    starting rpc25519 and without exiting.
-7. Leader startup returns a non-empty canonical peer URL.
-8. Follower bootstrap receives exactly the leader's canonical peer URL.
-9. Follower sends an `ethernet-frame` message and the leader receives it with
+8. Every node startup returns a non-empty canonical peer URL.
+9. Leader bootstrap DNS replies to `HELLO EMUNET\n` with exactly the leader's
+   canonical peer URL.
+10. Leader bootstrap DNS includes known follower URLs when present.
+11. Follower sends an `ethernet-frame` message and the leader receives it with
    node ID and MAC metadata intact.
-10. Leader sends an `ethernet-frame` reply and the follower receives it intact.
-11. Follower election path does not call a tsnet construction/start hook.
-12. Follower queues frames received before `attachVirtioNet`, then flushes them
+12. Leader sends an `ethernet-frame` reply and the follower receives it intact.
+13. Follower election path does not call a tsnet construction/start hook.
+14. Follower queues frames received before `attachVirtioNet`, then flushes them
     to the attached virtio-net device.
 
 Acceptance for Stage 1:
@@ -253,7 +274,7 @@ Implementation details:
   - close the old follower rpc25519 client/circuit if it is still open;
   - create `emunetRouter` and the local emunet port;
   - start `tsnet.Server` only after the listener has been acquired;
-  - start the leader rpc25519 peer service on the already-acquired address;
+  - start the simple bootstrap DNS service on the already-acquired listener;
   - write `$HOME/.tailemu/leader.${PID}` and delete stale leader pid files.
 - Followers that do not win continue as clients:
   - if their old circuit/client closes, they dial the current bootstrap leader
@@ -468,7 +489,7 @@ Implementation details:
   - `tsnet.Server`;
   - `virtioNetMemoryTUN`;
   - `emunetRouter`;
-  - rpc25519 rendezvous server/local peer;
+  - local rpc25519 server/peer plus the separate bootstrap DNS listener;
   - local emunet port;
   - remote emunet port per follower circuit.
 - Leader local guest TX:
@@ -621,7 +642,7 @@ Implementation details:
   - follower write error.
 - Log high-level state transitions to oplog:
   - election result;
-  - leader rpc25519 rendezvous start;
+  - leader bootstrap DNS start;
   - follower connect/disconnect;
   - tsnet start;
   - authorization;
@@ -659,7 +680,8 @@ Acceptance for Stage 7:
 
 Recommended implementation sequence:
 
-1. Add greenpack envelope, bind preflight, rpc25519 rendezvous, and circuit
+1. Add greenpack `EmunetDNS`, greenpack message envelope, bind preflight,
+   simple TCP bootstrap DNS, per-node rpc25519 server/peer, and circuit
    transport helpers with tests.
 2. Add follower stack skeleton that can proxy frames over an emunet circuit but
    is not yet selected by default.

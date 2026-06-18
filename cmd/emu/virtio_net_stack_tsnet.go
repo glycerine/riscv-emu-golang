@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	emunetpkg "github.com/glycerine/riscv-emu-golang/emunet"
 	"github.com/tailscale/wireguard-go/tun"
 	"tailscale.com/tsnet"
 )
@@ -47,6 +48,23 @@ const (
 	dhcpAck      = byte(5)
 )
 
+type emunetVirtioStack struct {
+	mu sync.Mutex
+
+	node   *emunetpkg.Node
+	cancel context.CancelFunc
+	role   string
+
+	leaderCore *tsnetVirtioStack
+	dns        *emunetpkg.DNSServer
+	leaderCkt  *emunetpkg.Circuit
+
+	dev     *virtioNetDevice
+	pending [][]byte
+
+	followerURLs map[string]struct{}
+}
+
 type tsnetVirtioStack struct {
 	srv *tsnet.Server
 	tun *virtioNetMemoryTUN
@@ -62,6 +80,13 @@ type tsnetVirtioStack struct {
 }
 
 func newVirtioNetPacketStack(cfg EmuConfig) (virtioNetPacketStack, error) {
+	if tsnetEnvBool("RISCV_EMU_EMUNET_DISABLE") {
+		return newDirectTsnetVirtioStack(cfg)
+	}
+	return newEmunetVirtioStack(cfg)
+}
+
+func newDirectTsnetVirtioStack(cfg EmuConfig) (*tsnetVirtioStack, error) {
 	stack := &tsnetVirtioStack{
 		hostMAC: [6]byte{0x02, 0x72, 0x69, 0x73, 0xff, 0x01},
 	}
@@ -98,6 +123,187 @@ func newVirtioNetPacketStack(cfg EmuConfig) (virtioNetPacketStack, error) {
 	return stack, nil
 }
 
+func newEmunetVirtioStack(cfg EmuConfig) (virtioNetPacketStack, error) {
+	ctx, cancel := context.WithCancel(context.Background())
+	node, err := emunetpkg.StartNode(ctx, emunetpkg.NodeOptions{})
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	stack := &emunetVirtioStack{
+		node:         node,
+		cancel:       cancel,
+		followerURLs: make(map[string]struct{}),
+	}
+	go stack.readEmunetEvents(ctx)
+
+	ln, listenErr := emunetpkg.ListenRendezvous(ctx, emunetpkg.AddrFromEnv())
+	if listenErr == nil {
+		stack.role = "leader"
+		appendTsnetOpLog("emunet_election role=leader addr=%q peer_url=%q", ln.Addr().String(), node.PeerURL())
+		core, err := newDirectTsnetVirtioStack(cfg)
+		if err != nil {
+			_ = ln.Close()
+			_ = stack.Close()
+			return nil, err
+		}
+		stack.leaderCore = core
+		stack.dns = emunetpkg.StartDNSServer(ctx, ln, stack.dnsSnapshot)
+		appendTsnetOpLog("emunet_dns_start addr=%q leader_url=%q", ln.Addr().String(), node.PeerURL())
+		return stack, nil
+	}
+
+	dns, lookupErr := emunetpkg.LookupDNS(ctx, emunetpkg.AddrFromEnv())
+	if lookupErr != nil {
+		_ = stack.Close()
+		return nil, errors.Join(listenErr, lookupErr)
+	}
+	stack.role = "follower"
+	appendTsnetOpLog("emunet_election role=follower addr=%q leader_url=%q follower_count=%d peer_url=%q",
+		emunetpkg.AddrFromEnv(), dns.LeaderURL, len(dns.KnownFollowerURLs), node.PeerURL())
+	hello := emunetpkg.NewMessage(emunetpkg.MessageKindHello)
+	hello.PeerURL = node.PeerURL()
+	ckt, err := node.Connect(ctx, dns.LeaderURL, &hello)
+	if err != nil {
+		_ = stack.Close()
+		return nil, err
+	}
+	stack.leaderCkt = ckt
+	appendTsnetOpLog("emunet_circuit_connected role=follower leader_url=%q", dns.LeaderURL)
+	return stack, nil
+}
+
+func (s *emunetVirtioStack) dnsSnapshot() emunetpkg.EmunetDNS {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	followers := make([]string, 0, len(s.followerURLs))
+	for url := range s.followerURLs {
+		followers = append(followers, url)
+	}
+	return emunetpkg.EmunetDNS{
+		LeaderURL:         s.node.PeerURL(),
+		KnownFollowerURLs: followers,
+	}
+}
+
+func (s *emunetVirtioStack) attachVirtioNet(dev *virtioNetDevice) {
+	s.mu.Lock()
+	s.dev = dev
+	pending := s.pending
+	s.pending = nil
+	core := s.leaderCore
+	s.mu.Unlock()
+
+	if core != nil {
+		core.attachVirtioNet(dev)
+		return
+	}
+	for _, frame := range pending {
+		dev.InjectGuestFrame(frame)
+	}
+}
+
+func (s *emunetVirtioStack) InjectInboundPacket(frame []byte) {
+	s.mu.Lock()
+	core := s.leaderCore
+	ckt := s.leaderCkt
+	node := s.node
+	peerURL := ""
+	var mac []byte
+	if s.dev != nil {
+		mac = append([]byte(nil), s.dev.mac[:]...)
+	}
+	if node != nil {
+		peerURL = node.PeerURL()
+	}
+	s.mu.Unlock()
+
+	if core != nil {
+		core.InjectInboundPacket(frame)
+		return
+	}
+	if node == nil || ckt == nil {
+		return
+	}
+	msg := emunetpkg.NewMessage(emunetpkg.MessageKindEthernetFrame)
+	msg.PeerURL = peerURL
+	msg.MAC = mac
+	_ = node.SendFrame(ckt, msg, frame)
+}
+
+func (s *emunetVirtioStack) Close() error {
+	var err error
+	if s.cancel != nil {
+		s.cancel()
+	}
+	if s.leaderCkt != nil {
+		s.leaderCkt.Close(nil)
+	}
+	if s.dns != nil {
+		err = errors.Join(err, s.dns.Close())
+	}
+	if s.leaderCore != nil {
+		err = errors.Join(err, s.leaderCore.Close())
+	}
+	if s.node != nil {
+		err = errors.Join(err, s.node.Close())
+	}
+	return err
+}
+
+func (s *emunetVirtioStack) readEmunetEvents(ctx context.Context) {
+	for {
+		select {
+		case ev := <-s.node.Events():
+			if ev.Err != nil {
+				appendTsnetOpLog("emunet_circuit_error error=%q", ev.Err)
+				continue
+			}
+			s.handleEmunetMessage(ev)
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+func (s *emunetVirtioStack) handleEmunetMessage(ev emunetpkg.Event) {
+	switch ev.Message.Kind {
+	case emunetpkg.MessageKindHello:
+		if ev.Message.PeerURL != "" {
+			s.mu.Lock()
+			s.followerURLs[ev.Message.PeerURL] = struct{}{}
+			s.mu.Unlock()
+			appendTsnetOpLog("emunet_client_connected peer_url=%q", ev.Message.PeerURL)
+		}
+	case emunetpkg.MessageKindEthernetFrame:
+		s.mu.Lock()
+		core := s.leaderCore
+		node := s.node
+		s.mu.Unlock()
+		if core != nil {
+			core.handleGuestFrame(ev.Message.Frame, func(reply []byte) {
+				msg := emunetpkg.NewMessage(emunetpkg.MessageKindEthernetFrame)
+				msg.PeerURL = node.PeerURL()
+				_ = node.SendFrame(ev.Circuit, msg, reply)
+			})
+			return
+		}
+		s.injectGuestEthernet(ev.Message.Frame)
+	}
+}
+
+func (s *emunetVirtioStack) injectGuestEthernet(frame []byte) {
+	s.mu.Lock()
+	dev := s.dev
+	if dev == nil {
+		s.pending = append(s.pending, append([]byte(nil), frame...))
+		s.mu.Unlock()
+		return
+	}
+	s.mu.Unlock()
+	dev.InjectGuestFrame(frame)
+}
+
 func (s *tsnetVirtioStack) attachVirtioNet(dev *virtioNetDevice) {
 	s.mu.Lock()
 	s.dev = dev
@@ -112,13 +318,17 @@ func (s *tsnetVirtioStack) attachVirtioNet(dev *virtioNetDevice) {
 }
 
 func (s *tsnetVirtioStack) InjectInboundPacket(frame []byte) {
+	s.handleGuestFrame(frame, s.injectGuestEthernet)
+}
+
+func (s *tsnetVirtioStack) handleGuestFrame(frame []byte, emit func([]byte)) {
 	if len(frame) < 14 {
 		return
 	}
 	etherType := binary.BigEndian.Uint16(frame[12:14])
 	switch etherType {
 	case etherTypeIPv4:
-		if s.handleDHCP(frame) {
+		if s.handleDHCP(frame, emit) {
 			return
 		}
 		s.tun.InjectIPPacket(frame[14:])
@@ -126,7 +336,7 @@ func (s *tsnetVirtioStack) InjectInboundPacket(frame []byte) {
 		s.tun.InjectIPPacket(frame[14:])
 	case etherTypeARP:
 		if reply := s.arpReply(frame); len(reply) != 0 {
-			s.injectGuestEthernet(reply)
+			emit(reply)
 		}
 	}
 }
@@ -256,7 +466,7 @@ func (s *tsnetVirtioStack) arpReply(req []byte) []byte {
 	return reply
 }
 
-func (s *tsnetVirtioStack) handleDHCP(frame []byte) bool {
+func (s *tsnetVirtioStack) handleDHCP(frame []byte, emit func([]byte)) bool {
 	if len(frame) < 14+20 {
 		return false
 	}
@@ -298,7 +508,7 @@ func (s *tsnetVirtioStack) handleDHCP(frame []byte) bool {
 	}
 	reply := s.dhcpReply(dhcp, replyType, guestIP)
 	if len(reply) != 0 {
-		s.injectGuestEthernet(reply)
+		emit(reply)
 	}
 	return true
 }
