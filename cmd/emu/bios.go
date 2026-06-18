@@ -886,8 +886,8 @@ func buildVirtFDT(memSize uint64, opts virtFDTOptions) ([]byte, error) {
 	b.propString("status", "okay")
 	b.propString("compatible", "riscv")
 	b.propString("riscv,isa-base", "rv64i")
-	b.propStringList("riscv,isa-extensions", "i", "m", "a", "f", "d", "c", "zicsr", "zifencei", "sstc")
-	b.propString("riscv,isa", "rv64imafdcsu_zicsr_zifencei_sstc")
+	b.propStringList("riscv,isa-extensions", "i", "m", "a", "f", "d", "c", "zba", "zbb", "zbc", "zicsr", "zifencei", "sstc")
+	b.propString("riscv,isa", "rv64imafdcsu_zba_zbb_zbc_zicsr_zifencei_sstc")
 	b.propString("mmu-type", "riscv,sv48")
 
 	b.beginNode("interrupt-controller")

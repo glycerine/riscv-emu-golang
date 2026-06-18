@@ -261,9 +261,12 @@ func TestPrepareBiosGuestLoadsKernelInitrdAndBootArgs(t *testing.T) {
 	}
 	if !bytes.Contains(guest.fdt, []byte("riscv,isa-base\x00")) ||
 		!bytes.Contains(guest.fdt, []byte("riscv,isa-extensions\x00")) ||
+		!bytes.Contains(guest.fdt, []byte("zba\x00")) ||
+		!bytes.Contains(guest.fdt, []byte("zbb\x00")) ||
+		!bytes.Contains(guest.fdt, []byte("zbc\x00")) ||
 		!bytes.Contains(guest.fdt, []byte("sstc\x00")) ||
-		!bytes.Contains(guest.fdt, []byte("rv64imafdcsu_zicsr_zifencei_sstc\x00")) {
-		t.Fatalf("generated FDT does not advertise Sstc")
+		!bytes.Contains(guest.fdt, []byte("rv64imafdcsu_zba_zbb_zbc_zicsr_zifencei_sstc\x00")) {
+		t.Fatalf("generated FDT does not advertise expected ISA extensions")
 	}
 	if !bytes.Contains(guest.fdt, []byte("syscon-reboot\x00")) ||
 		!bytes.Contains(guest.fdt, []byte("syscon\x00")) ||
