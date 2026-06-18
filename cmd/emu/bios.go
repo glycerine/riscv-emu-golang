@@ -39,6 +39,8 @@ const (
 	biosSysconResetValue  = uint32(1)
 	biosUARTBase          = uint64(0x10000000)
 	biosUARTSize          = uint64(0x100)
+	biosHostIOBase        = uint64(0x10001000)
+	biosHostIOSize        = uint64(0x1000)
 	biosCLINTBase         = uint64(0x02000000)
 	biosCLINTSize         = uint64(0x00010000)
 	biosPLICBase          = uint64(0x0c000000)
@@ -101,6 +103,7 @@ func runEmuBios(cfg EmuConfig, budget uint64) (int, error) {
 	}
 	defer guest.mem.Free()
 	defer guest.mmio.closeUARTOutput()
+	defer guest.mmio.closeHostIO()
 
 	res, err := riscv.RunBiosMachineBudget(guest.cpu, &guest.cpu.Notes, budget)
 	if err != nil {
@@ -189,6 +192,9 @@ func prepareBiosGuestWithReset(cfg EmuConfig, onSystemReset func()) (*biosGuest,
 	}
 
 	mmio := newBiosMMIO(cfg.Stdin, cfg.Stdout, onSystemReset)
+	if cfg.HostIO {
+		mmio.enableHostIO(mem)
+	}
 	mem.SetMMIO(mmio)
 	cpu := riscv.NewCPU(*mem)
 	cpu.EnableStrictCSR()
@@ -313,6 +319,7 @@ func loadBiosFDT(cfg EmuConfig, initrd biosBlob) ([]byte, bool, error) {
 		RAMSize:     cfg.BiosRAMSize,
 		InitrdStart: initrd.addr,
 		InitrdEnd:   initrd.end,
+		HostIO:      cfg.HostIO,
 	})
 	return fdt, false, err
 }
@@ -332,6 +339,7 @@ type biosMMIO struct {
 	stdout        io.Writer
 	uartOut       *asyncUARTOutput
 	onSystemReset func()
+	hostio        *hostIODevice
 
 	uart            [0x100]byte
 	uartTXInterrupt bool
@@ -358,6 +366,10 @@ func newBiosMMIO(stdin io.Reader, stdout io.Writer, onSystemReset func()) *biosM
 	storeLittleEndian(m.clint[:], 0x4000, 8, ^uint64(0))
 	m.startUARTInput(stdin)
 	return m
+}
+
+func (m *biosMMIO) enableHostIO(mem *riscv.GuestMemory) {
+	m.hostio = newHostIODevice(mem)
 }
 
 func (m *biosMMIO) startUARTInput(stdin io.Reader) {
@@ -387,6 +399,11 @@ func (m *biosMMIO) Load(addr, width uint64) (uint64, bool, *riscv.MemFault) {
 	if off, ok := mmioRangeOffset(addr, width, biosUARTBase, biosUARTSize); ok {
 		return m.loadUART(off, width), true, nil
 	}
+	if m.hostio != nil {
+		if off, ok := mmioRangeOffset(addr, width, biosHostIOBase, biosHostIOSize); ok {
+			return m.hostio.Load(off, width), true, nil
+		}
+	}
 	if off, ok := mmioRangeOffset(addr, width, biosCLINTBase, biosCLINTSize); ok {
 		return m.loadCLINT(off, width), true, nil
 	}
@@ -395,6 +412,7 @@ func (m *biosMMIO) Load(addr, width uint64) (uint64, bool, *riscv.MemFault) {
 	}
 	if mmioRangeTouches(addr, width, biosSysconBase, biosSysconSize) ||
 		mmioRangeTouches(addr, width, biosUARTBase, biosUARTSize) ||
+		(m.hostio != nil && mmioRangeTouches(addr, width, biosHostIOBase, biosHostIOSize)) ||
 		mmioRangeTouches(addr, width, biosCLINTBase, biosCLINTSize) ||
 		mmioRangeTouches(addr, width, biosPLICBase, biosPLICSize) {
 		return 0, true, &riscv.MemFault{Addr: addr, Width: width, Kind: riscv.FaultLoad}
@@ -411,6 +429,11 @@ func (m *biosMMIO) Store(addr, width, value uint64) (bool, *riscv.MemFault) {
 		m.storeUART(off, width, value)
 		return true, nil
 	}
+	if m.hostio != nil {
+		if off, ok := mmioRangeOffset(addr, width, biosHostIOBase, biosHostIOSize); ok {
+			return true, m.hostio.Store(off, width, value)
+		}
+	}
 	if off, ok := mmioRangeOffset(addr, width, biosCLINTBase, biosCLINTSize); ok {
 		m.storeCLINT(off, width, value)
 		return true, nil
@@ -421,6 +444,7 @@ func (m *biosMMIO) Store(addr, width, value uint64) (bool, *riscv.MemFault) {
 	}
 	if mmioRangeTouches(addr, width, biosSysconBase, biosSysconSize) ||
 		mmioRangeTouches(addr, width, biosUARTBase, biosUARTSize) ||
+		(m.hostio != nil && mmioRangeTouches(addr, width, biosHostIOBase, biosHostIOSize)) ||
 		mmioRangeTouches(addr, width, biosCLINTBase, biosCLINTSize) ||
 		mmioRangeTouches(addr, width, biosPLICBase, biosPLICSize) {
 		return true, &riscv.MemFault{Addr: addr, Width: width, Kind: riscv.FaultStore}
@@ -431,6 +455,7 @@ func (m *biosMMIO) Store(addr, width, value uint64) (bool, *riscv.MemFault) {
 func (m *biosMMIO) MMIOOverlaps(addr, size uint64) bool {
 	return rangesOverlap(addr, addr+size, biosSysconBase, biosSysconBase+biosSysconSize) ||
 		rangesOverlap(addr, addr+size, biosUARTBase, biosUARTBase+biosUARTSize) ||
+		(m.hostio != nil && rangesOverlap(addr, addr+size, biosHostIOBase, biosHostIOBase+biosHostIOSize)) ||
 		rangesOverlap(addr, addr+size, biosCLINTBase, biosCLINTBase+biosCLINTSize) ||
 		rangesOverlap(addr, addr+size, biosPLICBase, biosPLICBase+biosPLICSize)
 }
@@ -533,6 +558,14 @@ func (m *biosMMIO) closeUARTOutput() {
 	}
 	m.uartOut.Close()
 	m.uartOut = nil
+}
+
+func (m *biosMMIO) closeHostIO() {
+	if m.hostio == nil {
+		return
+	}
+	m.hostio.Close()
+	m.hostio = nil
 }
 
 type asyncUARTOutput struct {
@@ -915,6 +948,7 @@ type virtFDTOptions struct {
 	RAMSize     uint64
 	InitrdStart uint64
 	InitrdEnd   uint64
+	HostIO      bool
 }
 
 func buildVirtFDT(memSize uint64, opts virtFDTOptions) ([]byte, error) {
@@ -1025,6 +1059,13 @@ func buildVirtFDT(memSize uint64, opts virtFDTOptions) ([]byte, error) {
 	b.propCells("interrupt-parent", virtPLICPH)
 	b.propCells("interrupts", 10)
 	b.endNode()
+
+	if opts.HostIO {
+		b.beginNode("hostio@10001000")
+		b.propString("compatible", "glycerine,riscv-hostio-v1")
+		b.propCells64("reg", biosHostIOBase, biosHostIOSize)
+		b.endNode()
+	}
 
 	b.endNode()
 	b.endNode()

@@ -994,10 +994,10 @@ standard:
 
 linux:
 	go install ./cmd/emu	
-	@#works with Zba/b/c fixes in and advertized, but big pause while booting linux, we want faster:
+	@# Older reference Ubuntu kernel, kept for comparison:
 	@# emu -mem 256MB -bios xendor/opensbi/build/platform/generic/firmware/fw_dynamic.elf -kernel xendor/linux/boot/vmlinuz-6.17.0-35-generic -initrd xendor/linux/initramfs.cpio.gz -append "console=ttyS0,115200 earlycon=uart8250,mmio,0x10000000 rdinit=/init panic=1 reboot=t init_on_alloc=0 init_on_free=0 audit=0 lsm=capability cma=0 numa=off slub_debug=- lpj=XXXXX"
-	@# still won't load at all. hangs trying to load linux-6.17-hand-build/Image
-	emu -mem 256MB -bios xendor/opensbi/build/platform/generic/firmware/fw_dynamic.elf -kernel xendor/linux-6.17-hand-built/Image -initrd xendor/linux/initramfs.cpio.gz -append "console=ttyS0,115200 earlycon=uart8250,mmio,0x10000000 rdinit=/init panic=1 reboot=t init_on_alloc=0 init_on_free=0 audit=0 lsm=capability cma=0 numa=off slub_debug=- lpj=XXXXX"
+	@# Slim in-tree Image with built-in hostfs over custom hostio MMIO.
+	emu -hostio -mem 256MB -bios xendor/opensbi/build/platform/generic/firmware/fw_dynamic.elf -kernel xendor/linux-6.17-hand-built/Image -initrd xendor/linux/initramfs.cpio.gz -append "console=ttyS0,115200 earlycon=uart8250,mmio,0x10000000 rdinit=/init panic=1 reboot=t init_on_alloc=0 init_on_free=0 audit=0 lsm=capability cma=0 numa=off slub_debug=- lpj=XXXXX"
 
 save-linux-config:
 	cd ~/linux && PATH=/private/tmp/linux-host-tools:/usr/local/opt/llvm/bin:/usr/local/bin:$PATH \

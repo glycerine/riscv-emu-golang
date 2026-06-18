@@ -149,6 +149,7 @@ func TestEmuBiosBootFlagsParse(t *testing.T) {
 		"-dump-dtb", dumpDTBPath,
 		"-machine", "virt",
 		"-mem", "512mb",
+		"-hostio",
 	)
 	if cfg.BiosPath == "" || cfg.RunPath != "" {
 		t.Fatalf("parsed BiosPath=%q RunPath=%q", cfg.BiosPath, cfg.RunPath)
@@ -173,6 +174,9 @@ func TestEmuBiosBootFlagsParse(t *testing.T) {
 	}
 	if cfg.MemorySize != riscv.Size4GB {
 		t.Fatalf("MemorySize slab = %d, want %d", cfg.MemorySize, riscv.Size4GB)
+	}
+	if !cfg.HostIO {
+		t.Fatal("HostIO = false, want true")
 	}
 	budget, err := cfg.schedulerBudget()
 	if err != nil {
@@ -476,6 +480,280 @@ func TestBiosSysconResetInvokesCallback(t *testing.T) {
 	}
 }
 
+func TestBiosHostIOFDTAdvertisedWhenEnabled(t *testing.T) {
+	without, err := buildVirtFDT(riscv.Size4GB, virtFDTOptions{})
+	if err != nil {
+		t.Fatalf("build FDT without hostio: %v", err)
+	}
+	if bytes.Contains(without, []byte("glycerine,riscv-hostio-v1")) {
+		t.Fatal("hostio compatible appeared without HostIO")
+	}
+
+	with, err := buildVirtFDT(riscv.Size4GB, virtFDTOptions{HostIO: true})
+	if err != nil {
+		t.Fatalf("build FDT with hostio: %v", err)
+	}
+	if !bytes.Contains(with, []byte("hostio@10001000")) {
+		t.Fatal("hostio node missing from FDT")
+	}
+	if !bytes.Contains(with, []byte("glycerine,riscv-hostio-v1")) {
+		t.Fatal("hostio compatible missing from FDT")
+	}
+}
+
+func TestBiosHostIOOpenWriteSeekReadClose(t *testing.T) {
+	mem, mmio := newHostIOTestDevice(t)
+	path := filepath.Join(t.TempDir(), "host.txt")
+
+	handle := runHostIOTestCmd(t, mem, hostIOCommand{
+		Op:      hostIOOpOpen,
+		Flags:   hostIOOpenReadWrite | hostIOOpenCreate | hostIOOpenTrunc,
+		Path:    writeHostIOTestBytes(t, mem, 0x2000, []byte(path)),
+		PathLen: uint64(len(path)),
+		Mode:    0644,
+	}).Result
+	if handle <= 0 {
+		t.Fatalf("open handle = %d, want positive", handle)
+	}
+
+	payload := []byte("hello hostio")
+	got := runHostIOTestCmd(t, mem, hostIOCommand{
+		Op:     hostIOOpWrite,
+		Handle: uint64(handle),
+		Buf:    writeHostIOTestBytes(t, mem, 0x3000, payload),
+		Len:    uint64(len(payload)),
+	})
+	if got.Result != int64(len(payload)) {
+		t.Fatalf("write result = %d, want %d", got.Result, len(payload))
+	}
+
+	got = runHostIOTestCmd(t, mem, hostIOCommand{
+		Op:     hostIOOpSeek,
+		Flags:  uint32(io.SeekStart),
+		Handle: uint64(handle),
+	})
+	if got.Result != 0 {
+		t.Fatalf("seek result = %d, want 0", got.Result)
+	}
+
+	got = runHostIOTestCmd(t, mem, hostIOCommand{
+		Op:     hostIOOpRead,
+		Handle: uint64(handle),
+		Buf:    0x4000,
+		Len:    uint64(len(payload)),
+	})
+	if got.Result != int64(len(payload)) {
+		t.Fatalf("read result = %d, want %d", got.Result, len(payload))
+	}
+	readBack := make([]byte, len(payload))
+	if fault := mem.ReadBytes(0x4000, readBack); fault != nil {
+		t.Fatalf("read guest buffer: %v", fault)
+	}
+	if !bytes.Equal(readBack, payload) {
+		t.Fatalf("read payload = %q, want %q", readBack, payload)
+	}
+
+	got = runHostIOTestCmd(t, mem, hostIOCommand{Op: hostIOOpClose, Handle: uint64(handle)})
+	if got.Result != 0 {
+		t.Fatalf("close result = %d, want 0", got.Result)
+	}
+	if mmio.hostio.files[uint64(handle)] != nil {
+		t.Fatal("closed handle still present")
+	}
+	onDisk, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read host file: %v", err)
+	}
+	if !bytes.Equal(onDisk, payload) {
+		t.Fatalf("host file = %q, want %q", onDisk, payload)
+	}
+}
+
+func TestBiosHostIOPathCommands(t *testing.T) {
+	mem, _ := newHostIOTestDevice(t)
+	dir := filepath.Join(t.TempDir(), "a", "b")
+	file := filepath.Join(dir, "payload.txt")
+	payload := []byte("from guest ram")
+
+	got := runHostIOTestCmd(t, mem, hostIOCommand{
+		Op:      hostIOOpMkdirAll,
+		Path:    writeHostIOTestBytes(t, mem, 0x2000, []byte(dir)),
+		PathLen: uint64(len(dir)),
+		Mode:    0755,
+	})
+	if got.Result != 0 {
+		t.Fatalf("mkdirall result = %d errno=%d, want success", got.Result, got.Errno)
+	}
+
+	got = runHostIOTestCmd(t, mem, hostIOCommand{
+		Op:      hostIOOpWriteFile,
+		Path:    writeHostIOTestBytes(t, mem, 0x3000, []byte(file)),
+		PathLen: uint64(len(file)),
+		Buf:     writeHostIOTestBytes(t, mem, 0x4000, payload),
+		Len:     uint64(len(payload)),
+		Mode:    0644,
+	})
+	if got.Result != int64(len(payload)) {
+		t.Fatalf("writefile result = %d errno=%d, want %d", got.Result, got.Errno, len(payload))
+	}
+
+	got = runHostIOTestCmd(t, mem, hostIOCommand{
+		Op:      hostIOOpReadFile,
+		Path:    writeHostIOTestBytes(t, mem, 0x5000, []byte(file)),
+		PathLen: uint64(len(file)),
+		Buf:     0x6000,
+		Len:     uint64(len(payload)),
+	})
+	if got.Result != int64(len(payload)) {
+		t.Fatalf("readfile result = %d errno=%d, want %d", got.Result, got.Errno, len(payload))
+	}
+	readBack := make([]byte, len(payload))
+	if fault := mem.ReadBytes(0x6000, readBack); fault != nil {
+		t.Fatalf("read guest buffer: %v", fault)
+	}
+	if !bytes.Equal(readBack, payload) {
+		t.Fatalf("readfile payload = %q, want %q", readBack, payload)
+	}
+
+	got = runHostIOTestCmd(t, mem, hostIOCommand{
+		Op:      hostIOOpStat,
+		Path:    writeHostIOTestBytes(t, mem, 0x7000, []byte(file)),
+		PathLen: uint64(len(file)),
+		Buf:     0x8000,
+		Len:     hostIOStatSize,
+	})
+	if got.Result != hostIOStatSize {
+		t.Fatalf("stat result = %d errno=%d, want stat size", got.Result, got.Errno)
+	}
+	var stat [hostIOStatSize]byte
+	if fault := mem.ReadBytes(0x8000, stat[:]); fault != nil {
+		t.Fatalf("read stat: %v", fault)
+	}
+	if size := binary.LittleEndian.Uint64(stat[0:]); size != uint64(len(payload)) {
+		t.Fatalf("stat size = %d, want %d", size, len(payload))
+	}
+
+	got = runHostIOTestCmd(t, mem, hostIOCommand{
+		Op:      hostIOOpReadDir,
+		Path:    writeHostIOTestBytes(t, mem, 0x9000, []byte(dir)),
+		PathLen: uint64(len(dir)),
+		Buf:     0xa000,
+		Len:     4096,
+	})
+	if got.Result <= hostIODirentHeaderSize {
+		t.Fatalf("readdir result = %d errno=%d, want entry bytes", got.Result, got.Errno)
+	}
+	var direntHeader [hostIODirentHeaderSize]byte
+	if fault := mem.ReadBytes(0xa000, direntHeader[:]); fault != nil {
+		t.Fatalf("read dirent header: %v", fault)
+	}
+	nameLen := binary.LittleEndian.Uint32(direntHeader[24:])
+	name := make([]byte, nameLen)
+	if fault := mem.ReadBytes(0xa000+hostIODirentHeaderSize, name); fault != nil {
+		t.Fatalf("read dirent name: %v", fault)
+	}
+	if string(name) != "payload.txt" {
+		t.Fatalf("readdir first name = %q, want payload.txt", name)
+	}
+}
+
+func newHostIOTestDevice(t *testing.T) (*riscv.GuestMemory, *biosMMIO) {
+	t.Helper()
+	mem, err := riscv.NewGuestMemory(riscv.Size512MB)
+	if err != nil {
+		t.Fatalf("NewGuestMemory: %v", err)
+	}
+	m := newBiosMMIO(nil, io.Discard, nil)
+	m.enableHostIO(mem)
+	mem.SetMMIO(m)
+	t.Cleanup(func() {
+		m.closeHostIO()
+		mem.Free()
+	})
+	return mem, m
+}
+
+func runHostIOTestCmd(t *testing.T, mem *riscv.GuestMemory, cmd hostIOCommand) hostIOCommand {
+	t.Helper()
+	const cmdAddr = uint64(0x1000)
+	writeHostIOTestCmd(t, mem, cmdAddr, cmd)
+	if fault := mem.Store64(biosHostIOBase+hostIORegCmdAddr, cmdAddr); fault != nil {
+		t.Fatalf("store hostio cmd addr: %v", fault)
+	}
+	if fault := mem.Store64(biosHostIOBase+hostIORegCmdSize, hostIOCmdSize); fault != nil {
+		t.Fatalf("store hostio cmd size: %v", fault)
+	}
+	if fault := mem.Store32(biosHostIOBase+hostIORegSubmit, 1); fault != nil {
+		t.Fatalf("submit hostio cmd: %v", fault)
+	}
+	got := readHostIOTestCmd(t, mem, cmdAddr)
+	if got.Status != hostIOStatusOK {
+		t.Fatalf("hostio op %d status=%d errno=%d result=%d", got.Op, got.Status, got.Errno, got.Result)
+	}
+	status, fault := mem.Load32(biosHostIOBase + hostIORegStatus)
+	if fault != nil {
+		t.Fatalf("load hostio status: %v", fault)
+	}
+	if status != hostIOStatusOK {
+		t.Fatalf("hostio status register = %d, want OK", status)
+	}
+	return got
+}
+
+func writeHostIOTestBytes(t *testing.T, mem *riscv.GuestMemory, addr uint64, data []byte) uint64 {
+	t.Helper()
+	if fault := mem.WriteBytes(addr, data); fault != nil {
+		t.Fatalf("write guest bytes at %#x: %v", addr, fault)
+	}
+	return addr
+}
+
+func writeHostIOTestCmd(t *testing.T, mem *riscv.GuestMemory, addr uint64, cmd hostIOCommand) {
+	t.Helper()
+	var raw [hostIOCmdSize]byte
+	binary.LittleEndian.PutUint32(raw[0:], cmd.Op)
+	binary.LittleEndian.PutUint32(raw[4:], cmd.Flags)
+	binary.LittleEndian.PutUint64(raw[8:], cmd.Path)
+	binary.LittleEndian.PutUint64(raw[16:], cmd.PathLen)
+	binary.LittleEndian.PutUint64(raw[24:], cmd.Path2)
+	binary.LittleEndian.PutUint64(raw[32:], cmd.Path2Len)
+	binary.LittleEndian.PutUint64(raw[40:], cmd.Buf)
+	binary.LittleEndian.PutUint64(raw[48:], cmd.Len)
+	binary.LittleEndian.PutUint64(raw[56:], cmd.Offset)
+	binary.LittleEndian.PutUint64(raw[64:], cmd.Mode)
+	binary.LittleEndian.PutUint64(raw[72:], cmd.Handle)
+	binary.LittleEndian.PutUint64(raw[80:], uint64(cmd.Result))
+	binary.LittleEndian.PutUint32(raw[88:], cmd.Errno)
+	binary.LittleEndian.PutUint32(raw[92:], cmd.Status)
+	if fault := mem.WriteBytes(addr, raw[:]); fault != nil {
+		t.Fatalf("write hostio command: %v", fault)
+	}
+}
+
+func readHostIOTestCmd(t *testing.T, mem *riscv.GuestMemory, addr uint64) hostIOCommand {
+	t.Helper()
+	var raw [hostIOCmdSize]byte
+	if fault := mem.ReadBytes(addr, raw[:]); fault != nil {
+		t.Fatalf("read hostio command: %v", fault)
+	}
+	return hostIOCommand{
+		Op:       binary.LittleEndian.Uint32(raw[0:]),
+		Flags:    binary.LittleEndian.Uint32(raw[4:]),
+		Path:     binary.LittleEndian.Uint64(raw[8:]),
+		PathLen:  binary.LittleEndian.Uint64(raw[16:]),
+		Path2:    binary.LittleEndian.Uint64(raw[24:]),
+		Path2Len: binary.LittleEndian.Uint64(raw[32:]),
+		Buf:      binary.LittleEndian.Uint64(raw[40:]),
+		Len:      binary.LittleEndian.Uint64(raw[48:]),
+		Offset:   binary.LittleEndian.Uint64(raw[56:]),
+		Mode:     binary.LittleEndian.Uint64(raw[64:]),
+		Handle:   binary.LittleEndian.Uint64(raw[72:]),
+		Result:   int64(binary.LittleEndian.Uint64(raw[80:])),
+		Errno:    binary.LittleEndian.Uint32(raw[88:]),
+		Status:   binary.LittleEndian.Uint32(raw[92:]),
+	}
+}
+
 func TestEnableRawTerminalIgnoresNonFileStdin(t *testing.T) {
 	restore, raw, err := enableRawTerminal(strings.NewReader(""))
 	if err != nil {
@@ -666,6 +944,7 @@ func TestRunEmuBiosFWDynamicHandBuiltLinuxBootsToInitUnder8s(t *testing.T) {
 		InitrdPath: initrdPath,
 		Append:     linuxMakeBootArgs,
 		Memory:     "256MB",
+		HostIO:     true,
 		Stdin:      strings.NewReader(""),
 		Stdout:     &stdout,
 		Stderr:     &stderr,
@@ -689,6 +968,93 @@ func TestRunEmuBiosFWDynamicHandBuiltLinuxBootsToInitUnder8s(t *testing.T) {
 	} else {
 		t.Logf("hand-built Linux booted to /init in %s host time", elapsed)
 	}
+}
+
+func TestRunEmuBiosFWDynamicHandBuiltLinuxHostFSMountReadWrite(t *testing.T) {
+	const bootWallBudget = 15 * time.Second
+	const biosPath = "../../xendor/opensbi/build/platform/generic/firmware/fw_dynamic.elf"
+	const kernelPath = "../../xendor/linux-6.17-hand-built/Image"
+	const initrdPath = "../../xendor/linux/initramfs.cpio.gz"
+	for _, path := range []string{biosPath, kernelPath, initrdPath} {
+		if !fileExists(path) {
+			t.Skipf("hand-built Linux BIOS fixture not present: %s", path)
+		}
+	}
+
+	hostDir := t.TempDir()
+	hostDir, err := filepath.EvalSymlinks(hostDir)
+	if err != nil {
+		t.Fatalf("EvalSymlinks(%q): %v", hostDir, err)
+	}
+	fromHost := filepath.Join(hostDir, "from-host.txt")
+	fromGuest := filepath.Join(hostDir, "from-guest.txt")
+	if err := os.WriteFile(fromHost, []byte("hello-from-hostfs-host\n"), 0644); err != nil {
+		t.Fatalf("write host fixture: %v", err)
+	}
+
+	const doneMarker = "HOSTFS-SMOKE-42"
+	script := strings.Join([]string{
+		"set -e",
+		"mkdir -p /host",
+		"mount -t hostfs none /host -o " + hostDir,
+		"cat /host/from-host.txt",
+		"echo hello-from-hostfs-guest > /host/from-guest.txt",
+		"cat /host/from-guest.txt",
+		"echo HOSTFS-SMOKE-4''2",
+	}, "\n") + "\n"
+
+	var stdout safeStringWriter
+	var stderr bytes.Buffer
+	stdinR, stdinW := io.Pipe()
+	defer stdinR.Close()
+	go func() {
+		defer stdinW.Close()
+		deadline := time.Now().Add(bootWallBudget)
+		for time.Now().Before(deadline) {
+			if strings.Contains(stdout.String(), "=== RISC-V initramfs booted ===") {
+				_, _ = io.WriteString(stdinW, script)
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}()
+
+	start := time.Now()
+	ok, err := runBiosUntilOutputWithin(EmuConfig{
+		BiosPath:   biosPath,
+		KernelPath: kernelPath,
+		InitrdPath: initrdPath,
+		Append:     linuxMakeBootArgs,
+		Memory:     "256MB",
+		HostIO:     true,
+		Stdin:      stdinR,
+		Stdout:     &stdout,
+		Stderr:     &stderr,
+	}, doneMarker, 2_500_000_000, bootWallBudget)
+	elapsed := time.Since(start)
+	out := stdout.String()
+	if err != nil {
+		t.Fatalf("hand-built Linux hostfs smoke err after %s = %v\nstdout tail:\n%s\nstderr:\n%s",
+			elapsed, err, tailString(out, 8192), stderr.String())
+	}
+	if !ok {
+		t.Fatalf("hand-built Linux hostfs smoke marker missing after %s\nstdout tail:\n%s\nstderr:\n%s",
+			elapsed, tailString(out, 8192), stderr.String())
+	}
+	if !strings.Contains(out, "hello-from-hostfs-host") {
+		t.Fatalf("guest did not cat host-created file\nstdout tail:\n%s", tailString(out, 8192))
+	}
+	if !strings.Contains(out, "hello-from-hostfs-guest") {
+		t.Fatalf("guest did not cat guest-created file\nstdout tail:\n%s", tailString(out, 8192))
+	}
+	got, err := os.ReadFile(fromGuest)
+	if err != nil {
+		t.Fatalf("host cannot read guest-created file: %v", err)
+	}
+	if string(got) != "hello-from-hostfs-guest\n" {
+		t.Fatalf("guest-created file = %q, want %q", got, "hello-from-hostfs-guest\n")
+	}
+	t.Logf("hand-built Linux mounted hostfs and round-tripped host files in %s", elapsed)
 }
 
 func TestDiagRunEmuBiosFWDynamicHandBuiltLinuxInitcallDebug(t *testing.T) {
@@ -856,6 +1222,7 @@ func runBiosUntilOutputWithin(cfg EmuConfig, marker string, maxInstructions uint
 	}
 	defer guest.mem.Free()
 	defer guest.mmio.closeUARTOutput()
+	defer guest.mmio.closeHostIO()
 
 	const chunk = uint64(100_000)
 	start := time.Now()

@@ -71,6 +71,7 @@ type EmuConfig struct {
 	Append            string
 	DTBPath           string
 	DumpDTBPath       string
+	HostIO            bool
 	Machine           string
 	Seed              uint64
 	Memory            string
@@ -149,6 +150,7 @@ func (c *EmuConfig) DefineFlags(fs *flag.FlagSet) {
 	fs.StringVar(&c.Append, "append", "", "kernel command line for generated BIOS FDT bootargs")
 	fs.StringVar(&c.DTBPath, "dtb", "", "path to external flattened device tree blob for -bios")
 	fs.StringVar(&c.DumpDTBPath, "dump-dtb", "", "write the BIOS FDT blob to this path before boot")
+	fs.BoolVar(&c.HostIO, "hostio", false, "enable non-hermetic custom MMIO host filesystem passthrough for -bios")
 	fs.StringVar(&c.Machine, "machine", "virt", "machine model for -bios; currently only virt")
 	fs.Uint64Var(&c.Seed, "seed", 0, "pseudo random number generator seed")
 	fs.StringVar(&c.Memory, "mem", "", "guest memory size as bytes or KB/MB/GB/TB; with -bios this is RAM advertised to Linux")
@@ -195,6 +197,8 @@ func (c *EmuConfig) ValidateConfig() error {
 			return fmt.Errorf("-dtb requires -bios")
 		case c.DumpDTBPath != "":
 			return fmt.Errorf("-dump-dtb requires -bios")
+		case c.HostIO:
+			return fmt.Errorf("-hostio requires -bios")
 		}
 	}
 	if c.KernelPath != "" && !fileExists(c.KernelPath) {
