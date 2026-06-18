@@ -270,3 +270,5 @@ tailsocks --exit-node office --socks-addr 127.0.0.1:5041 --state-dir ./state-off
 ## License
 
 [MIT](./LICENSE.md)
+
+riscv-emu-golang/tailsocks was vendored as of version of: Wed May 27 21:04:03 2026 -0700
