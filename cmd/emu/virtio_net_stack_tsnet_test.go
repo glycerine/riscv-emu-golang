@@ -185,6 +185,42 @@ func TestTsnetOpLogDefaultsToPerProcessEmunetStateDir(t *testing.T) {
 	}
 }
 
+func TestWriteEmunetLeaderPIDFileReplacesStaleLeaderFiles(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := tailemuDir()
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	stale := filepath.Join(dir, "leader.123")
+	other := filepath.Join(dir, "tailscaled.state")
+	if err := os.WriteFile(stale, []byte("123\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(other, []byte("keep\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	path := writeEmunetLeaderPIDFile()
+	want := filepath.Join(dir, fmt.Sprintf("leader.%d", os.Getpid()))
+	if path != want {
+		t.Fatalf("leader pid path = %q, want %q", path, want)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != fmt.Sprintf("%d\n", os.Getpid()) {
+		t.Fatalf("leader pid file = %q, want current pid", got)
+	}
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Fatalf("stale leader file still exists or unexpected stat error: %v", err)
+	}
+	if _, err := os.Stat(other); err != nil {
+		t.Fatalf("non-leader file should remain: %v", err)
+	}
+}
+
 func TestEmunetFollowerDoesNotStartTsnetBeforePromotion(t *testing.T) {
 	t.Setenv("RPC25519_SERVER_DATA_DIR", t.TempDir())
 	t.Setenv("HOME", t.TempDir())

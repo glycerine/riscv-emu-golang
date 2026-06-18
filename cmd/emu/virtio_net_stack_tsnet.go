@@ -221,6 +221,7 @@ func (s *emunetVirtioStack) promoteToLeader(ctx context.Context, cfg EmuConfig, 
 	if dev != nil {
 		core.attachVirtioNet(dev)
 	}
+	writeEmunetLeaderPIDFile()
 	appendTsnetOpLog("emunet_election role=leader reason=%q addr=%q peer_url=%q", reason, ln.Addr().String(), s.node.PeerURL())
 	appendTsnetOpLog("emunet_dns_start addr=%q leader_url=%q", ln.Addr().String(), s.node.PeerURL())
 	return nil
@@ -923,6 +924,36 @@ func tsnetOpLogPath() string {
 		return filepath.Join(home, ".local", "state", "emunet", name)
 	}
 	return filepath.Join(os.TempDir(), ".local", "state", "emunet", name)
+}
+
+func writeEmunetLeaderPIDFile() string {
+	dir := tailemuDir()
+	name := fmt.Sprintf("leader.%d", os.Getpid())
+	path := filepath.Join(dir, name)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		appendTsnetOpLog("emunet_leader_pidfile_error path=%q error=%q", path, err)
+		return path
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		appendTsnetOpLog("emunet_leader_pidfile_readdir_error dir=%q error=%q", dir, err)
+	} else {
+		for _, entry := range entries {
+			if entry.IsDir() || !strings.HasPrefix(entry.Name(), "leader.") || entry.Name() == name {
+				continue
+			}
+			stale := filepath.Join(dir, entry.Name())
+			if err := os.Remove(stale); err != nil {
+				appendTsnetOpLog("emunet_leader_pidfile_remove_error path=%q error=%q", stale, err)
+			}
+		}
+	}
+	if err := os.WriteFile(path, []byte(fmt.Sprintf("%d\n", os.Getpid())), 0600); err != nil {
+		appendTsnetOpLog("emunet_leader_pidfile_error path=%q error=%q", path, err)
+		return path
+	}
+	appendTsnetOpLog("emunet_leader_pidfile path=%q", path)
+	return path
 }
 
 func appendTsnetOpLog(format string, args ...any) {
