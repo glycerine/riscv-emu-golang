@@ -6,8 +6,10 @@ Build **emunet**, the private guest-side emulator network, around one elected
 local leader process. The leader binds `127.0.0.1:7557`, owns the single
 persistent `tsnet.Server`, gives all local guest Linux instances emunet DHCP
 addresses, NATs outbound IPv4 from emunet to the Tailscale tailnet, and drops
-unsolicited inbound traffic. Follower emulator processes connect to the leader
-over loopback and proxy raw virtio-net Ethernet frames instead of registering
+unsolicited inbound traffic. Follower emulator processes use `127.0.0.1:7557`
+as a local rendezvous endpoint. The elected leader replies with its canonical
+rpc25519 peer URL, and followers then exchange greenpack-encoded emunet
+messages over rpc25519 Peer/Fragment/Circuit circuits instead of registering
 new Tailscale nodes.
 
 The security posture is intentionally outbound-only for v1. An emunet guest can
@@ -50,9 +52,9 @@ Current code facts this plan depends on:
 - `cmd/emu/virtio_net_stack_tsnet.go` already has a memory TUN for `tsnet`,
   DHCP and ARP helpers, persistent tsnet state, and the oplog.
 - `tailsocks` is now a local package, but its existing data path is SOCKS5 over
-  `tsnet`, not guest Ethernet. It can be reshaped or used as a home for shared
-  emunet election/proxy helpers, but the emunet data path should stay raw
-  Ethernet to preserve normal Linux commands inside the guest.
+  `tsnet`, not guest Ethernet.
+- `rpc25519` provides the emunet loopback control/data plane. The election port
+  is only the local rendezvous. Canonical contact is always by rpc25519 peer URL.
 
 ## 2. Target Architecture
 
@@ -63,7 +65,7 @@ guest Linux eth0
   -> virtio-net queue
   -> local emulator process
   -> leader if this process owns 127.0.0.1:7557
-  -> follower TCP connection if another process owns 127.0.0.1:7557
+  -> follower rpc25519 circuit if another process owns 127.0.0.1:7557
   -> emunetRouter
   -> emunet NAT table
   -> virtioNetMemoryTUN
@@ -72,7 +74,7 @@ guest Linux eth0
 ```
 
 The leader is a local emunet router. It has one in-process emunet port for its
-own guest, plus one emunet port per follower TCP connection. Each emulator node
+own guest, plus one emunet port per follower rpc25519 circuit. Each emulator node
 must expose its own invented locally administered unicast virtio-net MAC. The
 emunet port remains the unit of NAT ownership and return-path delivery, while
 DHCP can associate a lease with the guest MAC learned on that emunet port.
@@ -98,7 +100,7 @@ tsnet IP packet
   -> original guest tuple restore
   -> Ethernet wrapping
   -> owning emunet port only
-  -> local virtio-net RX or follower TCP frame
+  -> local virtio-net RX or follower rpc25519 frame
 ```
 
 Unmatched inbound packets are dropped. That is not a missing route. It is the
@@ -107,15 +109,14 @@ v1 security model.
 ## 3. Public Interfaces And Package Shape
 
 Keep emulator-specific virtio details in `cmd/emu`, but move generic loopback
-frame transport helpers into `tailsocks` or a small subpackage beneath it. Since
-`tailsocks` is owned by this repo and malleable, do not preserve the imported
-main-package API at the expense of clarity.
+peer bootstrap and message transport helpers into a root `emunet` package.
+`tailsocks` stays separate as a SOCKS5-over-tsnet helper package.
 
 Recommended package split:
 
+- `emunet`: root package for loopback election, leader URL rendezvous,
+  rpc25519 peer/circuit setup, and greenpack emunet message helpers.
 - `tailsocks`: keep existing SOCKS5 code and auth/exit-node helpers.
-- `tailsocks/emunet` or `tailsocks/emuconn`: new loopback election and frame
-  transport helpers.
 - `cmd/emu`: owns `emunetRouter`, NAT, DHCP, ARP, virtio-net attachment, and the
   `tsnet.Server` integration.
 
@@ -123,13 +124,17 @@ New helper concepts:
 
 - `DefaultEmunetAddr = "127.0.0.1:7557"`.
 - `EmunetAddrFromEnv()` returns `RISCV_EMU_EMUNET_ADDR` or the default.
-- TCP handshake magic: `risemu-emunet-v1\n`.
-- Frame wire format: big-endian `uint32` payload length followed by one raw
-  Ethernet frame.
-- No emunet transport-level Ethernet frame size cap. The loopback transport carries the
-  length-prefixed payload it is given.
-- `ReadFrame(io.Reader) ([]byte, error)`.
-- `WriteFrame(io.Writer, frame []byte) error`.
+- Bootstrap service: the local rpc25519 server bound to the election address.
+  Its first responsibility is to return the leader's full peer URL.
+- Canonical peer URL: once learned, a follower uses the returned URL for emunet
+  circuits. The bootstrap address can later move to a replacement leader
+  without changing established rpc25519 circuit identity rules.
+- Greenpack envelope: `emunet.Message` carries versioned `Kind`, `NodeID`,
+  local guest `MAC`, optional `LeaderURL`, optional `Error`, and raw Ethernet
+  `Frame` payload bytes.
+- Message kinds begin with `hello`, `leader-url`, and `ethernet-frame`.
+- No emunet transport-level Ethernet frame size cap. The loopback transport
+  carries the greenpack payload it is given.
 
 Leader/follower construction behavior:
 
@@ -139,10 +144,13 @@ Leader/follower construction behavior:
   - start the `tsnet.Server`;
   - create the `emunetRouter`;
   - create the local in-process emunet port;
-  - accept follower TCP connections.
+  - start the rpc25519 peer service and answer bootstrap `hello` messages with
+    the leader peer URL.
 - If listen fails because the address is in use, this process is follower:
-  - dial the leader;
-  - perform the handshake;
+  - dial the bootstrap service;
+  - send a greenpack `hello`;
+  - receive the current leader's canonical peer URL;
+  - establish an emunet circuit to that peer URL;
   - create a follower stack that implements `virtioNetPacketStack`;
   - do not construct or start `tsnet.Server`.
 - If listen fails for a non-address-in-use reason, try follower dial once. If
@@ -150,7 +158,8 @@ Leader/follower construction behavior:
 
 Follower behavior:
 
-- Guest TX frames are serialized over the loopback TCP connection.
+- Guest TX frames are sent as greenpack `ethernet-frame` messages over the
+  rpc25519 emunet circuit.
 - Frames from leader are injected into the follower's local virtio-net RX queue.
 - Frames received before `attachVirtioNet` are queued and flushed on attach.
 - Followers keep a background emunet election loop that periodically tries to
@@ -163,50 +172,57 @@ Leader behavior:
 
 - The local guest and each follower connection are separate emunet ports.
 - The leader sends replies only to the port that owns the lease or NAT mapping.
-- The leader closes and removes an emunet port when a follower disconnects.
-- Closing the leader closes listener, tsnet server, memory TUN, and follower
-  connections.
+- The leader closes and removes an emunet port when a follower circuit closes.
+- Closing the leader closes rpc25519 server, tsnet server, memory TUN, and
+  follower circuits.
 
-## 4. Stage 1: Emunet Election And Frame Transport
+## 4. Stage 1: Emunet Rendezvous And Circuit Transport
 
-Goal: make a process become either leader or follower, and prove raw Ethernet
-frames can move over localhost without involving Tailscale, DHCP, or NAT yet.
+Goal: make a process become either leader or follower, prove the local bootstrap
+endpoint returns the canonical leader peer URL, and prove Ethernet frames can
+move over rpc25519 circuits without involving Tailscale, DHCP, or NAT yet.
 
 Implementation details:
 
-- Add the frame codec and handshake helpers in the new `tailsocks/emunet`
-  helper package.
-- Keep the codec intentionally tiny:
-  - read exactly 4 bytes for the frame length;
-  - read exactly that many payload bytes;
-  - write length and payload under one writer lock at call sites that share a
-    connection.
-- Add an election helper that accepts an address and returns either:
-  - a listener for leader mode, or
-  - a connected TCP connection for follower mode.
+- Add greenpack message envelope helpers in the new root `emunet` package.
+- Add an rpc25519 transport helper that accepts an address and either:
+  - starts the elected leader's rpc25519 server and local peer service, or
+  - connects as a client, obtains the leader peer URL, and opens an emunet
+    circuit to it.
 - Use `net.ListenConfig` and `net.Dialer` so tests can use contexts and short
-  timeouts.
+  timeouts for preflight bind/dial checks. This preflight is required because
+  `rpc25519.Server.Start()` currently fatal-exits on bind failure.
 - For production, refuse non-loopback addresses unless an explicit env override
   later added for tests permits it. The default must stay local-only.
+- `127.0.0.1:7557` remains the election medium. Follower failover polling uses
+  bind preflight; only the process that wins preflight may construct the
+  rpc25519 leader server on that address.
 - Add oplog events:
   - `emunet_election role=leader addr=...`
   - `emunet_election role=client addr=...`
+  - `emunet_leader_url url=...`
+  - `emunet_circuit_connected remote=...`
+  - `emunet_circuit_disconnected remote=... error=...`
   - `emunet_client_connected remote=...`
   - `emunet_client_disconnected remote=... error=...`
 
 Stage 1 tests:
 
-1. Frame codec round-trips a representative Ethernet frame byte-for-byte.
-2. Frame codec round-trips a payload larger than `virtioNetMaxFrameLen` to prove
-   the emunet transport does not impose an Ethernet frame cap.
-3. Frame codec returns a clean error on truncated length prefix.
-4. Frame codec returns a clean error on truncated payload.
-5. Handshake accepts exact protocol magic.
-6. Handshake rejects wrong magic.
-7. First election on a free loopback address returns leader/listener.
-8. Second election against an occupied address returns follower/connection.
-9. Follower election path does not call a tsnet construction/start hook.
-10. Follower queues frames received before `attachVirtioNet`, then flushes them
+1. Greenpack envelope round-trips a representative Ethernet frame byte-for-byte.
+2. Greenpack envelope round-trips a payload larger than `virtioNetMaxFrameLen`
+   to prove emunet does not impose an Ethernet frame cap.
+3. Greenpack decode returns a clean error on truncated payload.
+4. Unknown future greenpack fields are ignored by older readers.
+5. First bind preflight on a free loopback address returns available.
+6. Second bind preflight against an occupied address returns unavailable without
+   starting rpc25519 and without exiting.
+7. Leader startup returns a non-empty canonical peer URL.
+8. Follower bootstrap receives exactly the leader's canonical peer URL.
+9. Follower sends an `ethernet-frame` message and the leader receives it with
+   node ID and MAC metadata intact.
+10. Leader sends an `ethernet-frame` reply and the follower receives it intact.
+11. Follower election path does not call a tsnet construction/start hook.
+12. Follower queues frames received before `attachVirtioNet`, then flushes them
     to the attached virtio-net device.
 
 Acceptance for Stage 1:
@@ -234,18 +250,19 @@ Implementation details:
 - When bind succeeds:
   - keep the listener open; this listener is the election victory token;
   - transition the process from follower mode to leader mode;
-  - close the old follower TCP connection if it is still open;
+  - close the old follower rpc25519 client/circuit if it is still open;
   - create `emunetRouter` and the local emunet port;
   - start `tsnet.Server` only after the listener has been acquired;
-  - start accepting follower connections on the already-acquired listener;
+  - start the leader rpc25519 peer service on the already-acquired address;
   - write `$HOME/.tailemu/leader.${PID}` and delete stale leader pid files.
 - Followers that do not win continue as clients:
-  - if their old TCP connection closes, they dial the current emunet leader;
+  - if their old circuit/client closes, they dial the current bootstrap leader
+    and request the current canonical peer URL again;
   - if dialing fails during the handoff window, they retry;
   - they keep polling for future leader loss.
 - This stage handles leader process exit or any failure mode that releases the
   emunet listen port. It intentionally does not detect a wedged leader that
-  keeps the TCP port bound.
+  keeps the rendezvous port bound.
 - Add oplog events:
   - `emunet_failover_poll_start addr=... interval=...`
   - `emunet_failover_promote pid=... addr=...`
@@ -264,7 +281,7 @@ Stage 2 tests:
 5. Followers that lose the race do not start tsnet.
 6. Losing followers reconnect to the newly promoted leader after the handoff
    window.
-7. Promotion closes the old follower TCP connection and does not leak the old
+7. Promotion closes the old follower rpc25519 circuit and does not leak the old
    read/write goroutines.
 8. Closing a follower stack stops its election loop and prevents later
    promotion.
@@ -304,7 +321,7 @@ Implementation details:
 - Introduce `emunetRouter`.
 - Introduce `emunetPort` or an equivalent opaque port ID:
   - local leader guest has one port;
-  - each follower TCP connection has one port.
+  - each follower rpc25519 circuit has one port.
 - Store per-port state:
   - lease IP;
   - guest MAC learned from the node's virtio-net config, DHCP, or ARP;
@@ -443,7 +460,7 @@ Acceptance for Stage 4:
 ## 8. Stage 5: Integrate Emunet Router, Leader, Follower, And Existing tsnet TUN
 
 Goal: connect the pure emunet router/NAT to virtio-net, the leader/follower
-emunet TCP proxy, and the existing `virtioNetMemoryTUN`.
+emunet rpc25519 circuits, and the existing `virtioNetMemoryTUN`.
 
 Implementation details:
 
@@ -451,15 +468,16 @@ Implementation details:
   - `tsnet.Server`;
   - `virtioNetMemoryTUN`;
   - `emunetRouter`;
-  - loopback listener;
+  - rpc25519 rendezvous server/local peer;
   - local emunet port;
-  - remote emunet port per follower connection.
+  - remote emunet port per follower circuit.
 - Leader local guest TX:
   - `InjectInboundPacket(frame)` calls
     `emunetRouter.HandleGuestEthernet(localEmunetPort, frame)`.
 - Follower TX:
-  - follower writes Ethernet frame over TCP;
-  - leader connection goroutine reads frame and calls
+  - follower sends an `ethernet-frame` greenpack message over its rpc25519
+    circuit;
+  - leader circuit goroutine reads the message and calls
     `emunetRouter.HandleGuestEthernet(remoteEmunetPort, frame)`.
 - Emunet router outbound:
   - DHCP/ARP/gateway ICMP replies are Ethernet frames sent directly to the
@@ -472,7 +490,7 @@ Implementation details:
     router source MAC;
   - leader sends only to the owning emunet port.
 - Follower RX:
-  - TCP reader receives Ethernet frames from leader;
+  - rpc25519 circuit reader receives `ethernet-frame` messages from leader;
   - if virtio-net is attached, call `InjectGuestFrame`;
   - otherwise queue until attachment.
 - Preserve persistence:
@@ -488,19 +506,19 @@ Implementation details:
 
 Stage 5 tests:
 
-1. Leader local guest can complete DHCP and ARP without any TCP followers.
-2. Follower guest DHCP request is carried over TCP and receives an emunet lease
-   reply.
+1. Leader local guest can complete DHCP and ARP without any followers.
+2. Follower guest DHCP request is carried over an rpc25519 circuit and receives
+   an emunet lease reply.
 3. Leader accepts two followers and routes replies only to the NAT-owning
    follower.
 4. Packet from TUN with valid NAT mapping is Ethernet-wrapped with guest
    destination MAC and emunet router source MAC.
 5. Packet from TUN with no NAT mapping is dropped and never sent to any follower
    or local guest.
-6. Follower connection close removes the emunet port and does not affect other
+6. Follower circuit close removes the emunet port and does not affect other
    followers.
-7. Leader close shuts down listener, tsnet server, TUN, and follower
-   connections.
+7. Leader close shuts down rpc25519 server, tsnet server, TUN, and follower
+   circuits.
 8. Oplog records leader start, follower connect, follower disconnect,
    authorization, and tail IPv4 readiness.
 9. Existing `TestTsnetDir...`, `TestTsnetOpLog...`, DHCP helper tests, and
@@ -603,7 +621,7 @@ Implementation details:
   - follower write error.
 - Log high-level state transitions to oplog:
   - election result;
-  - leader listener start;
+  - leader rpc25519 rendezvous start;
   - follower connect/disconnect;
   - tsnet start;
   - authorization;
@@ -641,9 +659,10 @@ Acceptance for Stage 7:
 
 Recommended implementation sequence:
 
-1. Add frame codec, handshake, and election helpers with tests.
-2. Add follower stack skeleton that can proxy frames but is not yet selected by
-   default.
+1. Add greenpack envelope, bind preflight, rpc25519 rendezvous, and circuit
+   transport helpers with tests.
+2. Add follower stack skeleton that can proxy frames over an emunet circuit but
+   is not yet selected by default.
 3. Add automatic failover where follower stacks poll-bind the emunet address
    and promote themselves only after acquiring the listen socket.
 4. Add `emunetRouter` with fake ports, emunet DHCP, ARP, and gateway ping.
