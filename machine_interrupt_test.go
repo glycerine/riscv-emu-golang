@@ -282,6 +282,7 @@ func TestCPU_StrictUnknownCSRTraps(t *testing.T) {
 	}
 	cpu := NewCPU(*mem)
 	cpu.EnableStrictCSR()
+	cpu.SetPrivilegeMode(PrivSupervisor)
 	cpu.SetPC(pc)
 
 	if err := cpu.Step(); err != ErrIllegalInstruction {
@@ -305,6 +306,7 @@ func TestCPU_STimecmpCSR(t *testing.T) {
 	}
 	cpu := NewCPU(*mem)
 	cpu.EnableStrictCSR()
+	cpu.SetPrivilegeMode(PrivSupervisor)
 	cpu.SetPC(pc)
 	cpu.SetReg(1, 500)
 

@@ -515,6 +515,7 @@ func TestSRET_IllegalInstruction(t *testing.T) {
 	const codeVA = uint64(0x1000)
 	mem.Store32(codeVA, 0x10200073) // SRET
 	cpu := NewCPU(*mem)
+	cpu.EnableStrictCSR()
 	cpu.SetPC(codeVA)
 	err := cpu.Step()
 	if err != ErrIllegalInstruction {

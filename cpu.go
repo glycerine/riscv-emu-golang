@@ -52,22 +52,21 @@ const (
 	statusUXL  = uint64(3) << 32
 	statusSD   = uint64(1) << 63
 
-	sstatusMask         = statusSIE | statusSPIE | statusSPP | statusFS | statusXS | statusSUM | statusMXR | statusUXL
-	sstatusReadable     = sstatusMask | statusSD
-	mstatusWritable     = sstatusMask | statusMIE | statusMPIE | statusMPRV | statusMPP | statusTVM | statusTW | statusTSR
-	supervisorIPMask    = mipSSIP | mipSTIP | mipSEIP
-	machineIPMask       = supervisorIPMask | mipMSIP | mipMTIP | mipMEIP
-	counterCycleBit     = uint64(1) << 0
-	counterTimeBit      = uint64(1) << 1
-	counterInstretBit   = uint64(1) << 2
-	counterCSRMask      = counterCycleBit | counterTimeBit | counterInstretBit
-	implementedMideleg  = supervisorIPMask
-	implementedMedeleg  = uint64(0x000000000004b109)
-	implementedMieMask  = machineIPMask
-	implementedSieMask  = supervisorIPMask
-	implementedMipMask  = mipSSIP | mipMSIP | mipSEIP | mipMEIP
-	implementedSipMask  = mipSSIP | mipSEIP
-	implementedCountinh = counterCSRMask
+	sstatusMask        = statusSIE | statusSPIE | statusSPP | statusFS | statusXS | statusSUM | statusMXR | statusUXL
+	sstatusReadable    = sstatusMask | statusSD
+	mstatusWritable    = sstatusMask | statusMIE | statusMPIE | statusMPRV | statusMPP | statusTVM | statusTW | statusTSR
+	supervisorIPMask   = mipSSIP | mipSTIP | mipSEIP
+	machineIPMask      = supervisorIPMask | mipMSIP | mipMTIP | mipMEIP
+	counterCycleBit    = uint64(1) << 0
+	counterTimeBit     = uint64(1) << 1
+	counterInstretBit  = uint64(1) << 2
+	counterCSRMask     = counterCycleBit | counterTimeBit | counterInstretBit
+	implementedMideleg = supervisorIPMask
+	implementedMedeleg = uint64(0x000000000004b109)
+	implementedMieMask = machineIPMask
+	implementedSieMask = supervisorIPMask
+	implementedMipMask = mipSSIP | mipMSIP | mipSEIP | mipMEIP
+	implementedSipMask = mipSSIP | mipSEIP
 )
 
 const (
@@ -262,12 +261,14 @@ func (c *CPU) counterCSRAllowed(addr uint32) bool {
 }
 
 func (c *CPU) checkCSRAccess(addr uint32, write bool) bool {
-	req := csrRequiredPrivilege(addr)
-	if req == 2 || c.priv < req {
-		return false
-	}
-	if write && csrIsReadOnly(addr) {
-		return false
+	if c.strictCSR {
+		req := csrRequiredPrivilege(addr)
+		if req == 2 || c.priv < req {
+			return false
+		}
+		if write && csrIsReadOnly(addr) {
+			return false
+		}
 	}
 	switch addr {
 	case 0x001, 0x002, 0x003:
@@ -275,7 +276,7 @@ func (c *CPU) checkCSRAccess(addr uint32, write bool) bool {
 			return false
 		}
 	}
-	if csrIsCounter(addr) && !c.counterCSRAllowed(addr) {
+	if c.strictCSR && csrIsCounter(addr) && !c.counterCSRAllowed(addr) {
 		return false
 	}
 	return true
@@ -404,7 +405,7 @@ func (c *CPU) trapToSupervisorAt(pc, cause, tval uint64) {
 }
 
 func (c *CPU) trapToMachineAt(pc, cause, tval uint64) bool {
-	if c.mtvec == 0 && c.priv == PrivUser && c.mmu == nil {
+	if c.mtvec == 0 && !c.strictCSR {
 		// Process-mode tests historically use mtvec==0 as "return the note to
 		// the host"; privileged guests may legitimately vector traps to address 0.
 		return false
@@ -1242,7 +1243,7 @@ func (c *CPU) stepFromInsn(insn uint32) error {
 			}
 			return ErrEcall
 		case insn == 0x30200073: // MRET
-			if c.priv != PrivMachine {
+			if c.strictCSR && c.priv != PrivMachine {
 				return ErrIllegalInstruction
 			}
 			nextPriv := PrivilegeMode((c.mstatus >> 11) & 3)
@@ -1262,7 +1263,7 @@ func (c *CPU) stepFromInsn(insn uint32) error {
 			c.retireInsn()
 			return nil
 		case insn == 0x10200073: // SRET
-			if c.priv == PrivUser || (c.priv < PrivMachine && c.mstatus&statusTSR != 0) {
+			if c.strictCSR && (c.priv == PrivUser || (c.priv < PrivMachine && c.mstatus&statusTSR != 0)) {
 				return ErrIllegalInstruction
 			}
 			nextPriv := PrivUser
@@ -1282,11 +1283,11 @@ func (c *CPU) stepFromInsn(insn uint32) error {
 			c.retireInsn()
 			return nil
 		case insn == 0x10500073: // WFI — no-op in user-mode emulation
-			if c.priv == PrivUser || (c.priv < PrivMachine && c.mstatus&statusTW != 0) {
+			if c.strictCSR && (c.priv == PrivUser || (c.priv < PrivMachine && c.mstatus&statusTW != 0)) {
 				return ErrIllegalInstruction
 			}
 		case funct3 == 0 && insn>>25 == 0x09: // SFENCE.VMA
-			if c.priv == PrivUser || (c.priv < PrivMachine && c.mstatus&statusTVM != 0) {
+			if c.strictCSR && (c.priv == PrivUser || (c.priv < PrivMachine && c.mstatus&statusTVM != 0)) {
 				return ErrIllegalInstruction
 			}
 			c.flushTLB()
@@ -2301,7 +2302,7 @@ func (c *CPU) writeCSR(addr uint32, val uint64) bool {
 	case 0x30a:
 		c.menvcfg = val // menvcfg
 	case 0x320:
-		c.mcountinh = val & implementedCountinh // mcountinhibit
+		c.mcountinh = val // mcountinhibit
 	case 0x340:
 		c.mscratch = val // mscratch
 	case 0x341:

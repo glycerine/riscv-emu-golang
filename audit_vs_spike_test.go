@@ -11,6 +11,7 @@ func TestAuditCSRPrivilegeAndCounterChecks(t *testing.T) {
 	t.Run("user cannot read machine CSR", func(t *testing.T) {
 		cpu, mem := oneInsnCPU(t, ienc(opSYSTEM, 2, 1, 0, 0x300)) // CSRRS x1,mstatus,x0
 		defer mem.Free()
+		cpu.EnableStrictCSR()
 		cpu.SetPrivilegeMode(PrivUser)
 		if err := cpu.Step(); err != ErrIllegalInstruction {
 			t.Fatalf("Step err = %v, want illegal instruction", err)
@@ -20,6 +21,7 @@ func TestAuditCSRPrivilegeAndCounterChecks(t *testing.T) {
 	t.Run("counteren gates user counters", func(t *testing.T) {
 		cpu, mem := oneInsnCPU(t, ienc(opSYSTEM, 2, 1, 0, 0xC00)) // CSRRS x1,cycle,x0
 		defer mem.Free()
+		cpu.EnableStrictCSR()
 		cpu.SetPrivilegeMode(PrivUser)
 		cpu.mcounteren = 0
 		cpu.scounteren = 0
@@ -31,6 +33,7 @@ func TestAuditCSRPrivilegeAndCounterChecks(t *testing.T) {
 	t.Run("CSRRS write intent uses encoded rs1", func(t *testing.T) {
 		cpu, mem := oneInsnCPU(t, ienc(opSYSTEM, 2, 1, 5, 0xC00)) // CSRRS x1,cycle,x5
 		defer mem.Free()
+		cpu.EnableStrictCSR()
 		cpu.SetPrivilegeMode(PrivMachine)
 		cpu.SetReg(5, 0)
 		if err := cpu.Step(); err != ErrIllegalInstruction {
@@ -85,6 +88,7 @@ func TestAuditPrivilegedReturnAndFenceChecks(t *testing.T) {
 	t.Run("SRET clears MPRV", func(t *testing.T) {
 		cpu, mem := oneInsnCPU(t, sretInsn)
 		defer mem.Free()
+		cpu.EnableStrictCSR()
 		cpu.SetPrivilegeMode(PrivSupervisor)
 		cpu.mstatus = statusSPIE | statusMPRV
 		if err := cpu.Step(); err != nil {
@@ -98,6 +102,7 @@ func TestAuditPrivilegedReturnAndFenceChecks(t *testing.T) {
 	t.Run("SRET obeys TSR", func(t *testing.T) {
 		cpu, mem := oneInsnCPU(t, sretInsn)
 		defer mem.Free()
+		cpu.EnableStrictCSR()
 		cpu.SetPrivilegeMode(PrivSupervisor)
 		cpu.mstatus = statusTSR
 		if err := cpu.Step(); err != ErrIllegalInstruction {
@@ -108,6 +113,7 @@ func TestAuditPrivilegedReturnAndFenceChecks(t *testing.T) {
 	t.Run("WFI and SFENCE require privilege", func(t *testing.T) {
 		for _, insn := range []uint32{0x10500073, 0x12000073} {
 			cpu, mem := oneInsnCPU(t, insn)
+			cpu.EnableStrictCSR()
 			cpu.SetPrivilegeMode(PrivUser)
 			err := cpu.Step()
 			mem.Free()
@@ -180,6 +186,7 @@ func TestAuditReservedDecodeAndMtvecZero(t *testing.T) {
 	t.Run("machine trap may vector to mtvec zero", func(t *testing.T) {
 		cpu, mem := oneInsnCPU(t, ecallInsn)
 		defer mem.Free()
+		cpu.EnableStrictCSR()
 		cpu.SetPrivilegeMode(PrivMachine)
 		cpu.mtvec = 0
 		if err := cpu.Step(); err != nil {

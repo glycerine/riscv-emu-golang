@@ -38,7 +38,7 @@ config-dependent.
 
 ---
 
-## Summary of outstanding findings
+## Summary of original outstanding findings
 
 | #  | Sev  | Area | One-line |
 |----|------|------|----------|
@@ -314,3 +314,57 @@ The cleanest path to "not a single bit different" is a **differential fuzzer**:
 random instruction streams + random register/`fcsr`/`frm` state run lock-step against
 `spike` (commit-log mode, `--isa=rv64gc_zba_zbb_zbc_zicond`), diffing GPR/FPR/`fcsr`/
 `pc`/trap after each step. That mechanically surfaces B1–B3 and any residual decode gap.
+
+---
+
+## 6. 2026-06-18 Codex follow-up status
+
+This section supersedes the "outstanding" wording above for the current tree.
+
+### Fixed
+
+* **B2/B3/B6:** FP instructions now validate static/dynamic `rm`, reject reserved
+  `frm`, require `mstatus.FS != Off`, mark FP state dirty, and `FCVT.D.S` raises NV for
+  signaling-NaN input.
+* **B1, partial:** float-to-int conversions now honor RNE/RTZ/RDN/RUP/RMM. On amd64,
+  FP arithmetic/conversion paths use MXCSR rounding for RNE/RTZ/RDN/RUP.
+* **B4/B5:** `MRET`/`SRET` clear `mstatus.MPRV` when returning below M.
+* **B7/B10/B12:** CSR privilege/read-only/counter checks and WFI/SFENCE/SRET
+  privilege checks are enforced in strict firmware mode. This is the path used by
+  `emu -bios` (`prepareBiosGuest` calls `EnableStrictCSR()` and starts in M-mode).
+  The legacy process-mode harness remains permissive so riscv-tests reset-vector CSR
+  probes keep working.
+* **B9:** `mstatus`, `sstatus`, `sie`, `mie`, `mip`, `mideleg`, `medeleg`, and counter
+  enable writes are masked to the modeled writable bits; `mstatus.SD` is maintained.
+* **B11:** CSRRS/CSRRC write suppression now follows the encoded `rs1/uimm` field, and
+  CSRRW/CSRRWI suppress the CSR read when `rd==x0`.
+* **B13:** reserved Zicond/Zba/Zbs/base OP/OP-32 encodings now raise illegal instead
+  of silently writing zero or executing as base arithmetic.
+* **B14:** in strict firmware mode, `mtvec==0` is a valid trap vector address. In
+  process-mode, `mtvec==0` remains the existing host-note escape hatch.
+* **B15, resolved by advertisement:** the generated BIOS FDT now advertises `zicond`
+  alongside the implemented Zba/Zbb/Zbc/Zicsr/Zifencei/Sstc set.
+
+### Intentionally Kept / Did Not Fix
+
+* **B8 misalignment:** intentionally kept permissive. The interpreter, cached
+  interpreter, and JIT all retain bytewise retry paths for misaligned scalar/FP
+  loads/stores/fetches. Comments were added at those fallback sites noting that strict
+  Spike-style behavior would propagate `FaultMisalign`, but existing real tests depend
+  on the permissive behavior.
+* **Per-extension runtime gating:** not added. The CPU continues to implement the
+  extension set it supports without a per-instruction ISA option. For the BIOS/Linux
+  path, the advertised ISA was brought into sync by adding `zicond` to the FDT.
+* **RMM FP arithmetic and non-amd64 host rounding:** RMM has no direct MXCSR
+  equivalent, so arithmetic using RMM still falls back to the existing host behavior.
+  Non-amd64 `SetRoundingMode` is currently a no-op. Float-to-int RMM is fixed because
+  it is handled in Go before conversion. Exact RMM arithmetic needs a SoftFloat-style
+  implementation or explicit software rounding.
+
+### Regression coverage added/updated
+
+* `audit_vs_spike_test.go` covers the fixed CSR, privilege, FP, reserved-decode, and
+  `mtvec==0` cases.
+* Existing strict CSR/SRET tests were adjusted to opt into strict firmware semantics.
+* BIOS FDT tests now require `zicond` in both `riscv,isa-extensions` and the legacy
+  `riscv,isa` string.
