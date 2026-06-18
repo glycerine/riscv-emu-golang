@@ -262,8 +262,8 @@ election medium. If the leader process exits or otherwise releases
 
 Implementation details:
 
-- Add an `emunetElectionLoop` owned by follower stacks.
-- The loop periodically attempts `net.Listen("tcp", EmunetAddrFromEnv())`.
+- Add an emunet `watchDog` owned by follower stacks.
+- The watchDog periodically attempts `net.Listen("tcp", EmunetAddrFromEnv())`.
 - Default polling interval: 250ms.
 - Test override or constructor injection must allow a much shorter interval or
   fake ticker without sleeping in unit tests.
@@ -286,10 +286,12 @@ Implementation details:
   emunet listen port. It intentionally does not detect a wedged leader that
   keeps the rendezvous port bound.
 - Add oplog events:
-  - `emunet_failover_poll_start addr=... interval=...`
-  - `emunet_failover_promote pid=... addr=...`
-  - `emunet_failover_reconnect addr=...`
-  - `emunet_failover_reconnect_error addr=... error=...`
+  - `emunet_watchDog_start addr=... interval=...`
+  - `emunet_watchDog_promote_start reason=... addr=...`
+  - `emunet_watchDog_promote_error reason=... addr=... error=...`
+  - `emunet_watchDog_reconnected leader_url=...`
+  - `emunet_watchDog_reconnect_error addr=... error=...`
+  - `emunet_watchDog_leader_circuit_lost error=...`
   - `emunet_leader_pidfile path=...`
 
 Stage 2 tests:
@@ -309,8 +311,8 @@ Stage 2 tests:
    promotion.
 9. Failover writes `leader.${PID}` for the promoted process and removes stale
    leader pid files in the tailemu directory.
-10. Oplog contains poll start, promotion, reconnect, and reconnect-error events
-    where applicable.
+10. Oplog contains watchDog start, promotion, reconnect, and reconnect-error
+    events where applicable.
 11. A transient dial failure after leader loss does not abort the follower; it
     continues polling and retrying.
 12. If the old leader process is wedged but still holds the port, followers do
@@ -767,4 +769,3 @@ Relevant spots:
 [cmd/emu/virtio_net_stack_tsnet.go (line 171)](/Users/jaten/go/src/github.com/glycerine/riscv-emu-golang/cmd/emu/virtio_net_stack_tsnet.go:171) makes followers connect to the leader instead.
 
 For failover, I’d keep that same model: followers poll/retry the rendezvous bind; the first one that succeeds becomes leader and lazily starts tsnet from the persistent state. That gives us stable follower behavior, no duplicate tailnet nodes, and fast promotion once auth state exists.
-

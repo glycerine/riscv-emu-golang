@@ -86,5 +86,3 @@ require (
 	gvisor.dev/gvisor v0.0.0-20260224225140-573d5e7127a8 // indirect
 	k8s.io/utils v0.0.0-20260507154919-ff6756f316d2 // indirect
 )
-
-replace github.com/glycerine/rpc25519 => /Users/jaten/rpc25519
