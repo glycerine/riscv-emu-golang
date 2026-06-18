@@ -738,3 +738,33 @@ without the pure NAT and fake emunet-port router tests first.
   `$HOME/.local/state/emunet/oplog.${PID}`, with timestamps using
   `2006-01-02T15:04:05.000Z07:00`.
   Every emulator process can write its own log file.
+
+Q & A
+-------
+
+Q: 
+Do the follower nodes a) bring up the netstack of gvisor.dev/gvisor/pkg/tcpip/ TCP/IP stack which is a part of the tailscale stack, and then re-initialize if they later become leader, or b) do they just start a tailscale stack immediately but without authentiation. (b) seems more stable, but I don't know how to "not authetnicate" but still run the tcp/stack.
+
+
+A:
+Short answer: neither quite. The best design is:
+
+Followers should not start tsnet at all. They should start only their own emunet rpc25519 server/peer, lose or win the 127.0.0.1:7557 election, and if they lose, proxy guest Ethernet frames to the leader.
+
+If a follower later wins the bind because the leader died, then it promotes itself and starts tsnet.Server using the persistent state dir.
+
+Why: tsnet.Server.Start() does create the gVisor netstack, but it also starts the Tailscale LocalBackend with WantRunning=true. If there is no persisted auth or auth key, it goes to login/auth states and prints an auth URL. That is not really a clean “unauthenticated TCP/IP stack” mode. Up() waits for ipn.Running and a Tailscale IP, and our NAT path needs that tail IP anyway.
+
+So option b would be noisier and more fragile: every follower would spin up Tailscale machinery, possibly emit auth URLs, own magicsock/backend state, and still not be useful for routing until promoted/authenticated.
+
+The current code already follows the better shape: every node starts emunet.StartNode before election, but only the election winner calls newEmunetLeaderTsnetVirtioStack, which creates tsnet.Server.
+
+Relevant spots:
+[cmd/emu/virtio_net_stack_tsnet.go (line 141)](/Users/jaten/go/src/github.com/glycerine/riscv-emu-golang/cmd/emu/virtio_net_stack_tsnet.go:141) starts the emunet node and election.
+
+[cmd/emu/virtio_net_stack_tsnet.go (line 159)](/Users/jaten/go/src/github.com/glycerine/riscv-emu-golang/cmd/emu/virtio_net_stack_tsnet.go:159) starts tsnet only for the leader.
+
+[cmd/emu/virtio_net_stack_tsnet.go (line 171)](/Users/jaten/go/src/github.com/glycerine/riscv-emu-golang/cmd/emu/virtio_net_stack_tsnet.go:171) makes followers connect to the leader instead.
+
+For failover, I’d keep that same model: followers poll/retry the rendezvous bind; the first one that succeeds becomes leader and lazily starts tsnet from the persistent state. That gives us stable follower behavior, no duplicate tailnet nodes, and fast promotion once auth state exists.
+
