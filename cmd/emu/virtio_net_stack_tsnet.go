@@ -59,9 +59,11 @@ type emunetVirtioStack struct {
 	leaderCore *tsnetVirtioStack
 	dns        *emunetpkg.DNSServer
 	leaderCkt  *emunetpkg.Circuit
+	leaderURL  string
 
-	dev     *virtioNetDevice
-	pending [][]byte
+	dev               *virtioNetDevice
+	pending           [][]byte
+	followerByCircuit map[*emunetpkg.Circuit]string
 
 	followerURLs map[string]struct{}
 }
@@ -153,9 +155,10 @@ func newEmunetVirtioStack(cfg EmuConfig) (virtioNetPacketStack, error) {
 		return nil, err
 	}
 	stack := &emunetVirtioStack{
-		node:         node,
-		cancel:       cancel,
-		followerURLs: make(map[string]struct{}),
+		node:              node,
+		cancel:            cancel,
+		followerURLs:      make(map[string]struct{}),
+		followerByCircuit: make(map[*emunetpkg.Circuit]string),
 	}
 	go stack.readEmunetEvents(ctx)
 
@@ -209,6 +212,7 @@ func (s *emunetVirtioStack) promoteToLeader(ctx context.Context, cfg EmuConfig, 
 	oldCkt := s.leaderCkt
 	dev := s.dev
 	s.leaderCkt = nil
+	s.leaderURL = s.node.PeerURL()
 	s.leaderCore = core
 	s.dns = dns
 	s.role = "leader"
@@ -246,6 +250,7 @@ func (s *emunetVirtioStack) connectToLeader(ctx context.Context, dns emunetpkg.E
 	}
 	oldCkt := s.leaderCkt
 	s.leaderCkt = ckt
+	s.leaderURL = dns.LeaderURL
 	s.role = "follower"
 	s.mu.Unlock()
 
@@ -281,12 +286,17 @@ func (s *emunetVirtioStack) runFollowerWatchDog(ctx context.Context, cfg EmuConf
 			}
 			return
 		}
-		if !s.needsLeaderReconnect() {
+		if !s.isFollower() {
 			continue
 		}
 		dns, lookupErr := emunetpkg.LookupDNS(ctx, emunetpkg.AddrFromEnv())
 		if lookupErr != nil {
-			appendTsnetOpLog("emunet_watchDog_reconnect_error addr=%q error=%q", emunetpkg.AddrFromEnv(), lookupErr)
+			if s.needsLeaderReconnect() {
+				appendTsnetOpLog("emunet_watchDog_reconnect_error addr=%q error=%q", emunetpkg.AddrFromEnv(), lookupErr)
+			}
+			continue
+		}
+		if !s.shouldConnectToDNSLeader(dns.LeaderURL) {
 			continue
 		}
 		if err := s.connectToLeader(ctx, dns); err != nil {
@@ -316,8 +326,15 @@ func (s *emunetVirtioStack) noteLeaderCircuitLost(ckt *emunetpkg.Circuit, cause 
 		return
 	}
 	s.leaderCkt = nil
+	s.leaderURL = ""
 	s.mu.Unlock()
 	appendTsnetOpLog("emunet_watchDog_leader_circuit_lost error=%q", cause)
+}
+
+func (s *emunetVirtioStack) shouldConnectToDNSLeader(leaderURL string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.role == "follower" && leaderURL != "" && (s.leaderCkt == nil || s.leaderURL != leaderURL)
 }
 
 func (s *emunetVirtioStack) dnsSnapshot() emunetpkg.EmunetDNS {
@@ -405,8 +422,8 @@ func (s *emunetVirtioStack) readEmunetEvents(ctx context.Context) {
 		select {
 		case ev := <-s.node.Events():
 			if ev.Err != nil {
-				appendTsnetOpLog("emunet_circuit_error role=%q error=%q", s.role, ev.Err)
-				s.noteLeaderCircuitLost(ev.Circuit, ev.Err)
+				appendTsnetOpLog("emunet_circuit_error role=%q error=%q", s.roleSnapshot(), ev.Err)
+				s.handleEmunetCircuitError(ev.Circuit, ev.Err)
 				continue
 			}
 			s.handleEmunetMessage(ev)
@@ -420,10 +437,8 @@ func (s *emunetVirtioStack) handleEmunetMessage(ev emunetpkg.Event) {
 	switch ev.Message.Kind {
 	case emunetpkg.MessageKindHello:
 		if ev.Message.PeerURL != "" {
-			s.mu.Lock()
-			s.followerURLs[ev.Message.PeerURL] = struct{}{}
-			s.mu.Unlock()
-			appendTsnetOpLog("emunet_client_connected role=%q peer_url=%q", s.role, ev.Message.PeerURL)
+			s.rememberFollowerCircuit(ev.Circuit, ev.Message.PeerURL)
+			appendTsnetOpLog("emunet_client_connected role=%q peer_url=%q", s.roleSnapshot(), ev.Message.PeerURL)
 		}
 	case emunetpkg.MessageKindEthernetFrame:
 		s.mu.Lock()
@@ -444,6 +459,57 @@ func (s *emunetVirtioStack) handleEmunetMessage(ev emunetpkg.Event) {
 		}
 		s.injectGuestEthernet(ev.Message.Frame)
 	}
+}
+
+func (s *emunetVirtioStack) handleEmunetCircuitError(ckt *emunetpkg.Circuit, cause error) {
+	if s.roleSnapshot() == "leader" {
+		s.forgetFollowerCircuit(ckt, cause)
+		return
+	}
+	s.noteLeaderCircuitLost(ckt, cause)
+}
+
+func (s *emunetVirtioStack) rememberFollowerCircuit(ckt *emunetpkg.Circuit, peerURL string) {
+	s.mu.Lock()
+	if s.followerURLs == nil {
+		s.followerURLs = make(map[string]struct{})
+	}
+	if s.followerByCircuit == nil {
+		s.followerByCircuit = make(map[*emunetpkg.Circuit]string)
+	}
+	s.followerURLs[peerURL] = struct{}{}
+	if ckt != nil {
+		s.followerByCircuit[ckt] = peerURL
+	}
+	s.mu.Unlock()
+}
+
+func (s *emunetVirtioStack) forgetFollowerCircuit(ckt *emunetpkg.Circuit, cause error) {
+	s.mu.Lock()
+	peerURL := ""
+	if ckt != nil && s.followerByCircuit != nil {
+		peerURL = s.followerByCircuit[ckt]
+		delete(s.followerByCircuit, ckt)
+	}
+	if peerURL != "" {
+		delete(s.followerURLs, peerURL)
+	}
+	core := s.leaderCore
+	s.mu.Unlock()
+
+	if peerURL == "" {
+		return
+	}
+	if core != nil {
+		core.removeEmunetPort(peerURL)
+	}
+	appendTsnetOpLog("emunet_client_disconnected peer_url=%q error=%q", peerURL, cause)
+}
+
+func (s *emunetVirtioStack) roleSnapshot() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.role
 }
 
 func (s *emunetVirtioStack) injectGuestEthernet(frame []byte) {

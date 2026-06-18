@@ -100,6 +100,24 @@ func (s *tsnetVirtioStack) learnPortMAC(id string, mac [6]byte, emit func([]byte
 	p.guestMAC = mac
 }
 
+func (s *tsnetVirtioStack) removeEmunetPort(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.ports, id)
+	for key, ent := range s.natByOut {
+		if key.portID != id {
+			continue
+		}
+		delete(s.natByOut, key)
+		delete(s.natByIn, emunetNATInKey{
+			proto:      ent.proto,
+			external:   ent.external,
+			remoteIP:   ent.remoteIP,
+			remotePort: ent.remotePort,
+		})
+	}
+}
+
 func (s *tsnetVirtioStack) arpReplyForPort(portID string, req []byte, emit func([]byte)) []byte {
 	if len(req) < 42 || binary.BigEndian.Uint16(req[14:16]) != 1 ||
 		binary.BigEndian.Uint16(req[16:18]) != etherTypeIPv4 ||

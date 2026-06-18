@@ -232,18 +232,7 @@ func TestEmunetFollowerDoesNotStartTsnetBeforePromotion(t *testing.T) {
 	defer dnsSrv.Close()
 	t.Setenv("RISCV_EMU_EMUNET_ADDR", addr)
 
-	var starts atomic.Int32
-	oldHook := newEmunetLeaderTsnetVirtioStackHook
-	oldInterval := emunetWatchDogInterval
-	newEmunetLeaderTsnetVirtioStackHook = func(EmuConfig) (*tsnetVirtioStack, error) {
-		starts.Add(1)
-		return &tsnetVirtioStack{hostMAC: emunetRouterMAC}, nil
-	}
-	emunetWatchDogInterval = 20 * time.Millisecond
-	t.Cleanup(func() {
-		newEmunetLeaderTsnetVirtioStackHook = oldHook
-		emunetWatchDogInterval = oldInterval
-	})
+	starts := installFakeEmunetLeaderHook(t, 20*time.Millisecond)
 
 	stackIf, err := newEmunetVirtioStack(EmuConfig{})
 	if err != nil {
@@ -282,18 +271,7 @@ func TestEmunetFollowerWatchDogPromotesAfterRendezvousFreed(t *testing.T) {
 	defer leader.Close()
 	t.Setenv("RISCV_EMU_EMUNET_ADDR", addr)
 
-	var starts atomic.Int32
-	oldHook := newEmunetLeaderTsnetVirtioStackHook
-	oldInterval := emunetWatchDogInterval
-	newEmunetLeaderTsnetVirtioStackHook = func(EmuConfig) (*tsnetVirtioStack, error) {
-		starts.Add(1)
-		return &tsnetVirtioStack{hostMAC: emunetRouterMAC}, nil
-	}
-	emunetWatchDogInterval = 10 * time.Millisecond
-	t.Cleanup(func() {
-		newEmunetLeaderTsnetVirtioStackHook = oldHook
-		emunetWatchDogInterval = oldInterval
-	})
+	starts := installFakeEmunetLeaderHook(t, 10*time.Millisecond)
 
 	stackIf, err := newEmunetVirtioStack(EmuConfig{})
 	if err != nil {
@@ -327,6 +305,138 @@ func TestEmunetFollowerWatchDogPromotesAfterRendezvousFreed(t *testing.T) {
 	if dns.LeaderURL != stack.node.PeerURL() {
 		t.Fatalf("promoted DNS leader URL = %q, want %q", dns.LeaderURL, stack.node.PeerURL())
 	}
+}
+
+func TestEmunetFollowerWatchDogRacePromotesOneAndReconnectsLosers(t *testing.T) {
+	t.Setenv("RPC25519_SERVER_DATA_DIR", t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+
+	leader, dnsSrv, addr := startTestEmunetLeaderDNS(t, ctx)
+	t.Setenv("RISCV_EMU_EMUNET_ADDR", addr)
+	starts := installFakeEmunetLeaderHook(t, 10*time.Millisecond)
+
+	stacks := make([]*emunetVirtioStack, 0, 3)
+	for range 3 {
+		stackIf, err := newEmunetVirtioStack(EmuConfig{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		stack := stackIf.(*emunetVirtioStack)
+		stacks = append(stacks, stack)
+		defer stack.Close()
+	}
+
+	if err := leader.Close(); err != nil {
+		t.Fatalf("close old leader node: %v", err)
+	}
+	if err := dnsSrv.Close(); err != nil {
+		t.Fatalf("close old leader DNS: %v", err)
+	}
+
+	waitForTestCondition(t, 3*time.Second, func() bool {
+		promoted := promotedTestStack(stacks)
+		if promoted == nil || starts.Load() != 1 {
+			return false
+		}
+		needed := make(map[string]struct{}, len(stacks)-1)
+		for _, stack := range stacks {
+			if stack != promoted {
+				needed[stack.node.PeerURL()] = struct{}{}
+			}
+		}
+		promoted.mu.Lock()
+		defer promoted.mu.Unlock()
+		for url := range needed {
+			if _, ok := promoted.followerURLs[url]; !ok {
+				return false
+			}
+		}
+		return true
+	})
+
+	if got := promotedTestStackCount(stacks); got != 1 {
+		t.Fatalf("promoted leader count = %d, want 1", got)
+	}
+	if got := starts.Load(); got != 1 {
+		t.Fatalf("leader tsnet starts = %d, want 1", got)
+	}
+}
+
+func TestEmunetFollowerCloseStopsWatchDogPromotion(t *testing.T) {
+	t.Setenv("RPC25519_SERVER_DATA_DIR", t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	leader, dnsSrv, addr := startTestEmunetLeaderDNS(t, ctx)
+	defer leader.Close()
+	t.Setenv("RISCV_EMU_EMUNET_ADDR", addr)
+	starts := installFakeEmunetLeaderHook(t, 10*time.Millisecond)
+
+	stackIf, err := newEmunetVirtioStack(EmuConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stack := stackIf.(*emunetVirtioStack)
+	if err := stack.Close(); err != nil {
+		t.Fatalf("close follower stack: %v", err)
+	}
+	if err := dnsSrv.Close(); err != nil {
+		t.Fatalf("close leader DNS: %v", err)
+	}
+
+	time.Sleep(5 * emunetWatchDogInterval)
+	if got := starts.Load(); got != 0 {
+		t.Fatalf("leader tsnet starts after closed follower = %d, want 0", got)
+	}
+}
+
+func installFakeEmunetLeaderHook(t *testing.T, interval time.Duration) *atomic.Int32 {
+	t.Helper()
+	starts := new(atomic.Int32)
+	oldHook := newEmunetLeaderTsnetVirtioStackHook
+	oldInterval := emunetWatchDogInterval
+	newEmunetLeaderTsnetVirtioStackHook = func(EmuConfig) (*tsnetVirtioStack, error) {
+		starts.Add(1)
+		return &tsnetVirtioStack{hostMAC: emunetRouterMAC}, nil
+	}
+	emunetWatchDogInterval = interval
+	t.Cleanup(func() {
+		newEmunetLeaderTsnetVirtioStackHook = oldHook
+		emunetWatchDogInterval = oldInterval
+	})
+	return starts
+}
+
+func promotedTestStack(stacks []*emunetVirtioStack) *emunetVirtioStack {
+	var promoted *emunetVirtioStack
+	for _, stack := range stacks {
+		stack.mu.Lock()
+		isLeader := stack.role == "leader" && stack.leaderCore != nil && stack.dns != nil
+		stack.mu.Unlock()
+		if !isLeader {
+			continue
+		}
+		if promoted != nil {
+			return nil
+		}
+		promoted = stack
+	}
+	return promoted
+}
+
+func promotedTestStackCount(stacks []*emunetVirtioStack) int {
+	count := 0
+	for _, stack := range stacks {
+		stack.mu.Lock()
+		if stack.role == "leader" && stack.leaderCore != nil && stack.dns != nil {
+			count++
+		}
+		stack.mu.Unlock()
+	}
+	return count
 }
 
 func startTestEmunetLeaderDNS(t *testing.T, ctx context.Context) (*emunetpkg.Node, *emunetpkg.DNSServer, string) {
