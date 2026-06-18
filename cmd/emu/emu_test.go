@@ -9,6 +9,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -609,6 +612,40 @@ func TestRunEmuBiosFWDynamicHandBuiltLinuxPrintsBanner(t *testing.T) {
 	}
 }
 
+func TestDiagRunEmuBiosFWDynamicHandBuiltLinuxInitcallDebug(t *testing.T) {
+	if os.Getenv("RISCV_EMU_LINUX_INITCALL_DIAG") == "" {
+		t.Skip("set RISCV_EMU_LINUX_INITCALL_DIAG=1 to profile hand-built Linux initcalls")
+	}
+	const biosPath = "../../xendor/opensbi/build/platform/generic/firmware/fw_dynamic.elf"
+	const kernelPath = "../../xendor/linux-6.17-hand-built/Image"
+	const initrdPath = "../../xendor/linux/initramfs.cpio.gz"
+	for _, path := range []string{biosPath, kernelPath, initrdPath} {
+		if !fileExists(path) {
+			t.Skipf("hand-built Linux BIOS fixture not present: %s", path)
+		}
+	}
+
+	var stdout, stderr bytes.Buffer
+	ok, err := runBiosUntilOutput(EmuConfig{
+		BiosPath:   biosPath,
+		KernelPath: kernelPath,
+		InitrdPath: initrdPath,
+		Append:     linuxUARTBootArgs + " initcall_debug ignore_loglevel loglevel=8",
+		Memory:     "512MB",
+		Stdin:      strings.NewReader(""),
+		Stdout:     &stdout,
+		Stderr:     &stderr,
+	}, "Run /init as init process", 2_000_000_000)
+	t.Logf("slowest initcalls:\n%s", slowInitcallReport(stdout.String(), 30))
+	t.Logf("stdout tail:\n%s", tailString(stdout.String(), 8192))
+	if err != nil {
+		t.Fatalf("hand-built Linux initcall diag err = %v\nstderr:\n%s", err, stderr.String())
+	}
+	if !ok {
+		t.Fatalf("hand-built Linux initcall diag marker missing\nstderr:\n%s", stderr.String())
+	}
+}
+
 func TestRunEmuBiosFWDynamicLinuxSmoke(t *testing.T) {
 	const biosPath = "../../xendor/opensbi/build/platform/generic/firmware/fw_dynamic.elf"
 	const kernelPath = "../../xendor/linux/boot/vmlinuz-6.17.0-35-generic"
@@ -769,6 +806,37 @@ func tailString(s string, max int) string {
 		return s
 	}
 	return s[len(s)-max:]
+}
+
+func slowInitcallReport(output string, limit int) string {
+	type entry struct {
+		name  string
+		usecs int64
+	}
+	re := regexp.MustCompile(`initcall (.+?) returned -?\d+ after ([0-9]+) usecs`)
+	matches := re.FindAllStringSubmatch(output, -1)
+	entries := make([]entry, 0, len(matches))
+	for _, m := range matches {
+		usecs, err := strconv.ParseInt(m[2], 10, 64)
+		if err != nil {
+			continue
+		}
+		entries = append(entries, entry{name: m[1], usecs: usecs})
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].usecs > entries[j].usecs
+	})
+	if len(entries) > limit {
+		entries = entries[:limit]
+	}
+	if len(entries) == 0 {
+		return "(no initcall_debug timings found)"
+	}
+	var b strings.Builder
+	for _, e := range entries {
+		fmt.Fprintf(&b, "%8d usecs  %s\n", e.usecs, e.name)
+	}
+	return strings.TrimRight(b.String(), "\n")
 }
 
 func guestInsnForTest(mem *riscv.GuestMemory, pc uint64) uint32 {
