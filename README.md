@@ -1,6 +1,11 @@
 A RISC-V 64 emulator in Golang (Go)
 ==============
 
+* News 2026 June 17:
+
+As a verification of robustness, the CPU emulator can boot a Linux kernel now;
+as of v0.3.0.
+
 * News 2026 June 16: 
 
 v0.1.0 and beyond emulate a deterministic Linux OS "personality" and thus
