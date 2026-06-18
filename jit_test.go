@@ -48,16 +48,17 @@ func jenc(rd uint32, offset int32) uint32 {
 
 // Opcode constants.
 const (
-	opLOAD   = uint32(0x03)
-	opSTORE  = uint32(0x23)
-	opOPIMM  = uint32(0x13)
-	opOP     = uint32(0x33)
-	opBRANCH = uint32(0x63)
-	opJALR   = uint32(0x67)
-	opLUI    = uint32(0x37)
-	opAUIPC  = uint32(0x17)
-	opSYSTEM = uint32(0x73)
-	opOP32   = uint32(0x3B)
+	opLOAD    = uint32(0x03)
+	opSTORE   = uint32(0x23)
+	opOPIMM   = uint32(0x13)
+	opOP      = uint32(0x33)
+	opBRANCH  = uint32(0x63)
+	opJALR    = uint32(0x67)
+	opLUI     = uint32(0x37)
+	opAUIPC   = uint32(0x17)
+	opSYSTEM  = uint32(0x73)
+	opOPIMM32 = uint32(0x1B)
+	opOP32    = uint32(0x3B)
 
 	instrECALL  = uint32(0x00000073)
 	instrEBREAK = uint32(0x00100073)
@@ -282,7 +283,6 @@ func TestJIT_ADD(t *testing.T) {
 }
 
 func TestJIT_MulHighAndPopcount(t *testing.T) {
-	cpopImm := int32((0x60 << 5) | 2)
 	tests := []struct {
 		name string
 		insn uint32
@@ -327,15 +327,34 @@ func TestJIT_MulHighAndPopcount(t *testing.T) {
 		},
 		{
 			name: "CPOP",
-			insn: ienc(opOPIMM, 1, 1, 2, cpopImm),
+			insn: ienc(opOPIMM, 1, 1, 2, 0x602),
 			x2:   0xf0f0f0f0f0f0f0f0,
 			want: 32,
 		},
 		{
 			name: "CPOPW",
-			insn: renc(opOP32, 2, 0x60, 1, 2, 2),
+			insn: ienc(opOPIMM32, 1, 1, 2, 0x602),
 			x2:   0xffffffff0000000f,
 			want: 4,
+		},
+		{
+			name: "RORIW_Canonical",
+			insn: ienc(opOPIMM32, 5, 1, 2, 0x601),
+			x2:   1,
+			want: 0xffffffff80000000,
+		},
+		{
+			name: "ZEXT_H",
+			insn: renc(opOP32, 4, 0x04, 1, 2, 0),
+			x2:   0x12345678deadbeef,
+			want: 0xbeef,
+		},
+		{
+			name: "CLMULR_HighBit",
+			insn: renc(opOP, 2, 0x05, 1, 2, 3),
+			x2:   2,
+			x3:   0x8000000000000000,
+			want: 2,
 		},
 	}
 

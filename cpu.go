@@ -485,37 +485,37 @@ func (c *CPU) stepFromInsn(insn uint32) error {
 			return ErrIllegalInstruction
 		}
 
-	// ── OP-IMM (I-type) ──────────────────────────────────────────────────
+		// ── OP-IMM (I-type) ──────────────────────────────────────────────────
 	case 0x13: // ── OP-IMM ─────────────────────────────────────────────────
-		funct7i := insn >> 25
-		shamt := uint8(insn>>20) & 0x3F
+		imm12 := (insn >> 20) & 0xFFF
+		funct6i := imm12 >> 6
+		shamt := uint8(imm12 & 0x3F)
 		a := c.Reg(rs1)
 		var v uint64
 		switch funct3 {
 		case 0x0:
 			v = a + uint64(iimm) // ADDI
 		case 0x1: // SLLI / Zbs BSETI/BCLRI/BINVI / Zbb CLZ/CTZ/CPOP/SEXT
-			// Use bits[31:26] (mask out bit25=shamt[5]) to identify the operation.
-			switch funct7i &^ 1 {
+			switch funct6i {
 			case 0x00:
 				v = a << shamt // SLLI (shamt[5] may be 0 or 1)
-			case 0x14:
+			case 0x0A:
 				v = a | (1 << uint(shamt)) // BSETI
-			case 0x24:
+			case 0x12:
 				v = a &^ (1 << uint(shamt)) // BCLRI
-			case 0x34:
+			case 0x1A:
 				v = a ^ (1 << uint(shamt)) // BINVI
-			case 0x60: // CLZ/CTZ/CPOP/SEXT.B/SEXT.H — rs2 in shamt
-				switch shamt {
-				case 0:
+			case 0x18: // CLZ/CTZ/CPOP/SEXT.B/SEXT.H
+				switch imm12 {
+				case 0x600:
 					v = uint64(bits.LeadingZeros64(a)) // CLZ
-				case 1:
+				case 0x601:
 					v = uint64(bits.TrailingZeros64(a)) // CTZ
-				case 2:
+				case 0x602:
 					v = uint64(bits.OnesCount64(a)) // CPOP
-				case 0x22:
+				case 0x604:
 					v = uint64(int64(int8(a))) // SEXT.B
-				case 0x23:
+				case 0x605:
 					v = uint64(int64(int16(a))) // SEXT.H
 				default:
 					return ErrIllegalInstruction
@@ -533,23 +533,20 @@ func (c *CPU) stepFromInsn(insn uint32) error {
 			} // SLTIU
 		case 0x4:
 			v = a ^ uint64(iimm) // XORI
-		case 0x5: // SRLI/SRAI / Zbs BEXTI / Zbb RORI/ORC.B/REV8/ZEXT.H
-			switch funct7i &^ 1 {
-			case 0x00:
+		case 0x5: // SRLI/SRAI / Zbs BEXTI / Zbb RORI/ORC.B/REV8
+			switch {
+			case funct6i == 0x00:
 				v = a >> shamt // SRLI
-			case 0x20:
+			case funct6i == 0x10:
 				v = uint64(int64(a) >> shamt) // SRAI
-			case 0x24:
+			case funct6i == 0x12:
 				v = (a >> uint(shamt)) & 1 // BEXTI
-			case 0x30:
-				sh := uint(shamt & 63)
-				v = (a >> sh) | (a << (64 - sh)) // RORI
-			case 0x14:
+			case funct6i == 0x18:
+				v = uint64(bits.RotateLeft64(a, -int(shamt))) // RORI
+			case imm12 == 0x287:
 				v = orcB(a) // ORC.B
-			case 0x34:
+			case imm12 == 0x6B8:
 				v = rev8(a) // REV8
-			case 0x04:
-				v = a & 0xFFFF // ZEXT.H
 			default:
 				return ErrIllegalInstruction
 			}
@@ -560,32 +557,43 @@ func (c *CPU) stepFromInsn(insn uint32) error {
 		}
 		c.SetReg(rd, v)
 
-	// ── OP-IMM-32 (I-type, 32-bit ops, sign-extend result) ───────────────
+		// ── OP-IMM-32 (I-type, 32-bit ops, sign-extend result) ───────────────
 	case 0x1B: // ── OP-IMM-32 ───────────────────────────────────────────────
+		imm12 := (insn >> 20) & 0xFFF
 		funct7i32 := insn >> 25
-		shamt := uint8(insn>>20) & 0x1F
+		funct6i32 := imm12 >> 6
+		shamt := uint8(imm12 & 0x1F)
+		shamt6 := uint8(imm12 & 0x3F)
 		var v int32
 		switch funct3 {
 		case 0x0: // ADDIW
 			v = int32(c.Reg(rs1)) + int32(iimm)
-		case 0x1: // SLLIW / Zba SLLI.UW
-			if funct7i32 == 0x04 { // SLLI.UW: rd = uint64(uint32(rs1)) << shamt
-				c.SetReg(rd, uint64(uint32(c.Reg(rs1)))<<uint(shamt))
+		case 0x1: // SLLIW / Zba SLLI.UW / Zbb CLZW/CTZW/CPOPW
+			switch {
+			case funct7i32 == 0x00:
+				v = int32(uint32(c.Reg(rs1)) << shamt)
+			case funct6i32 == 0x02: // SLLI.UW: rd = uint64(uint32(rs1)) << shamt[5:0]
+				c.SetReg(rd, uint64(uint32(c.Reg(rs1)))<<uint(shamt6))
 				c.pc = nextPC
 				c.retireInsn()
 				return nil
+			case imm12 == 0x600:
+				v = int32(bits.LeadingZeros32(uint32(c.Reg(rs1)))) // CLZW
+			case imm12 == 0x601:
+				v = int32(bits.TrailingZeros32(uint32(c.Reg(rs1)))) // CTZW
+			case imm12 == 0x602:
+				v = int32(bits.OnesCount32(uint32(c.Reg(rs1)))) // CPOPW
+			default:
+				return ErrIllegalInstruction
 			}
-			v = int32(c.Reg(rs1)) << shamt
 		case 0x5: // SRLIW / SRAIW / RORIW
-			switch funct7i32 >> 1 { // mask shamt[5] (always 0 for 5-bit shamt)
+			switch funct7i32 {
 			case 0x00:
 				v = int32(uint32(c.Reg(rs1)) >> shamt) // SRLIW
-			case 0x10:
+			case 0x20:
 				v = int32(c.Reg(rs1)) >> shamt // SRAIW
 			case 0x30: // RORIW: rotate right word immediate
-				a32 := uint32(c.Reg(rs1))
-				sh := uint(shamt & 0x1F)
-				v = int32(a32>>sh | a32<<(32-sh))
+				v = int32(bits.RotateLeft32(uint32(c.Reg(rs1)), -int(shamt)))
 			default:
 				return ErrIllegalInstruction
 			}
@@ -651,8 +659,11 @@ func (c *CPU) stepFromInsn(insn uint32) error {
 					v = a % b
 				}
 			}
-		// ── Zbb/Zbs/Zba (OP) ────────────────────────────────────────────────
-		case 0x04: // Zbb: ZEXT.H
+			// ── Zbb/Zbs/Zba (OP) ────────────────────────────────────────────────
+		case 0x04: // RV32-style PACK/ZEXT.H encoding; RV64 Zbb uses PACKW below.
+			if funct3 != 4 || rs2 != 0 {
+				return ErrIllegalInstruction
+			}
 			v = a & 0xFFFF
 		case 0x05: // Zbb: MIN/MAX + Zbc: CLMUL/CLMULR/CLMULH
 			switch funct3 {
@@ -666,7 +677,7 @@ func (c *CPU) stepFromInsn(insn uint32) error {
 				v = r
 			case 2: // CLMULR
 				var r uint64
-				for i := 0; i < 63; i++ {
+				for i := 0; i < 64; i++ {
 					if (b>>i)&1 != 0 {
 						r ^= a >> (63 - i)
 					}
@@ -704,6 +715,8 @@ func (c *CPU) stepFromInsn(insn uint32) error {
 				} else {
 					v = b
 				} // MAXU
+			default:
+				return ErrIllegalInstruction
 			}
 		case 0x07: // Zicond: CZERO.EQZ / CZERO.NEZ
 			switch funct3 {
@@ -729,12 +742,12 @@ func (c *CPU) stepFromInsn(insn uint32) error {
 			case 6:
 				v = b + (a << 3)
 			}
-		case 0x14: // Zbs: BSET / Zbb: ORC.B
+		case 0x14: // Zbs: BSET
 			switch funct3 {
 			case 1:
 				v = a | (1 << (b & 63)) // BSET
-			case 5:
-				v = orcB(a) // ORC.B (rs2=7, but we check funct3)
+			default:
+				return ErrIllegalInstruction
 			}
 		case 0x20: // RV64I SUB/SRA + Zbb ANDN/ORN/XNOR
 			switch funct3 {
@@ -756,32 +769,17 @@ func (c *CPU) stepFromInsn(insn uint32) error {
 			case 5:
 				v = (a >> (b & 63)) & 1 // BEXT
 			}
-		case 0x30: // Zbb: ROL/ROR/SEXT.B/SEXT.H  (funct7=0x30, rs2 disambiguates)
+		case 0x30: // Zbb: ROL/ROR
 			switch funct3 {
 			case 1: // ROL
-				sh := b & 63
-				v = (a << sh) | (a >> (64 - sh))
+				v = uint64(bits.RotateLeft64(a, int(b&63)))
 			case 5: // ROR
-				sh := b & 63
-				v = (a >> sh) | (a << (64 - sh))
+				v = uint64(bits.RotateLeft64(a, -int(b&63)))
+			default:
+				return ErrIllegalInstruction
 			}
 		case 0x34: // Zbs: BINV
 			v = a ^ (1 << (b & 63))
-		case 0x35: // Zbb: REV8 (funct3=5, rs2=24 for RV64)
-			v = rev8(a)
-		case 0x60: // Zbb: CLZ/CTZ/CPOP/SEXT.B/SEXT.H (funct3=1, rs2 selects)
-			switch rs2 {
-			case 0:
-				v = uint64(bits.LeadingZeros64(a)) // CLZ
-			case 1:
-				v = uint64(bits.TrailingZeros64(a)) // CTZ
-			case 2:
-				v = uint64(bits.OnesCount64(a)) // CPOP
-			case 2 + 0x20: // SEXT.B (rs2=0x22, funct7=0x30 handled above — but gcc may emit differently)
-				v = uint64(int64(int8(a)))
-			case 3 + 0x20:
-				v = uint64(int64(int16(a)))
-			}
 		default: // ── RV64I ─────────────────────────────────────────────────
 			switch funct3 {
 			case 0x0:
@@ -857,8 +855,18 @@ func (c *CPU) stepFromInsn(insn uint32) error {
 			default:
 				return ErrIllegalInstruction
 			}
-		case 0x04: // Zba: ADD.UW  rd = x3 + uint64(uint32(x2))
-			c.SetReg(rd, c.Reg(rs2)+uint64(uint32(c.Reg(rs1))))
+		case 0x04:
+			switch funct3 {
+			case 0: // Zba: ADD.UW  rd = rs2 + uint64(uint32(rs1))
+				c.SetReg(rd, c.Reg(rs2)+uint64(uint32(c.Reg(rs1))))
+			case 4: // Zbb: ZEXT.H (RV64 canonical PACKW rd, rs1, x0)
+				if rs2 != 0 {
+					return ErrIllegalInstruction
+				}
+				c.SetReg(rd, uint64(uint16(c.Reg(rs1))))
+			default:
+				return ErrIllegalInstruction
+			}
 			c.pc = nextPC
 			c.retireInsn()
 			return nil
@@ -882,20 +890,9 @@ func (c *CPU) stepFromInsn(insn uint32) error {
 			sh := b32 & 0x1F
 			switch funct3 {
 			case 1:
-				v = int32(a32<<sh | a32>>(32-sh))
+				v = int32(bits.RotateLeft32(a32, int(sh)))
 			case 5:
-				v = int32(a32>>sh | a32<<(32-sh))
-			default:
-				return ErrIllegalInstruction
-			}
-		case 0x60: // Zbb: CLZW / CTZW / CPOPW
-			switch rs2 {
-			case 0:
-				v = int32(bits.LeadingZeros32(a32))
-			case 1:
-				v = int32(bits.TrailingZeros32(a32))
-			case 2:
-				v = int32(bits.OnesCount32(a32))
+				v = int32(bits.RotateLeft32(a32, -int(sh)))
 			default:
 				return ErrIllegalInstruction
 			}

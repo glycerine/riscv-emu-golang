@@ -50,7 +50,9 @@ func TestC_FLD_Basic(t *testing.T) {
 	initX[9] = oracleDataVA
 	mem := make([]byte, 8)
 	b := math.Float64bits(3.141592653589793)
-	for i := 0; i < 8; i++ { mem[i] = byte(b >> (i * 8)) }
+	for i := 0; i < 8; i++ {
+		mem[i] = byte(b >> (i * 8))
+	}
 	runOneRVCF(t, cFLD(1, 1, 0), initX, initF, mem)
 }
 
@@ -60,7 +62,9 @@ func TestC_FLD_Offset(t *testing.T) {
 	initX[9] = oracleDataVA
 	mem := make([]byte, 16)
 	b := math.Float64bits(2.718281828)
-	for i := 0; i < 8; i++ { mem[8+i] = byte(b >> (i * 8)) }
+	for i := 0; i < 8; i++ {
+		mem[8+i] = byte(b >> (i * 8))
+	}
 	runOneRVCF(t, cFLD(0, 1, 8), initX, ffregs(), mem)
 }
 
@@ -84,7 +88,9 @@ func TestC_FLDSP_Basic(t *testing.T) {
 	initX[2] = oracleDataVA + 64
 	mem := make([]byte, 128)
 	b := math.Float64bits(1.4142135623730951)
-	for i := 0; i < 8; i++ { mem[64+i] = byte(b >> (i * 8)) }
+	for i := 0; i < 8; i++ {
+		mem[64+i] = byte(b >> (i * 8))
+	}
 	runOneRVCF(t, cFLDSP(1, 0), initX, ffregs(), mem)
 }
 
@@ -101,10 +107,10 @@ func TestC_FSDSP_Basic(t *testing.T) {
 
 // ── RORIW ─────────────────────────────────────────────────────────────────
 // RORIW x1, x2, shamt: x1 = sign_extend(ror32(x2[31:0], shamt))
-// Encoding: OP-IMM-32 (0x1B), funct3=5, funct7[6:1]=0x30 (bits31:26=0x30)
+// Encoding: OP-IMM-32 (0x1B), funct3=5, funct7=0x30.
 
 func roriw(rd, rs1, shamt int) uint32 {
-	return uint32(0x60<<25|shamt<<20|rs1<<15|5<<12|rd<<7|0x1B)
+	return uint32(0x30<<25 | shamt<<20 | rs1<<15 | 5<<12 | rd<<7 | 0x1B)
 }
 
 // ── WFI ───────────────────────────────────────────────────────────────────
@@ -133,7 +139,9 @@ func runOneRVCF(t *testing.T, insn16 uint16, initX [32]uint64, initF [32]uint64,
 	elf := riscv.BuildELF(oracleCodeVA, []uint32{word0, 0x00000073})
 
 	lm := NewMachine(elf)
-	if lm == nil { t.Fatal("libriscv: NewMachine failed") }
+	if lm == nil {
+		t.Fatal("libriscv: NewMachine failed")
+	}
 	defer lm.Close()
 
 	if len(initMem) > 0 {
@@ -146,11 +154,13 @@ func runOneRVCF(t *testing.T, insn16 uint16, initX [32]uint64, initF [32]uint64,
 	lm.RunToEcall()
 	lXRegs := lm.SnapshotRegs()
 	lFRegs := lm.SnapshotFRegs()
-	lMem   := lm.SnapshotMem(0, oracleMemSize)
+	lMem := lm.SnapshotMem(0, oracleMemSize)
 
 	// Our CPU
 	mem, err := riscv.NewGuestMemory(oracleMemSize)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer mem.Free()
 	riscv.LoadELFBytes(mem, elf)
 	if len(initMem) > 0 {
@@ -160,8 +170,12 @@ func runOneRVCF(t *testing.T, insn16 uint16, initX [32]uint64, initF [32]uint64,
 	}
 	cpu := riscv.NewCPU(*mem)
 	cpu.SetPC(oracleCodeVA)
-	for r := uint8(1); r < 32; r++ { cpu.SetReg(r, initX[r]) }
-	for r := uint8(0); r < 32; r++ { cpu.SetFReg(r, initF[r]) }
+	for r := uint8(1); r < 32; r++ {
+		cpu.SetReg(r, initX[r])
+	}
+	for r := uint8(0); r < 32; r++ {
+		cpu.SetFReg(r, initF[r])
+	}
 	cpu.Step()
 
 	// Compare integer registers

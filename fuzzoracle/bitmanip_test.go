@@ -20,22 +20,26 @@ import (
 
 func brt(funct7, funct3, rd, rs1, rs2 int, opcode ...int) uint32 {
 	op := 0x33
-	if len(opcode) > 0 { op = opcode[0] }
-	return uint32(funct7<<25|rs2<<20|rs1<<15|funct3<<12|rd<<7|op)
+	if len(opcode) > 0 {
+		op = opcode[0]
+	}
+	return uint32(funct7<<25 | rs2<<20 | rs1<<15 | funct3<<12 | rd<<7 | op)
 }
 
 func bimm(funct7hi, funct3, rd, rs1, shamt int, opcode ...int) uint32 {
 	op := 0x13
-	if len(opcode) > 0 { op = opcode[0] }
-	return uint32(funct7hi<<25|shamt<<20|rs1<<15|funct3<<12|rd<<7|op)
+	if len(opcode) > 0 {
+		op = opcode[0]
+	}
+	return uint32(funct7hi<<25 | shamt<<20 | rs1<<15 | funct3<<12 | rd<<7 | op)
 }
 
 func csr(csr12, rs1, funct3, rd int) uint32 {
-	return uint32(csr12<<20|rs1<<15|funct3<<12|rd<<7|0x73)
+	return uint32(csr12<<20 | rs1<<15 | funct3<<12 | rd<<7 | 0x73)
 }
 
 func csri(csr12, uimm5, funct3, rd int) uint32 {
-	return uint32(csr12<<20|uimm5<<15|funct3<<12|rd<<7|0x73)
+	return uint32(csr12<<20 | uimm5<<15 | funct3<<12 | rd<<7 | 0x73)
 }
 
 // ── Zicsr ─────────────────────────────────────────────────────────────────
@@ -158,15 +162,15 @@ func TestROLW(t *testing.T) {
 }
 func TestSEXT_B(t *testing.T) {
 	// SEXT.B x1, x2: sign-extend byte
-	runOne(t, brt(0x30, 1, 1, 2, 2), regs(2, 0xFF), nil) // -1
+	runOne(t, bimm(0x30, 1, 1, 2, 4), regs(2, 0xFF), nil) // -1
 }
 func TestSEXT_H(t *testing.T) {
 	// SEXT.H x1, x2: sign-extend halfword
-	runOne(t, brt(0x30, 1, 1, 2, 3), regs(2, 0x8000), nil) // -32768
+	runOne(t, bimm(0x30, 1, 1, 2, 5), regs(2, 0x8000), nil) // -32768
 }
 func TestZEXT_H(t *testing.T) {
 	// ZEXT.H x1, x2: zero-extend halfword
-	runOne(t, brt(0x04, 4, 1, 2, 0), regs(2, 0xDEADBEEFFFFF8000), nil) // 0x8000
+	runOne(t, brt(0x04, 4, 1, 2, 0, 0x3B), regs(2, 0xDEADBEEFFFFF8000), nil) // 0x8000
 }
 
 // ── Zbs — single-bit instructions ─────────────────────────────────────────
@@ -236,7 +240,9 @@ func TestSRET_Illegal(t *testing.T) {
 	// SRET = 0x10200073: libriscv triggers ILLEGAL_OPERATION, we return ErrIllegalInstruction.
 	// We can't use runOne (which calls Step then compares regs) because Step errors out.
 	mem, err := riscv.NewGuestMemory(oracleMemSize)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer mem.Free()
 	elf := riscv.BuildELF(oracleCodeVA, []uint32{0x10200073, 0x00000073})
 	riscv.LoadELFBytes(mem, elf)

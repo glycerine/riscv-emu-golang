@@ -1382,7 +1382,9 @@ func (e *emitter) emitOpImm(rd, rs1 uint32, imm int64, funct3, funct7 uint32) {
 	if rd == 0 {
 		return
 	}
-	shamt := imm & 63
+	imm12 := uint32(imm) & 0xFFF
+	funct6 := imm12 >> 6
+	shamt := int64(imm12 & 63)
 
 	switch funct3 {
 	case 0: // ADDI
@@ -1398,7 +1400,6 @@ func (e *emitter) emitOpImm(rd, rs1 uint32, imm int64, funct3, funct7 uint32) {
 			e.irEm.AddImm(e.xregDst(rd), src, imm)
 		}
 	case 1: // SLLI / BSETI / BCLRI / BINVI / CLZ/CTZ/CPOP/SEXT
-		funct6 := funct7 >> 1
 		switch funct6 {
 		case 0x00: // SLLI
 			src := e.xreg(rs1)
@@ -1416,21 +1417,21 @@ func (e *emitter) emitOpImm(rd, rs1 uint32, imm int64, funct3, funct7 uint32) {
 			t := e.irEm.Tmp()
 			e.irEm.Const(t, int64(1)<<shamt)
 			e.irEm.Xor(e.xregDst(rd), src, t)
-		case 0x30: // CLZ/CTZ/CPOP/SEXT.B/SEXT.H
-			switch shamt {
-			case 0: // CLZ
+		case 0x18: // CLZ/CTZ/CPOP/SEXT.B/SEXT.H
+			switch imm12 {
+			case 0x600: // CLZ
 				src := e.xreg(rs1)
 				e.irEm.Clz(e.xregDst(rd), src, I64)
-			case 1: // CTZ
+			case 0x601: // CTZ
 				src := e.xreg(rs1)
 				e.irEm.Ctz(e.xregDst(rd), src, I64)
-			case 2: // CPOP
+			case 0x602: // CPOP
 				src := e.xreg(rs1)
 				e.irEm.Popcount(e.xregDst(rd), src, I64)
-			case 0x22: // SEXT.B
+			case 0x604: // SEXT.B
 				src := e.xreg(rs1)
 				e.irEm.Sext(e.xregDst(rd), src, I8)
-			case 0x23: // SEXT.H
+			case 0x605: // SEXT.H
 				src := e.xreg(rs1)
 				e.irEm.Sext(e.xregDst(rd), src, I16)
 			default:
@@ -1448,26 +1449,30 @@ func (e *emitter) emitOpImm(rd, rs1 uint32, imm int64, funct3, funct7 uint32) {
 	case 4: // XORI
 		src := e.xreg(rs1)
 		e.irEm.XorImm(e.xregDst(rd), src, imm)
-	case 5: // SRLI/SRAI / BEXTI / RORI / ORC.B / REV8 / ZEXT.H
-		funct6 := funct7 >> 1
-		switch funct6 {
-		case 0x00: // SRLI
+	case 5: // SRLI/SRAI / BEXTI / RORI / ORC.B / REV8
+		switch {
+		case funct6 == 0x00: // SRLI
 			src := e.xreg(rs1)
 			e.irEm.ShrImm(e.xregDst(rd), src, shamt)
-		case 0x10: // SRAI
+		case funct6 == 0x10: // SRAI
 			src := e.xreg(rs1)
 			e.irEm.SarImm(e.xregDst(rd), src, shamt)
-		case 0x12: // BEXTI
+		case funct6 == 0x12: // BEXTI
 			t := e.irEm.Tmp()
 			e.irEm.ShrImm(t, e.xreg(rs1), shamt)
 			e.irEm.AndImm(e.xregDst(rd), t, 1)
-		case 0x18: // RORI
-			t1 := e.irEm.Tmp()
-			e.irEm.ShrImm(t1, e.xreg(rs1), shamt)
-			t2 := e.irEm.Tmp()
-			e.irEm.ShlImm(t2, e.xreg(rs1), 64-shamt)
-			e.irEm.Or(e.xregDst(rd), t1, t2)
-		case 0x0A: // ORC.B — each byte becomes 0xFF if nonzero, 0x00 if zero
+		case funct6 == 0x18: // RORI
+			src := e.xreg(rs1)
+			if shamt == 0 {
+				e.irEm.Mov(e.xregDst(rd), src)
+			} else {
+				t1 := e.irEm.Tmp()
+				e.irEm.ShrImm(t1, src, shamt)
+				t2 := e.irEm.Tmp()
+				e.irEm.ShlImm(t2, src, 64-shamt)
+				e.irEm.Or(e.xregDst(rd), t1, t2)
+			}
+		case imm12 == 0x287: // ORC.B — each byte becomes 0xFF if nonzero, 0x00 if zero
 			src := e.xreg(rs1)
 			dst := e.xregDst(rd)
 			e.irEm.Const(dst, 0)
@@ -1484,12 +1489,9 @@ func (e *emitter) emitOpImm(rd, rs1 uint32, imm int64, funct3, funct7 uint32) {
 				e.irEm.ShlImm(mask, mask, int64(i*8))
 				e.irEm.Or(dst, dst, mask)
 			}
-		case 0x1A: // REV8 — byte-swap via BSWAP
+		case imm12 == 0x6B8: // REV8 — byte-swap via BSWAP
 			src := e.xreg(rs1)
 			e.irEm.Bswap(e.xregDst(rd), src)
-		case 0x02: // ZEXT.H
-			src := e.xreg(rs1)
-			e.irEm.Zext(e.xregDst(rd), src, I16)
 		default:
 			e.terminated = true
 		}
@@ -1548,7 +1550,10 @@ func (e *emitter) emitOpImm32(rd, rs1 uint32, imm int64, funct3, funct7 uint32) 
 	if rd == 0 {
 		return
 	}
-	shamt := imm & 31
+	imm12 := uint32(imm) & 0xFFF
+	funct6 := imm12 >> 6
+	shamt := int64(imm12 & 31)
+	shamt6 := int64(imm12 & 63)
 
 	switch funct3 {
 	case 0: // ADDIW
@@ -1562,24 +1567,39 @@ func (e *emitter) emitOpImm32(rd, rs1 uint32, imm int64, funct3, funct7 uint32) 
 			e.irEm.AddImm(t, src, imm)
 			e.irEm.Sext(dst, t, I32)
 		}
-	case 1: // SLLIW / SLLI.UW
-		if funct7 == 0x04 { // SLLI.UW
-			t := e.irEm.Tmp()
-			e.irEm.Zext(t, e.xreg(rs1), I32)
-			e.irEm.ShlImm(e.xregDst(rd), t, shamt)
-		} else { // SLLIW
+	case 1: // SLLIW / SLLI.UW / CLZW / CTZW / CPOPW
+		switch {
+		case funct7 == 0x00: // SLLIW
 			t := e.irEm.Tmp()
 			e.irEm.ShlImm(t, e.xreg(rs1), shamt)
 			e.irEm.Sext(e.xregDst(rd), t, I32)
+		case funct6 == 0x02: // SLLI.UW
+			t := e.irEm.Tmp()
+			e.irEm.Zext(t, e.xreg(rs1), I32)
+			e.irEm.ShlImm(e.xregDst(rd), t, shamt6)
+		case imm12 == 0x600: // CLZW
+			t := e.irEm.Tmp()
+			e.irEm.Zext(t, e.xreg(rs1), I32)
+			e.irEm.Clz(e.xregDst(rd), t, I32)
+		case imm12 == 0x601: // CTZW
+			t := e.irEm.Tmp()
+			e.irEm.Zext(t, e.xreg(rs1), I32)
+			e.irEm.Ctz(e.xregDst(rd), t, I32)
+		case imm12 == 0x602: // CPOPW
+			t := e.irEm.Tmp()
+			e.irEm.Zext(t, e.xreg(rs1), I32)
+			e.irEm.Popcount(e.xregDst(rd), t, I32)
+		default:
+			e.terminated = true
 		}
 	case 5: // SRLIW / SRAIW / RORIW
-		switch funct7 >> 1 {
+		switch funct7 {
 		case 0x00: // SRLIW
 			t := e.irEm.Tmp()
 			e.irEm.Zext(t, e.xreg(rs1), I32) // zero-extend to get uint32
 			e.irEm.ShrImm(t, t, shamt)
 			e.irEm.Sext(e.xregDst(rd), t, I32)
-		case 0x10: // SRAIW
+		case 0x20: // SRAIW
 			t := e.irEm.Tmp()
 			e.irEm.Sext(t, e.xreg(rs1), I32) // sign-extend to get int32
 			e.irEm.SarImm(t, t, shamt)
@@ -1603,6 +1623,58 @@ func (e *emitter) emitOpImm32(rd, rs1 uint32, imm int64, funct3, funct7 uint32) 
 }
 
 // ── OP (R-type) ────────────────────────────────────────────────────────
+
+func (e *emitter) emitClmul(dst, a, b VReg, mode uint32) {
+	acc := e.irEm.Tmp()
+	e.irEm.Const(acc, 0)
+	for i := 0; i < 64; i++ {
+		var shift int
+		switch mode {
+		case 1: // CLMUL
+			shift = i
+		case 2: // CLMULR
+			shift = 63 - i
+		case 3: // CLMULH
+			if i == 0 {
+				continue
+			}
+			shift = 64 - i
+		default:
+			e.terminated = true
+			return
+		}
+
+		bit := e.irEm.Tmp()
+		if i == 0 {
+			e.irEm.Mov(bit, b)
+		} else {
+			e.irEm.ShrImm(bit, b, int64(i))
+		}
+		e.irEm.AndImm(bit, bit, 1)
+
+		mask := e.irEm.Tmp()
+		e.irEm.Neg(mask, bit)
+
+		term := e.irEm.Tmp()
+		switch mode {
+		case 1:
+			if shift == 0 {
+				e.irEm.Mov(term, a)
+			} else {
+				e.irEm.ShlImm(term, a, int64(shift))
+			}
+		case 2, 3:
+			if shift == 0 {
+				e.irEm.Mov(term, a)
+			} else {
+				e.irEm.ShrImm(term, a, int64(shift))
+			}
+		}
+		e.irEm.And(term, term, mask)
+		e.irEm.Xor(acc, acc, term)
+	}
+	e.irEm.Mov(dst, acc)
+}
 
 func (e *emitter) emitOp(rd, rs1, rs2, funct3, funct7 uint32) {
 	if rd == 0 {
@@ -1670,10 +1742,20 @@ func (e *emitter) emitOp(rd, rs1, rs2, funct3, funct7 uint32) {
 		case 7: // REMU — guarded: div-by-zero → dividend
 			e.emitDivGuarded(dst, a, b, false, true)
 		}
-	case 0x04: // Zbb: ZEXT.H (R-type encoding funct7=0x04, funct3 can vary)
-		e.irEm.Zext(dst, a, I16)
+	case 0x04: // RV32-style PACK/ZEXT.H encoding; RV64 Zbb uses PACKW below.
+		if funct3 == 4 && rs2 == 0 {
+			e.irEm.Zext(dst, a, I16)
+		} else {
+			e.terminated = true
+		}
 	case 0x05: // MIN/MAX (Zbb) + CLMUL (Zbc)
 		switch funct3 {
+		case 1: // CLMUL
+			e.emitClmul(dst, a, b, 1)
+		case 2: // CLMULR
+			e.emitClmul(dst, a, b, 2)
+		case 3: // CLMULH
+			e.emitClmul(dst, a, b, 3)
 		case 4: // MIN
 			takeA := e.irEm.NewLabel()
 			done := e.irEm.NewLabel()
@@ -1889,10 +1971,21 @@ func (e *emitter) emitOp32(rd, rs1, rs2, funct3, funct7 uint32) {
 		default:
 			e.terminated = true
 		}
-	case 0x04: // Zba: ADD.UW
-		t := e.irEm.Tmp()
-		e.irEm.Zext(t, a, I32)
-		e.irEm.Add(dst, b, t)
+	case 0x04:
+		switch funct3 {
+		case 0: // Zba: ADD.UW
+			t := e.irEm.Tmp()
+			e.irEm.Zext(t, a, I32)
+			e.irEm.Add(dst, b, t)
+		case 4: // Zbb: ZEXT.H (RV64 canonical PACKW rd, rs1, x0)
+			if rs2 == 0 {
+				e.irEm.Zext(dst, a, I16)
+			} else {
+				e.terminated = true
+			}
+		default:
+			e.terminated = true
+		}
 	case 0x30: // Zbb: ROLW/RORW
 		switch funct3 {
 		case 1: // ROLW
@@ -3233,7 +3326,7 @@ func (e *emitter) emitRVC_Q1(insn uint16, funct3 uint16) {
 			e.emitOpImm(rs1, rs1, shamt, 5, 0)
 		case 0b01:
 			shamt := int64(((insn>>12)&1)<<5 | (insn>>2)&0x1F)
-			e.emitOpImm(rs1, rs1, shamt, 5, 0x20)
+			e.emitOpImm(rs1, rs1, 0x400|shamt, 5, 0x20)
 		case 0b10:
 			imm := rvcSignedImm6(insn)
 			e.emitOpImm(rs1, rs1, imm, 7, 0)

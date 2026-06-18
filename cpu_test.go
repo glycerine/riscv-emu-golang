@@ -258,7 +258,7 @@ func TestRORW_Spec(t *testing.T) {
 func TestCLZ_Spec(t *testing.T) {
 	mem, _ := NewGuestMemory(Size64MB)
 	defer mem.Free()
-	cpu := setupM(t, mem, brtD(0x60, 1, 1, 2, 0, 0x33), 0x0001000000000000, 0)
+	cpu := setupM(t, mem, ienc(opOPIMM, 1, 1, 2, 0x600), 0x0001000000000000, 0)
 	if cpu.Reg(1) != 15 {
 		t.Errorf("CLZ: got %d want 15", cpu.Reg(1))
 	}
@@ -266,7 +266,7 @@ func TestCLZ_Spec(t *testing.T) {
 func TestCLZ_Zero_Spec(t *testing.T) {
 	mem, _ := NewGuestMemory(Size64MB)
 	defer mem.Free()
-	cpu := setupM(t, mem, brtD(0x60, 1, 1, 2, 0, 0x33), 0, 0)
+	cpu := setupM(t, mem, ienc(opOPIMM, 1, 1, 2, 0x600), 0, 0)
 	if cpu.Reg(1) != 64 {
 		t.Errorf("CLZ(0): got %d want 64", cpu.Reg(1))
 	}
@@ -274,7 +274,7 @@ func TestCLZ_Zero_Spec(t *testing.T) {
 func TestCTZ_Spec(t *testing.T) {
 	mem, _ := NewGuestMemory(Size64MB)
 	defer mem.Free()
-	cpu := setupM(t, mem, brtD(0x60, 1, 1, 2, 1, 0x33), 0x100, 0)
+	cpu := setupM(t, mem, ienc(opOPIMM, 1, 1, 2, 0x601), 0x100, 0)
 	if cpu.Reg(1) != 8 {
 		t.Errorf("CTZ: got %d want 8", cpu.Reg(1))
 	}
@@ -282,7 +282,7 @@ func TestCTZ_Spec(t *testing.T) {
 func TestCTZ_Zero_Spec(t *testing.T) {
 	mem, _ := NewGuestMemory(Size64MB)
 	defer mem.Free()
-	cpu := setupM(t, mem, brtD(0x60, 1, 1, 2, 1, 0x33), 0, 0)
+	cpu := setupM(t, mem, ienc(opOPIMM, 1, 1, 2, 0x601), 0, 0)
 	if cpu.Reg(1) != 64 {
 		t.Errorf("CTZ(0): got %d want 64", cpu.Reg(1))
 	}
@@ -290,15 +290,31 @@ func TestCTZ_Zero_Spec(t *testing.T) {
 func TestCPOP_Spec(t *testing.T) {
 	mem, _ := NewGuestMemory(Size64MB)
 	defer mem.Free()
-	cpu := setupM(t, mem, brtD(0x60, 1, 1, 2, 2, 0x33), 0xFF00FF00FF00FF00, 0)
+	cpu := setupM(t, mem, ienc(opOPIMM, 1, 1, 2, 0x602), 0xFF00FF00FF00FF00, 0)
 	if cpu.Reg(1) != 32 {
 		t.Errorf("CPOP: got %d want 32", cpu.Reg(1))
+	}
+}
+func TestSEXT_B_Spec(t *testing.T) {
+	mem, _ := NewGuestMemory(Size64MB)
+	defer mem.Free()
+	cpu := setupM(t, mem, ienc(opOPIMM, 1, 1, 2, 0x604), 0x80, 0)
+	if cpu.Reg(1) != 0xFFFFFFFFFFFFFF80 {
+		t.Errorf("SEXT.B: got 0x%X", cpu.Reg(1))
+	}
+}
+func TestSEXT_H_Spec(t *testing.T) {
+	mem, _ := NewGuestMemory(Size64MB)
+	defer mem.Free()
+	cpu := setupM(t, mem, ienc(opOPIMM, 1, 1, 2, 0x605), 0x8000, 0)
+	if cpu.Reg(1) != 0xFFFFFFFFFFFF8000 {
+		t.Errorf("SEXT.H: got 0x%X", cpu.Reg(1))
 	}
 }
 func TestCLZW_Spec(t *testing.T) {
 	mem, _ := NewGuestMemory(Size64MB)
 	defer mem.Free()
-	cpu := setupM(t, mem, brtD(0x60, 1, 1, 2, 0, 0x3B), 0x00010000, 0)
+	cpu := setupM(t, mem, ienc(opOPIMM32, 1, 1, 2, 0x600), 0x00010000, 0)
 	if cpu.Reg(1) != 15 {
 		t.Errorf("CLZW: got %d want 15", cpu.Reg(1))
 	}
@@ -306,7 +322,7 @@ func TestCLZW_Spec(t *testing.T) {
 func TestCTZW_Spec(t *testing.T) {
 	mem, _ := NewGuestMemory(Size64MB)
 	defer mem.Free()
-	cpu := setupM(t, mem, brtD(0x60, 1, 1, 2, 1, 0x3B), 0x100, 0)
+	cpu := setupM(t, mem, ienc(opOPIMM32, 1, 1, 2, 0x601), 0x100, 0)
 	if cpu.Reg(1) != 8 {
 		t.Errorf("CTZW: got %d want 8", cpu.Reg(1))
 	}
@@ -314,15 +330,31 @@ func TestCTZW_Spec(t *testing.T) {
 func TestCPOPW_Spec(t *testing.T) {
 	mem, _ := NewGuestMemory(Size64MB)
 	defer mem.Free()
-	cpu := setupM(t, mem, brtD(0x60, 1, 1, 2, 2, 0x3B), 0xFFFF0000, 0)
+	cpu := setupM(t, mem, ienc(opOPIMM32, 1, 1, 2, 0x602), 0xFFFF0000, 0)
 	if cpu.Reg(1) != 16 {
 		t.Errorf("CPOPW: got %d want 16", cpu.Reg(1))
+	}
+}
+func TestZEXT_H_Spec(t *testing.T) {
+	mem, _ := NewGuestMemory(Size64MB)
+	defer mem.Free()
+	cpu := setupM(t, mem, brtD(0x04, 4, 1, 2, 0, 0x3B), 0x12345678DEADBEEF, 0)
+	if cpu.Reg(1) != 0xBEEF {
+		t.Errorf("ZEXT.H: got 0x%X want 0xBEEF", cpu.Reg(1))
+	}
+}
+func TestSLLI_UW_Shift63(t *testing.T) {
+	mem, _ := NewGuestMemory(Size64MB)
+	defer mem.Free()
+	cpu := setupM(t, mem, ienc(opOPIMM32, 1, 1, 2, 0x0BF), 1, 0)
+	if cpu.Reg(1) != 0x8000000000000000 {
+		t.Errorf("SLLI.UW shamt=63: got 0x%X", cpu.Reg(1))
 	}
 }
 func TestORC_B_Spec(t *testing.T) {
 	mem, _ := NewGuestMemory(Size64MB)
 	defer mem.Free()
-	cpu := setupM(t, mem, brtD(0x14, 5, 1, 2, 7, 0x33), 0x00FF0100000000AB, 0)
+	cpu := setupM(t, mem, ienc(opOPIMM, 5, 1, 2, 0x287), 0x00FF0100000000AB, 0)
 	want := uint64(0x00FFFF00000000FF)
 	if cpu.Reg(1) != want {
 		t.Errorf("ORC.B: got 0x%016X want 0x%016X", cpu.Reg(1), want)
@@ -331,7 +363,7 @@ func TestORC_B_Spec(t *testing.T) {
 func TestREV8_Spec(t *testing.T) {
 	mem, _ := NewGuestMemory(Size64MB)
 	defer mem.Free()
-	cpu := setupM(t, mem, brtD(0x35, 5, 1, 2, 24, 0x33), 0x0102030405060708, 0)
+	cpu := setupM(t, mem, ienc(opOPIMM, 5, 1, 2, 0x6B8), 0x0102030405060708, 0)
 	want := uint64(0x0807060504030201)
 	if cpu.Reg(1) != want {
 		t.Errorf("REV8: got 0x%016X want 0x%016X", cpu.Reg(1), want)
@@ -341,7 +373,7 @@ func TestREV8_Spec(t *testing.T) {
 // ── RORIW (Zbb) — not supported by libriscv oracle ────────────────────────
 
 func roriw_enc(rd, rs1, shamt int) uint32 {
-	return uint32(0x60<<25 | shamt<<20 | rs1<<15 | 5<<12 | rd<<7 | 0x1B)
+	return uint32(0x30<<25 | shamt<<20 | rs1<<15 | 5<<12 | rd<<7 | 0x1B)
 }
 
 func TestRORIW_Basic(t *testing.T) {
@@ -424,10 +456,10 @@ func TestCLMULH_Basic(t *testing.T) {
 func TestCLMULR_Basic(t *testing.T) {
 	mem, _ := NewGuestMemory(Size64MB)
 	defer mem.Free()
-	a, b := uint64(0xDEADBEEFCAFEBABE), uint64(0x123456789ABCDEF0)
+	a, b := uint64(0xDEADBEEFCAFEBABE), uint64(0x923456789ABCDEF0)
 	cpu := setupM(t, mem, brtD(0x05, 2, 1, 2, 3, 0x33), a, b)
 	var r uint64
-	for i := 0; i < 63; i++ {
+	for i := 0; i < 64; i++ {
 		if (b>>i)&1 != 0 {
 			r ^= a >> (63 - i)
 		}
