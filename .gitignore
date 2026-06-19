@@ -19,3 +19,4 @@ debug_libriscv_dir/
 vizjit_debug_dir/
 *.o
 *.a
+xendor/go1.26.4.linux-riscv64

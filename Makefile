@@ -1060,7 +1060,7 @@ build-slim-linux:
 	@# leaves out alot of hardware drivers we do not need. 
 	@# Boots in < 8 seconds on the intrepreter--very nice.
 	cd ~/linux && PATH='$(OUR_LINUX)/linux-host-tools:/usr/local/opt/llvm/bin:/usr/local/bin:$(PATH)' \
-	gmake ARCH=riscv LLVM=1 \
+	gmake -j6 ARCH=riscv LLVM=1 \
 	HOSTCFLAGS=\
 	'-I$(OUR_LINUX)/linux-host-elf-include -include $(OUR_LINUX)/linux-host-elf-include/darwin_compat.h' \
 	olddefconfig Image savedefconfig && \
