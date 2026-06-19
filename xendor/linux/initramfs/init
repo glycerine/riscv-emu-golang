@@ -3,11 +3,12 @@ mount -t proc none /proc
 mount -t sysfs none /sys
 mount -t devtmpfs none /dev 2>/dev/null || true
 
-mkdir -p /bin /sbin /usr/bin /usr/sbin
+mkdir -p /bin /sbin /usr/bin /usr/sbin /tmp
 mkdir -p /host
 mount -t hostfs none /host -o /
 
 /bin/busybox --install -s
+chmod 1777 /tmp
 
 # Bring up networking only when a virtio-net interface has actually bound.
 # Keep this bounded and in the background so boot reaches a shell even if DHCP

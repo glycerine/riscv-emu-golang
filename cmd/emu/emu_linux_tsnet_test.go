@@ -29,10 +29,12 @@ func TestRunEmuBiosFWDynamicHandBuiltLinuxEmunetNetupGatewaySmoke(t *testing.T) 
 	const doneMarker = "EMUNET-SMOKE-42"
 	script := strings.Join([]string{
 		"set -e",
-		"netup",
+		"i=0",
+		"while [ $i -lt 10 ]; do ifconfig eth0 | grep -q 10.77.0.2 && break; i=$((i + 1)); sleep 1; done",
 		"ifconfig eth0",
 		"route -n",
 		"cat /etc/resolv.conf",
+		"cat /tmp/netup.log",
 		"ping -c 1 10.77.0.1",
 		"echo EMUNET-SMOKE-4''2",
 	}, "\n") + "\n"
