@@ -23,7 +23,7 @@ import (
 )
 
 const (
-	defaultTailemuSubdir    = ".tailemu"
+	defaultEmunetSubdir     = ".emunet"
 	defaultTsnetStateSubdir = "riscv-emu"
 
 	etherTypeIPv4 = uint16(0x0800)
@@ -981,14 +981,14 @@ func tsnetDir() string {
 	if v := os.Getenv("RISCV_EMU_TSNET_DIR"); v != "" {
 		return v
 	}
-	return filepath.Join(tailemuDir(), defaultTsnetStateSubdir)
+	return filepath.Join(emunetDir(), defaultTsnetStateSubdir)
 }
 
-func tailemuDir() string {
+func emunetDir() string {
 	if home := os.Getenv("HOME"); home != "" {
-		return filepath.Join(home, defaultTailemuSubdir)
+		return filepath.Join(home, defaultEmunetSubdir)
 	}
-	return filepath.Join(os.TempDir(), defaultTailemuSubdir)
+	return filepath.Join(os.TempDir(), defaultEmunetSubdir)
 }
 
 func tsnetOpLogPath() string {
@@ -1000,11 +1000,11 @@ func tsnetOpLogPath() string {
 }
 
 func emunetLeaderOpLogLinkPath() string {
-	return filepath.Join(tailemuDir(), "oplog.leader.lnk")
+	return filepath.Join(emunetDir(), "oplog.leader.lnk")
 }
 
 func writeEmunetLeaderPIDFile() string {
-	dir := tailemuDir()
+	dir := emunetDir()
 	name := fmt.Sprintf("leader.%d", os.Getpid())
 	path := filepath.Join(dir, name)
 	if err := os.MkdirAll(dir, 0700); err != nil {

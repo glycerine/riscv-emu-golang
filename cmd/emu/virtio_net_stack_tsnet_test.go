@@ -654,7 +654,7 @@ func TestTsnetVirtioStackEmunetCounterSnapshotsDuringTraffic(t *testing.T) {
 func TestTsnetDirDefaultsToHostPersistentStateDir(t *testing.T) {
 	t.Setenv("RISCV_EMU_TSNET_DIR", "")
 	t.Setenv("HOME", "/tmp/riscv-emu-home")
-	want := "/tmp/riscv-emu-home/.tailemu/riscv-emu"
+	want := "/tmp/riscv-emu-home/.emunet/riscv-emu"
 	if got := tsnetDir(); got != want {
 		t.Fatalf("tsnetDir default = %q, want %q", got, want)
 	}
@@ -718,7 +718,7 @@ func TestUpdateEmunetLeaderOpLogLinkPointsToCurrentOpLog(t *testing.T) {
 
 	appendTsnetOpLog("leader_ready")
 	link := updateEmunetLeaderOpLogLink()
-	wantLink := filepath.Join(home, ".tailemu", "oplog.leader.lnk")
+	wantLink := filepath.Join(home, ".emunet", "oplog.leader.lnk")
 	if link != wantLink {
 		t.Fatalf("leader oplog link = %q, want %q", link, wantLink)
 	}
@@ -762,7 +762,7 @@ func TestUpdateEmunetLeaderOpLogLinkReplacesRegularFile(t *testing.T) {
 func TestWriteEmunetLeaderPIDFileReplacesStaleLeaderFiles(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	dir := tailemuDir()
+	dir := emunetDir()
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		t.Fatal(err)
 	}
