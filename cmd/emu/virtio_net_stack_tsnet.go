@@ -129,9 +129,7 @@ func newTsnetVirtioStack(cfg EmuConfig, directTailnetGuest bool) (*tsnetVirtioSt
 		AuthKey:   os.Getenv("TS_AUTHKEY"),
 		Ephemeral: ephemeral,
 		Tun:       stack.tun,
-		UserLogf: func(format string, args ...any) {
-			fmt.Fprintf(os.Stderr, "tsnet: "+format+"\n", args...)
-		},
+		UserLogf:  tsnetUserLogf,
 	}
 	if err := stack.srv.Start(); err != nil {
 		appendTsnetOpLog("start_error state_dir=%q error=%q", stateDir, err)
@@ -228,6 +226,7 @@ func (s *emunetVirtioStack) promoteToLeader(ctx context.Context, cfg EmuConfig, 
 		core.attachVirtioNet(dev)
 	}
 	writeEmunetLeaderPIDFile()
+	updateEmunetLeaderOpLogLink()
 	appendTsnetOpLog("emunet_election role=leader reason=%q addr=%q peer_url=%q", reason, ln.Addr().String(), s.node.PeerURL())
 	appendTsnetOpLog("emunet_dns_start addr=%q leader_url=%q", ln.Addr().String(), s.node.PeerURL())
 	return nil
@@ -1000,6 +999,10 @@ func tsnetOpLogPath() string {
 	return filepath.Join(os.TempDir(), ".local", "state", "emunet", name)
 }
 
+func emunetLeaderOpLogLinkPath() string {
+	return filepath.Join(tailemuDir(), "oplog.leader.lnk")
+}
+
 func writeEmunetLeaderPIDFile() string {
 	dir := tailemuDir()
 	name := fmt.Sprintf("leader.%d", os.Getpid())
@@ -1028,6 +1031,42 @@ func writeEmunetLeaderPIDFile() string {
 	}
 	appendTsnetOpLog("emunet_leader_pidfile path=%q", path)
 	return path
+}
+
+func updateEmunetLeaderOpLogLink() string {
+	link := emunetLeaderOpLogLinkPath()
+	target := tsnetOpLogPath()
+	if err := os.MkdirAll(filepath.Dir(link), 0700); err != nil {
+		appendTsnetOpLog("emunet_leader_oplog_link_error path=%q target=%q error=%q", link, target, err)
+		return link
+	}
+
+	tmp := filepath.Join(filepath.Dir(link), fmt.Sprintf(".oplog.leader.lnk.%d.tmp", os.Getpid()))
+	_ = os.Remove(tmp)
+	if err := os.Symlink(target, tmp); err != nil {
+		appendTsnetOpLog("emunet_leader_oplog_link_error path=%q target=%q error=%q", link, target, err)
+		return link
+	}
+	if err := os.Remove(link); err != nil && !os.IsNotExist(err) {
+		_ = os.Remove(tmp)
+		appendTsnetOpLog("emunet_leader_oplog_link_error path=%q target=%q error=%q", link, target, err)
+		return link
+	}
+	if err := os.Rename(tmp, link); err != nil {
+		_ = os.Remove(tmp)
+		appendTsnetOpLog("emunet_leader_oplog_link_error path=%q target=%q error=%q", link, target, err)
+		return link
+	}
+	appendTsnetOpLog("emunet_leader_oplog_link path=%q target=%q", link, target)
+	return link
+}
+
+func tsnetUserLogf(format string, args ...any) {
+	msg := fmt.Sprintf(format, args...)
+	for _, line := range strings.Split(strings.TrimRight(msg, "\n"), "\n") {
+		appendTsnetOpLog("tsnet_user %s", line)
+	}
+	fmt.Fprintf(os.Stderr, "tsnet: "+format+"\n", args...)
 }
 
 func appendTsnetOpLog(format string, args ...any) {

@@ -693,6 +693,72 @@ func TestTsnetOpLogDefaultsToPerProcessEmunetStateDir(t *testing.T) {
 	}
 }
 
+func TestTsnetUserLogfAppendsUserVisibleLinesToOpLog(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	tsnetUserLogf("auth url: %s\nstatus: %s", "https://login.tailscale.com/a/example", "waiting")
+
+	got, err := os.ReadFile(tsnetOpLogPath())
+	if err != nil {
+		t.Fatalf("read oplog: %v", err)
+	}
+	text := string(got)
+	if !strings.Contains(text, "tsnet_user auth url: https://login.tailscale.com/a/example") {
+		t.Fatalf("oplog missing auth URL line: %q", text)
+	}
+	if !strings.Contains(text, "tsnet_user status: waiting") {
+		t.Fatalf("oplog missing second user log line: %q", text)
+	}
+}
+
+func TestUpdateEmunetLeaderOpLogLinkPointsToCurrentOpLog(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	appendTsnetOpLog("leader_ready")
+	link := updateEmunetLeaderOpLogLink()
+	wantLink := filepath.Join(home, ".tailemu", "oplog.leader.lnk")
+	if link != wantLink {
+		t.Fatalf("leader oplog link = %q, want %q", link, wantLink)
+	}
+	target, err := os.Readlink(link)
+	if err != nil {
+		t.Fatalf("read leader oplog symlink: %v", err)
+	}
+	if want := tsnetOpLogPath(); target != want {
+		t.Fatalf("leader oplog symlink target = %q, want %q", target, want)
+	}
+	got, err := os.ReadFile(link)
+	if err != nil {
+		t.Fatalf("read leader oplog through symlink: %v", err)
+	}
+	if !strings.Contains(string(got), "leader_ready") {
+		t.Fatalf("leader oplog symlink did not resolve to current oplog: %q", got)
+	}
+}
+
+func TestUpdateEmunetLeaderOpLogLinkReplacesRegularFile(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	link := emunetLeaderOpLogLinkPath()
+	if err := os.MkdirAll(filepath.Dir(link), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(link, []byte("keep me\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	updateEmunetLeaderOpLogLink()
+	target, err := os.Readlink(link)
+	if err != nil {
+		t.Fatalf("read leader oplog symlink: %v", err)
+	}
+	if want := tsnetOpLogPath(); target != want {
+		t.Fatalf("leader oplog symlink target = %q, want %q", target, want)
+	}
+}
+
 func TestWriteEmunetLeaderPIDFileReplacesStaleLeaderFiles(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
