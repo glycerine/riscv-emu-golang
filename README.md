@@ -14,8 +14,10 @@ in hermitic deterministic mode if desired for DST testing.
 Idle emu yield to the host OS, so sit at 1% cpu when
 doing nothing (under real network / non-deterministic mode).
 
-Our interpeter's floating point emulation was verified green on 
-John R. Hauser's Berkeley TestFloat/SoftFloat test suite.
+Our interpeter's floating point implimentation is verified green on 
+John R. Hauser's Berkeley TestFloat/SoftFloat test suite;
+https://www.jhauser.us/arithmetic/TestFloat.html
+which is vendored in. "make test-softfloat" to run.
 
 * News 2026 June 17:
 
