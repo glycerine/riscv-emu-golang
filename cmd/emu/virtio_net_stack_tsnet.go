@@ -606,7 +606,7 @@ func (s *tsnetVirtioStack) waitTsnetUp(ctx context.Context) {
 	status, err := s.srv.Up(ctx)
 	if err != nil {
 		if ctx.Err() == nil {
-			fmt.Fprintf(os.Stderr, "tsnet: up: %v\n", err)
+			writeTerminalStatusf("tsnet: up: %v", err)
 			appendTsnetOpLog("up_error error=%q", err)
 		}
 		return
@@ -1087,18 +1087,18 @@ func tsnetUserLogf(format string, args ...any) {
 	for _, line := range strings.Split(strings.TrimRight(msg, "\n"), "\n") {
 		appendTsnetOpLog("tsnet_user %s", line)
 	}
-	fmt.Fprintf(os.Stderr, "tsnet: "+format+"\n", args...)
+	writeTerminalStatusf("tsnet: %s", msg)
 }
 
 func appendTsnetOpLog(format string, args ...any) {
 	path := tsnetOpLogPath()
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
-		fmt.Fprintf(os.Stderr, "tsnet: oplog mkdir: %v\n", err)
+		writeTerminalStatusf("tsnet: oplog mkdir: %v", err)
 		return
 	}
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "tsnet: oplog open: %v\n", err)
+		writeTerminalStatusf("tsnet: oplog open: %v", err)
 		return
 	}
 	defer f.Close()

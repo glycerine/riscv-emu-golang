@@ -196,7 +196,7 @@ func newEmuConsoleSocket(index int, rxCh chan byte) (*emuConsoleSocket, error) {
 	}
 	go c.acceptLoop()
 	go c.writeLoop()
-	fmt.Fprintf(os.Stderr, "console%d: %s\n", index, path)
+	writeTerminalStatusf("console%d: %s", index, path)
 	return c, nil
 }
 
@@ -234,7 +234,7 @@ func (c *emuConsoleSocket) acceptLoop() {
 			select {
 			case <-c.done:
 			default:
-				fmt.Fprintf(os.Stderr, "console%d: accept: %v\n", c.index, err)
+				writeTerminalStatusf("console%d: accept: %v", c.index, err)
 			}
 			return
 		}

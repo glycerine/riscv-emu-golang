@@ -42,6 +42,14 @@ func TestRunEmuDefaultRunsGoHelloFixture(t *testing.T) {
 	}
 }
 
+func TestTerminalStatusTextUsesCRLF(t *testing.T) {
+	got := terminalStatusText("console%d: %s\nnext", 1, "/tmp/console1.sock")
+	want := "console1: /tmp/console1.sock\r\nnext\r\n"
+	if got != want {
+		t.Fatalf("terminalStatusText = %q, want %q", got, want)
+	}
+}
+
 func TestRunEmuReturnsGuestExitCodeAndStderr(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	code, err := runEmu(EmuConfig{

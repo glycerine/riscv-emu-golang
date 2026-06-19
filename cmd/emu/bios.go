@@ -420,7 +420,7 @@ func (m *biosMMIO) enableConsoleSocket(index int) {
 	}
 	console, err := newEmuConsoleSocket(index, m.uarts[index].rxCh)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "console%d: %v\n", index, err)
+		writeTerminalStatusf("console%d: %v", index, err)
 		return
 	}
 	m.uarts[index].out = console
