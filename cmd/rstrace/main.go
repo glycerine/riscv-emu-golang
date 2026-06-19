@@ -25,13 +25,15 @@ type syscallFrame struct {
 }
 
 func main() {
-	if err := run(); err != nil {
+	code, err := run()
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "rstrace: %v\n", err)
 		os.Exit(1)
 	}
+	os.Exit(code)
 }
 
-func run() error {
+func run() (int, error) {
 	var outPath string
 	var follow bool
 	var attachPID int
@@ -41,41 +43,40 @@ func run() error {
 	flag.Parse()
 
 	var out io.Writer = os.Stderr
-	var outFile *os.File
 	if outPath != "" {
 		f, err := os.Create(outPath)
 		if err != nil {
-			return err
+			return 1, err
 		}
 		defer f.Close()
-		outFile = f
 		out = f
 	}
-	_ = outFile
 
 	procs := map[int]*procState{}
+	rootPID := 0
 	if attachPID > 0 {
 		if flag.NArg() != 0 {
-			return fmt.Errorf("-p cannot be combined with a command")
+			return 1, fmt.Errorf("-p cannot be combined with a command")
 		}
 		if err := syscall.PtraceAttach(attachPID); err != nil {
-			return fmt.Errorf("attach pid %d: %w", attachPID, err)
+			return 1, fmt.Errorf("attach pid %d: %w", attachPID, err)
 		}
 		var ws syscall.WaitStatus
 		if _, err := syscall.Wait4(attachPID, &ws, 0, nil); err != nil {
-			return fmt.Errorf("wait attached pid %d: %w", attachPID, err)
+			return 1, fmt.Errorf("wait attached pid %d: %w", attachPID, err)
 		}
+		rootPID = attachPID
 		procs[attachPID] = &procState{entering: true}
 		if err := setPtraceOptions(attachPID, follow); err != nil {
-			return fmt.Errorf("set ptrace options pid %d: %w", attachPID, err)
+			return 1, fmt.Errorf("set ptrace options pid %d: %w", attachPID, err)
 		}
 		if err := syscall.PtraceSyscall(attachPID, 0); err != nil {
-			return fmt.Errorf("resume pid %d: %w", attachPID, err)
+			return 1, fmt.Errorf("resume pid %d: %w", attachPID, err)
 		}
 	} else {
 		args := flag.Args()
 		if len(args) == 0 {
-			return fmt.Errorf("usage: rstrace [-f] [-o file] command [args...]")
+			return 1, fmt.Errorf("usage: rstrace [-f] [-o file] command [args...]")
 		}
 		cmd := exec.Command(args[0], args[1:]...)
 		cmd.Stdin = os.Stdin
@@ -83,19 +84,20 @@ func run() error {
 		cmd.Stderr = os.Stderr
 		cmd.SysProcAttr = &syscall.SysProcAttr{Ptrace: true}
 		if err := cmd.Start(); err != nil {
-			return err
+			return 1, err
 		}
 		pid := cmd.Process.Pid
+		rootPID = pid
 		procs[pid] = &procState{entering: true}
 		var ws syscall.WaitStatus
 		if _, err := syscall.Wait4(pid, &ws, 0, nil); err != nil {
-			return fmt.Errorf("initial wait pid %d: %w", pid, err)
+			return 1, fmt.Errorf("initial wait pid %d: %w", pid, err)
 		}
 		if err := setPtraceOptions(pid, follow); err != nil {
-			return fmt.Errorf("set ptrace options pid %d: %w", pid, err)
+			return 1, fmt.Errorf("set ptrace options pid %d: %w", pid, err)
 		}
 		if err := syscall.PtraceSyscall(pid, 0); err != nil {
-			return fmt.Errorf("resume pid %d: %w", pid, err)
+			return 1, fmt.Errorf("resume pid %d: %w", pid, err)
 		}
 	}
 
@@ -104,9 +106,9 @@ func run() error {
 		pid, err := syscall.Wait4(-1, &ws, 0, nil)
 		if err != nil {
 			if err == syscall.ECHILD {
-				return nil
+				return 0, nil
 			}
-			return err
+			return 1, err
 		}
 		st := procs[pid]
 		if st == nil {
@@ -118,10 +120,18 @@ func run() error {
 		case ws.Exited():
 			fmt.Fprintf(out, "%d +++ exited %d +++\n", pid, ws.ExitStatus())
 			delete(procs, pid)
+			if pid == rootPID {
+				detachRemaining(procs)
+				return ws.ExitStatus(), nil
+			}
 			continue
 		case ws.Signaled():
 			fmt.Fprintf(out, "%d +++ killed by %s +++\n", pid, ws.Signal())
 			delete(procs, pid)
+			if pid == rootPID {
+				detachRemaining(procs)
+				return 128 + int(ws.Signal()), nil
+			}
 			continue
 		case !ws.Stopped():
 			continue
@@ -154,7 +164,14 @@ func run() error {
 		}
 		_ = syscall.PtraceSyscall(pid, sig)
 	}
-	return nil
+	return 0, nil
+}
+
+func detachRemaining(procs map[int]*procState) {
+	for pid := range procs {
+		_ = syscall.PtraceDetach(pid)
+		delete(procs, pid)
+	}
 }
 
 func setPtraceOptions(pid int, follow bool) error {
