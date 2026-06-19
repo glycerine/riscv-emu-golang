@@ -5,8 +5,7 @@ emu_net: RISCV64 emulator and network in Golang (Go)
 
 * News 2026 June 17:
 
-As a verification of robustness, the CPU emulator can boot a Linux kernel now;
-as of v0.3.0.
+As a verification of robustness, the CPU emulator can now boot a regular (e.g. Ubuntu) Linux kernel. See the "make linux" target. 
 
 * News 2026 June 16: 
 
