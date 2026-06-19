@@ -40,6 +40,10 @@ echo ""
 echo "=== RISC-V initramfs booted ==="
 echo ""
 if [ -e /dev/ttyS1 ]; then
-	/bin/busybox setsid /bin/sh -c 'exec /bin/sh -i </dev/ttyS1 >/dev/ttyS1 2>&1' &
+	(
+		while [ -e /dev/ttyS1 ]; do
+			/bin/busybox setsid /bin/sh -c 'exec /bin/sh -i </dev/ttyS1 >/dev/ttyS1 2>&1'
+		done
+	) &
 fi
 exec /bin/busybox setsid /bin/sh -c 'exec /bin/sh -i </dev/ttyS0 >/dev/ttyS0 2>&1'

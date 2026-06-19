@@ -549,6 +549,93 @@ func TestBiosUART1DTRDropClosesActiveConsoleSocket(t *testing.T) {
 	}
 }
 
+func TestBiosUART1DTRDropAllowsThreeSequentialConsoleSessions(t *testing.T) {
+	t.Setenv("HOME", shortTempHome(t))
+	m := newBiosMMIOWithConsoleSockets(nil, io.Discard, nil, true)
+	defer m.closeUARTOutput()
+
+	path := emuConsoleSocketPath(os.Getpid(), 1)
+	console, ok := m.uarts[1].out.(*emuConsoleSocket)
+	if !ok {
+		t.Fatalf("UART1 output = %T, want console socket", m.uarts[1].out)
+	}
+	for session := 0; session < 3; session++ {
+		conn, err := net.Dial("unix", path)
+		if err != nil {
+			t.Fatalf("session %d dial console socket: %v", session+1, err)
+		}
+
+		deadline := time.Now().Add(time.Second)
+		for console.activeConn() == nil && time.Now().Before(deadline) {
+			time.Sleep(time.Millisecond)
+		}
+		if console.activeConn() == nil {
+			_ = conn.Close()
+			t.Fatalf("session %d console socket did not accept connection", session+1)
+		}
+
+		m.storeUARTPort(1, 4, 1, uint64(uartMCRDTR))
+		out := byte('A' + session)
+		m.storeUARTPort(1, 0, 1, uint64(out))
+		buf := make([]byte, 1)
+		if _, err := io.ReadFull(conn, buf); err != nil {
+			_ = conn.Close()
+			t.Fatalf("session %d read console socket output: %v", session+1, err)
+		}
+		if buf[0] != out {
+			_ = conn.Close()
+			t.Fatalf("session %d console socket output = %q, want %q", session+1, buf[0], out)
+		}
+
+		in := byte('0' + session)
+		if _, err := conn.Write([]byte{in}); err != nil {
+			_ = conn.Close()
+			t.Fatalf("session %d write console socket input: %v", session+1, err)
+		}
+		deadline = time.Now().Add(time.Second)
+		for len(m.uarts[1].rx) < 1 && time.Now().Before(deadline) {
+			m.drainUARTInput(1)
+		}
+		if got := m.loadUARTPort(1, 0, 1); byte(got) != in {
+			_ = conn.Close()
+			t.Fatalf("session %d UART1 RBR = %q, want %q", session+1, byte(got), in)
+		}
+
+		m.storeUARTPort(1, 4, 1, 0)
+		if console.activeConn() != nil {
+			_ = conn.Close()
+			t.Fatalf("session %d console active connection still present after UART1 DTR drop", session+1)
+		}
+		if err := conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+			_ = conn.Close()
+			t.Fatalf("session %d set read deadline: %v", session+1, err)
+		}
+		var closed [1]byte
+		n, err := conn.Read(closed[:])
+		_ = conn.Close()
+		if err == nil {
+			t.Fatalf("session %d console socket read after DTR drop returned n=%d nil error, want close", session+1, n)
+		}
+	}
+}
+
+func TestInitramfsRespawnsTTY1DebugShell(t *testing.T) {
+	initScript, err := os.ReadFile("../../xendor/linux/initramfs/init")
+	if err != nil {
+		t.Fatalf("read initramfs init: %v", err)
+	}
+	text := string(initScript)
+	for _, want := range []string{
+		"if [ -e /dev/ttyS1 ]; then",
+		"while [ -e /dev/ttyS1 ]; do",
+		"exec /bin/sh -i </dev/ttyS1 >/dev/ttyS1 2>&1",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("initramfs init missing %q", want)
+		}
+	}
+}
+
 func TestBiosSysconResetInvokesCallback(t *testing.T) {
 	calls := 0
 	m := newBiosMMIO(nil, io.Discard, func() {

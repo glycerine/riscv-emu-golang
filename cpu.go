@@ -88,6 +88,7 @@ type CPU struct {
 	fcsr              uint32     // FP control/status: fflags[4:0] + frm[7:5]
 	riscvInstrBegun   uint64     // guest instruction attempts begun, including faulting attempts
 	riscvInstrRetired uint64     // RISC-V instret-style retired instructions
+	wfi               bool       // last retired instruction was WFI; consumed by BIOS machine loop
 	lastTrapCause     uint64
 	lastTrapInsnLen   uint8
 	priv              PrivilegeMode
@@ -511,6 +512,7 @@ func (c *CPU) step() error {
 // Used by runCached and other fast-path drivers to bypass the guest-memory
 // fetch that step() would otherwise redo on every visit to a given PC.
 func (c *CPU) stepFromInsn(insn uint32) error {
+	c.wfi = false
 	opcode := uint8(insn & 0x7F)
 	rd := uint8((insn >> 7) & 0x1F)
 	funct3 := uint8((insn >> 12) & 0x07)
@@ -1286,6 +1288,7 @@ func (c *CPU) stepFromInsn(insn uint32) error {
 			if c.strictCSR && (c.priv == PrivUser || (c.priv < PrivMachine && c.mstatus&statusTW != 0)) {
 				return ErrIllegalInstruction
 			}
+			c.wfi = true
 		case funct3 == 0 && insn>>25 == 0x09: // SFENCE.VMA
 			if c.strictCSR && (c.priv == PrivUser || (c.priv < PrivMachine && c.mstatus&statusTVM != 0)) {
 				return ErrIllegalInstruction
