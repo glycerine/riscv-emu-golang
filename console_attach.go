@@ -50,6 +50,12 @@ func attachEmuConsole(cfg EmuConfig) (int, error) {
 	}
 	defer conn.Close()
 
+	if cfg.AttachEnter {
+		if _, err := conn.Write([]byte{'\r'}); err != nil {
+			return 0, fmt.Errorf("attach console %d for pid %d send enter: %w", cfg.AttachConsole, cfg.AttachPID, err)
+		}
+	}
+
 	restore, raw, err := enableRawTerminal(cfg.Stdin)
 	if err != nil {
 		return 0, err
@@ -138,6 +144,7 @@ func resolveDebugAttach(cfg EmuConfig) (EmuConfig, error) {
 	cfg.Debug = false
 	cfg.AttachPID = inst.PID
 	cfg.AttachConsole = 1
+	cfg.AttachEnter = true
 	return cfg, nil
 }
 

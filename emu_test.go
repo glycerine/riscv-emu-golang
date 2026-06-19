@@ -1460,11 +1460,11 @@ func TestRunEmuDebugAttachesSingleOtherConsole1(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("runEmu debug exit = %d, want 0", code)
 	}
-	if got := <-done; got != "hello" {
-		t.Fatalf("server read = %q, want hello", got)
+	if got := <-done; got != "\rhello" {
+		t.Fatalf("server read = %q, want enter then hello", got)
 	}
-	if got := stdout.String(); got != "ack:hello" {
-		t.Fatalf("debug stdout = %q, want ack:hello", got)
+	if got := stdout.String(); got != "ack:\rhello" {
+		t.Fatalf("debug stdout = %q, want ack then enter then hello", got)
 	}
 }
 
@@ -1524,10 +1524,11 @@ func TestRunEmuDebugAttachesSingleOtherConsole1ThreeTimes(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("session %d runEmu debug exit = %d, want 0", session+1, code)
 		}
-		if got := <-done; got != msg {
-			t.Fatalf("session %d server read = %q, want %q", session+1, got, msg)
+		want := "\r" + msg
+		if got := <-done; got != want {
+			t.Fatalf("session %d server read = %q, want %q", session+1, got, want)
 		}
-		if got, want := stdout.String(), "ack:"+msg; got != want {
+		if got, want := stdout.String(), "ack:"+want; got != want {
 			t.Fatalf("session %d debug stdout = %q, want %q", session+1, got, want)
 		}
 	}

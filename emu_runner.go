@@ -63,6 +63,7 @@ type EmuConfig struct {
 	Debug               bool
 	AttachPID           int
 	AttachConsole       int
+	AttachEnter         bool
 	Args                []string
 	Env                 []string
 	Stdin               io.Reader
