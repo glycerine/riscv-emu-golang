@@ -28,7 +28,7 @@ for netdev in /sys/class/net/*; do
 done
 
 if [ -n "$EMUNET_IFACE" ]; then
-	(NET_IFACE="$EMUNET_IFACE" netup -n -T 1 -t 5 >/tmp/netup.log 2>&1 || true) &
+	NET_IFACE="$EMUNET_IFACE" netup -n -T 1 -t 5 || true
 fi
 
 # Turn on loopback interface for 127.0.0.1.

@@ -34,7 +34,6 @@ func TestRunEmuBiosFWDynamicHandBuiltLinuxEmunetNetupGatewaySmoke(t *testing.T) 
 		"ifconfig eth0",
 		"route -n",
 		"cat /etc/resolv.conf",
-		"cat /tmp/netup.log",
 		"ping -c 1 10.77.0.1",
 		"echo EMUNET-SMOKE-4''2",
 	}, "\n") + "\n"
