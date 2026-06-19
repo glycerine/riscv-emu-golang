@@ -31,7 +31,7 @@
         darwin-perf bench-wasm build-luajit-riscv \
         hello hello-elfs quad standard test-arm64-qemu \
         test-arm64-qemu-main test-arm64-qemu-lockstep \
-        bench-arm64-qemu bench-arm64-qemu-full
+        bench-arm64-qemu bench-arm64-qemu-full rstrace
 
 # ── platform detection ─────────────────────────────────────────────────────
 
@@ -102,6 +102,9 @@ GUEST_ELF   := $(GUEST_DIR)/bench_guest.elf
 GUEST_NATIVE := $(GUEST_DIR)/bench_guest.native
 GUEST_WASM   := $(GUEST_DIR)/bench_guest.wasm
 OUR_LINUX    := $(ROOT)xendor/linux-6.17-hand-built
+RSTRACE_BIN  := $(ROOT)xendor/linux/initramfs/bin/rstrace
+RSTRACE_GOCACHE ?= /tmp/riscv-emu-go-build-cache
+RSTRACE_GOMODCACHE ?= /tmp/riscv-emu-go-mod-cache
 UCB_BAR      := $(ROOT)xendor/ucb-bar
 SOFTFLOAT_BUILD := $(UCB_BAR)/SoftFloat-3e/build/Linux-x86_64-GCC
 TESTFLOAT_BUILD := $(UCB_BAR)/berkeley-testfloat-3/build/Linux-x86_64-GCC
@@ -208,6 +211,7 @@ endif
 	@echo ""
 	@echo "  Other:"
 	@echo "    make test             unit tests"
+	@echo "    make rstrace          build guest linux/riscv64 syscall tracer"
 	@echo "    make softfloat        build vendored Berkeley SoftFloat/TestFloat"
 	@echo "    make test-softfloat   stream TestFloat gold cases into cpu.go FP tests"
 	@echo "    make test-arm64-qemu           cross-build root/riscv-tests/lockstep under qemu-system-aarch64"
@@ -1019,6 +1023,14 @@ linux:
 	@# emu -mem 256MB -bios xendor/opensbi/build/platform/generic/firmware/fw_dynamic.elf -kernel xendor/linux/boot/vmlinuz-6.17.0-35-generic -initrd xendor/linux/initramfs.cpio.gz -append "console=ttyS0,115200 earlycon=uart8250,mmio,0x10000000 rdinit=/init panic=1 reboot=t init_on_alloc=0 init_on_free=0 audit=0 lsm=capability cma=0 numa=off slub_debug=- lpj=XXXXX"
 		@# Slim in-tree Image with built-in hostfs plus virtio-net MMIO.
 		emu $(EMU_IDLE) -hostio -net -mem 4GB -bios xendor/opensbi/build/platform/generic/firmware/fw_dynamic.elf -kernel xendor/linux-6.17-hand-built/Image -initrd xendor/linux/initramfs.cpio.gz -append "console=ttyS0,115200 earlycon=uart8250,mmio,0x10000000 rdinit=/init panic=1 reboot=t init_on_alloc=0 init_on_free=0 audit=0 lsm=capability cma=0 numa=off slub_debug=- lpj=XXXXX"
+
+rstrace:
+	GOOS=linux GOARCH=riscv64 CGO_ENABLED=0 \
+	GOCACHE=$(RSTRACE_GOCACHE) \
+	GOMODCACHE=$(RSTRACE_GOMODCACHE) \
+	go build -o $(RSTRACE_BIN) ./cmd/rstrace
+	@ls -lh $(RSTRACE_BIN)
+	@file $(RSTRACE_BIN) 2>/dev/null || true
 
 save-linux-config:
 	cd ~/linux && PATH=/private/tmp/linux-host-tools:/usr/local/opt/llvm/bin:/usr/local/bin:$PATH \
