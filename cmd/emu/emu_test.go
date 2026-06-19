@@ -1189,6 +1189,121 @@ func TestRunEmuListShowsLiveConsoleSocket(t *testing.T) {
 	}
 }
 
+func TestRunEmuDebugAttachesSingleOtherConsole1(t *testing.T) {
+	t.Setenv("HOME", shortTempHome(t))
+	const selfPID = 111
+	const targetPID = 222
+	installFakeEmuProcessTable(t, selfPID, map[int]bool{selfPID: true, targetPID: true})
+
+	path := emuConsoleSocketPath(targetPID, 1)
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		t.Fatal(err)
+	}
+	addr := &net.UnixAddr{Name: path, Net: "unix"}
+	ln, err := net.ListenUnix("unix", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	defer os.Remove(path)
+
+	done := make(chan string, 1)
+	go func() {
+		conn, err := ln.AcceptUnix()
+		if err != nil {
+			done <- "accept: " + err.Error()
+			return
+		}
+		defer conn.Close()
+		got, err := io.ReadAll(conn)
+		if err != nil {
+			done <- "read: " + err.Error()
+			return
+		}
+		if _, err := conn.Write([]byte("ack:" + string(got))); err != nil {
+			done <- "write: " + err.Error()
+			return
+		}
+		done <- string(got)
+	}()
+
+	var stdout bytes.Buffer
+	code, err := runEmu(EmuConfig{
+		Debug:  true,
+		Stdin:  strings.NewReader("hello"),
+		Stdout: &stdout,
+	})
+	if err != nil {
+		t.Fatalf("runEmu debug: %v", err)
+	}
+	if code != 0 {
+		t.Fatalf("runEmu debug exit = %d, want 0", code)
+	}
+	if got := <-done; got != "hello" {
+		t.Fatalf("server read = %q, want hello", got)
+	}
+	if got := stdout.String(); got != "ack:hello" {
+		t.Fatalf("debug stdout = %q, want ack:hello", got)
+	}
+}
+
+func TestResolveDebugAttachRejectsMultipleOtherEmus(t *testing.T) {
+	t.Setenv("HOME", shortTempHome(t))
+	const selfPID = 111
+	installFakeEmuProcessTable(t, selfPID, map[int]bool{222: true, 333: true})
+	for _, pid := range []int{222, 333} {
+		dir := emuInstanceDir(pid)
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(emuConsoleSocketPath(pid, 1), []byte{}, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	_, err := resolveDebugAttach(EmuConfig{Debug: true})
+	if err == nil || !strings.Contains(err.Error(), "multiple other running emu instances") {
+		t.Fatalf("resolveDebugAttach err = %v, want multiple emus error", err)
+	}
+}
+
+func TestResolveDebugAttachRejectsNoOtherEmus(t *testing.T) {
+	t.Setenv("HOME", shortTempHome(t))
+	const selfPID = 111
+	installFakeEmuProcessTable(t, selfPID, map[int]bool{selfPID: true})
+	dir := emuInstanceDir(selfPID)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(emuConsoleSocketPath(selfPID, 1), []byte{}, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := resolveDebugAttach(EmuConfig{Debug: true})
+	if err == nil || !strings.Contains(err.Error(), "no other running emu instances") {
+		t.Fatalf("resolveDebugAttach err = %v, want no other emu error", err)
+	}
+}
+
+func TestResolveDebugAttachRejectsMissingConsole1(t *testing.T) {
+	t.Setenv("HOME", shortTempHome(t))
+	const selfPID = 111
+	const targetPID = 222
+	installFakeEmuProcessTable(t, selfPID, map[int]bool{targetPID: true})
+	dir := emuInstanceDir(targetPID)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(emuConsoleSocketPath(targetPID, 2), []byte{}, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := resolveDebugAttach(EmuConfig{Debug: true})
+	if err == nil || !strings.Contains(err.Error(), "console 1 is not available") {
+		t.Fatalf("resolveDebugAttach err = %v, want missing console 1 error", err)
+	}
+}
+
 func TestRunEmuAttachConsoleCopiesBytes(t *testing.T) {
 	t.Setenv("HOME", shortTempHome(t))
 	path := emuConsoleSocketPath(os.Getpid(), 1)
@@ -1242,6 +1357,18 @@ func TestRunEmuAttachConsoleCopiesBytes(t *testing.T) {
 	if got := stdout.String(); got != "ack:hello" {
 		t.Fatalf("attach stdout = %q, want ack:hello", got)
 	}
+}
+
+func installFakeEmuProcessTable(t *testing.T, self int, alive map[int]bool) {
+	t.Helper()
+	oldCurrentPID := emuCurrentPID
+	oldProcessAlive := emuProcessAlive
+	emuCurrentPID = func() int { return self }
+	emuProcessAlive = func(pid int) bool { return alive[pid] }
+	t.Cleanup(func() {
+		emuCurrentPID = oldCurrentPID
+		emuProcessAlive = oldProcessAlive
+	})
 }
 
 func shortTempHome(t *testing.T) string {

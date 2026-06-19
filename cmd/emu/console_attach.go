@@ -17,6 +17,17 @@ import (
 
 const emuConsoleSocketSuffix = ".sock"
 
+var (
+	emuCurrentPID   = os.Getpid
+	emuProcessAlive = processAlive
+)
+
+type emuInstance struct {
+	PID      int
+	Dir      string
+	Consoles []int
+}
+
 func emuInstanceDir(pid int) string {
 	return filepath.Join(emunetDir(), fmt.Sprintf("emu.%d", pid))
 }
@@ -82,12 +93,61 @@ func listEmuInstances(w io.Writer) error {
 	if w == nil {
 		w = io.Discard
 	}
-	dirs, err := filepath.Glob(filepath.Join(emunetDir(), "emu.*"))
+	instances, err := scanEmuInstances()
 	if err != nil {
 		return err
 	}
-	sort.Strings(dirs)
 	fmt.Fprintln(w, "PID\tSTATUS\tCONSOLES\tDIR")
+	for _, inst := range instances {
+		status := "running"
+		if !emuProcessAlive(inst.PID) {
+			status = "stale"
+		}
+		if len(inst.Consoles) == 0 && status == "stale" {
+			continue
+		}
+		fmt.Fprintf(w, "%d\t%s\t%s\t%s\n", inst.PID, status, formatConsoleIndexes(inst.Consoles), inst.Dir)
+	}
+	return nil
+}
+
+func resolveDebugAttach(cfg EmuConfig) (EmuConfig, error) {
+	instances, err := scanEmuInstances()
+	if err != nil {
+		return cfg, err
+	}
+	self := emuCurrentPID()
+	var running []emuInstance
+	for _, inst := range instances {
+		if inst.PID == self || !emuProcessAlive(inst.PID) {
+			continue
+		}
+		running = append(running, inst)
+	}
+	switch len(running) {
+	case 0:
+		return cfg, fmt.Errorf("-debug found no other running emu instances")
+	case 1:
+	default:
+		return cfg, fmt.Errorf("-debug found multiple other running emu instances (%s); use -pid PID -console 1", formatEmuPIDs(running))
+	}
+	inst := running[0]
+	if !hasConsoleIndex(inst.Consoles, 1) {
+		return cfg, fmt.Errorf("-debug found emu pid %d, but console 1 is not available at %s", inst.PID, emuConsoleSocketPath(inst.PID, 1))
+	}
+	cfg.Debug = false
+	cfg.AttachPID = inst.PID
+	cfg.AttachConsole = 1
+	return cfg, nil
+}
+
+func scanEmuInstances() ([]emuInstance, error) {
+	dirs, err := filepath.Glob(filepath.Join(emunetDir(), "emu.*"))
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(dirs)
+	out := make([]emuInstance, 0, len(dirs))
 	for _, dir := range dirs {
 		base := filepath.Base(dir)
 		rawPID, ok := strings.CutPrefix(base, "emu.")
@@ -98,17 +158,30 @@ func listEmuInstances(w io.Writer) error {
 		if err != nil || pid <= 0 {
 			continue
 		}
-		status := "running"
-		if !processAlive(pid) {
-			status = "stale"
-		}
-		consoles := emuConsoleIndexes(dir)
-		if len(consoles) == 0 && status == "stale" {
-			continue
-		}
-		fmt.Fprintf(w, "%d\t%s\t%s\t%s\n", pid, status, formatConsoleIndexes(consoles), dir)
+		out = append(out, emuInstance{
+			PID:      pid,
+			Dir:      dir,
+			Consoles: emuConsoleIndexes(dir),
+		})
 	}
-	return nil
+	return out, nil
+}
+
+func hasConsoleIndex(indexes []int, want int) bool {
+	for _, idx := range indexes {
+		if idx == want {
+			return true
+		}
+	}
+	return false
+}
+
+func formatEmuPIDs(instances []emuInstance) string {
+	parts := make([]string, len(instances))
+	for i, inst := range instances {
+		parts[i] = strconv.Itoa(inst.PID)
+	}
+	return strings.Join(parts, ",")
 }
 
 func processAlive(pid int) bool {
