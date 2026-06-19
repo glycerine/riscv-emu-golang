@@ -2,6 +2,7 @@ package riscv
 
 import (
 	"encoding/binary"
+	"fmt"
 	"net/netip"
 	"time"
 )
@@ -101,6 +102,7 @@ func (s *tsnetVirtioStack) emunetPortLocked(id string, emit func([]byte)) *emune
 	}
 	if !p.lease.Is4() {
 		p.lease = s.nextLeaseLocked()
+		s.traceLocked("lease port=%q ip=%s", id, p.lease)
 	}
 	return p
 }
@@ -188,6 +190,7 @@ func (s *tsnetVirtioStack) arpReplyForPort(portID string, req []byte, emit func(
 		}
 		s.mu.Unlock()
 		if senderMAC == ([6]byte{}) {
+			s.trace("arp_no_reply port=%q target_ip=%s", portID, targetIP)
 			return nil
 		}
 	}
@@ -204,6 +207,7 @@ func (s *tsnetVirtioStack) arpReplyForPort(portID string, req []byte, emit func(
 	copy(reply[32:38], req[22:28])
 	copy(reply[38:42], req[28:32])
 	s.incARPReply()
+	s.trace("arp_reply port=%q target_ip=%s sender_mac=%x", portID, targetIP, senderMAC)
 	return reply
 }
 
@@ -295,9 +299,11 @@ func (s *tsnetVirtioStack) deliverLocalIPv4(portID string, frame []byte, emit fu
 
 	if targetID == "" || targetID == portID || targetEmit == nil {
 		s.incDrop(emunetDropNoLocalPort)
+		s.trace("local_ipv4_no_port src_port=%q dst=%s target_port=%q target_emit=%t", portID, dst, targetID, targetEmit != nil)
 		return true
 	}
 	targetEmit(append([]byte(nil), frame...))
+	s.trace("local_ipv4_deliver src_port=%q dst=%s target_port=%q len=%d", portID, dst, targetID, len(frame))
 	return true
 }
 
@@ -659,6 +665,20 @@ func (s *tsnetVirtioStack) incDrop(reason string) {
 	if s.cfg.EmunetTrace {
 		appendTsnetOpLog("emunet_trace drop reason=%q count=%d", reason, count)
 	}
+}
+
+func (s *tsnetVirtioStack) trace(format string, args ...any) {
+	if s == nil || !s.cfg.EmunetTrace {
+		return
+	}
+	appendTsnetOpLog("emunet_trace %s", fmt.Sprintf(format, args...))
+}
+
+func (s *tsnetVirtioStack) traceLocked(format string, args ...any) {
+	if s == nil || !s.cfg.EmunetTrace {
+		return
+	}
+	appendTsnetOpLog("emunet_trace %s", fmt.Sprintf(format, args...))
 }
 
 func ethernetIPv4Frame(dst, src [6]byte, packet []byte) []byte {

@@ -803,6 +803,7 @@ func (s *tsnetVirtioStack) handleDHCP(portID string, frame []byte, emit func([]b
 		copy(guestMAC[:], dhcp[28:34])
 		s.learnPortMAC(portID, guestMAC, emit)
 		guestIP = s.portLease(portID, emit)
+		s.trace("dhcp port=%q msg=%d lease=%s mac=%x", portID, msgType, guestIP, guestMAC)
 		serverIP = emunetRouterIPv4
 		dnsIP = emunetDNSIPv4
 		subnet = [4]byte{255, 255, 255, 0}

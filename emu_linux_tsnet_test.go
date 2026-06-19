@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -17,8 +18,8 @@ const (
 	emunetLinuxPeerHelperEnv = "RISCV_EMUNET_LINUX_PEER_HELPER"
 	emunetLinuxPeerRoleEnv   = "RISCV_EMUNET_LINUX_PEER_ROLE"
 	emunetLinuxPeerAddrEnv   = "RISCV_EMUNET_LINUX_PEER_ADDR"
-	emunetLinuxPeerIPEnv     = "RISCV_EMUNET_LINUX_PEER_IP"
-	emunetLinuxPeerTargetEnv = "RISCV_EMUNET_LINUX_PEER_TARGET"
+	emunetLinuxPeerTsnetEnv  = "RISCV_EMUNET_LINUX_PEER_TSNET_DIR"
+	emunetLinuxPeerModeEnv   = "RISCV_EMUNET_LINUX_PEER_MODE"
 )
 
 func TestRunEmuBiosFWDynamicHandBuiltLinuxEmunetNetupGatewaySmoke(t *testing.T) {
@@ -98,7 +99,7 @@ func TestRunEmuBiosFWDynamicHandBuiltLinuxEmunetNetupGatewaySmoke(t *testing.T) 
 }
 
 func TestRunEmuBiosFWDynamicHandBuiltLinuxTwoEmuProcessesPingEachOther(t *testing.T) {
-	const timeout = 120 * time.Second
+	const timeout = 180 * time.Second
 	const biosPath = "xendor/opensbi/build/platform/generic/firmware/fw_dynamic.elf"
 	const kernelPath = "xendor/linux-6.17-hand-built/Image"
 	const initrdPath = "xendor/linux/initramfs.cpio.gz"
@@ -107,27 +108,39 @@ func TestRunEmuBiosFWDynamicHandBuiltLinuxTwoEmuProcessesPingEachOther(t *testin
 			t.Skipf("hand-built Linux BIOS fixture not present: %s", path)
 		}
 	}
+	tsnetDir := requireExistingTsnetAuthState(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-	home := t.TempDir()
-	rpcDir := t.TempDir()
-	emunetAddr := reserveTestEmunetAddr(t)
-	writeTestRPC25519HostCID(t, home)
+	cases := []struct {
+		name       string
+		firstMode  string
+		secondMode string
+	}{
+		{name: "follower_pings_leader", firstMode: "hold", secondMode: "ping"},
+		{name: "leader_pings_follower", firstMode: "ping", secondMode: "hold"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), timeout)
+			defer cancel()
+			configHome := t.TempDir()
+			rpcDir := t.TempDir()
+			emunetAddr := reserveTestEmunetAddr(t)
+			writeTestRPC25519HostCIDConfigHome(t, configHome)
 
-	peerA := startEmunetLinuxPeerHelper(t, ctx, home, rpcDir, emunetAddr, "A", "10.77.0.2", "")
-	defer peerA.killAndWait()
-	waitForPeerOutput(t, peerA, "EMUPEER-A-READY", 50*time.Second)
+			first := startRealEmunetLinuxPeerHelper(t, ctx, configHome, rpcDir, emunetAddr, tsnetDir, "A", tc.firstMode)
+			defer first.killAndWait()
+			second := startRealEmunetLinuxPeerHelper(t, ctx, configHome, rpcDir, emunetAddr, tsnetDir, "B", tc.secondMode)
+			defer second.killAndWait()
 
-	peerB := startEmunetLinuxPeerHelper(t, ctx, home, rpcDir, emunetAddr, "B", "10.77.0.3", "10.77.0.2")
-	defer peerB.killAndWait()
-	waitForPeerOutput(t, peerB, "EMUPEER-B-READY", 50*time.Second)
-
-	waitForPeerDone(t, peerB)
-	out := peerB.stdout.String()
-	if !strings.Contains(out, "EMUPEER-B-SUCCESS") {
-		t.Fatalf("peer B did not report success\nstdout tail:\n%s\nstderr:\n%s",
-			tailString(out, 8192), peerB.stderr.String())
+			pinger := first
+			holder := second
+			if tc.secondMode == "ping" {
+				pinger = second
+				holder = first
+			}
+			waitForPingerExit(t, pinger)
+			holder.killAndWait()
+		})
 	}
 }
 
@@ -135,88 +148,52 @@ func TestEmunetLinuxPeerGuestHelper(t *testing.T) {
 	if os.Getenv(emunetLinuxPeerHelperEnv) != "1" {
 		return
 	}
-	const bootWallBudget = 90 * time.Second
+	const bootWallBudget = 120 * time.Second
 	const biosPath = "xendor/opensbi/build/platform/generic/firmware/fw_dynamic.elf"
 	const kernelPath = "xendor/linux-6.17-hand-built/Image"
 	const initrdPath = "xendor/linux/initramfs.cpio.gz"
 	role := os.Getenv(emunetLinuxPeerRoleEnv)
 	emunetAddr := os.Getenv(emunetLinuxPeerAddrEnv)
-	expectIP := os.Getenv(emunetLinuxPeerIPEnv)
-	targetIP := os.Getenv(emunetLinuxPeerTargetEnv)
-	if role == "" || emunetAddr == "" || expectIP == "" {
-		t.Fatalf("missing helper env: role=%q addr=%q ip=%q target=%q", role, emunetAddr, expectIP, targetIP)
-	}
-	installFakeEmunetLeaderHook(t, 20*time.Millisecond)
-
-	doneMarker := fmt.Sprintf("EMUPEER-%s-FINISHED", role)
-	successMarker := fmt.Sprintf("EMUPEER-%s-SUCCESS", role)
-	script := strings.Join([]string{
-		"set -u",
-		"i=0",
-		fmt.Sprintf("while [ $i -lt 20 ]; do if ifconfig eth0 | grep -q 'inet addr:%s'; then break; fi; i=$((i + 1)); sleep 1; done", expectIP),
-		"ifconfig eth0",
-		"cat /proc/net/route",
-		fmt.Sprintf("if ! ifconfig eth0 | grep -q 'inet addr:%s'; then echo EMUPEER-%s-WRONG-IP; echo %s; exit 0; fi", expectIP, role, doneMarker),
-		fmt.Sprintf("echo EMUPEER-%s-READY", role),
-	}, "\n") + "\n"
-	if targetIP == "" {
-		script += "while true; do sleep 1; done\n"
-	} else {
-		script += strings.Join([]string{
-			"success=0",
-			"i=0",
-			fmt.Sprintf("while [ $i -lt 30 ]; do if ping -c 1 -W 1 %s; then echo %s; success=1; break; fi; i=$((i + 1)); sleep 1; done", targetIP, successMarker),
-			fmt.Sprintf("if [ \"$success\" != 1 ]; then echo EMUPEER-%s-FAIL; fi", role),
-			"cat /proc/net/arp 2>/dev/null || true",
-			"ifconfig eth0",
-			fmt.Sprintf("echo %s", doneMarker),
-		}, "\n") + "\n"
+	tsnetDir := os.Getenv(emunetLinuxPeerTsnetEnv)
+	mode := os.Getenv(emunetLinuxPeerModeEnv)
+	if role == "" || emunetAddr == "" || tsnetDir == "" || mode == "" {
+		t.Fatalf("missing helper env: role=%q addr=%q tsnet=%q mode=%q", role, emunetAddr, tsnetDir, mode)
 	}
 
-	stdout := &teeSafeStringWriter{out: os.Stdout}
+	script := realEmunetLinuxPeerScript(mode)
 	var stderr bytes.Buffer
-	stdinR, stdinW := io.Pipe()
-	defer stdinR.Close()
+	done := make(chan struct{})
 	go func() {
-		defer stdinW.Close()
-		deadline := time.Now().Add(bootWallBudget)
-		for time.Now().Before(deadline) {
-			if strings.Contains(stdout.String(), "=== RISC-V initramfs booted ===") {
-				_, _ = io.WriteString(stdinW, script)
-				return
-			}
-			time.Sleep(10 * time.Millisecond)
+		select {
+		case <-time.After(bootWallBudget):
+			fmt.Fprintf(os.Stderr, "peer %s still running after %s in mode %s\n", role, bootWallBudget, mode)
+		case <-done:
 		}
 	}()
-
-	ok, err := runBiosUntilOutputWithin(EmuConfig{
-		BiosPath:   biosPath,
-		KernelPath: kernelPath,
-		InitrdPath: initrdPath,
-		Append:     linuxMakeBootArgs,
-		Memory:     "256MB",
-		HostIO:     true,
-		Net:        true,
-		EmunetAddr: emunetAddr,
-		Stdin:      stdinR,
-		Stdout:     stdout,
-		Stderr:     &stderr,
-	}, doneMarker, 30_000_000_000, bootWallBudget)
-	out := stdout.String()
+	code, err := RunEmu(EmuConfig{
+		BiosPath:    biosPath,
+		KernelPath:  kernelPath,
+		InitrdPath:  initrdPath,
+		Append:      linuxMakeBootArgs,
+		Memory:      "256MB",
+		HostIO:      true,
+		Net:         true,
+		EmunetAddr:  emunetAddr,
+		EmunetTrace: true,
+		TsnetDir:    tsnetDir,
+		Stdin:       strings.NewReader(script),
+		Stdout:      os.Stdout,
+		Stderr:      &stderr,
+	})
+	close(done)
 	if stderr.Len() != 0 {
 		fmt.Fprint(os.Stderr, stderr.String())
 	}
 	if err != nil {
-		t.Fatalf("peer %s Linux helper err = %v\nstdout tail:\n%s\nstderr:\n%s",
-			role, err, tailString(out, 8192), stderr.String())
+		t.Fatalf("peer %s Linux helper err = %v\nstderr:\n%s", role, err, stderr.String())
 	}
-	if !ok {
-		t.Fatalf("peer %s Linux helper marker missing\nstdout tail:\n%s\nstderr:\n%s",
-			role, tailString(out, 8192), stderr.String())
-	}
-	if targetIP != "" && !strings.Contains(out, successMarker) {
-		t.Fatalf("peer %s did not ping target %s\nstdout tail:\n%s\nstderr:\n%s",
-			role, targetIP, tailString(out, 8192), stderr.String())
+	if code != 0 {
+		t.Fatalf("peer %s Linux helper exit code = %d\nstderr:\n%s", role, code, stderr.String())
 	}
 }
 
@@ -241,7 +218,28 @@ func (w *teeSafeStringWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
-func startEmunetLinuxPeerHelper(t *testing.T, ctx context.Context, home, rpcDir, emunetAddr, role, ip, target string) *emunetLinuxPeerProcess {
+func requireExistingTsnetAuthState(t *testing.T) string {
+	t.Helper()
+	home := os.Getenv("HOME")
+	if home == "" {
+		t.Skip("skipping real emunet integration: HOME is unset, cannot locate existing tsnet auth state")
+	}
+	dir := filepath.Join(home, defaultEmunetSubdir, defaultTsnetStateSubdir)
+	state := filepath.Join(dir, "tailscaled.state")
+	info, err := os.Stat(state)
+	if err != nil {
+		t.Logf("skipping real emunet integration: no existing tsnet auth state at %s: %v", state, err)
+		t.Skip("real emunet integration requires existing tsnet authentication")
+	}
+	if info.Size() == 0 {
+		t.Logf("skipping real emunet integration: existing tsnet auth state is empty at %s", state)
+		t.Skip("real emunet integration requires non-empty tsnet authentication")
+	}
+	t.Logf("real emunet integration using existing tsnet auth state %s (%d bytes)", state, info.Size())
+	return dir
+}
+
+func startRealEmunetLinuxPeerHelper(t *testing.T, ctx context.Context, configHome, rpcDir, emunetAddr, tsnetDir, role, mode string) *emunetLinuxPeerProcess {
 	t.Helper()
 	exe, err := os.Executable()
 	if err != nil {
@@ -249,14 +247,13 @@ func startEmunetLinuxPeerHelper(t *testing.T, ctx context.Context, home, rpcDir,
 	}
 	cmd := exec.CommandContext(ctx, exe, "-test.run=^TestEmunetLinuxPeerGuestHelper$", "-test.v")
 	cmd.Env = envWith(os.Environ(), map[string]string{
-		"HOME":                     home,
-		"XDG_CONFIG_HOME":          "",
+		"XDG_CONFIG_HOME":          configHome,
 		"RPC25519_SERVER_DATA_DIR": rpcDir,
 		emunetLinuxPeerHelperEnv:   "1",
 		emunetLinuxPeerRoleEnv:     role,
 		emunetLinuxPeerAddrEnv:     emunetAddr,
-		emunetLinuxPeerIPEnv:       ip,
-		emunetLinuxPeerTargetEnv:   target,
+		emunetLinuxPeerTsnetEnv:    tsnetDir,
+		emunetLinuxPeerModeEnv:     mode,
 		"GOCPU_VIZJIT_OFF":         "1",
 	})
 	p := &emunetLinuxPeerProcess{
@@ -275,9 +272,9 @@ func startEmunetLinuxPeerHelper(t *testing.T, ctx context.Context, home, rpcDir,
 	return p
 }
 
-func writeTestRPC25519HostCID(t *testing.T, home string) {
+func writeTestRPC25519HostCIDConfigHome(t *testing.T, configHome string) {
 	t.Helper()
-	path := filepath.Join(home, ".config", "rpc25519", "host.cid")
+	path := filepath.Join(configHome, ".config", "rpc25519", "host.cid")
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		t.Fatalf("create rpc25519 config dir: %v", err)
 	}
@@ -290,35 +287,88 @@ func writeTestRPC25519HostCID(t *testing.T, home string) {
 	}
 }
 
-func waitForPeerOutput(t *testing.T, p *emunetLinuxPeerProcess, marker string, timeout time.Duration) {
-	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if strings.Contains(p.stdout.String(), marker) {
-			return
-		}
-		select {
-		case err := <-p.done:
-			t.Fatalf("peer %s exited before %q: %v\nstdout tail:\n%s\nstderr:\n%s",
-				p.role, marker, err, tailString(p.stdout.String(), 8192), p.stderr.String())
-		default:
-		}
-		time.Sleep(20 * time.Millisecond)
+func realEmunetLinuxPeerScript(mode string) string {
+	lines := []string{
+		"set +e",
+		"i=0",
+		"own=",
+		"while [ $i -lt 90 ]; do",
+		"  own=$(ifconfig eth0 2>/dev/null | sed -n 's/.*inet addr:\\([0-9.]*\\).*/\\1/p')",
+		"  case \"$own\" in 10.77.0.*) break ;; esac",
+		"  netup 2>/dev/null || true",
+		"  sleep 1",
+		"  i=$((i + 1))",
+		"done",
+		"ifconfig eth0",
+		"cat /proc/net/route",
+		"cat /proc/net/arp 2>/dev/null || true",
+		"case \"$own\" in 10.77.0.*) ;; *) while true; do sleep 60; done ;; esac",
 	}
-	t.Fatalf("timed out waiting for peer %s marker %q\nstdout tail:\n%s\nstderr:\n%s",
-		p.role, marker, tailString(p.stdout.String(), 8192), p.stderr.String())
+	if mode == "hold" {
+		lines = append(lines, "while true; do sleep 60; done")
+		return strings.Join(lines, "\n") + "\n"
+	}
+	lines = append(lines,
+		"i=0",
+		"while [ $i -lt 120 ]; do",
+		"  for target in 10.77.0.2 10.77.0.3 10.77.0.4 10.77.0.5 10.77.0.6 10.77.0.7 10.77.0.8 10.77.0.9 10.77.0.10; do",
+		"    [ \"$target\" = \"$own\" ] && continue",
+		"    if ping -c 1 -W 1 \"$target\"; then",
+		"      reboot -f",
+		"      while true; do sleep 60; done",
+		"    fi",
+		"  done",
+		"  sleep 1",
+		"  i=$((i + 1))",
+		"done",
+		"cat /proc/net/arp 2>/dev/null || true",
+		"ifconfig eth0",
+		"while true; do sleep 60; done",
+	)
+	return strings.Join(lines, "\n") + "\n"
 }
 
-func waitForPeerDone(t *testing.T, p *emunetLinuxPeerProcess) {
+func waitForPingerExit(t *testing.T, p *emunetLinuxPeerProcess) {
 	t.Helper()
 	err := <-p.done
 	if p.cmd != nil {
 		p.cmd.Process = nil
 	}
 	if err != nil {
-		t.Fatalf("peer %s helper failed: %v\nstdout tail:\n%s\nstderr:\n%s",
-			p.role, err, tailString(p.stdout.String(), 8192), p.stderr.String())
+		home := os.Getenv("HOME")
+		t.Fatalf("pinger %s failed before guest reboot: %v\nstdout tail:\n%s\nstderr:\n%s\nemunet logs:\n%s",
+			p.role, err, tailString(p.stdout.String(), 32768), p.stderr.String(), emunetTestLogDump(home))
 	}
+}
+
+func emunetTestLogDump(home string) string {
+	dir := filepath.Join(home, ".local", "state", "emunet")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return fmt.Sprintf("read %s: %v", dir, err)
+	}
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasPrefix(entry.Name(), "oplog.") {
+			continue
+		}
+		names = append(names, entry.Name())
+	}
+	sort.Strings(names)
+	if len(names) == 0 {
+		return fmt.Sprintf("no oplogs in %s", dir)
+	}
+	var b strings.Builder
+	for _, name := range names {
+		path := filepath.Join(dir, name)
+		data, err := os.ReadFile(path)
+		if err != nil {
+			fmt.Fprintf(&b, "== %s ==\nread error: %v\n", path, err)
+			continue
+		}
+		fmt.Fprintf(&b, "== %s ==\n%s\n", path, tailString(string(data), 32768))
+	}
+	return b.String()
 }
 
 func (p *emunetLinuxPeerProcess) kill() {

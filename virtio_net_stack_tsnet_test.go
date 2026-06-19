@@ -1288,9 +1288,9 @@ func installFakeEmunetLeaderCoreHook(t *testing.T, interval time.Duration, confi
 	cores := make(chan *tsnetVirtioStack, 8)
 	oldHook := newEmunetLeaderTsnetVirtioStackHook
 	oldInterval := emunetWatchDogInterval
-	newEmunetLeaderTsnetVirtioStackHook = func(EmuConfig) (*tsnetVirtioStack, error) {
+	newEmunetLeaderTsnetVirtioStackHook = func(cfg EmuConfig) (*tsnetVirtioStack, error) {
 		starts.Add(1)
-		core := &tsnetVirtioStack{hostMAC: emunetRouterMAC}
+		core := &tsnetVirtioStack{hostMAC: emunetRouterMAC, cfg: cfg}
 		core.tun = newVirtioNetMemoryTUN(core.handleTsnetPacket)
 		if configure != nil {
 			configure(core)
