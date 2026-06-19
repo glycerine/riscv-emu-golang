@@ -1188,6 +1188,61 @@ func TestEmunetLeaderRoutesNATReplyOnlyToOwningFollower(t *testing.T) {
 	}
 }
 
+func TestEmunetLeaderSwitchesFramesBetweenLocalGuestAndFollower(t *testing.T) {
+	t.Setenv("RPC25519_SERVER_DATA_DIR", t.TempDir())
+	setTestEmunetHome(t, t.TempDir())
+	cfg := EmuConfig{EmunetAddr: reserveTestEmunetAddr(t)}
+	_, cores := installFakeEmunetLeaderCoreHook(t, 20*time.Millisecond, nil)
+
+	leaderIf, err := newEmunetVirtioStack(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leader := leaderIf.(*emunetVirtioStack)
+	defer leader.Close()
+	core := recvLeaderCore(t, cores)
+	followerIf, err := newEmunetVirtioStack(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	follower := followerIf.(*emunetVirtioStack)
+	defer follower.Close()
+
+	localMAC := [6]byte{0x02, 0, 0, 0, 4, 0x01}
+	followerMAC := [6]byte{0x02, 0, 0, 0, 4, 0x02}
+	leader.InjectInboundPacket(dhcpTestFrame(t, dhcpDiscover, 0x77770001, localMAC))
+	assertDHCPReply(t, onlyPendingEthernetFrame(t, core), dhcpOffer, netip.MustParseAddr("10.77.0.2"))
+	clearTsnetPending(core)
+	follower.InjectInboundPacket(dhcpTestFrame(t, dhcpDiscover, 0x77770002, followerMAC))
+	assertDHCPReply(t, waitPendingEmunetFrame(t, follower, time.Second), dhcpOffer, netip.MustParseAddr("10.77.0.3"))
+	clearEmunetPending(follower)
+
+	leader.InjectInboundPacket(arpRequestFrame(localMAC, [4]byte{10, 77, 0, 2}, [4]byte{10, 77, 0, 3}))
+	arpForFollower := onlyPendingEthernetFrame(t, core)
+	if !bytes.Equal(arpForFollower[6:12], followerMAC[:]) {
+		t.Fatalf("leader-local ARP src MAC = %x, want follower %x", arpForFollower[6:12], followerMAC)
+	}
+	clearTsnetPending(core)
+	follower.InjectInboundPacket(arpRequestFrame(followerMAC, [4]byte{10, 77, 0, 3}, [4]byte{10, 77, 0, 2}))
+	arpForLocal := waitPendingEmunetFrame(t, follower, time.Second)
+	if !bytes.Equal(arpForLocal[6:12], localMAC[:]) {
+		t.Fatalf("follower ARP src MAC = %x, want local %x", arpForLocal[6:12], localMAC)
+	}
+	clearEmunetPending(follower)
+
+	localToFollower := ethernetIPv4Frame(followerMAC, localMAC, icmpIPv4Packet([4]byte{10, 77, 0, 2}, [4]byte{10, 77, 0, 3}, icmpEchoRequest, 0x7777, 1))
+	leader.InjectInboundPacket(localToFollower)
+	if got := waitPendingEmunetFrame(t, follower, time.Second); !bytes.Equal(got, localToFollower) {
+		t.Fatalf("local-to-follower frame changed:\n got %x\nwant %x", got, localToFollower)
+	}
+
+	followerToLocal := ethernetIPv4Frame(localMAC, followerMAC, icmpIPv4Packet([4]byte{10, 77, 0, 3}, [4]byte{10, 77, 0, 2}, icmpEchoRequest, 0x7778, 1))
+	follower.InjectInboundPacket(followerToLocal)
+	if got := waitPendingTsnetFrame(t, core, time.Second); !bytes.Equal(got, followerToLocal) {
+		t.Fatalf("follower-to-local frame changed:\n got %x\nwant %x", got, followerToLocal)
+	}
+}
+
 func TestEmunetLeaderDropsUnmatchedTUNPacket(t *testing.T) {
 	t.Setenv("RPC25519_SERVER_DATA_DIR", t.TempDir())
 	setTestEmunetHome(t, t.TempDir())
@@ -1342,6 +1397,34 @@ func clearEmunetPending(stack *emunetVirtioStack) {
 	stack.mu.Lock()
 	stack.pending = nil
 	stack.mu.Unlock()
+}
+
+func clearTsnetPending(stack *tsnetVirtioStack) {
+	stack.mu.Lock()
+	stack.pending = nil
+	stack.mu.Unlock()
+}
+
+func waitPendingTsnetFrame(t *testing.T, stack *tsnetVirtioStack, timeout time.Duration) []byte {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		stack.mu.Lock()
+		if len(stack.pending) != 0 {
+			frame := append([]byte(nil), stack.pending[0]...)
+			copy(stack.pending, stack.pending[1:])
+			stack.pending = stack.pending[:len(stack.pending)-1]
+			stack.mu.Unlock()
+			return frame
+		}
+		stack.mu.Unlock()
+		time.Sleep(5 * time.Millisecond)
+	}
+	stack.mu.Lock()
+	pending := len(stack.pending)
+	stack.mu.Unlock()
+	t.Fatalf("timed out waiting for pending tsnet frame; pending=%d", pending)
+	return nil
 }
 
 func waitForNATExternal(t *testing.T, core *tsnetVirtioStack, portID string, proto byte, guestPort uint16, remoteIP [4]byte, remotePort uint16) uint16 {

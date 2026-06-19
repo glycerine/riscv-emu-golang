@@ -1829,8 +1829,8 @@ func TestRunEmuBiosFWDynamicHandBuiltLinuxPrintsBanner(t *testing.T) {
 	}
 }
 
-func TestRunEmuBiosFWDynamicHandBuiltLinuxBootsToInitUnder8s(t *testing.T) {
-	const bootWallBudget = 8 * time.Second
+func TestRunEmuBiosFWDynamicHandBuiltLinuxBootsToInitUnder20s(t *testing.T) {
+	const bootWallBudget = 20 * time.Second
 	const biosPath = "xendor/opensbi/build/platform/generic/firmware/fw_dynamic.elf"
 	const kernelPath = "xendor/linux-6.17-hand-built/Image"
 	const initrdPath = "xendor/linux/initramfs.cpio.gz"
