@@ -1,5 +1,7 @@
 package riscv
 
+import "time"
+
 const (
 	mipSSIP = uint64(1) << InterruptSSIP
 	mipMSIP = uint64(1) << InterruptMSIP
@@ -18,7 +20,15 @@ type biosSupervisorExternalIRQ interface {
 	SupervisorExternalInterruptPending() bool
 }
 
-const biosTimerTicksPerInstruction = uint64(1)
+const (
+	biosTimerTicksPerInstruction = uint64(1)
+	biosTimerTimebaseHz          = uint64(10000000)
+)
+
+var (
+	biosWFIHostSleep    = time.Sleep
+	biosWFIHostSleepCap = time.Millisecond
+)
 
 func (c *CPU) serviceBiosMachineTimer() {
 	timer, ok := c.mem.mmio.(biosMachineTimerMMIO)
@@ -26,11 +36,100 @@ func (c *CPU) serviceBiosMachineTimer() {
 		timer.AdvanceMachineTimer(biosTimerTicksPerInstruction)
 		c.refreshSupervisorTimerPendingAt(timer.MachineTimerValue())
 	}
+	c.refreshSupervisorExternalPending()
+}
+
+func (c *CPU) serviceBiosWFI() {
+	if !c.consumeWFI() {
+		return
+	}
+	c.refreshSupervisorTimerPending()
+	c.refreshSupervisorExternalPending()
+	if c.hasPendingBiosInterrupt() {
+		return
+	}
+	timer, ok := c.mem.mmio.(biosMachineTimerMMIO)
+	if !ok {
+		return
+	}
+	sleepFor, ticks := c.biosWFISleepPlan(timer.MachineTimerValue())
+	if sleepFor <= 0 || ticks == 0 {
+		return
+	}
+	biosWFIHostSleep(sleepFor)
+	timer.AdvanceMachineTimer(ticks)
+	c.refreshSupervisorTimerPendingAt(timer.MachineTimerValue())
+	c.refreshSupervisorExternalPending()
+}
+
+func (c *CPU) consumeWFI() bool {
+	if !c.wfi {
+		return false
+	}
+	c.wfi = false
+	return true
+}
+
+func (c *CPU) hasPendingBiosInterrupt() bool {
+	if _, ok := c.pendingMachineInterrupt(); ok {
+		return true
+	}
+	if _, ok := c.pendingSupervisorInterrupt(); ok {
+		return true
+	}
+	return false
+}
+
+func (c *CPU) refreshSupervisorExternalPending() {
 	if irq, ok := c.mem.mmio.(biosSupervisorExternalIRQ); ok && irq.SupervisorExternalInterruptPending() {
 		c.mip |= mipSEIP
 	} else {
 		c.mip &^= mipSEIP
 	}
+}
+
+func (c *CPU) biosWFISleepPlan(now uint64) (time.Duration, uint64) {
+	sleepFor := biosWFIHostSleepCap
+	ticks := biosTimerDurationToTicks(sleepFor)
+	if ticks == 0 {
+		return 0, 0
+	}
+	if c.stimecmp != ^uint64(0) {
+		if now >= c.stimecmp {
+			return 0, 0
+		}
+		if until := c.stimecmp - now; until < ticks {
+			ticks = until
+			sleepFor = biosTimerTicksToDuration(ticks)
+		}
+	}
+	return sleepFor, ticks
+}
+
+func biosTimerDurationToTicks(d time.Duration) uint64 {
+	if d <= 0 {
+		return 0
+	}
+	ticks := uint64(d) * biosTimerTimebaseHz / uint64(time.Second)
+	if ticks == 0 {
+		return 1
+	}
+	return ticks
+}
+
+func biosTimerTicksToDuration(ticks uint64) time.Duration {
+	if ticks == 0 {
+		return 0
+	}
+	ns := ticks * uint64(time.Second) / biosTimerTimebaseHz
+	if ns == 0 {
+		return time.Nanosecond
+	}
+	const maxDuration = (uint64(1) << 63) - 1
+	if ns > maxDuration {
+		return time.Duration(maxDuration)
+	}
+	return time.Duration(ns)
 }
 
 func (c *CPU) timerValue() uint64 {

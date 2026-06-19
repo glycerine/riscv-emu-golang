@@ -480,6 +480,7 @@ func (c *CPU) Run() error {
 func (c *CPU) Step() error { return c.step() }
 
 func (c *CPU) step() error {
+	c.wfi = false
 	// Fetch 16 bits first to detect compressed (RVC) instructions.
 	// Bits[1:0] != 0b11 means 16-bit; 0b11 means 32-bit.
 	half, fh := c.fetch16(c.pc)

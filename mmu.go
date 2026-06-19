@@ -95,6 +95,9 @@ func runMachineBudget(cpu *CPU, nc *NoteChain, budget uint64, biosMode bool) (Ru
 			}
 		}
 		if err == nil {
+			if biosMode {
+				cpu.serviceBiosWFI()
+			}
 			continue
 		}
 		if cpu.trapMachineError(err) {

@@ -1334,6 +1334,71 @@ func TestRunEmuDebugAttachesSingleOtherConsole1(t *testing.T) {
 	}
 }
 
+func TestRunEmuDebugAttachesSingleOtherConsole1ThreeTimes(t *testing.T) {
+	t.Setenv("HOME", shortTempHome(t))
+	const selfPID = 111
+	const targetPID = 222
+	installFakeEmuProcessTable(t, selfPID, map[int]bool{selfPID: true, targetPID: true})
+
+	path := emuConsoleSocketPath(targetPID, 1)
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		t.Fatal(err)
+	}
+	addr := &net.UnixAddr{Name: path, Net: "unix"}
+	ln, err := net.ListenUnix("unix", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	defer os.Remove(path)
+
+	done := make(chan string, 3)
+	go func() {
+		for session := 0; session < 3; session++ {
+			conn, err := ln.AcceptUnix()
+			if err != nil {
+				done <- "accept: " + err.Error()
+				return
+			}
+			got, err := io.ReadAll(conn)
+			if err != nil {
+				_ = conn.Close()
+				done <- "read: " + err.Error()
+				return
+			}
+			if _, err := conn.Write([]byte("ack:" + string(got))); err != nil {
+				_ = conn.Close()
+				done <- "write: " + err.Error()
+				return
+			}
+			_ = conn.Close()
+			done <- string(got)
+		}
+	}()
+
+	for session := 0; session < 3; session++ {
+		msg := fmt.Sprintf("hello%d", session+1)
+		var stdout bytes.Buffer
+		code, err := runEmu(EmuConfig{
+			Debug:  true,
+			Stdin:  strings.NewReader(msg),
+			Stdout: &stdout,
+		})
+		if err != nil {
+			t.Fatalf("session %d runEmu debug: %v", session+1, err)
+		}
+		if code != 0 {
+			t.Fatalf("session %d runEmu debug exit = %d, want 0", session+1, code)
+		}
+		if got := <-done; got != msg {
+			t.Fatalf("session %d server read = %q, want %q", session+1, got, msg)
+		}
+		if got, want := stdout.String(), "ack:"+msg; got != want {
+			t.Fatalf("session %d debug stdout = %q, want %q", session+1, got, want)
+		}
+	}
+}
+
 func TestResolveDebugAttachRejectsMultipleOtherEmus(t *testing.T) {
 	t.Setenv("HOME", shortTempHome(t))
 	const selfPID = 111

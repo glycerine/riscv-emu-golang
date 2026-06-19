@@ -1,6 +1,9 @@
 package riscv
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 type testMachineTimer struct {
 	ticks uint64
@@ -99,6 +102,155 @@ func TestRunBiosMachineBudget_DoesNotDeliverCLINTMachineTimerInterrupt(t *testin
 	}
 }
 
+func TestRunBiosMachineBudget_WFISleepsUntilSupervisorTimerCompare(t *testing.T) {
+	mem, err := NewGuestMemory(Size64KB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mem.Free()
+	timer := &testMachineTimer{}
+	mem.SetMMIO(timer)
+
+	const pc = uint64(0x1000)
+	if fault := mem.Store32(pc, 0x10500073); fault != nil { // wfi
+		t.Fatal(fault)
+	}
+	cpu := NewCPU(*mem)
+	cpu.SetPrivilegeMode(PrivSupervisor)
+	cpu.SetPC(pc)
+	cpu.stimecmp = 6
+	cpu.mideleg = mipSTIP
+	cpu.sie = mipSTIP
+	cpu.mstatus = statusSIE
+
+	var sleeps []time.Duration
+	withFakeBiosWFISleep(t, time.Millisecond, func(d time.Duration) {
+		sleeps = append(sleeps, d)
+	})
+
+	res, err := RunBiosMachineBudget(cpu, &cpu.Notes, 1)
+	if err != nil {
+		t.Fatalf("RunBiosMachineBudget: %v", err)
+	}
+	if res != RunBudgetExpired {
+		t.Fatalf("RunBiosMachineBudget result = %v, want expired", res)
+	}
+	if len(sleeps) != 1 {
+		t.Fatalf("WFI sleeps = %d, want 1", len(sleeps))
+	}
+	if sleeps[0] != 500*time.Nanosecond {
+		t.Fatalf("WFI sleep = %s, want 500ns", sleeps[0])
+	}
+	if timer.ticks != 6 {
+		t.Fatalf("BIOS timer ticks = %d, want stimecmp 6", timer.ticks)
+	}
+	if cpu.mipValue()&mipSTIP == 0 {
+		t.Fatalf("WFI did not assert STIP at stimecmp: mip=0x%x", cpu.mipValue())
+	}
+	if cpu.PC() != pc+4 {
+		t.Fatalf("PC = 0x%x, want WFI retired to 0x%x", cpu.PC(), pc+4)
+	}
+}
+
+func TestRunBiosMachineBudget_WFISleepIsCappedWithoutTimerDeadline(t *testing.T) {
+	mem, err := NewGuestMemory(Size64KB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mem.Free()
+	timer := &testMachineTimer{}
+	mem.SetMMIO(timer)
+
+	const pc = uint64(0x1000)
+	if fault := mem.Store32(pc, 0x10500073); fault != nil { // wfi
+		t.Fatal(fault)
+	}
+	cpu := NewCPU(*mem)
+	cpu.SetPrivilegeMode(PrivSupervisor)
+	cpu.SetPC(pc)
+
+	var sleeps []time.Duration
+	withFakeBiosWFISleep(t, 2*time.Millisecond, func(d time.Duration) {
+		sleeps = append(sleeps, d)
+	})
+
+	res, err := RunBiosMachineBudget(cpu, &cpu.Notes, 1)
+	if err != nil {
+		t.Fatalf("RunBiosMachineBudget: %v", err)
+	}
+	if res != RunBudgetExpired {
+		t.Fatalf("RunBiosMachineBudget result = %v, want expired", res)
+	}
+	if len(sleeps) != 1 || sleeps[0] != 2*time.Millisecond {
+		t.Fatalf("WFI sleeps = %v, want [2ms]", sleeps)
+	}
+	const wantTicks = biosTimerTicksPerInstruction + 20000
+	if timer.ticks != wantTicks {
+		t.Fatalf("BIOS timer ticks = %d, want %d", timer.ticks, wantTicks)
+	}
+}
+
+func TestRunBiosMachineBudget_WFIDoesNotSleepWithPendingInterrupt(t *testing.T) {
+	mem, err := NewGuestMemory(Size64KB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mem.Free()
+	timer := &testMachineTimer{}
+	mem.SetMMIO(timer)
+
+	cpu := NewCPU(*mem)
+	cpu.SetPrivilegeMode(PrivSupervisor)
+	cpu.wfi = true
+	cpu.mip = mipSSIP
+	cpu.mideleg = mipSSIP
+	cpu.sie = mipSSIP
+	cpu.mstatus = statusSIE
+
+	withFakeBiosWFISleep(t, time.Millisecond, func(time.Duration) {
+		t.Fatal("WFI slept despite a pending supervisor interrupt")
+	})
+	cpu.serviceBiosWFI()
+	if cpu.wfi {
+		t.Fatal("WFI flag was not consumed")
+	}
+	if timer.ticks != 0 {
+		t.Fatalf("BIOS timer ticks = %d, want no WFI advance", timer.ticks)
+	}
+}
+
+func TestRunMachineBudget_WFIDoesNotSleepOrAdvanceBiosTimer(t *testing.T) {
+	mem, err := NewGuestMemory(Size64KB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mem.Free()
+	timer := &testMachineTimer{}
+	mem.SetMMIO(timer)
+
+	const pc = uint64(0x1000)
+	if fault := mem.Store32(pc, 0x10500073); fault != nil { // wfi
+		t.Fatal(fault)
+	}
+	cpu := NewCPU(*mem)
+	cpu.SetPrivilegeMode(PrivSupervisor)
+	cpu.SetPC(pc)
+
+	withFakeBiosWFISleep(t, time.Millisecond, func(time.Duration) {
+		t.Fatal("generic RunMachineBudget used BIOS WFI sleep")
+	})
+	res, err := RunMachineBudget(cpu, &cpu.Notes, 1)
+	if err != nil {
+		t.Fatalf("RunMachineBudget: %v", err)
+	}
+	if res != RunBudgetExpired {
+		t.Fatalf("RunMachineBudget result = %v, want expired", res)
+	}
+	if timer.ticks != 0 {
+		t.Fatalf("generic RunMachineBudget advanced timer by %d", timer.ticks)
+	}
+}
+
 func TestRunBiosMachineBudget_SupervisorTimerCompareUsesVectoredStvec(t *testing.T) {
 	mem, err := NewGuestMemory(Size64KB)
 	if err != nil {
@@ -131,6 +283,18 @@ func TestRunBiosMachineBudget_SupervisorTimerCompareUsesVectoredStvec(t *testing
 	if want := base + 4*InterruptSTIP; cpu.PC() != want {
 		t.Fatalf("PC = 0x%x, want vectored stvec target 0x%x", cpu.PC(), want)
 	}
+}
+
+func withFakeBiosWFISleep(t *testing.T, cap time.Duration, sleep func(time.Duration)) {
+	t.Helper()
+	oldSleep := biosWFIHostSleep
+	oldCap := biosWFIHostSleepCap
+	biosWFIHostSleep = sleep
+	biosWFIHostSleepCap = cap
+	t.Cleanup(func() {
+		biosWFIHostSleep = oldSleep
+		biosWFIHostSleepCap = oldCap
+	})
 }
 
 func TestRunBiosMachineBudget_DeliversSupervisorTimerCompareInterrupt(t *testing.T) {
