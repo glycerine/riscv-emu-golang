@@ -9,6 +9,11 @@ mount -t hostfs none /host -o /
 
 /bin/busybox --install -s
 
+#bring up the network
+netup
+#turn on loopback interface for 127.0.0.1
+ifconfig lo up
+
 echo ""
 echo "=== RISC-V initramfs booted ==="
 echo ""
