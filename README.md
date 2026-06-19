@@ -14,6 +14,9 @@ in hermitic deterministic mode if desired for DST testing.
 Idle emu yield to the host OS, so sit at 1% cpu when
 doing nothing (under real network / non-deterministic mode).
 
+Our interpeter's floating point emulation was verified green on 
+John R. Hauser's Berkeley TestFloat/SoftFloat test suite.
+
 * News 2026 June 17:
 
 As a verification of robustness, the CPU emulator can now boot a regular (e.g. Ubuntu) Linux kernel. See the "make linux" target. 
