@@ -461,3 +461,16 @@ atg
 darwin ok  	riscv	324.063s
 linux: ok   riscv   380.452s
 ~~~
+
+# run with a different idle sleep than the default 1ms
+
+When guest OS Linux wants to low-power idle sleep, by
+default we sleep on the Go side for 1 millisecond. But here one
+can experiment with 25ms
+~~~
+make linux EMU_IDLE='-idle 25ms'
+~~~
+To turn off WFI sleep all together, you can do:
+~~~
+make linux EMU_IDLE='-idle 0'
+~~~

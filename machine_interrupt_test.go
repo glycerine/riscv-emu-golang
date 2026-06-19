@@ -190,6 +190,43 @@ func TestRunBiosMachineBudget_WFISleepIsCappedWithoutTimerDeadline(t *testing.T)
 	}
 }
 
+func TestRunBiosMachineBudget_WFIZeroCapDisablesHostSleep(t *testing.T) {
+	mem, err := NewGuestMemory(Size64KB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mem.Free()
+	timer := &testMachineTimer{}
+	mem.SetMMIO(timer)
+
+	const pc = uint64(0x1000)
+	if fault := mem.Store32(pc, 0x10500073); fault != nil { // wfi
+		t.Fatal(fault)
+	}
+	cpu := NewCPU(*mem)
+	cpu.SetPrivilegeMode(PrivSupervisor)
+	cpu.SetPC(pc)
+	cpu.stimecmp = 1000
+	cpu.mideleg = mipSTIP
+	cpu.sie = mipSTIP
+	cpu.mstatus = statusSIE
+
+	withFakeBiosWFISleep(t, 0, func(time.Duration) {
+		t.Fatal("WFI slept despite zero idle sleep cap")
+	})
+
+	res, err := RunBiosMachineBudget(cpu, &cpu.Notes, 1)
+	if err != nil {
+		t.Fatalf("RunBiosMachineBudget: %v", err)
+	}
+	if res != RunBudgetExpired {
+		t.Fatalf("RunBiosMachineBudget result = %v, want expired", res)
+	}
+	if timer.ticks != biosTimerTicksPerInstruction {
+		t.Fatalf("BIOS timer ticks = %d, want only per-instruction tick %d", timer.ticks, biosTimerTicksPerInstruction)
+	}
+}
+
 func TestRunBiosMachineBudget_WFIDoesNotSleepWithPendingInterrupt(t *testing.T) {
 	mem, err := NewGuestMemory(Size64KB)
 	if err != nil {

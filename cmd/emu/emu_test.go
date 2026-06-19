@@ -154,10 +154,31 @@ func TestParseEmuIdleFlag(t *testing.T) {
 	}
 }
 
-func TestEmuIdleFlagRejectsNonPositiveDuration(t *testing.T) {
+func TestParseEmuIdleFlagAcceptsZeroToDisableSleep(t *testing.T) {
+	for _, raw := range []string{"0ms", "0"} {
+		t.Run(raw, func(t *testing.T) {
+			cfg, _, _ := parseEmuConfigForTest(t,
+				"-run", "../../testvectors/jea9linux/elf/write_stdout.elf",
+				"-idle", raw,
+			)
+			d, ok, err := cfg.idleSleepCap()
+			if err != nil {
+				t.Fatalf("idleSleepCap: %v", err)
+			}
+			if !ok {
+				t.Fatalf("-idle %s did not register an override", raw)
+			}
+			if d != 0 {
+				t.Fatalf("-idle duration = %s, want 0", d)
+			}
+		})
+	}
+}
+
+func TestEmuIdleFlagRejectsNegativeDuration(t *testing.T) {
 	cfg := EmuConfig{
 		RunPath: "../../testvectors/jea9linux/elf/write_stdout.elf",
-		Idle:    "0",
+		Idle:    "-1ms",
 	}
 	if err := cfg.ValidateConfig(); err == nil || !strings.Contains(err.Error(), "-idle") {
 		t.Fatalf("ValidateConfig err = %v, want -idle error", err)

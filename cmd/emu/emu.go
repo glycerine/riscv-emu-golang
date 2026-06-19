@@ -724,9 +724,12 @@ func (c EmuConfig) idleSleepCap() (time.Duration, bool, error) {
 	if raw == "" {
 		return 0, false, nil
 	}
+	if raw == "0" {
+		return 0, true, nil
+	}
 	d, err := time.ParseDuration(raw)
-	if err != nil || d <= 0 {
-		return 0, false, fmt.Errorf("-idle must be a positive duration, got %q", c.Idle)
+	if err != nil || d < 0 {
+		return 0, false, fmt.Errorf("-idle must be a non-negative duration, got %q", c.Idle)
 	}
 	return d, true, nil
 }
