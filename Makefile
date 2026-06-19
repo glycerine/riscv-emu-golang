@@ -728,7 +728,7 @@ bench-summary:
 test:
 	@echo "── unit tests ──────────────────────────────────────────────────"
 	GOCPU_VIZJIT_OFF=1 cd $(ROOT) && go test -count=1 -v ./bench/ 2>&1
-	go test -v -tags tsnet ./cmd/emu
+	GOCPU_VIZJIT_OFF=1 cd $(ROOT) && time go test -tags tsnet -timeout=0 -count=1 -v 2>&1
 	GOCPU_VIZJIT_OFF=1 cd $(ROOT) && time go test -timeout=0 -count=1 -v 2>&1
 
 test-arm64-qemu:
