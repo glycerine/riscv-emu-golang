@@ -219,6 +219,18 @@ func TestRunBiosMachineBudget_WFIDoesNotSleepWithPendingInterrupt(t *testing.T) 
 	}
 }
 
+func TestSetBiosIdleSleepCapRestoresPreviousValue(t *testing.T) {
+	old := biosWFIHostSleepCap
+	restore := SetBiosIdleSleepCap(17 * time.Millisecond)
+	if biosWFIHostSleepCap != 17*time.Millisecond {
+		t.Fatalf("biosWFIHostSleepCap = %s, want 17ms", biosWFIHostSleepCap)
+	}
+	restore()
+	if biosWFIHostSleepCap != old {
+		t.Fatalf("biosWFIHostSleepCap = %s, want restored %s", biosWFIHostSleepCap, old)
+	}
+}
+
 func TestRunMachineBudget_WFIDoesNotSleepOrAdvanceBiosTimer(t *testing.T) {
 	mem, err := NewGuestMemory(Size64KB)
 	if err != nil {

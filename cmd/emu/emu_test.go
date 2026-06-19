@@ -137,6 +137,33 @@ func TestEmuBiosFlagIsSeparateFromRun(t *testing.T) {
 	}
 }
 
+func TestParseEmuIdleFlag(t *testing.T) {
+	cfg, _, _ := parseEmuConfigForTest(t,
+		"-run", "../../testvectors/jea9linux/elf/write_stdout.elf",
+		"-idle", "25ms",
+	)
+	d, ok, err := cfg.idleSleepCap()
+	if err != nil {
+		t.Fatalf("idleSleepCap: %v", err)
+	}
+	if !ok {
+		t.Fatal("-idle did not register an override")
+	}
+	if d != 25*time.Millisecond {
+		t.Fatalf("-idle duration = %s, want 25ms", d)
+	}
+}
+
+func TestEmuIdleFlagRejectsNonPositiveDuration(t *testing.T) {
+	cfg := EmuConfig{
+		RunPath: "../../testvectors/jea9linux/elf/write_stdout.elf",
+		Idle:    "0",
+	}
+	if err := cfg.ValidateConfig(); err == nil || !strings.Contains(err.Error(), "-idle") {
+		t.Fatalf("ValidateConfig err = %v, want -idle error", err)
+	}
+}
+
 func TestEmuBiosBootFlagsParse(t *testing.T) {
 	dir := t.TempDir()
 	kernelPath := filepath.Join(dir, "Image")

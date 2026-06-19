@@ -30,6 +30,14 @@ var (
 	biosWFIHostSleepCap = time.Millisecond
 )
 
+func SetBiosIdleSleepCap(d time.Duration) func() {
+	old := biosWFIHostSleepCap
+	biosWFIHostSleepCap = d
+	return func() {
+		biosWFIHostSleepCap = old
+	}
+}
+
 func (c *CPU) serviceBiosMachineTimer() {
 	timer, ok := c.mem.mmio.(biosMachineTimerMMIO)
 	if ok {

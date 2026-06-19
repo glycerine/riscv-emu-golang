@@ -87,6 +87,7 @@ type EmuConfig struct {
 	PRNG              bool
 	Chaos             bool
 	RealtimeOffsetNS  int64
+	Idle              string
 	List              bool
 	Debug             bool
 	AttachPID         int
@@ -168,6 +169,7 @@ func (c *EmuConfig) DefineFlags(fs *flag.FlagSet) {
 	fs.BoolVar(&c.PRNG, "prng", false, "use deterministic PRNG scheduling quantum and clock advancement")
 	fs.BoolVar(&c.Chaos, "chaos", false, "use deterministic chaos scheduling")
 	fs.Int64Var(&c.RealtimeOffsetNS, "init", defaultEmuRealtimeStartNS, "initial realtime clock value in nanoseconds since Unix epoch; default is 2000-01-01T00:00:00Z")
+	fs.StringVar(&c.Idle, "idle", "", "BIOS/Linux WFI host sleep cap as a duration, e.g. 5ms; empty keeps the built-in 1ms default")
 	fs.BoolVar(&c.List, "list", false, "list running emu instances with attachable consoles")
 	fs.BoolVar(&c.Debug, "debug", false, "attach to console 1 of the single other running emu instance")
 	fs.IntVar(&c.AttachPID, "pid", 0, "attach mode: host PID of an existing emu process")
@@ -274,6 +276,9 @@ func (c *EmuConfig) ValidateConfig() error {
 	if _, err := c.schedulerBudget(); err != nil {
 		return err
 	}
+	if _, _, err := c.idleSleepCap(); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -322,6 +327,11 @@ func runEmu(cfg EmuConfig) (int, error) {
 	if cfg.AttachPID != 0 {
 		return attachEmuConsole(cfg)
 	}
+	restoreIdle, err := cfg.applyIdleSleepCap()
+	if err != nil {
+		return 0, err
+	}
+	defer restoreIdle()
 
 	budget, err := cfg.schedulerBudget()
 	if err != nil {
@@ -696,6 +706,29 @@ func (c EmuConfig) schedulerBudget() (uint64, error) {
 		return parseEmuBudget(defaultEmuBudget)
 	}
 	return parseEmuBudget(c.Budget)
+}
+
+func (c EmuConfig) applyIdleSleepCap() (func(), error) {
+	d, ok, err := c.idleSleepCap()
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return func() {}, nil
+	}
+	return riscv.SetBiosIdleSleepCap(d), nil
+}
+
+func (c EmuConfig) idleSleepCap() (time.Duration, bool, error) {
+	raw := strings.TrimSpace(c.Idle)
+	if raw == "" {
+		return 0, false, nil
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d <= 0 {
+		return 0, false, fmt.Errorf("-idle must be a positive duration, got %q", c.Idle)
+	}
+	return d, true, nil
 }
 
 func parseEmuBudget(raw string) (uint64, error) {
