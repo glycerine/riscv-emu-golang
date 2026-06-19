@@ -3,6 +3,17 @@ emu_net: RISCV64 emulator and network in Golang (Go)
 
 ![emu_net](emunet_grid2.png)
 
+* News 2026 June 19:
+
+Real local grid network via the local NAT/DHCP works. Multiple
+emu on the same local host can communicate with themselves
+and the tsnet; so they can reach the internet to install
+packages and configure applications before restarting
+in hermitic deterministic mode if desired for DST testing.
+
+Idle emu yield to the host OS, so sit at 1% cpu when
+doing nothing (under real network / non-deterministic mode).
+
 * News 2026 June 17:
 
 As a verification of robustness, the CPU emulator can now boot a regular (e.g. Ubuntu) Linux kernel. See the "make linux" target. 
