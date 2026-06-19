@@ -1063,7 +1063,7 @@ build-slim-linux:
 	gmake -j6 ARCH=riscv LLVM=1 \
 	HOSTCFLAGS=\
 	'-I$(OUR_LINUX)/linux-host-elf-include -include $(OUR_LINUX)/linux-host-elf-include/darwin_compat.h' \
-	olddefconfig Image savedefconfig && \
+	clean olddefconfig Image savedefconfig && \
 	cp -p ~/linux/arch/riscv/boot/Image ~/ris/xendor/linux-6.17-hand-built/ && \
 	cp -p ~/linux/.config ~/ris/xendor/linux-6.17-hand-built/dot.config && \
 	cp -p ~/linux/defconfig ~/ris/xendor/linux-6.17-hand-built/defconfig
