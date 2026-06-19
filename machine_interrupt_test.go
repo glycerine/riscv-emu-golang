@@ -2,6 +2,7 @@ package riscv
 
 import (
 	"io"
+	"strings"
 	"testing"
 	"time"
 )
@@ -175,6 +176,56 @@ func TestRunBiosMachineBudget_WFISleepIsCappedWithoutTimerDeadline(t *testing.T)
 	}
 }
 
+func TestRunBiosMachineBudget_WFIWakesEarlyOnBoardWake(t *testing.T) {
+	mem, err := NewGuestMemory(Size64KB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mem.Free()
+	timer := newTestBiosMMIO()
+	timer.enableAsyncWFIWake()
+	mem.SetMMIO(timer)
+
+	const pc = uint64(0x1000)
+	if fault := mem.Store32(pc, 0x10500073); fault != nil { // wfi
+		t.Fatal(fault)
+	}
+	cpu := NewCPU(*mem)
+	cpu.SetPrivilegeMode(PrivSupervisor)
+	cpu.SetPC(pc)
+
+	var sleeps []time.Duration
+	withFakeBiosWFISleepFunc(t, 100*time.Millisecond, func(d time.Duration, wake <-chan struct{}) bool {
+		sleeps = append(sleeps, d)
+		if wake == nil {
+			t.Fatal("WFI sleep did not receive a board wake channel")
+		}
+		timer.wakeWFI()
+		select {
+		case <-wake:
+			return true
+		default:
+			t.Fatal("WFI sleep did not observe board wake")
+			return false
+		}
+	})
+
+	res, err := RunBiosMachineBudget(cpu, &cpu.Notes, 1)
+	if err != nil {
+		t.Fatalf("RunBiosMachineBudget: %v", err)
+	}
+	if res != RunBudgetExpired {
+		t.Fatalf("RunBiosMachineBudget result = %v, want expired", res)
+	}
+	if len(sleeps) != 1 || sleeps[0] != 100*time.Millisecond {
+		t.Fatalf("WFI sleeps = %v, want [100ms]", sleeps)
+	}
+	fullSleepTicks := biosTimerTicksPerInstruction + biosTimerDurationToTicks(100*time.Millisecond)
+	if got := timer.MachineTimerValue(); got >= fullSleepTicks {
+		t.Fatalf("BIOS timer ticks = %d, want less than full sleep advance %d", got, fullSleepTicks)
+	}
+}
+
 func TestRunBiosMachineBudget_WFIZeroCapDisablesHostSleep(t *testing.T) {
 	mem, err := NewGuestMemory(Size64KB)
 	if err != nil {
@@ -321,6 +372,14 @@ func TestRunBiosMachineBudget_SupervisorTimerCompareUsesVectoredStvec(t *testing
 
 func withFakeBiosWFISleep(t *testing.T, cap time.Duration, sleep func(time.Duration)) {
 	t.Helper()
+	withFakeBiosWFISleepFunc(t, cap, func(d time.Duration, _ <-chan struct{}) bool {
+		sleep(d)
+		return false
+	})
+}
+
+func withFakeBiosWFISleepFunc(t *testing.T, cap time.Duration, sleep biosWFISleepFunc) {
+	t.Helper()
 	oldSleep := biosWFIHostSleep
 	oldCap := biosWFIHostSleepCap
 	biosWFIHostSleep = sleep
@@ -329,6 +388,46 @@ func withFakeBiosWFISleep(t *testing.T, cap time.Duration, sleep func(time.Durat
 		biosWFIHostSleep = oldSleep
 		biosWFIHostSleepCap = oldCap
 	})
+}
+
+func TestBiosUARTInputWakesWFI(t *testing.T) {
+	m := newBiosMMIO(nil, io.Discard, nil)
+	m.enableAsyncWFIWake()
+	m.startUARTInput(0, strings.NewReader("x"))
+	select {
+	case <-m.wfiWakeChannel():
+	case <-time.After(time.Second):
+		t.Fatal("UART input did not wake WFI")
+	}
+}
+
+func TestVirtioNetInjectGuestFrameWakesWFI(t *testing.T) {
+	mem, err := NewGuestMemory(Size64KB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mem.Free()
+	dev := newVirtioNetDevice(mem, nil)
+	woke := make(chan struct{}, 1)
+	dev.wakeWFI = func() {
+		select {
+		case woke <- struct{}{}:
+		default:
+		}
+	}
+	dev.InjectGuestFrame([]byte{0x02, 0x72, 0x69, 0x73})
+	select {
+	case <-woke:
+	case <-time.After(time.Second):
+		t.Fatal("virtio-net RX did not wake WFI")
+	}
+}
+
+func TestBiosAsyncWFIWakeIsOptIn(t *testing.T) {
+	m := newBiosMMIO(nil, io.Discard, nil)
+	if m.wfiWakeChannel() != nil {
+		t.Fatal("BIOS MMIO allocated async WFI wake channel by default")
+	}
 }
 
 func TestRunBiosMachineBudget_DeliversSupervisorTimerCompareInterrupt(t *testing.T) {

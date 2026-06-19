@@ -201,6 +201,10 @@ func prepareBiosGuestWithReset(cfg EmuConfig, onSystemReset func()) (*biosGuest,
 		mmio.enableHostIO(mem)
 	}
 	if cfg.Net {
+		// Real host networking is a nondeterministic setup mode. In that mode
+		// WFI may sleep until a host event arrives; deterministic replay leaves
+		// async WFI wake disabled and advances only from virtual device state.
+		mmio.enableAsyncWFIWake()
 		stack, err := newVirtioNetPacketStack(cfg)
 		if err != nil {
 			mem.Free()
@@ -376,6 +380,7 @@ type biosMMIO struct {
 	onSystemReset func()
 	hostio        *hostIODevice
 	virtioNet     *virtioNetDevice
+	wfiWake       chan struct{}
 
 	clint         [0x10000]byte
 	mtime         uint64
@@ -426,9 +431,41 @@ func (m *biosMMIO) enableHostIO(mem *GuestMemory) {
 
 func (m *biosMMIO) enableVirtioNet(mem *GuestMemory, stack virtioNetPacketStack) {
 	m.virtioNet = newVirtioNetDevice(mem, stack)
+	if m.wfiWake != nil {
+		m.virtioNet.wakeWFI = m.wakeWFI
+	}
 	if attach, ok := stack.(interface{ attachVirtioNet(*virtioNetDevice) }); ok {
 		attach.attachVirtioNet(m.virtioNet)
 	}
+}
+
+func (m *biosMMIO) enableAsyncWFIWake() {
+	if m == nil || m.wfiWake != nil {
+		return
+	}
+	// Keep this opt-in. A nil wake channel is the deterministic BIOS/MMIO
+	// default; only nondeterministic external-I/O modes should enable it.
+	m.wfiWake = make(chan struct{}, 1)
+	if m.virtioNet != nil {
+		m.virtioNet.wakeWFI = m.wakeWFI
+	}
+}
+
+func (m *biosMMIO) wakeWFI() {
+	if m == nil || m.wfiWake == nil {
+		return
+	}
+	select {
+	case m.wfiWake <- struct{}{}:
+	default:
+	}
+}
+
+func (m *biosMMIO) wfiWakeChannel() <-chan struct{} {
+	if m == nil {
+		return nil
+	}
+	return m.wfiWake
 }
 
 func (m *biosMMIO) enableConsoleSocket(index int) {
@@ -461,9 +498,11 @@ func (m *biosMMIO) startUARTInput(index int, stdin io.Reader) {
 			n, err := stdin.Read(buf[:])
 			for i := 0; i < n; i++ {
 				rxCh <- buf[i]
+				m.wakeWFI()
 			}
 			if err != nil {
 				close(rxCh)
+				m.wakeWFI()
 				return
 			}
 		}

@@ -120,6 +120,7 @@ type virtioNetDevice struct {
 	queues            [2]virtioNetQueue
 	pendingRX         [][]byte
 	mac               [6]byte
+	wakeWFI           func()
 }
 
 type virtioNetQueue struct {
@@ -325,12 +326,18 @@ func (d *virtioNetDevice) InterruptPending() bool {
 
 func (d *virtioNetDevice) InjectGuestFrame(frame []byte) bool {
 	d.mu.Lock()
-	defer d.mu.Unlock()
 	if len(frame) == 0 || len(frame) > virtioNetMaxFrameLen {
+		d.mu.Unlock()
 		return false
 	}
 	d.pendingRX = append(d.pendingRX, append([]byte(nil), frame...))
-	return d.pumpRXLocked()
+	delivered := d.pumpRXLocked()
+	wake := d.wakeWFI
+	d.mu.Unlock()
+	if wake != nil {
+		wake()
+	}
+	return delivered
 }
 
 func (d *virtioNetDevice) deviceFeaturesLocked() uint64 {

@@ -16,10 +16,30 @@ const (
 	biosTimerTimebaseHz          = uint64(10000000)
 )
 
+type biosWFISleepFunc func(time.Duration, <-chan struct{}) bool
+
 var (
-	biosWFIHostSleep    = time.Sleep
-	biosWFIHostSleepCap = time.Millisecond
+	biosWFIHostSleep    biosWFISleepFunc = biosWFISelectSleep
+	biosWFIHostSleepCap                  = time.Millisecond
 )
+
+func biosWFISelectSleep(d time.Duration, wake <-chan struct{}) bool {
+	if d <= 0 {
+		return false
+	}
+	if wake == nil {
+		time.Sleep(d)
+		return false
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-wake:
+		return true
+	case <-timer.C:
+		return false
+	}
+}
 
 func SetBiosIdleSleepCap(d time.Duration) func() {
 	old := biosWFIHostSleepCap
@@ -53,7 +73,14 @@ func (c *CPU) serviceBiosWFI() {
 	if sleepFor <= 0 || ticks == 0 {
 		return
 	}
-	biosWFIHostSleep(sleepFor)
+	sleepStart := time.Now()
+	woke := biosWFIHostSleep(sleepFor, c.mem.mmio.wfiWakeChannel())
+	if woke {
+		elapsedTicks := biosTimerDurationToTicksAllowZero(time.Since(sleepStart))
+		if elapsedTicks < ticks {
+			ticks = elapsedTicks
+		}
+	}
 	c.mem.mmio.AdvanceMachineTimer(ticks)
 	c.refreshSupervisorTimerPendingAt(c.mem.mmio.MachineTimerValue())
 	c.refreshSupervisorExternalPending()
@@ -112,6 +139,13 @@ func biosTimerDurationToTicks(d time.Duration) uint64 {
 		return 1
 	}
 	return ticks
+}
+
+func biosTimerDurationToTicksAllowZero(d time.Duration) uint64 {
+	if d <= 0 {
+		return 0
+	}
+	return uint64(d) * biosTimerTimebaseHz / uint64(time.Second)
 }
 
 func biosTimerTicksToDuration(ticks uint64) time.Duration {
