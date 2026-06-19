@@ -879,6 +879,47 @@ func TestBiosHostIOPathCommands(t *testing.T) {
 	}
 }
 
+func TestBiosHostIOReadlinkNullTerminatesWhenSpaceAllows(t *testing.T) {
+	mem, _ := newHostIOTestDevice(t)
+	dir := t.TempDir()
+	target := "go/src/github.com/glycerine/riscv-emu-golang"
+	link := filepath.Join(dir, "ris")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	const bufAddr = uint64(0x4000)
+	fill := bytes.Repeat([]byte{0xaa}, 128)
+	if fault := mem.WriteBytes(bufAddr, fill); fault != nil {
+		t.Fatalf("fill guest buffer: %v", fault)
+	}
+
+	got := runHostIOTestCmd(t, mem, hostIOCommand{
+		Op:      hostIOOpReadlink,
+		Path:    writeHostIOTestBytes(t, mem, 0x2000, []byte(link)),
+		PathLen: uint64(len(link)),
+		Buf:     bufAddr,
+		Len:     uint64(len(fill)),
+	})
+	if got.Result != int64(len(target)) {
+		t.Fatalf("readlink result = %d errno=%d, want %d", got.Result, got.Errno, len(target))
+	}
+
+	readBack := make([]byte, len(target)+2)
+	if fault := mem.ReadBytes(bufAddr, readBack); fault != nil {
+		t.Fatalf("read guest buffer: %v", fault)
+	}
+	if string(readBack[:len(target)]) != target {
+		t.Fatalf("readlink target = %q, want %q", readBack[:len(target)], target)
+	}
+	if readBack[len(target)] != 0 {
+		t.Fatalf("byte after readlink target = %#x, want NUL", readBack[len(target)])
+	}
+	if readBack[len(target)+1] != 0xaa {
+		t.Fatalf("byte after terminator = %#x, want untouched marker", readBack[len(target)+1])
+	}
+}
+
 func TestBiosVirtioNetFDTAdvertisedWhenEnabled(t *testing.T) {
 	without, err := buildVirtFDT(Size4GB, virtFDTOptions{})
 	if err != nil {
