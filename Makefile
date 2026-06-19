@@ -22,7 +22,7 @@
 #   make clean          # remove xendor/build_capi and generated ELF
 #   make help           # this message
 
-.PHONY: all help bench-setup softfloat bench bench-quick \
+.PHONY: all help bench-setup softfloat test-softfloat bench bench-quick \
         bench-raw bench-ours bench-cpu lazy-bench bench-libriscv bench-mem \
         bench-smoke bench-summary bench-lots test clean check-tools \
         libriscv-build guest-elf guest-native guest-wasm \
@@ -212,6 +212,7 @@ endif
 	@echo "  Other:"
 	@echo "    make test             unit tests"
 	@echo "    make softfloat        build vendored Berkeley SoftFloat/TestFloat"
+	@echo "    make test-softfloat   stream TestFloat gold cases into cpu.go FP tests"
 	@echo "    make test-arm64-qemu           cross-build root/riscv-tests/lockstep under qemu-system-aarch64"
 	@echo "    make test-arm64-qemu-main      same, but skip sharded lockstep"
 	@echo "    make test-arm64-qemu-lockstep  sharded non-FP lockstep only"
@@ -241,6 +242,9 @@ softfloat:
 	@echo ""
 	@echo "  ✓ softfloat complete — TestFloat built without FLOAT16/BFLOAT16"
 	@echo ""
+
+test-softfloat: softfloat
+	GOCPU_VIZJIT_OFF=1 go test -tags softfloat -run 'TestCPU_(FPSoftFloat|FPRISCVSpec)' .
 
 check-tools:
 	@echo "── checking prerequisites  [$(PLATFORM)] ───────────────────────"
