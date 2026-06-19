@@ -1,4 +1,4 @@
-package main
+package riscv
 
 import (
 	"encoding/binary"
@@ -6,8 +6,6 @@ import (
 	"io"
 	"os"
 	"syscall"
-
-	riscv "github.com/glycerine/riscv-emu-golang"
 )
 
 const (
@@ -72,7 +70,7 @@ const (
 )
 
 type hostIODevice struct {
-	mem        *riscv.GuestMemory
+	mem        *GuestMemory
 	cmdAddr    uint64
 	cmdSize    uint64
 	status     uint32
@@ -99,7 +97,7 @@ type hostIOCommand struct {
 	Status   uint32
 }
 
-func newHostIODevice(mem *riscv.GuestMemory) *hostIODevice {
+func newHostIODevice(mem *GuestMemory) *hostIODevice {
 	return &hostIODevice{
 		mem:        mem,
 		cmdSize:    hostIOCmdSize,
@@ -142,7 +140,7 @@ func (d *hostIODevice) Load(off, width uint64) uint64 {
 	}
 }
 
-func (d *hostIODevice) Store(off, width, value uint64) *riscv.MemFault {
+func (d *hostIODevice) Store(off, width, value uint64) *MemFault {
 	switch off {
 	case hostIORegStatus:
 		if value == 0 {
@@ -177,7 +175,7 @@ func writeHostIOReg(old, width, value uint64, high bool) uint64 {
 	return (old &^ uint64(0xffffffff)) | uint64(uint32(value))
 }
 
-func (d *hostIODevice) submit() *riscv.MemFault {
+func (d *hostIODevice) submit() *MemFault {
 	cmd, fault, ok := d.readCommand()
 	if fault != nil {
 		d.setStatus(hostIOStatusBadCommand, uint32(syscall.EFAULT), -1)
@@ -199,7 +197,7 @@ func (d *hostIODevice) submit() *riscv.MemFault {
 	return d.writeCommand(cmd)
 }
 
-func (d *hostIODevice) readCommand() (*hostIOCommand, *riscv.MemFault, bool) {
+func (d *hostIODevice) readCommand() (*hostIOCommand, *MemFault, bool) {
 	if d.cmdSize == 0 {
 		d.cmdSize = hostIOCmdSize
 	}
@@ -229,7 +227,7 @@ func (d *hostIODevice) readCommand() (*hostIOCommand, *riscv.MemFault, bool) {
 	return cmd, nil, true
 }
 
-func (d *hostIODevice) writeCommand(cmd *hostIOCommand) *riscv.MemFault {
+func (d *hostIODevice) writeCommand(cmd *hostIOCommand) *MemFault {
 	var raw [hostIOCmdSize]byte
 	binary.LittleEndian.PutUint32(raw[0:], cmd.Op)
 	binary.LittleEndian.PutUint32(raw[4:], cmd.Flags)

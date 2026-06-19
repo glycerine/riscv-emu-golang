@@ -1,4 +1,4 @@
-package main
+package riscv
 
 import (
 	"bufio"
@@ -12,8 +12,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	riscv "github.com/glycerine/riscv-emu-golang"
 )
 
 var errBiosBudgetExpired = errors.New("bios instruction budget expired")
@@ -69,9 +67,9 @@ const (
 )
 
 type biosGuest struct {
-	mem         *riscv.GuestMemory
-	cpu         *riscv.CPU
-	elf         *riscv.ELF
+	mem         *GuestMemory
+	cpu         *CPU
+	elf         *ELF
 	mmio        *biosMMIO
 	fdt         []byte
 	fdtAddr     uint64
@@ -112,14 +110,14 @@ func runEmuBios(cfg EmuConfig, budget uint64) (int, error) {
 	defer guest.mmio.closeHostIO()
 	defer guest.mmio.closeVirtioNet()
 
-	res, err := riscv.RunBiosMachineBudget(guest.cpu, &guest.cpu.Notes, budget)
+	res, err := RunBiosMachineBudget(guest.cpu, &guest.cpu.Notes, budget)
 	if err != nil {
 		return 0, err
 	}
-	if res == riscv.RunBudgetExit {
+	if res == RunBudgetExit {
 		return guest.cpu.ExitCode, nil
 	}
-	if res == riscv.RunBudgetExpired {
+	if res == RunBudgetExpired {
 		return 0, fmt.Errorf("%w after %d instructions", errBiosBudgetExpired, budget)
 	}
 	return 0, nil
@@ -141,11 +139,11 @@ func prepareBiosGuestWithReset(cfg EmuConfig, onSystemReset func()) (*biosGuest,
 		return nil, fmt.Errorf("-mem %#x is too small for BIOS FDT address %#x", cfg.MemorySize, defaultBiosFDTAddr)
 	}
 
-	mem, err := riscv.NewGuestMemory(cfg.MemorySize)
+	mem, err := NewGuestMemory(cfg.MemorySize)
 	if err != nil {
 		return nil, err
 	}
-	elf, err := riscv.LoadELF(mem, cfg.BiosPath)
+	elf, err := LoadELF(mem, cfg.BiosPath)
 	if err != nil {
 		mem.Free()
 		return nil, err
@@ -211,9 +209,9 @@ func prepareBiosGuestWithReset(cfg EmuConfig, onSystemReset func()) (*biosGuest,
 		mmio.enableVirtioNet(mem, stack)
 	}
 	mem.SetMMIO(mmio)
-	cpu := riscv.NewCPU(*mem)
+	cpu := NewCPU(*mem)
 	cpu.EnableStrictCSR()
-	cpu.SetPrivilegeMode(riscv.PrivMachine)
+	cpu.SetPrivilegeMode(PrivMachine)
 	cpu.EnableMMU()
 	cpu.SetPC(elf.Entry)
 	cpu.SetReg(10, 0)       // a0: boot hart id
@@ -244,7 +242,7 @@ type biosBlob struct {
 	elf    bool
 }
 
-func loadBiosKernel(mem *riscv.GuestMemory, cfg EmuConfig) (biosBlob, error) {
+func loadBiosKernel(mem *GuestMemory, cfg EmuConfig) (biosBlob, error) {
 	if cfg.KernelPath == "" {
 		return biosBlob{}, nil
 	}
@@ -256,7 +254,7 @@ func loadBiosKernel(mem *riscv.GuestMemory, cfg EmuConfig) (biosBlob, error) {
 		return biosBlob{}, fmt.Errorf("-kernel path '%v' is empty", cfg.KernelPath)
 	}
 	if isELF(data) {
-		elf, err := riscv.LoadELFBytes(mem, data)
+		elf, err := LoadELFBytes(mem, data)
 		if err != nil {
 			return biosBlob{}, err
 		}
@@ -285,7 +283,7 @@ func loadBiosKernel(mem *riscv.GuestMemory, cfg EmuConfig) (biosBlob, error) {
 	}, nil
 }
 
-func loadBiosInitrd(mem *riscv.GuestMemory, cfg EmuConfig, kernel biosBlob) (biosBlob, error) {
+func loadBiosInitrd(mem *GuestMemory, cfg EmuConfig, kernel biosBlob) (biosBlob, error) {
 	if cfg.InitrdPath == "" {
 		return biosBlob{}, nil
 	}
@@ -351,6 +349,27 @@ func (c EmuConfig) biosBootArgs() string {
 	return strings.Join(parts, " ")
 }
 
+// Hardware model boundary.
+//
+// biosMMIO and the device structs it owns model a real physical board. Keep
+// that boundary honest even though this code now lives in the same Go package
+// as CPU, MMU, and GuestMemory internals:
+//
+//   - Devices observe guest physical addresses, not guest virtual addresses.
+//   - Devices move bytes through their MMIO registers, descriptor rings, and
+//     guest physical RAM helpers. They must not inspect page tables, TLBs,
+//     process state, Linux symbols, or other guest software internals.
+//   - Devices must not set PC, privilege mode, trap CSRs, or directly deliver
+//     traps. They assert interrupt-pending device state; the CPU interrupt path
+//     decides when and how the guest takes the interrupt.
+//   - MMIO load/store handlers must not call back into the CPU run loop or
+//     otherwise execute guest instructions recursively.
+//   - Fast paths are welcome, but only when they preserve the same guest-visible
+//     physical-memory, fault, and interrupt behavior as the modeled hardware.
+//
+// These are package conventions, not Go-enforced restrictions. The lowercase
+// device helpers below are intentionally private reminders that board code is
+// allowed to be concrete and fast, but not allowed to cheat through CPU state.
 type biosMMIO struct {
 	stdout        io.Writer
 	uarts         [2]biosUARTPort
@@ -401,11 +420,11 @@ func newBiosMMIOWithConsoleSockets(stdin io.Reader, stdout io.Writer, onSystemRe
 	return m
 }
 
-func (m *biosMMIO) enableHostIO(mem *riscv.GuestMemory) {
+func (m *biosMMIO) enableHostIO(mem *GuestMemory) {
 	m.hostio = newHostIODevice(mem)
 }
 
-func (m *biosMMIO) enableVirtioNet(mem *riscv.GuestMemory, stack virtioNetPacketStack) {
+func (m *biosMMIO) enableVirtioNet(mem *GuestMemory, stack virtioNetPacketStack) {
 	m.virtioNet = newVirtioNetDevice(mem, stack)
 	if attach, ok := stack.(interface{ attachVirtioNet(*virtioNetDevice) }); ok {
 		attach.attachVirtioNet(m.virtioNet)
@@ -451,7 +470,7 @@ func (m *biosMMIO) startUARTInput(index int, stdin io.Reader) {
 	}()
 }
 
-func (m *biosMMIO) Load(addr, width uint64) (uint64, bool, *riscv.MemFault) {
+func (m *biosMMIO) Load(addr, width uint64) (uint64, bool, *MemFault) {
 	if off, ok := mmioRangeOffset(addr, width, biosSysconBase, biosSysconSize); ok {
 		return m.loadSyscon(off, width), true, nil
 	}
@@ -480,12 +499,12 @@ func (m *biosMMIO) Load(addr, width uint64) (uint64, bool, *riscv.MemFault) {
 		(m.virtioNet != nil && mmioRangeTouches(addr, width, biosVirtioNetBase, biosVirtioNetSize)) ||
 		mmioRangeTouches(addr, width, biosCLINTBase, biosCLINTSize) ||
 		mmioRangeTouches(addr, width, biosPLICBase, biosPLICSize) {
-		return 0, true, &riscv.MemFault{Addr: addr, Width: width, Kind: riscv.FaultLoad}
+		return 0, true, &MemFault{Addr: addr, Width: width, Kind: FaultLoad}
 	}
 	return 0, false, nil
 }
 
-func (m *biosMMIO) Store(addr, width, value uint64) (bool, *riscv.MemFault) {
+func (m *biosMMIO) Store(addr, width, value uint64) (bool, *MemFault) {
 	if off, ok := mmioRangeOffset(addr, width, biosSysconBase, biosSysconSize); ok {
 		m.storeSyscon(off, width, value)
 		return true, nil
@@ -518,7 +537,7 @@ func (m *biosMMIO) Store(addr, width, value uint64) (bool, *riscv.MemFault) {
 		(m.virtioNet != nil && mmioRangeTouches(addr, width, biosVirtioNetBase, biosVirtioNetSize)) ||
 		mmioRangeTouches(addr, width, biosCLINTBase, biosCLINTSize) ||
 		mmioRangeTouches(addr, width, biosPLICBase, biosPLICSize) {
-		return true, &riscv.MemFault{Addr: addr, Width: width, Kind: riscv.FaultStore}
+		return true, &MemFault{Addr: addr, Width: width, Kind: FaultStore}
 	}
 	return false, nil
 }
@@ -1043,7 +1062,7 @@ func checkFWJumpFDTOverlap(kernel biosBlob, fdtLen int) error {
 		fwJumpGenericFDTAddr, fdtEnd, kernel.addr, kernel.end)
 }
 
-func writeFWDynamicInfo(mem *riscv.GuestMemory, memSize, nextAddr, fdtAddr uint64, fdtLen int, kernel, initrd biosBlob) (uint64, error) {
+func writeFWDynamicInfo(mem *GuestMemory, memSize, nextAddr, fdtAddr uint64, fdtLen int, kernel, initrd biosBlob) (uint64, error) {
 	addr, err := chooseFWDynamicInfoAddr(memSize, fdtAddr, fdtLen, kernel, initrd)
 	if err != nil {
 		return 0, err

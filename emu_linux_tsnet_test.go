@@ -1,6 +1,6 @@
 //go:build tsnet
 
-package main
+package riscv
 
 import (
 	"bytes"
@@ -12,9 +12,9 @@ import (
 
 func TestRunEmuBiosFWDynamicHandBuiltLinuxEmunetNetupGatewaySmoke(t *testing.T) {
 	const bootWallBudget = 20 * time.Second
-	const biosPath = "../../xendor/opensbi/build/platform/generic/firmware/fw_dynamic.elf"
-	const kernelPath = "../../xendor/linux-6.17-hand-built/Image"
-	const initrdPath = "../../xendor/linux/initramfs.cpio.gz"
+	const biosPath = "xendor/opensbi/build/platform/generic/firmware/fw_dynamic.elf"
+	const kernelPath = "xendor/linux-6.17-hand-built/Image"
+	const initrdPath = "xendor/linux/initramfs.cpio.gz"
 	for _, path := range []string{biosPath, kernelPath, initrdPath} {
 		if !fileExists(path) {
 			t.Skipf("hand-built Linux BIOS fixture not present: %s", path)

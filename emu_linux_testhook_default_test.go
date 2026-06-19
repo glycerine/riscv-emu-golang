@@ -1,6 +1,6 @@
 //go:build !tsnet
 
-package main
+package riscv
 
 import "testing"
 

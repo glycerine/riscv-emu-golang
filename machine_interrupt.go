@@ -11,15 +11,6 @@ const (
 	mipMEIP = uint64(1) << InterruptMEIP
 )
 
-type biosMachineTimerMMIO interface {
-	AdvanceMachineTimer(delta uint64)
-	MachineTimerValue() uint64
-}
-
-type biosSupervisorExternalIRQ interface {
-	SupervisorExternalInterruptPending() bool
-}
-
 const (
 	biosTimerTicksPerInstruction = uint64(1)
 	biosTimerTimebaseHz          = uint64(10000000)
@@ -39,10 +30,9 @@ func SetBiosIdleSleepCap(d time.Duration) func() {
 }
 
 func (c *CPU) serviceBiosMachineTimer() {
-	timer, ok := c.mem.mmio.(biosMachineTimerMMIO)
-	if ok {
-		timer.AdvanceMachineTimer(biosTimerTicksPerInstruction)
-		c.refreshSupervisorTimerPendingAt(timer.MachineTimerValue())
+	if c.mem.mmio != nil {
+		c.mem.mmio.AdvanceMachineTimer(biosTimerTicksPerInstruction)
+		c.refreshSupervisorTimerPendingAt(c.mem.mmio.MachineTimerValue())
 	}
 	c.refreshSupervisorExternalPending()
 }
@@ -56,17 +46,16 @@ func (c *CPU) serviceBiosWFI() {
 	if c.hasPendingBiosInterrupt() {
 		return
 	}
-	timer, ok := c.mem.mmio.(biosMachineTimerMMIO)
-	if !ok {
+	if c.mem.mmio == nil {
 		return
 	}
-	sleepFor, ticks := c.biosWFISleepPlan(timer.MachineTimerValue())
+	sleepFor, ticks := c.biosWFISleepPlan(c.mem.mmio.MachineTimerValue())
 	if sleepFor <= 0 || ticks == 0 {
 		return
 	}
 	biosWFIHostSleep(sleepFor)
-	timer.AdvanceMachineTimer(ticks)
-	c.refreshSupervisorTimerPendingAt(timer.MachineTimerValue())
+	c.mem.mmio.AdvanceMachineTimer(ticks)
+	c.refreshSupervisorTimerPendingAt(c.mem.mmio.MachineTimerValue())
 	c.refreshSupervisorExternalPending()
 }
 
@@ -89,7 +78,7 @@ func (c *CPU) hasPendingBiosInterrupt() bool {
 }
 
 func (c *CPU) refreshSupervisorExternalPending() {
-	if irq, ok := c.mem.mmio.(biosSupervisorExternalIRQ); ok && irq.SupervisorExternalInterruptPending() {
+	if c.mem.mmio != nil && c.mem.mmio.SupervisorExternalInterruptPending() {
 		c.mip |= mipSEIP
 	} else {
 		c.mip &^= mipSEIP
@@ -141,11 +130,10 @@ func biosTimerTicksToDuration(ticks uint64) time.Duration {
 }
 
 func (c *CPU) timerValue() uint64 {
-	timer, ok := c.mem.mmio.(biosMachineTimerMMIO)
-	if !ok {
+	if c.mem.mmio == nil {
 		return c.riscvInstrBegun
 	}
-	return timer.MachineTimerValue()
+	return c.mem.mmio.MachineTimerValue()
 }
 
 func (c *CPU) refreshSupervisorTimerPending() {

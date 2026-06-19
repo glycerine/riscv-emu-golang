@@ -169,10 +169,10 @@ type GuestMemory struct {
 	// containment invariant.
 	accessOverlay guestMemoryAccessOverlay
 
-	// mmio is an optional bare-machine device hook. It stays nil for normal
-	// process/personality workloads; BIOS machine boot installs it for devices
-	// described in the generated FDT.
-	mmio GuestMemoryMMIO
+	// mmio is the concrete bare-machine board device hook. It stays nil for
+	// normal process/personality workloads; BIOS machine boot installs it for
+	// devices described in the generated FDT.
+	mmio *biosMMIO
 
 	// TohostAddr is the address of the "tohost" symbol found during ELF
 	// loading. Non-zero means the loaded binary uses the HTIF tohost
@@ -182,13 +182,6 @@ type GuestMemory struct {
 
 type guestMemoryAccessOverlay interface {
 	CheckGuestAccess(addr, width uint64, kind FaultKind, size uint64) *MemFault
-}
-
-// GuestMemoryMMIO handles memory-mapped device accesses. Return ok=false to
-// let the access fall through to regular guest RAM.
-type GuestMemoryMMIO interface {
-	Load(addr, width uint64) (value uint64, ok bool, fault *MemFault)
-	Store(addr, width, value uint64) (ok bool, fault *MemFault)
 }
 
 // NewGuestMemory allocates a guest address space of the given size.
@@ -304,11 +297,11 @@ func (m *GuestMemory) clearAccessOverlay(o guestMemoryAccessOverlay) {
 	}
 }
 
-func (m *GuestMemory) SetMMIO(mmio GuestMemoryMMIO) {
+func (m *GuestMemory) SetMMIO(mmio *biosMMIO) {
 	m.mmio = mmio
 }
 
-func (m *GuestMemory) ClearMMIO(mmio GuestMemoryMMIO) {
+func (m *GuestMemory) ClearMMIO(mmio *biosMMIO) {
 	if m.mmio == mmio {
 		m.mmio = nil
 	}

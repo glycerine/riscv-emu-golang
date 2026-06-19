@@ -1,4 +1,4 @@
-package main
+package riscv
 
 import (
 	cryptorand "crypto/rand"
@@ -7,8 +7,6 @@ import (
 	"os"
 	"sync"
 	"time"
-
-	riscv "github.com/glycerine/riscv-emu-golang"
 )
 
 const (
@@ -109,7 +107,7 @@ func (s *virtioNetMemoryStack) Frames() [][]byte {
 type virtioNetDevice struct {
 	mu sync.Mutex
 
-	mem   *riscv.GuestMemory
+	mem   *GuestMemory
 	stack virtioNetPacketStack
 
 	deviceFeaturesSel uint32
@@ -141,7 +139,7 @@ type virtqDesc struct {
 	next  uint16
 }
 
-func newVirtioNetDevice(mem *riscv.GuestMemory, stack virtioNetPacketStack) *virtioNetDevice {
+func newVirtioNetDevice(mem *GuestMemory, stack virtioNetPacketStack) *virtioNetDevice {
 	if stack == nil {
 		stack = newVirtioNetMemoryStack()
 	}
@@ -259,9 +257,9 @@ func (d *virtioNetDevice) Load(off, width uint64) uint64 {
 	return loadLittleEndianFromU32(reg, width)
 }
 
-func (d *virtioNetDevice) Store(off, width, value uint64) *riscv.MemFault {
+func (d *virtioNetDevice) Store(off, width, value uint64) *MemFault {
 	var frames [][]byte
-	var fault *riscv.MemFault
+	var fault *MemFault
 
 	d.mu.Lock()
 	switch off {
@@ -367,7 +365,7 @@ func (d *virtioNetDevice) resetLocked() {
 	}
 }
 
-func (d *virtioNetDevice) notifyQueueLocked(index uint16) ([][]byte, *riscv.MemFault) {
+func (d *virtioNetDevice) notifyQueueLocked(index uint16) ([][]byte, *MemFault) {
 	switch index {
 	case virtioNetQueueTX:
 		return d.drainTXLocked()
@@ -379,7 +377,7 @@ func (d *virtioNetDevice) notifyQueueLocked(index uint16) ([][]byte, *riscv.MemF
 	}
 }
 
-func (d *virtioNetDevice) drainTXLocked() ([][]byte, *riscv.MemFault) {
+func (d *virtioNetDevice) drainTXLocked() ([][]byte, *MemFault) {
 	q := &d.queues[virtioNetQueueTX]
 	if !q.ready || q.num == 0 {
 		return nil, nil
@@ -453,7 +451,7 @@ func (d *virtioNetDevice) raiseVringInterruptLocked() {
 	d.interruptStatus |= virtioMMIOIntVring
 }
 
-func (d *virtioNetDevice) readDescriptorChainLocked(q *virtioNetQueue, head uint16, requireWrite bool) ([]byte, *riscv.MemFault) {
+func (d *virtioNetDevice) readDescriptorChainLocked(q *virtioNetQueue, head uint16, requireWrite bool) ([]byte, *MemFault) {
 	var out []byte
 	id := head
 	for n := uint16(0); n < q.num; n++ {
@@ -482,7 +480,7 @@ func (d *virtioNetDevice) readDescriptorChainLocked(q *virtioNetQueue, head uint
 	return out, nil
 }
 
-func (d *virtioNetDevice) writeDescriptorChainLocked(q *virtioNetQueue, head uint16, packet []byte) (bool, *riscv.MemFault) {
+func (d *virtioNetDevice) writeDescriptorChainLocked(q *virtioNetQueue, head uint16, packet []byte) (bool, *MemFault) {
 	id := head
 	off := 0
 	for n := uint16(0); n < q.num; n++ {
@@ -514,7 +512,7 @@ func (d *virtioNetDevice) writeDescriptorChainLocked(q *virtioNetQueue, head uin
 	return false, nil
 }
 
-func (d *virtioNetDevice) readDescLocked(q *virtioNetQueue, id uint16) (virtqDesc, *riscv.MemFault) {
+func (d *virtioNetDevice) readDescLocked(q *virtioNetQueue, id uint16) (virtqDesc, *MemFault) {
 	var raw [16]byte
 	if q.num == 0 || id >= q.num {
 		return virtqDesc{}, nil
@@ -530,7 +528,7 @@ func (d *virtioNetDevice) readDescLocked(q *virtioNetQueue, id uint16) (virtqDes
 	}, nil
 }
 
-func (d *virtioNetDevice) addUsedLocked(q *virtioNetQueue, id uint16, length uint32) *riscv.MemFault {
+func (d *virtioNetDevice) addUsedLocked(q *virtioNetQueue, id uint16, length uint32) *MemFault {
 	usedIdx, fault := d.readGuestU16(q.used + 2)
 	if fault != nil {
 		return fault
@@ -545,7 +543,7 @@ func (d *virtioNetDevice) addUsedLocked(q *virtioNetQueue, id uint16, length uin
 	return d.writeGuestU16(q.used+2, usedIdx+1)
 }
 
-func (d *virtioNetDevice) readGuestU16(addr uint64) (uint16, *riscv.MemFault) {
+func (d *virtioNetDevice) readGuestU16(addr uint64) (uint16, *MemFault) {
 	var raw [2]byte
 	if fault := d.mem.ReadBytes(addr, raw[:]); fault != nil {
 		return 0, fault
@@ -553,13 +551,13 @@ func (d *virtioNetDevice) readGuestU16(addr uint64) (uint16, *riscv.MemFault) {
 	return binary.LittleEndian.Uint16(raw[:]), nil
 }
 
-func (d *virtioNetDevice) writeGuestU16(addr uint64, value uint16) *riscv.MemFault {
+func (d *virtioNetDevice) writeGuestU16(addr uint64, value uint16) *MemFault {
 	var raw [2]byte
 	binary.LittleEndian.PutUint16(raw[:], value)
 	return d.mem.WriteBytes(addr, raw[:])
 }
 
-func (d *virtioNetDevice) writeGuestU32(addr uint64, value uint32) *riscv.MemFault {
+func (d *virtioNetDevice) writeGuestU32(addr uint64, value uint32) *MemFault {
 	var raw [4]byte
 	binary.LittleEndian.PutUint32(raw[:], value)
 	return d.mem.WriteBytes(addr, raw[:])

@@ -1,6 +1,6 @@
 //go:build !tsnet
 
-package main
+package riscv
 
 func newVirtioNetPacketStack(cfg EmuConfig) (virtioNetPacketStack, error) {
 	return newVirtioNetMemoryStack(), nil

@@ -1,6 +1,6 @@
 //go:build darwin || freebsd || netbsd || openbsd
 
-package main
+package riscv
 
 import "golang.org/x/sys/unix"
 

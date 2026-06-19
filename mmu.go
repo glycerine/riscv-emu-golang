@@ -43,10 +43,6 @@ type tlbEntry struct {
 	mmio      bool
 }
 
-type mmioRangeChecker interface {
-	MMIOOverlaps(addr, size uint64) bool
-}
-
 func (c *CPU) EnableMMU() {
 	if c.mmu == nil {
 		c.mmu = new(MMU)
@@ -497,7 +493,7 @@ func (m *MMU) walk(c *CPU, addr uint64, kind FaultKind) (uint64, tlbEntry, *MemF
 		fill.direct = m.canDirectMap(c, paddrBase, pageSize)
 		if fill.direct {
 			fill.hostBase = uintptr(c.mem.hostPtr(paddrBase))
-		} else if r, ok := c.mem.mmio.(mmioRangeChecker); ok && r.MMIOOverlaps(paddrBase, pageSize) {
+		} else if c.mem.mmio != nil && c.mem.mmio.MMIOOverlaps(paddrBase, pageSize) {
 			fill.mmio = true
 		}
 		return paddr, fill, nil
@@ -524,11 +520,8 @@ func (m *MMU) canDirectMap(c *CPU, paddr, size uint64) bool {
 	if paddr > c.mem.size || size > c.mem.size-paddr {
 		return false
 	}
-	if c.mem.mmio != nil {
-		r, ok := c.mem.mmio.(mmioRangeChecker)
-		if !ok || r.MMIOOverlaps(paddr, size) {
-			return false
-		}
+	if c.mem.mmio != nil && c.mem.mmio.MMIOOverlaps(paddr, size) {
+		return false
 	}
 	return true
 }

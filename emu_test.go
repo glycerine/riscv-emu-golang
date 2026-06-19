@@ -1,4 +1,4 @@
-package main
+package riscv
 
 import (
 	"bytes"
@@ -17,15 +17,13 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	riscv "github.com/glycerine/riscv-emu-golang"
 )
 
 func TestRunEmuDefaultRunsGoHelloFixture(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	code, err := runEmu(EmuConfig{
-		RunPath:           "../../testvectors/jea9linux/go/elf/hello.elf",
-		MemorySize:        riscv.Size16GB,
+		RunPath:           "testvectors/jea9linux/go/elf/hello.elf",
+		MemorySize:        Size16GB,
 		InstructionBudget: 1 << 20,
 		Stdin:             strings.NewReader(""),
 		Stdout:            &stdout,
@@ -53,8 +51,8 @@ func TestTerminalStatusTextUsesCRLF(t *testing.T) {
 func TestRunEmuReturnsGuestExitCodeAndStderr(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	code, err := runEmu(EmuConfig{
-		RunPath:           "../../testvectors/jea9linux/go/elf/nilpanic.elf",
-		MemorySize:        riscv.Size16GB,
+		RunPath:           "testvectors/jea9linux/go/elf/nilpanic.elf",
+		MemorySize:        Size16GB,
 		InstructionBudget: 1 << 20,
 		Stdin:             strings.NewReader(""),
 		Stdout:            &stdout,
@@ -104,16 +102,16 @@ func TestEmuEnvDefaultsFollowHermitMode(t *testing.T) {
 }
 
 func TestEmuTimeModeFollowsHermitFlag(t *testing.T) {
-	if got := (EmuConfig{}).timeMode(); got != riscv.RealTime {
+	if got := (EmuConfig{}).timeMode(); got != RealTime {
 		t.Fatalf("default emu time mode = %v, want RealTime", got)
 	}
-	if got := (EmuConfig{Hermit: true}).timeMode(); got != riscv.HermitTime {
+	if got := (EmuConfig{Hermit: true}).timeMode(); got != HermitTime {
 		t.Fatalf("hermit emu time mode = %v, want HermitTime", got)
 	}
 }
 
 func TestEmuBiosFlagIsSeparateFromRun(t *testing.T) {
-	const path = "../../testvectors/jea9linux/elf/write_stdout.elf"
+	const path = "testvectors/jea9linux/elf/write_stdout.elf"
 	cfg, _, _ := parseEmuConfigForTest(t,
 		"-bios", path,
 	)
@@ -129,8 +127,8 @@ func TestEmuBiosFlagIsSeparateFromRun(t *testing.T) {
 		t.Fatal("ValidateConfig accepted missing -run/-bios path")
 	}
 	both := EmuConfig{
-		RunPath:  "../../testvectors/jea9linux/elf/write_stdout.elf",
-		BiosPath: "../../xendor/opensbi/build/platform/generic/firmware/fw_jump.elf",
+		RunPath:  "testvectors/jea9linux/elf/write_stdout.elf",
+		BiosPath: "xendor/opensbi/build/platform/generic/firmware/fw_jump.elf",
 	}
 	if err := both.ValidateConfig(); err == nil {
 		t.Fatal("ValidateConfig accepted both -run and -bios")
@@ -139,7 +137,7 @@ func TestEmuBiosFlagIsSeparateFromRun(t *testing.T) {
 
 func TestParseEmuIdleFlag(t *testing.T) {
 	cfg, _, _ := parseEmuConfigForTest(t,
-		"-run", "../../testvectors/jea9linux/elf/write_stdout.elf",
+		"-run", "testvectors/jea9linux/elf/write_stdout.elf",
 		"-idle", "25ms",
 	)
 	d, ok, err := cfg.idleSleepCap()
@@ -158,7 +156,7 @@ func TestParseEmuIdleFlagAcceptsZeroToDisableSleep(t *testing.T) {
 	for _, raw := range []string{"0ms", "0"} {
 		t.Run(raw, func(t *testing.T) {
 			cfg, _, _ := parseEmuConfigForTest(t,
-				"-run", "../../testvectors/jea9linux/elf/write_stdout.elf",
+				"-run", "testvectors/jea9linux/elf/write_stdout.elf",
 				"-idle", raw,
 			)
 			d, ok, err := cfg.idleSleepCap()
@@ -177,7 +175,7 @@ func TestParseEmuIdleFlagAcceptsZeroToDisableSleep(t *testing.T) {
 
 func TestEmuIdleFlagRejectsNegativeDuration(t *testing.T) {
 	cfg := EmuConfig{
-		RunPath: "../../testvectors/jea9linux/elf/write_stdout.elf",
+		RunPath: "testvectors/jea9linux/elf/write_stdout.elf",
 		Idle:    "-1ms",
 	}
 	if err := cfg.ValidateConfig(); err == nil || !strings.Contains(err.Error(), "-idle") {
@@ -198,7 +196,7 @@ func TestEmuBiosBootFlagsParse(t *testing.T) {
 	}
 
 	cfg, _, _ := parseEmuConfigForTest(t,
-		"-bios", "../../testvectors/jea9linux/elf/write_stdout.elf",
+		"-bios", "testvectors/jea9linux/elf/write_stdout.elf",
 		"-kernel", kernelPath,
 		"-kernel-addr", "0x80400000",
 		"-initrd", initrdPath,
@@ -227,11 +225,11 @@ func TestEmuBiosBootFlagsParse(t *testing.T) {
 	if cfg.machine() != "virt" {
 		t.Fatalf("machine = %q, want virt", cfg.machine())
 	}
-	if cfg.BiosRAMSize != riscv.Size512MB {
-		t.Fatalf("BiosRAMSize = %d, want %d", cfg.BiosRAMSize, riscv.Size512MB)
+	if cfg.BiosRAMSize != Size512MB {
+		t.Fatalf("BiosRAMSize = %d, want %d", cfg.BiosRAMSize, Size512MB)
 	}
-	if cfg.MemorySize != riscv.Size4GB {
-		t.Fatalf("MemorySize slab = %d, want %d", cfg.MemorySize, riscv.Size4GB)
+	if cfg.MemorySize != Size4GB {
+		t.Fatalf("MemorySize slab = %d, want %d", cfg.MemorySize, Size4GB)
 	}
 	if !cfg.HostIO {
 		t.Fatal("HostIO = false, want true")
@@ -248,7 +246,7 @@ func TestEmuBiosBootFlagsParse(t *testing.T) {
 	}
 
 	runWithKernel := EmuConfig{
-		RunPath:    "../../testvectors/jea9linux/elf/write_stdout.elf",
+		RunPath:    "testvectors/jea9linux/elf/write_stdout.elf",
 		KernelPath: kernelPath,
 	}
 	if err := runWithKernel.ValidateConfig(); err == nil {
@@ -263,10 +261,10 @@ func TestParseEmuMemorySize(t *testing.T) {
 	}{
 		{"1024", 1024},
 		{"0x400", 1024},
-		{"512mb", riscv.Size512MB},
-		{"512MB", riscv.Size512MB},
-		{"512 MiB", riscv.Size512MB},
-		{"2GB", riscv.Size2GB},
+		{"512mb", Size512MB},
+		{"512MB", Size512MB},
+		{"512 MiB", Size512MB},
+		{"2GB", Size2GB},
 	}
 	for _, tt := range tests {
 		got, err := parseEmuMemorySize(tt.raw)
@@ -294,7 +292,7 @@ func TestPrepareBiosGuestLoadsKernelInitrdAndBootArgs(t *testing.T) {
 	}
 
 	guest, err := prepareBiosGuest(EmuConfig{
-		BiosPath:    "../../testvectors/jea9linux/elf/write_stdout.elf",
+		BiosPath:    "testvectors/jea9linux/elf/write_stdout.elf",
 		KernelPath:  kernelPath,
 		KernelAddr:  0x80400000,
 		InitrdPath:  initrdPath,
@@ -309,8 +307,8 @@ func TestPrepareBiosGuestLoadsKernelInitrdAndBootArgs(t *testing.T) {
 		t.Fatalf("prepareBiosGuest: %v", err)
 	}
 	defer guest.mem.Free()
-	if got := guest.mem.Size(); got != riscv.Size4GB {
-		t.Fatalf("guest memory slab = %d, want %d", got, riscv.Size4GB)
+	if got := guest.mem.Size(); got != Size4GB {
+		t.Fatalf("guest memory slab = %d, want %d", got, Size4GB)
 	}
 
 	if got := guestMemoryBytes(t, guest.mem, guest.kernel.addr, len(kernel)); !bytes.Equal(got, kernel) {
@@ -322,7 +320,7 @@ func TestPrepareBiosGuestLoadsKernelInitrdAndBootArgs(t *testing.T) {
 	if !bytes.Contains(guest.fdt, []byte("console=hvc0 root=/dev/ram0\x00")) {
 		t.Fatalf("generated FDT does not contain bootargs: %x", guest.fdt)
 	}
-	if !bytes.Contains(guest.fdt, fdtU64(riscv.Size512MB)) {
+	if !bytes.Contains(guest.fdt, fdtU64(Size512MB)) {
 		t.Fatalf("generated FDT does not contain 512MB RAM size")
 	}
 	if !bytes.Contains(guest.fdt, fdtU64(guest.initrd.addr)) || !bytes.Contains(guest.fdt, fdtU64(guest.initrd.end)) {
@@ -356,7 +354,7 @@ func TestPrepareBiosGuestUsesExternalDTB(t *testing.T) {
 	dir := t.TempDir()
 	dtbPath := filepath.Join(dir, "external.dtb")
 	dumpDTBPath := filepath.Join(dir, "dumped.dtb")
-	fdt, err := buildVirtFDT(riscv.Size16GB, virtFDTOptions{BootArgs: "from-external-dtb"})
+	fdt, err := buildVirtFDT(Size16GB, virtFDTOptions{BootArgs: "from-external-dtb"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -365,10 +363,10 @@ func TestPrepareBiosGuestUsesExternalDTB(t *testing.T) {
 	}
 
 	guest, err := prepareBiosGuest(EmuConfig{
-		BiosPath:    "../../testvectors/jea9linux/elf/write_stdout.elf",
+		BiosPath:    "testvectors/jea9linux/elf/write_stdout.elf",
 		DTBPath:     dtbPath,
 		DumpDTBPath: dumpDTBPath,
-		MemorySize:  riscv.Size16GB,
+		MemorySize:  Size16GB,
 		Stdin:       strings.NewReader(""),
 		Stdout:      &bytes.Buffer{},
 		Stderr:      &bytes.Buffer{},
@@ -668,7 +666,7 @@ func TestBiosUART1DTRDropAllowsThreeSequentialConsoleSessions(t *testing.T) {
 }
 
 func TestInitramfsRespawnsTTY1DebugShell(t *testing.T) {
-	initScript, err := os.ReadFile("../../xendor/linux/initramfs/init")
+	initScript, err := os.ReadFile("xendor/linux/initramfs/init")
 	if err != nil {
 		t.Fatalf("read initramfs init: %v", err)
 	}
@@ -705,7 +703,7 @@ func TestBiosSysconResetInvokesCallback(t *testing.T) {
 }
 
 func TestBiosHostIOFDTAdvertisedWhenEnabled(t *testing.T) {
-	without, err := buildVirtFDT(riscv.Size4GB, virtFDTOptions{})
+	without, err := buildVirtFDT(Size4GB, virtFDTOptions{})
 	if err != nil {
 		t.Fatalf("build FDT without hostio: %v", err)
 	}
@@ -713,7 +711,7 @@ func TestBiosHostIOFDTAdvertisedWhenEnabled(t *testing.T) {
 		t.Fatal("hostio compatible appeared without HostIO")
 	}
 
-	with, err := buildVirtFDT(riscv.Size4GB, virtFDTOptions{HostIO: true})
+	with, err := buildVirtFDT(Size4GB, virtFDTOptions{HostIO: true})
 	if err != nil {
 		t.Fatalf("build FDT with hostio: %v", err)
 	}
@@ -882,7 +880,7 @@ func TestBiosHostIOPathCommands(t *testing.T) {
 }
 
 func TestBiosVirtioNetFDTAdvertisedWhenEnabled(t *testing.T) {
-	without, err := buildVirtFDT(riscv.Size4GB, virtFDTOptions{})
+	without, err := buildVirtFDT(Size4GB, virtFDTOptions{})
 	if err != nil {
 		t.Fatalf("build FDT without net: %v", err)
 	}
@@ -890,7 +888,7 @@ func TestBiosVirtioNetFDTAdvertisedWhenEnabled(t *testing.T) {
 		t.Fatal("virtio-net node appeared without Net")
 	}
 
-	with, err := buildVirtFDT(riscv.Size4GB, virtFDTOptions{Net: true})
+	with, err := buildVirtFDT(Size4GB, virtFDTOptions{Net: true})
 	if err != nil {
 		t.Fatalf("build FDT with net: %v", err)
 	}
@@ -906,7 +904,7 @@ func TestBiosVirtioNetFDTAdvertisedWhenEnabled(t *testing.T) {
 }
 
 func TestBiosSecondUARTFDTAdvertised(t *testing.T) {
-	fdt, err := buildVirtFDT(riscv.Size4GB, virtFDTOptions{})
+	fdt, err := buildVirtFDT(Size4GB, virtFDTOptions{})
 	if err != nil {
 		t.Fatalf("build FDT: %v", err)
 	}
@@ -1106,9 +1104,9 @@ func TestBiosVirtioNetRXInjectsGuestFrameAndInterrupts(t *testing.T) {
 	}
 }
 
-func newVirtioNetTestDevice(t *testing.T) (*riscv.GuestMemory, *virtioNetMemoryStack, *biosMMIO) {
+func newVirtioNetTestDevice(t *testing.T) (*GuestMemory, *virtioNetMemoryStack, *biosMMIO) {
 	t.Helper()
-	mem, err := riscv.NewGuestMemory(riscv.Size512MB)
+	mem, err := NewGuestMemory(Size512MB)
 	if err != nil {
 		t.Fatalf("NewGuestMemory: %v", err)
 	}
@@ -1123,7 +1121,7 @@ func newVirtioNetTestDevice(t *testing.T) (*riscv.GuestMemory, *virtioNetMemoryS
 	return mem, stack, m
 }
 
-func setupVirtioQueueTest(t *testing.T, mem *riscv.GuestMemory, queue uint16, num uint16, desc, avail, used uint64) {
+func setupVirtioQueueTest(t *testing.T, mem *GuestMemory, queue uint16, num uint16, desc, avail, used uint64) {
 	t.Helper()
 	mustStore32Emu(t, mem, biosVirtioNetBase+virtioMMIOQueueSel, uint32(queue))
 	mustStore32Emu(t, mem, biosVirtioNetBase+virtioMMIOQueueNum, uint32(num))
@@ -1140,7 +1138,7 @@ func setupVirtioQueueTest(t *testing.T, mem *riscv.GuestMemory, queue uint16, nu
 	mustStore32Emu(t, mem, biosVirtioNetBase+virtioMMIOQueueReady, 1)
 }
 
-func writeVirtqDescTest(t *testing.T, mem *riscv.GuestMemory, table uint64, id uint16, addr uint64, length uint32, flags uint16, next uint16) {
+func writeVirtqDescTest(t *testing.T, mem *GuestMemory, table uint64, id uint16, addr uint64, length uint32, flags uint16, next uint16) {
 	t.Helper()
 	var raw [16]byte
 	binary.LittleEndian.PutUint64(raw[0:8], addr)
@@ -1152,13 +1150,13 @@ func writeVirtqDescTest(t *testing.T, mem *riscv.GuestMemory, table uint64, id u
 	}
 }
 
-func addVirtqAvailTest(t *testing.T, mem *riscv.GuestMemory, avail uint64, num uint16, idx uint16, head uint16) {
+func addVirtqAvailTest(t *testing.T, mem *GuestMemory, avail uint64, num uint16, idx uint16, head uint16) {
 	t.Helper()
 	mustStore16Emu(t, mem, avail+4+2*uint64(idx%num), head)
 	mustStore16Emu(t, mem, avail+2, idx+1)
 }
 
-func mustLoad16Emu(t *testing.T, mem *riscv.GuestMemory, addr uint64) uint16 {
+func mustLoad16Emu(t *testing.T, mem *GuestMemory, addr uint64) uint16 {
 	t.Helper()
 	got, fault := mem.Load16(addr)
 	if fault != nil {
@@ -1167,7 +1165,7 @@ func mustLoad16Emu(t *testing.T, mem *riscv.GuestMemory, addr uint64) uint16 {
 	return got
 }
 
-func mustLoad32Emu(t *testing.T, mem *riscv.GuestMemory, addr uint64) uint32 {
+func mustLoad32Emu(t *testing.T, mem *GuestMemory, addr uint64) uint32 {
 	t.Helper()
 	got, fault := mem.Load32(addr)
 	if fault != nil {
@@ -1176,23 +1174,23 @@ func mustLoad32Emu(t *testing.T, mem *riscv.GuestMemory, addr uint64) uint32 {
 	return got
 }
 
-func mustStore16Emu(t *testing.T, mem *riscv.GuestMemory, addr uint64, value uint16) {
+func mustStore16Emu(t *testing.T, mem *GuestMemory, addr uint64, value uint16) {
 	t.Helper()
 	if fault := mem.Store16(addr, value); fault != nil {
 		t.Fatalf("Store16(%#x): %v", addr, fault)
 	}
 }
 
-func mustStore32Emu(t *testing.T, mem *riscv.GuestMemory, addr uint64, value uint32) {
+func mustStore32Emu(t *testing.T, mem *GuestMemory, addr uint64, value uint32) {
 	t.Helper()
 	if fault := mem.Store32(addr, value); fault != nil {
 		t.Fatalf("Store32(%#x): %v", addr, fault)
 	}
 }
 
-func newHostIOTestDevice(t *testing.T) (*riscv.GuestMemory, *biosMMIO) {
+func newHostIOTestDevice(t *testing.T) (*GuestMemory, *biosMMIO) {
 	t.Helper()
-	mem, err := riscv.NewGuestMemory(riscv.Size512MB)
+	mem, err := NewGuestMemory(Size512MB)
 	if err != nil {
 		t.Fatalf("NewGuestMemory: %v", err)
 	}
@@ -1206,7 +1204,7 @@ func newHostIOTestDevice(t *testing.T) (*riscv.GuestMemory, *biosMMIO) {
 	return mem, m
 }
 
-func runHostIOTestCmd(t *testing.T, mem *riscv.GuestMemory, cmd hostIOCommand) hostIOCommand {
+func runHostIOTestCmd(t *testing.T, mem *GuestMemory, cmd hostIOCommand) hostIOCommand {
 	t.Helper()
 	const cmdAddr = uint64(0x1000)
 	writeHostIOTestCmd(t, mem, cmdAddr, cmd)
@@ -1233,7 +1231,7 @@ func runHostIOTestCmd(t *testing.T, mem *riscv.GuestMemory, cmd hostIOCommand) h
 	return got
 }
 
-func writeHostIOTestBytes(t *testing.T, mem *riscv.GuestMemory, addr uint64, data []byte) uint64 {
+func writeHostIOTestBytes(t *testing.T, mem *GuestMemory, addr uint64, data []byte) uint64 {
 	t.Helper()
 	if fault := mem.WriteBytes(addr, data); fault != nil {
 		t.Fatalf("write guest bytes at %#x: %v", addr, fault)
@@ -1241,7 +1239,7 @@ func writeHostIOTestBytes(t *testing.T, mem *riscv.GuestMemory, addr uint64, dat
 	return addr
 }
 
-func writeHostIOTestCmd(t *testing.T, mem *riscv.GuestMemory, addr uint64, cmd hostIOCommand) {
+func writeHostIOTestCmd(t *testing.T, mem *GuestMemory, addr uint64, cmd hostIOCommand) {
 	t.Helper()
 	var raw [hostIOCmdSize]byte
 	binary.LittleEndian.PutUint32(raw[0:], cmd.Op)
@@ -1263,7 +1261,7 @@ func writeHostIOTestCmd(t *testing.T, mem *riscv.GuestMemory, addr uint64, cmd h
 	}
 }
 
-func readHostIOTestCmd(t *testing.T, mem *riscv.GuestMemory, addr uint64) hostIOCommand {
+func readHostIOTestCmd(t *testing.T, mem *GuestMemory, addr uint64) hostIOCommand {
 	t.Helper()
 	var raw [hostIOCmdSize]byte
 	if fault := mem.ReadBytes(addr, raw[:]); fault != nil {
@@ -1586,7 +1584,7 @@ func shortTempHome(t *testing.T) string {
 }
 
 func TestPrepareBiosGuestRejectsFwJumpFDTKernelOverlap(t *testing.T) {
-	const biosPath = "../../xendor/opensbi/build/platform/generic/firmware/fw_jump.elf"
+	const biosPath = "xendor/opensbi/build/platform/generic/firmware/fw_jump.elf"
 	if !fileExists(biosPath) {
 		t.Skipf("OpenSBI fw_jump fixture not present: %s", biosPath)
 	}
@@ -1600,7 +1598,7 @@ func TestPrepareBiosGuestRejectsFwJumpFDTKernelOverlap(t *testing.T) {
 		BiosPath:   biosPath,
 		KernelPath: kernelPath,
 		KernelAddr: fwJumpGenericFDTAddr - 4096,
-		MemorySize: riscv.Size16GB,
+		MemorySize: Size16GB,
 		Stdin:      strings.NewReader(""),
 		Stdout:     &bytes.Buffer{},
 		Stderr:     &bytes.Buffer{},
@@ -1614,7 +1612,7 @@ func TestPrepareBiosGuestRejectsFwJumpFDTKernelOverlap(t *testing.T) {
 }
 
 func TestPrepareBiosGuestFWDynamicSetsInfoBlock(t *testing.T) {
-	const biosPath = "../../xendor/opensbi/build/platform/generic/firmware/fw_dynamic.elf"
+	const biosPath = "xendor/opensbi/build/platform/generic/firmware/fw_dynamic.elf"
 	if !fileExists(biosPath) {
 		t.Skipf("OpenSBI fw_dynamic fixture not present: %s", biosPath)
 	}
@@ -1628,7 +1626,7 @@ func TestPrepareBiosGuestFWDynamicSetsInfoBlock(t *testing.T) {
 	guest, err := prepareBiosGuest(EmuConfig{
 		BiosPath:   biosPath,
 		KernelPath: kernelPath,
-		MemorySize: riscv.Size16GB,
+		MemorySize: Size16GB,
 		Stdin:      strings.NewReader(""),
 		Stdout:     &bytes.Buffer{},
 		Stderr:     &bytes.Buffer{},
@@ -1656,7 +1654,7 @@ func TestPrepareBiosGuestFWDynamicSetsInfoBlock(t *testing.T) {
 }
 
 func TestRunEmuBiosFWDynamicHandsOffToTinySModeImage(t *testing.T) {
-	const biosPath = "../../xendor/opensbi/build/platform/generic/firmware/fw_dynamic.elf"
+	const biosPath = "xendor/opensbi/build/platform/generic/firmware/fw_dynamic.elf"
 	if !fileExists(biosPath) {
 		t.Skipf("OpenSBI fw_dynamic fixture not present: %s", biosPath)
 	}
@@ -1693,7 +1691,7 @@ func TestRunEmuBiosFWDynamicHandsOffToTinySModeImage(t *testing.T) {
 		t.Fatalf("OpenSBI did not hand off to tiny S-mode Image: %v\nstdout tail:\n%s\nstderr:\n%s",
 			err, tailString(stdout.String(), 4096), stderr.String())
 	}
-	if got := guest.cpu.PrivilegeMode(); got != riscv.PrivSupervisor {
+	if got := guest.cpu.PrivilegeMode(); got != PrivSupervisor {
 		t.Fatalf("privilege after sentinel = %v, want supervisor; state=%+v", got, guest.cpu.DebugSnapshot())
 	}
 	if got := guest.cpu.Reg(10); got != 0 {
@@ -1712,9 +1710,9 @@ func TestRunEmuBiosFWDynamicHandsOffToTinySModeImage(t *testing.T) {
 }
 
 func TestRunEmuBiosFWDynamicHandBuiltLinuxPrintsBanner(t *testing.T) {
-	const biosPath = "../../xendor/opensbi/build/platform/generic/firmware/fw_dynamic.elf"
-	const kernelPath = "../../xendor/linux-6.17-hand-built/Image"
-	const initrdPath = "../../xendor/linux/initramfs.cpio.gz"
+	const biosPath = "xendor/opensbi/build/platform/generic/firmware/fw_dynamic.elf"
+	const kernelPath = "xendor/linux-6.17-hand-built/Image"
+	const initrdPath = "xendor/linux/initramfs.cpio.gz"
 	for _, path := range []string{biosPath, kernelPath, initrdPath} {
 		if !fileExists(path) {
 			t.Skipf("hand-built Linux BIOS fixture not present: %s", path)
@@ -1744,9 +1742,9 @@ func TestRunEmuBiosFWDynamicHandBuiltLinuxPrintsBanner(t *testing.T) {
 
 func TestRunEmuBiosFWDynamicHandBuiltLinuxBootsToInitUnder8s(t *testing.T) {
 	const bootWallBudget = 8 * time.Second
-	const biosPath = "../../xendor/opensbi/build/platform/generic/firmware/fw_dynamic.elf"
-	const kernelPath = "../../xendor/linux-6.17-hand-built/Image"
-	const initrdPath = "../../xendor/linux/initramfs.cpio.gz"
+	const biosPath = "xendor/opensbi/build/platform/generic/firmware/fw_dynamic.elf"
+	const kernelPath = "xendor/linux-6.17-hand-built/Image"
+	const initrdPath = "xendor/linux/initramfs.cpio.gz"
 	for _, path := range []string{biosPath, kernelPath, initrdPath} {
 		if !fileExists(path) {
 			t.Skipf("hand-built Linux BIOS fixture not present: %s", path)
@@ -1792,9 +1790,9 @@ func TestRunEmuBiosFWDynamicHandBuiltLinuxBootsToInitUnder8s(t *testing.T) {
 
 func TestRunEmuBiosFWDynamicHandBuiltLinuxHostFSMountReadWrite(t *testing.T) {
 	const bootWallBudget = 15 * time.Second
-	const biosPath = "../../xendor/opensbi/build/platform/generic/firmware/fw_dynamic.elf"
-	const kernelPath = "../../xendor/linux-6.17-hand-built/Image"
-	const initrdPath = "../../xendor/linux/initramfs.cpio.gz"
+	const biosPath = "xendor/opensbi/build/platform/generic/firmware/fw_dynamic.elf"
+	const kernelPath = "xendor/linux-6.17-hand-built/Image"
+	const initrdPath = "xendor/linux/initramfs.cpio.gz"
 	for _, path := range []string{biosPath, kernelPath, initrdPath} {
 		if !fileExists(path) {
 			t.Skipf("hand-built Linux BIOS fixture not present: %s", path)
@@ -1881,9 +1879,9 @@ func TestRunEmuBiosFWDynamicHandBuiltLinuxHostFSMountReadWrite(t *testing.T) {
 
 func TestRunEmuBiosFWDynamicHandBuiltLinuxVirtioNetRegistersEth0(t *testing.T) {
 	const bootWallBudget = 15 * time.Second
-	const biosPath = "../../xendor/opensbi/build/platform/generic/firmware/fw_dynamic.elf"
-	const kernelPath = "../../xendor/linux-6.17-hand-built/Image"
-	const initrdPath = "../../xendor/linux/initramfs.cpio.gz"
+	const biosPath = "xendor/opensbi/build/platform/generic/firmware/fw_dynamic.elf"
+	const kernelPath = "xendor/linux-6.17-hand-built/Image"
+	const initrdPath = "xendor/linux/initramfs.cpio.gz"
 	for _, path := range []string{biosPath, kernelPath, initrdPath} {
 		if !fileExists(path) {
 			t.Skipf("hand-built Linux BIOS fixture not present: %s", path)
@@ -1946,9 +1944,9 @@ func TestRunEmuBiosFWDynamicHandBuiltLinuxVirtioNetRegistersEth0(t *testing.T) {
 
 func TestRunEmuBiosFWDynamicHandBuiltLinuxCtrlCInterruptsPing(t *testing.T) {
 	const bootWallBudget = 15 * time.Second
-	const biosPath = "../../xendor/opensbi/build/platform/generic/firmware/fw_dynamic.elf"
-	const kernelPath = "../../xendor/linux-6.17-hand-built/Image"
-	const initrdPath = "../../xendor/linux/initramfs.cpio.gz"
+	const biosPath = "xendor/opensbi/build/platform/generic/firmware/fw_dynamic.elf"
+	const kernelPath = "xendor/linux-6.17-hand-built/Image"
+	const initrdPath = "xendor/linux/initramfs.cpio.gz"
 	for _, path := range []string{biosPath, kernelPath, initrdPath} {
 		if !fileExists(path) {
 			t.Skipf("hand-built Linux BIOS fixture not present: %s", path)
@@ -2009,9 +2007,9 @@ func TestDiagRunEmuBiosFWDynamicHandBuiltLinuxInitcallDebug(t *testing.T) {
 	if os.Getenv("RISCV_EMU_LINUX_INITCALL_DIAG") == "" {
 		t.Skip("set RISCV_EMU_LINUX_INITCALL_DIAG=1 to profile hand-built Linux initcalls")
 	}
-	const biosPath = "../../xendor/opensbi/build/platform/generic/firmware/fw_dynamic.elf"
-	const kernelPath = "../../xendor/linux-6.17-hand-built/Image"
-	const initrdPath = "../../xendor/linux/initramfs.cpio.gz"
+	const biosPath = "xendor/opensbi/build/platform/generic/firmware/fw_dynamic.elf"
+	const kernelPath = "xendor/linux-6.17-hand-built/Image"
+	const initrdPath = "xendor/linux/initramfs.cpio.gz"
 	for _, path := range []string{biosPath, kernelPath, initrdPath} {
 		if !fileExists(path) {
 			t.Skipf("hand-built Linux BIOS fixture not present: %s", path)
@@ -2040,9 +2038,9 @@ func TestDiagRunEmuBiosFWDynamicHandBuiltLinuxInitcallDebug(t *testing.T) {
 }
 
 func TestRunEmuBiosFWDynamicLinuxSmoke(t *testing.T) {
-	const biosPath = "../../xendor/opensbi/build/platform/generic/firmware/fw_dynamic.elf"
-	const kernelPath = "../../xendor/linux/boot/vmlinuz-6.17.0-35-generic"
-	const initrdPath = "../../xendor/linux/initramfs.cpio.gz"
+	const biosPath = "xendor/opensbi/build/platform/generic/firmware/fw_dynamic.elf"
+	const kernelPath = "xendor/linux/boot/vmlinuz-6.17.0-35-generic"
+	const initrdPath = "xendor/linux/initramfs.cpio.gz"
 	for _, path := range []string{biosPath, kernelPath, initrdPath} {
 		if !fileExists(path) {
 			t.Skipf("Linux BIOS smoke fixture not present: %s", path)
@@ -2073,9 +2071,9 @@ const linuxUARTBootArgs = "console=ttyS0,115200 earlycon=uart8250,mmio,0x1000000
 const linuxMakeBootArgs = linuxUARTBootArgs + " panic=1 reboot=t init_on_alloc=0 init_on_free=0 audit=0 lsm=capability cma=0 numa=off slub_debug=- lpj=XXXXX"
 
 func TestRunEmuBiosFWDynamicLinuxBootsWith512MBRAM(t *testing.T) {
-	const biosPath = "../../xendor/opensbi/build/platform/generic/firmware/fw_dynamic.elf"
-	const kernelPath = "../../xendor/linux/boot/vmlinuz-6.17.0-35-generic"
-	const initrdPath = "../../xendor/linux/initramfs.cpio.gz"
+	const biosPath = "xendor/opensbi/build/platform/generic/firmware/fw_dynamic.elf"
+	const kernelPath = "xendor/linux/boot/vmlinuz-6.17.0-35-generic"
+	const initrdPath = "xendor/linux/initramfs.cpio.gz"
 	for _, path := range []string{biosPath, kernelPath, initrdPath} {
 		if !fileExists(path) {
 			t.Skipf("Linux BIOS boot fixture not present: %s", path)
@@ -2132,9 +2130,9 @@ func TestRunEmuBiosFWDynamicLinuxPassesTimerProbe(t *testing.T) {
 	if os.Getenv("RISCV_EMU_LINUX_SLOW_GENERIC") == "" {
 		t.Skip("set RISCV_EMU_LINUX_SLOW_GENERIC=1 to run the legacy generic Ubuntu timer probe")
 	}
-	const biosPath = "../../xendor/opensbi/build/platform/generic/firmware/fw_dynamic.elf"
-	const kernelPath = "../../xendor/linux/boot/vmlinuz-6.17.0-35-generic"
-	const initrdPath = "../../xendor/linux/initramfs.cpio.gz"
+	const biosPath = "xendor/opensbi/build/platform/generic/firmware/fw_dynamic.elf"
+	const kernelPath = "xendor/linux/boot/vmlinuz-6.17.0-35-generic"
+	const initrdPath = "xendor/linux/initramfs.cpio.gz"
 	for _, path := range []string{biosPath, kernelPath, initrdPath} {
 		if !fileExists(path) {
 			t.Skipf("Linux BIOS boot fixture not present: %s", path)
@@ -2184,7 +2182,7 @@ func runBiosUntilOutputWithin(cfg EmuConfig, marker string, maxInstructions uint
 		if rem := maxInstructions - used; rem < step {
 			step = rem
 		}
-		res, err := riscv.RunBiosMachineBudget(guest.cpu, &guest.cpu.Notes, step)
+		res, err := RunBiosMachineBudget(guest.cpu, &guest.cpu.Notes, step)
 		used += step
 		if strings.Contains(writerString(cfg.Stdout), marker) {
 			return true, nil
@@ -2192,7 +2190,7 @@ func runBiosUntilOutputWithin(cfg EmuConfig, marker string, maxInstructions uint
 		if err != nil {
 			return false, fmt.Errorf("%w at pc=%#x insn=%#x state=%+v", err, guest.cpu.PC(), guestInsnForTest(guest.mem, guest.cpu.PC()), guest.cpu.DebugSnapshot())
 		}
-		if res == riscv.RunBudgetExit {
+		if res == RunBudgetExit {
 			return strings.Contains(writerString(cfg.Stdout), marker), nil
 		}
 		if maxElapsed > 0 && time.Since(start) > maxElapsed {
@@ -2285,7 +2283,7 @@ func slowInitcallReport(output string, limit int) string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
-func guestInsnForTest(mem *riscv.GuestMemory, pc uint64) uint32 {
+func guestInsnForTest(mem *GuestMemory, pc uint64) uint32 {
 	insn, fault := mem.Load32(pc)
 	if fault != nil {
 		return 0
@@ -2301,7 +2299,7 @@ func runBiosUntilMagic(guest *biosGuest, addr, magic, maxInstructions uint64) er
 		if rem := maxInstructions - used; rem < step {
 			step = rem
 		}
-		res, err := riscv.RunBiosMachineBudget(guest.cpu, &guest.cpu.Notes, step)
+		res, err := RunBiosMachineBudget(guest.cpu, &guest.cpu.Notes, step)
 		used += step
 		got, fault := guest.mem.Load64(addr)
 		if fault != nil {
@@ -2314,7 +2312,7 @@ func runBiosUntilMagic(guest *biosGuest, addr, magic, maxInstructions uint64) er
 			return fmt.Errorf("%w after %d instructions at pc=%#x insn=%#x state=%+v sentinel=%#x",
 				err, used, guest.cpu.PC(), guestInsnForTest(guest.mem, guest.cpu.PC()), guest.cpu.DebugSnapshot(), got)
 		}
-		if res == riscv.RunBudgetExit {
+		if res == RunBudgetExit {
 			return fmt.Errorf("BIOS exited after %d instructions before sentinel %#x became %#x; pc=%#x state=%+v sentinel=%#x",
 				used, addr, magic, guest.cpu.PC(), guest.cpu.DebugSnapshot(), got)
 		}
@@ -2370,14 +2368,14 @@ func rvJAL(rd uint8, imm int32) uint32 {
 }
 
 func TestRunEmuBiosOpenSBIFwJumpGetsFDT(t *testing.T) {
-	const path = "../../xendor/opensbi/build/platform/generic/firmware/fw_jump.elf"
+	const path = "xendor/opensbi/build/platform/generic/firmware/fw_jump.elf"
 	if !fileExists(path) {
 		t.Skipf("OpenSBI firmware fixture not present: %s", path)
 	}
 
 	guest, err := prepareBiosGuest(EmuConfig{
 		BiosPath:   path,
-		MemorySize: riscv.Size16GB,
+		MemorySize: Size16GB,
 		Stdin:      strings.NewReader(""),
 		Stdout:     &bytes.Buffer{},
 		Stderr:     &bytes.Buffer{},
@@ -2405,7 +2403,7 @@ func TestRunEmuBiosOpenSBIFwJumpGetsFDT(t *testing.T) {
 		t.Fatalf("FDT magic at 0x%x = 0x%08x, want 0xd00dfeed", fdtAddr, magic)
 	}
 
-	_, err = riscv.RunBiosMachineBudget(guest.cpu, &guest.cpu.Notes, 256)
+	_, err = RunBiosMachineBudget(guest.cpu, &guest.cpu.Notes, 256)
 	if isNullFDTFault(err) {
 		t.Fatalf("OpenSBI still dereferenced a null FDT pointer: %v", err)
 	}
@@ -2413,7 +2411,7 @@ func TestRunEmuBiosOpenSBIFwJumpGetsFDT(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	code, err := runEmu(EmuConfig{
 		BiosPath:   path,
-		MemorySize: riscv.Size16GB,
+		MemorySize: Size16GB,
 		Budget:     "256",
 		Stdin:      strings.NewReader(""),
 		Stdout:     &stdout,
@@ -2427,7 +2425,7 @@ func TestRunEmuBiosOpenSBIFwJumpGetsFDT(t *testing.T) {
 	}
 }
 
-func loadBigEndianU32(mem *riscv.GuestMemory, addr uint64) (uint32, *riscv.MemFault) {
+func loadBigEndianU32(mem *GuestMemory, addr uint64) (uint32, *MemFault) {
 	var raw [4]byte
 	for i := range raw {
 		v, fault := mem.Load8(addr + uint64(i))
@@ -2439,7 +2437,7 @@ func loadBigEndianU32(mem *riscv.GuestMemory, addr uint64) (uint32, *riscv.MemFa
 	return binary.BigEndian.Uint32(raw[:]), nil
 }
 
-func guestMemoryBytes(t *testing.T, mem *riscv.GuestMemory, addr uint64, n int) []byte {
+func guestMemoryBytes(t *testing.T, mem *GuestMemory, addr uint64, n int) []byte {
 	t.Helper()
 	out := make([]byte, n)
 	for i := range out {
@@ -2452,7 +2450,7 @@ func guestMemoryBytes(t *testing.T, mem *riscv.GuestMemory, addr uint64, n int) 
 	return out
 }
 
-func loadLittleEndianU64(t *testing.T, mem *riscv.GuestMemory, addr uint64) uint64 {
+func loadLittleEndianU64(t *testing.T, mem *GuestMemory, addr uint64) uint64 {
 	t.Helper()
 	var raw [8]byte
 	for i := range raw {
@@ -2476,8 +2474,8 @@ func isNullFDTFault(err error) bool {
 	if err == nil {
 		return false
 	}
-	var fault *riscv.MemFault
-	return errors.As(err, &fault) && fault.Kind == riscv.FaultLoad && fault.Addr < 8
+	var fault *MemFault
+	return errors.As(err, &fault) && fault.Kind == FaultLoad && fault.Addr < 8
 }
 
 func envHas(env []string, want string) bool {
@@ -2502,8 +2500,8 @@ func TestRunEmuJea9LinuxFixtureModes(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var stdout, stderr bytes.Buffer
 			code, err := runEmu(EmuConfig{
-				RunPath:           "../../testvectors/jea9linux/elf/write_stdout.elf",
-				MemorySize:        riscv.Size64MB,
+				RunPath:           "testvectors/jea9linux/elf/write_stdout.elf",
+				MemorySize:        Size64MB,
 				InstructionBudget: 1 << 20,
 				JITLazy:           tc.jitlazy,
 				JITAOT:            tc.jitaot,
@@ -2526,7 +2524,7 @@ func TestRunEmuJea9LinuxFixtureModes(t *testing.T) {
 
 func TestEmuJITFlagsAreMutuallyExclusive(t *testing.T) {
 	cfg := EmuConfig{
-		RunPath: "../../testvectors/jea9linux/elf/write_stdout.elf",
+		RunPath: "testvectors/jea9linux/elf/write_stdout.elf",
 		JITLazy: true,
 		JITAOT:  true,
 	}
@@ -2537,7 +2535,7 @@ func TestEmuJITFlagsAreMutuallyExclusive(t *testing.T) {
 
 func TestEmuDefaultFlagsRunGoTimeNowFixtureCompletes(t *testing.T) {
 	cfg, stdout, stderr := parseEmuConfigForTest(t,
-		"-run", "../../testvectors/jea9linux/go/elf/timenow.elf",
+		"-run", "testvectors/jea9linux/go/elf/timenow.elf",
 	)
 
 	type result struct {
@@ -2582,7 +2580,7 @@ func TestEmuConfigDefaultsPreserveExplicitZeroClock(t *testing.T) {
 		t.Fatalf("schedulerBudget = %d, want %d", budget, defaultEmuInstructionBudget)
 	}
 
-	bios := EmuConfig{BiosPath: "../../testvectors/jea9linux/elf/write_stdout.elf"}.withDefaults()
+	bios := EmuConfig{BiosPath: "testvectors/jea9linux/elf/write_stdout.elf"}.withDefaults()
 	if bios.Budget != defaultEmuBiosBudget {
 		t.Fatalf("BIOS Budget = %q, want %q", bios.Budget, defaultEmuBiosBudget)
 	}
@@ -2597,7 +2595,7 @@ func TestEmuConfigDefaultsPreserveExplicitZeroClock(t *testing.T) {
 
 func TestParseEmuJITModeFlags(t *testing.T) {
 	lazy, _, _ := parseEmuConfigForTest(t,
-		"-run", "../../testvectors/jea9linux/elf/write_stdout.elf",
+		"-run", "testvectors/jea9linux/elf/write_stdout.elf",
 		"-jitlazy",
 	)
 	if !lazy.JITLazy || lazy.JITAOT {
@@ -2605,7 +2603,7 @@ func TestParseEmuJITModeFlags(t *testing.T) {
 	}
 
 	aot, _, _ := parseEmuConfigForTest(t,
-		"-run", "../../testvectors/jea9linux/elf/write_stdout.elf",
+		"-run", "testvectors/jea9linux/elf/write_stdout.elf",
 		"-jitaot",
 	)
 	if !aot.JITAOT || aot.JITLazy {
@@ -2613,7 +2611,7 @@ func TestParseEmuJITModeFlags(t *testing.T) {
 	}
 
 	interp, _, _ := parseEmuConfigForTest(t,
-		"-run", "../../testvectors/jea9linux/elf/write_stdout.elf",
+		"-run", "testvectors/jea9linux/elf/write_stdout.elf",
 	)
 	if interp.JITLazy || interp.JITAOT {
 		t.Fatalf("default parsed as JITLazy=%v JITAOT=%v", interp.JITLazy, interp.JITAOT)
@@ -2640,8 +2638,8 @@ func benchmarkRunEmuGoHello(b *testing.B, mode EmuConfig) {
 		var stdout, stderr bytes.Buffer
 		var stats EmuJITStats
 		cfg := mode
-		cfg.RunPath = "../../testvectors/jea9linux/go/elf/hello.elf"
-		cfg.MemorySize = riscv.Size16GB
+		cfg.RunPath = "testvectors/jea9linux/go/elf/hello.elf"
+		cfg.MemorySize = Size16GB
 		cfg.InstructionBudget = 1 << 20
 		cfg.Stdin = strings.NewReader("")
 		cfg.Stdout = &stdout
@@ -2739,7 +2737,7 @@ func parseEmuConfigForTest(t *testing.T, args ...string) (EmuConfig, *bytes.Buff
 	fs.SetOutput(&flagErrors)
 
 	cfg := &EmuConfig{}
-	cfg.DefineFlags(fs)
+	defineEmuFlagsForTest(fs, cfg)
 	if err := fs.Parse(args); err != nil {
 		t.Fatalf("parse flags: %v; output=%q", err, flagErrors.String())
 	}
@@ -2756,12 +2754,44 @@ func parseEmuConfigForTest(t *testing.T, args ...string) (EmuConfig, *bytes.Buff
 	return *cfg, &stdout, &stderr
 }
 
+func defineEmuFlagsForTest(fs *flag.FlagSet, c *EmuConfig) {
+	if c.MemorySize == 0 {
+		c.MemorySize = defaultEmuMemorySize
+	}
+	fs.StringVar(&c.RunPath, "run", "", "path to RISCV ELF binary to run")
+	fs.StringVar(&c.BiosPath, "bios", "", "path to RISCV machine-mode BIOS/firmware ELF to boot")
+	fs.StringVar(&c.KernelPath, "kernel", "", "path to kernel or next-stage payload to load with -bios")
+	fs.Uint64Var(&c.KernelAddr, "kernel-addr", 0, "guest physical address for raw -kernel payloads; default 0x80200000")
+	fs.StringVar(&c.InitrdPath, "initrd", "", "path to initrd image to load and advertise in the BIOS FDT")
+	fs.StringVar(&c.Append, "append", "", "kernel command line for generated BIOS FDT bootargs")
+	fs.StringVar(&c.DTBPath, "dtb", "", "path to external flattened device tree blob for -bios")
+	fs.StringVar(&c.DumpDTBPath, "dump-dtb", "", "write the BIOS FDT blob to this path before boot")
+	fs.BoolVar(&c.HostIO, "hostio", false, "enable non-hermetic custom MMIO host filesystem passthrough for -bios")
+	fs.BoolVar(&c.Net, "net", false, "enable non-hermetic virtio-net MMIO device for -bios")
+	fs.StringVar(&c.Machine, "machine", "virt", "machine model for -bios; currently only virt")
+	fs.Uint64Var(&c.Seed, "seed", 0, "pseudo random number generator seed")
+	fs.StringVar(&c.Memory, "mem", "", "guest memory size as bytes or KB/MB/GB/TB; with -bios this is RAM advertised to Linux")
+	fs.StringVar(&c.Budget, "budget", "", "scheduler/run budget as an instruction count, duration, or max")
+	fs.BoolVar(&c.JITLazy, "jitlazy", false, "run with the native lazy JIT instead of the interpreter")
+	fs.BoolVar(&c.JITAOT, "jitaot", false, "run with explicit AOT JIT instead of the interpreter")
+	fs.BoolVar(&c.Hermit, "hermit", false, "disable host filesystem passthrough")
+	fs.BoolVar(&c.Deadlock, "deadlock", false, "run each thread until it blocks before scheduling another thread")
+	fs.BoolVar(&c.PRNG, "prng", false, "use deterministic PRNG scheduling quantum and clock advancement")
+	fs.BoolVar(&c.Chaos, "chaos", false, "use deterministic chaos scheduling")
+	fs.Int64Var(&c.RealtimeOffsetNS, "init", defaultEmuRealtimeStartNS, "initial realtime clock value in nanoseconds since Unix epoch")
+	fs.StringVar(&c.Idle, "idle", "", "BIOS/Linux WFI host sleep cap as a duration")
+	fs.BoolVar(&c.List, "list", false, "list running emu instances with attachable consoles")
+	fs.BoolVar(&c.Debug, "debug", false, "attach to console 1 of the single other running emu instance")
+	fs.IntVar(&c.AttachPID, "pid", 0, "attach mode: host PID of an existing emu process")
+	fs.IntVar(&c.AttachConsole, "console", -1, "attach mode: console index to attach to with -pid")
+}
+
 func runEmuFixtureOutput(t *testing.T, seed uint64) string {
 	t.Helper()
 	var stdout, stderr bytes.Buffer
 	code, err := runEmu(EmuConfig{
-		RunPath:           "../../testvectors/jea9linux/go/elf/cryptorand.elf",
-		MemorySize:        riscv.Size16GB,
+		RunPath:           "testvectors/jea9linux/go/elf/cryptorand.elf",
+		MemorySize:        Size16GB,
 		InstructionBudget: 1 << 20,
 		Seed:              seed,
 		Stdin:             strings.NewReader(""),
