@@ -103,6 +103,7 @@ GUEST_SRC   := $(GUEST_DIR)/bench_guest.c
 GUEST_ELF   := $(GUEST_DIR)/bench_guest.elf
 GUEST_NATIVE := $(GUEST_DIR)/bench_guest.native
 GUEST_WASM   := $(GUEST_DIR)/bench_guest.wasm
+OUR_LINUX    := $(ROOT)xendor/linux-6.17-hand-built
 
 # -- profile guided optimization
 
@@ -1029,11 +1030,14 @@ build-slim-linux:
 	@# The output kernel Image file is a slim 5.8MB uncompressed--nice.
 	@# leaves out alot of hardware drivers we do not need. 
 	@# Boots in < 8 seconds on the intrepreter--very nice.
-	cd linux && PATH=/private/tmp/linux-host-tools:/usr/local/opt/llvm/bin:/usr/local/bin:$PATH \
+	cd ~/linux && PATH='$(OUR_LINUX)/linux-host-tools:/usr/local/opt/llvm/bin:/usr/local/bin:$(PATH)' \
 	gmake ARCH=riscv LLVM=1 \
 	HOSTCFLAGS=\
-	'-I/private/tmp/linux-host-elf-include -include /private/tmp/linux-host-elf-include/darwin_compat.h' \
-	Image
+	'-I$(OUR_LINUX)/linux-host-elf-include -include $(OUR_LINUX)/linux-host-elf-include/darwin_compat.h' \
+	olddefconfig Image savedefconfig && \
+	cp -p ~/linux/arch/riscv/boot/Image ~/ris/xendor/linux-6.17-hand-built/ && \
+	cp -p ~/linux/.config ~/ris/xendor/linux-6.17-hand-built/dot.config && \
+	cp -p ~/linux/defconfig ~/ris/xendor/linux-6.17-hand-built/defconfig
 
 repack-initramfs:
 	cd ~/ris/xendor/linux/initramfs/ && find . -print0 | \
