@@ -92,6 +92,13 @@ static void write_ready(void) {
 	}
 }
 
+static void write_c0_deferred(void) {
+	char msg[8] = {'c', '0', 'd', 'e', 'f', 'e', 'r', '\n'};
+	if (sys3(64, 1, (long)msg, 8) != 8) {
+		exit_code(246);
+	}
+}
+
 struct client_state {
 	long fd;
 	int kind;
@@ -244,6 +251,7 @@ void start_c(unsigned long *sp) {
 				st->stage = 3;
 				deferred_c0 = idx;
 				del_epoll(epfd, st->fd, 240);
+				write_c0_deferred();
 			} else {
 				st->stage = 2;
 				done++;

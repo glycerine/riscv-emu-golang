@@ -99,6 +99,23 @@ static void short_sleep(long code, unsigned long millis) {
 	}
 }
 
+static int is_gate(char *s) {
+	return s[0] == 'g' && s[1] == 'a' && s[2] == 't' && s[3] == 'e' && s[4] == 0;
+}
+
+static void wait_gate(long code, int mode) {
+	char c0msg[7] = {'c', '0', 'g', 'a', 't', 'e', '\n'};
+	char c1msg[7] = {'c', '1', 'g', 'a', 't', 'e', '\n'};
+	char *msg = mode == 0 ? c0msg : c1msg;
+	if (sys3(64, 1, (long)msg, 7) != 7) {
+		exit_code(code);
+	}
+	char token;
+	if (sys3(63, 0, (long)&token, 1) != 1) {
+		exit_code(code + 10);
+	}
+}
+
 static void roundtrip(long fd, long epfd, char *send, long send_len, char *want, long want_len, long code) {
 	if (sys3(64, fd, (long)send, send_len) != send_len) {
 		exit_code(code);
@@ -176,13 +193,18 @@ void start_c(unsigned long *sp) {
 	if (argc >= 4) {
 		sleep_millis = parse_port(argv[3]);
 	}
+	int gated = argc >= 4 && is_gate(argv[3]);
 	if (mode == 0) {
 		char ping[4] = {'p', 'i', 'n', 'g'};
 		char pong[4] = {'p', 'o', 'n', 'g'};
 		char heya[4] = {'h', 'e', 'y', 'a'};
 		char goga[4] = {'g', 'o', 'g', 'a'};
 		roundtrip(fd, epfd, ping, 4, pong, 4, 220);
-		short_sleep(225, sleep_millis);
+		if (gated) {
+			wait_gate(225, 0);
+		} else {
+			short_sleep(225, sleep_millis);
+		}
 		roundtrip(fd, epfd, heya, 4, goga, 4, 226);
 	} else {
 		char c1send0[7] = {'c', '1', 's', 'e', 'n', 'd', '0'};
@@ -190,7 +212,11 @@ void start_c(unsigned long *sp) {
 		char c1send1[7] = {'c', '1', 's', 'e', 'n', 'd', '1'};
 		char c1reply1[8] = {'c', '1', 'r', 'e', 'p', 'l', 'y', '1'};
 		roundtrip(fd, epfd, c1send0, 7, c1reply0, 8, 230);
-		short_sleep(235, sleep_millis);
+		if (gated) {
+			wait_gate(235, 1);
+		} else {
+			short_sleep(235, sleep_millis);
+		}
 		roundtrip(fd, epfd, c1send1, 7, c1reply1, 8, 236);
 	}
 	exit_code(0);

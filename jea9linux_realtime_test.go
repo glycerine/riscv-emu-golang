@@ -220,16 +220,37 @@ func runRealtimeCGuestSocketClientServer(t *testing.T, interleaving string) {
 		t.Fatalf("server did not report ready; stdout=%q", serverOut.String())
 	}
 
-	client0Out := newSignalBuffer("")
-	client0, client0Done := startRealtimeCGuest(t, "testvectors/jea9linux/elf/tcp_socket_client.elf", []string{portArg, "0", "20"}, client0Out)
+	client0Out := newSignalBuffer("c0gate\n")
+	client0StdinR, client0StdinW := io.Pipe()
+	defer client0StdinR.Close()
+	defer client0StdinW.Close()
+	client0, client0Done := startRealtimeCGuestWithStdin(t, "testvectors/jea9linux/elf/tcp_socket_client.elf", []string{portArg, "0", "gate"}, client0Out, client0StdinR)
 	defer client0.closeAllFDs()
 
-	client1Out := newSignalBuffer("")
-	client1, client1Done := startRealtimeCGuest(t, "testvectors/jea9linux/elf/tcp_socket_client.elf", []string{portArg, "1", "120"}, client1Out)
+	client1Out := newSignalBuffer("c1gate\n")
+	client1StdinR, client1StdinW := io.Pipe()
+	defer client1StdinR.Close()
+	defer client1StdinW.Close()
+	client1, client1Done := startRealtimeCGuestWithStdin(t, "testvectors/jea9linux/elf/tcp_socket_client.elf", []string{portArg, "1", "gate"}, client1Out, client1StdinR)
 	defer client1.closeAllFDs()
 
-	client0Res := waitRealtimeCGuest(t, "client_0", client0, client0Done)
-	client1Res := waitRealtimeCGuest(t, "client_1", client1, client1Done)
+	waitSignalOrGuestExit(t, "client_0 gate", client0Out, client0Done)
+	waitSignalOrGuestExit(t, "client_1 gate", client1Out, client1Done)
+
+	var client0Res realtimeCGuestResult
+	var client1Res realtimeCGuestResult
+	if interleaving == "0" {
+		releaseRealtimeCGuest(t, "client_0", client0StdinW)
+		client0Res = waitRealtimeCGuest(t, "client_0", client0, client0Done)
+		releaseRealtimeCGuest(t, "client_1", client1StdinW)
+		client1Res = waitRealtimeCGuest(t, "client_1", client1, client1Done)
+	} else {
+		releaseRealtimeCGuest(t, "client_0", client0StdinW)
+		waitOutputContainsOrGuestExit(t, "server deferred client_0", serverOut, serverDone, "c0defer\n")
+		releaseRealtimeCGuest(t, "client_1", client1StdinW)
+		client0Res = waitRealtimeCGuest(t, "client_0", client0, client0Done)
+		client1Res = waitRealtimeCGuest(t, "client_1", client1, client1Done)
+	}
 	if client0Res.err != nil || client0Res.code != 0 || client1Res.err != nil || client1Res.code != 0 {
 		server.closeAllFDs()
 		serverRes := waitRealtimeCGuest(t, "server", server, serverDone)
@@ -289,12 +310,14 @@ type signalBuffer struct {
 	want    string
 	signal  chan struct{}
 	signals sync.Once
+	changed chan struct{}
 }
 
 func newSignalBuffer(want string) *signalBuffer {
 	w := &signalBuffer{
-		want:   want,
-		signal: make(chan struct{}),
+		want:    want,
+		signal:  make(chan struct{}),
+		changed: make(chan struct{}),
 	}
 	if want == "" {
 		close(w.signal)
@@ -311,6 +334,8 @@ func (w *signalBuffer) Write(p []byte) (int, error) {
 			close(w.signal)
 		})
 	}
+	close(w.changed)
+	w.changed = make(chan struct{})
 	return n, err
 }
 
@@ -318,6 +343,12 @@ func (w *signalBuffer) String() string {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.buf.String()
+}
+
+func (w *signalBuffer) SnapshotAndChanged() (string, <-chan struct{}) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.String(), w.changed
 }
 
 type realtimeCGuestResult struct {
@@ -331,6 +362,13 @@ func startRealtimeCGuest(t *testing.T, path string, args []string, stdout interf
 	io.Writer
 	String() string
 }) (*Jea9Linux, <-chan realtimeCGuestResult) {
+	return startRealtimeCGuestWithStdin(t, path, args, stdout, nil)
+}
+
+func startRealtimeCGuestWithStdin(t *testing.T, path string, args []string, stdout interface {
+	io.Writer
+	String() string
+}, stdin io.Reader) (*Jea9Linux, <-chan realtimeCGuestResult) {
 	t.Helper()
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -363,6 +401,7 @@ func startRealtimeCGuest(t *testing.T, path string, args []string, stdout interf
 		},
 		Stdout:            stdout,
 		Stderr:            &stderr,
+		Stdin:             stdin,
 		AllowAllHostFiles: true,
 	})
 	guestArgs := append([]string{path}, args...)
@@ -388,6 +427,55 @@ func startRealtimeCGuest(t *testing.T, path string, args []string, stdout interf
 		}
 	}()
 	return jos, done
+}
+
+func waitSignalOrGuestExit(t *testing.T, name string, out *signalBuffer, done <-chan realtimeCGuestResult) {
+	t.Helper()
+	select {
+	case <-out.signal:
+		return
+	case res := <-done:
+		t.Fatalf("%s guest exited before signal: code=%d err=%v stdout=%q stderr=%q", name, res.code, res.err, res.stdout, res.stderr)
+	case <-time.After(2 * time.Second):
+		t.Fatalf("%s timed out; stdout=%q", name, out.String())
+	}
+}
+
+func waitOutputContainsOrGuestExit(t *testing.T, name string, out *signalBuffer, done <-chan realtimeCGuestResult, want string) {
+	t.Helper()
+	deadline := time.After(2 * time.Second)
+	for {
+		output, changed := out.SnapshotAndChanged()
+		if strings.Contains(output, want) {
+			return
+		}
+		select {
+		case res := <-done:
+			t.Fatalf("%s guest exited before %q: code=%d err=%v stdout=%q stderr=%q", name, want, res.code, res.err, res.stdout, res.stderr)
+		case <-deadline:
+			t.Fatalf("%s timed out waiting for %q; stdout=%q", name, want, out.String())
+		case <-changed:
+		}
+	}
+}
+
+func releaseRealtimeCGuest(t *testing.T, name string, w *io.PipeWriter) {
+	t.Helper()
+	done := make(chan error, 1)
+	go func() {
+		_, err := w.Write([]byte{'\n'})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			return
+		}
+		t.Fatalf("release %s: %v", name, err)
+	case <-time.After(2 * time.Second):
+		_ = w.CloseWithError(io.ErrClosedPipe)
+		t.Fatalf("release %s timed out", name)
+	}
 }
 
 func waitRealtimeCGuest(t *testing.T, name string, jos *Jea9Linux, done <-chan realtimeCGuestResult) realtimeCGuestResult {
