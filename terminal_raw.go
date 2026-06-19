@@ -24,14 +24,7 @@ func enableRawTerminal(stdin io.Reader) (func() error, bool, error) {
 		}
 		return nil, false, fmt.Errorf("enable raw terminal: %w", err)
 	}
-	raw := *oldState
-	raw.Iflag &^= unix.BRKINT | unix.ICRNL | unix.INPCK | unix.ISTRIP | unix.IXON
-	raw.Oflag &^= unix.OPOST
-	raw.Cflag &^= unix.CSIZE | unix.PARENB
-	raw.Cflag |= unix.CS8
-	raw.Lflag &^= unix.ECHO | unix.ICANON | unix.IEXTEN | unix.ISIG
-	raw.Cc[unix.VMIN] = 1
-	raw.Cc[unix.VTIME] = 0
+	raw := rawTerminalState(*oldState)
 	if err := unix.IoctlSetTermios(fd, termiosSetRequest, &raw); err != nil {
 		return nil, false, fmt.Errorf("enable raw terminal: %w", err)
 	}
@@ -42,4 +35,15 @@ func enableRawTerminal(stdin io.Reader) (func() error, bool, error) {
 		return nil
 	}
 	return restore, true, nil
+}
+
+func rawTerminalState(old unix.Termios) unix.Termios {
+	raw := old
+	raw.Iflag &^= unix.BRKINT | unix.ICRNL | unix.INPCK | unix.ISTRIP | unix.IXON
+	raw.Cflag &^= unix.CSIZE | unix.PARENB
+	raw.Cflag |= unix.CS8
+	raw.Lflag &^= unix.ECHO | unix.ICANON | unix.IEXTEN | unix.ISIG
+	raw.Cc[unix.VMIN] = 1
+	raw.Cc[unix.VTIME] = 0
+	return raw
 }
