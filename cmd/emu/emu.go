@@ -87,6 +87,9 @@ type EmuConfig struct {
 	PRNG              bool
 	Chaos             bool
 	RealtimeOffsetNS  int64
+	List              bool
+	AttachPID         int
+	AttachConsole     int
 	Args              []string
 	Env               []string
 	Stdin             io.Reader
@@ -164,9 +167,37 @@ func (c *EmuConfig) DefineFlags(fs *flag.FlagSet) {
 	fs.BoolVar(&c.PRNG, "prng", false, "use deterministic PRNG scheduling quantum and clock advancement")
 	fs.BoolVar(&c.Chaos, "chaos", false, "use deterministic chaos scheduling")
 	fs.Int64Var(&c.RealtimeOffsetNS, "init", defaultEmuRealtimeStartNS, "initial realtime clock value in nanoseconds since Unix epoch; default is 2000-01-01T00:00:00Z")
+	fs.BoolVar(&c.List, "list", false, "list running emu instances with attachable consoles")
+	fs.IntVar(&c.AttachPID, "pid", 0, "attach mode: host PID of an existing emu process")
+	fs.IntVar(&c.AttachConsole, "console", -1, "attach mode: console index to attach to with -pid")
 }
 
 func (c *EmuConfig) ValidateConfig() error {
+	attachMode := c.AttachPID != 0
+	if c.List {
+		if attachMode {
+			return fmt.Errorf("-list cannot be combined with -pid or -console")
+		}
+		if c.RunPath != "" || c.BiosPath != "" {
+			return fmt.Errorf("-list cannot be combined with -run or -bios")
+		}
+		return nil
+	}
+	if c.AttachPID == 0 && c.AttachConsole > 0 {
+		return fmt.Errorf("-console requires -pid")
+	}
+	if attachMode {
+		if c.AttachPID <= 0 {
+			return fmt.Errorf("-pid must be positive in attach mode")
+		}
+		if c.AttachConsole < 0 {
+			return fmt.Errorf("-console must be >= 0 in attach mode")
+		}
+		if c.RunPath != "" || c.BiosPath != "" {
+			return fmt.Errorf("-pid/-console attach mode cannot be combined with -run or -bios")
+		}
+		return nil
+	}
 	if c.RunPath == "" && c.BiosPath == "" {
 		return fmt.Errorf("one of -run or -bios is required")
 	}
@@ -266,6 +297,12 @@ func runEmu(cfg EmuConfig) (int, error) {
 	cfg = cfg.withDefaults()
 	if err := cfg.ValidateConfig(); err != nil {
 		return 0, err
+	}
+	if cfg.List {
+		return 0, listEmuInstances(cfg.Stdout)
+	}
+	if cfg.AttachPID != 0 {
+		return attachEmuConsole(cfg)
 	}
 
 	budget, err := cfg.schedulerBudget()

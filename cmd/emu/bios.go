@@ -38,6 +38,7 @@ const (
 	biosSysconResetOffset = uint32(0)
 	biosSysconResetValue  = uint32(1)
 	biosUARTBase          = uint64(0x10000000)
+	biosUART1Base         = uint64(0x10000100)
 	biosUARTSize          = uint64(0x100)
 	biosHostIOBase        = uint64(0x10001000)
 	biosHostIOSize        = uint64(0x1000)
@@ -49,6 +50,7 @@ const (
 	biosPLICSize          = uint64(0x04000000)
 	biosVirtioNetIRQ      = uint32(1)
 	biosUARTIRQ           = uint32(10)
+	biosUART1IRQ          = uint32(11)
 	plicSContext          = uint32(1)
 )
 
@@ -195,7 +197,7 @@ func prepareBiosGuestWithReset(cfg EmuConfig, onSystemReset func()) (*biosGuest,
 		}
 	}
 
-	mmio := newBiosMMIO(cfg.Stdin, cfg.Stdout, onSystemReset)
+	mmio := newBiosMMIOWithConsoleSockets(cfg.Stdin, cfg.Stdout, onSystemReset, cfg.Stdin == os.Stdin && cfg.Stdout == os.Stdout)
 	if cfg.HostIO {
 		mmio.enableHostIO(mem)
 	}
@@ -350,35 +352,51 @@ func (c EmuConfig) biosBootArgs() string {
 
 type biosMMIO struct {
 	stdout        io.Writer
-	uartOut       *asyncUARTOutput
+	uarts         [2]biosUARTPort
 	onSystemReset func()
 	hostio        *hostIODevice
 	virtioNet     *virtioNetDevice
 
-	uart            [0x100]byte
-	uartTXInterrupt bool
-	uartRX          []byte
-	uartRXCh        chan byte
-	clint           [0x10000]byte
-	mtime           uint64
-	plicPriority    [64]uint32
-	plicEnable      [2]uint64
-	plicThreshold   [2]uint32
-	plicClaimed     [2]uint32
+	clint         [0x10000]byte
+	mtime         uint64
+	plicPriority  [64]uint32
+	plicEnable    [2]uint64
+	plicThreshold [2]uint32
+	plicClaimed   [2]uint32
+}
+
+type biosUARTPort struct {
+	regs        [0x100]byte
+	txInterrupt bool
+	rx          []byte
+	rxCh        chan byte
+	out         interface {
+		WriteByte(byte)
+		Close() error
+	}
 }
 
 func newBiosMMIO(stdin io.Reader, stdout io.Writer, onSystemReset func()) *biosMMIO {
+	return newBiosMMIOWithConsoleSockets(stdin, stdout, onSystemReset, false)
+}
+
+func newBiosMMIOWithConsoleSockets(stdin io.Reader, stdout io.Writer, onSystemReset func(), consoleSockets bool) *biosMMIO {
 	if stdout == nil {
 		stdout = io.Discard
 	}
 	m := &biosMMIO{stdout: stdout, onSystemReset: onSystemReset}
 	if _, ok := stdout.(*bytes.Buffer); !ok && stdout != io.Discard {
-		m.uartOut = newAsyncUARTOutput(stdout)
+		m.uarts[0].out = newAsyncUARTOutput(stdout)
 	}
-	m.uart[2] = 0x01 // IIR: no interrupt pending
-	m.uart[5] = 0x60 // LSR: transmitter holding register empty, idle
+	for i := range m.uarts {
+		m.uarts[i].regs[2] = 0x01 // IIR: no interrupt pending
+		m.uarts[i].regs[5] = 0x60 // LSR: transmitter holding register empty, idle
+	}
 	storeLittleEndian(m.clint[:], 0x4000, 8, ^uint64(0))
-	m.startUARTInput(stdin)
+	m.startUARTInput(0, stdin)
+	if consoleSockets {
+		m.enableConsoleSocket(1)
+	}
 	return m
 }
 
@@ -393,20 +411,39 @@ func (m *biosMMIO) enableVirtioNet(mem *riscv.GuestMemory, stack virtioNetPacket
 	}
 }
 
-func (m *biosMMIO) startUARTInput(stdin io.Reader) {
+func (m *biosMMIO) enableConsoleSocket(index int) {
+	if index < 0 || index >= len(m.uarts) {
+		return
+	}
+	if m.uarts[index].rxCh == nil {
+		m.uarts[index].rxCh = make(chan byte, uartRXLimit)
+	}
+	console, err := newEmuConsoleSocket(index, m.uarts[index].rxCh)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "console%d: %v\n", index, err)
+		return
+	}
+	m.uarts[index].out = console
+}
+
+func (m *biosMMIO) startUARTInput(index int, stdin io.Reader) {
 	if stdin == nil {
 		return
 	}
-	m.uartRXCh = make(chan byte, uartRXLimit)
+	if index < 0 || index >= len(m.uarts) {
+		return
+	}
+	m.uarts[index].rxCh = make(chan byte, uartRXLimit)
+	rxCh := m.uarts[index].rxCh
 	go func() {
 		var buf [256]byte
 		for {
 			n, err := stdin.Read(buf[:])
 			for i := 0; i < n; i++ {
-				m.uartRXCh <- buf[i]
+				rxCh <- buf[i]
 			}
 			if err != nil {
-				close(m.uartRXCh)
+				close(rxCh)
 				return
 			}
 		}
@@ -417,8 +454,8 @@ func (m *biosMMIO) Load(addr, width uint64) (uint64, bool, *riscv.MemFault) {
 	if off, ok := mmioRangeOffset(addr, width, biosSysconBase, biosSysconSize); ok {
 		return m.loadSyscon(off, width), true, nil
 	}
-	if off, ok := mmioRangeOffset(addr, width, biosUARTBase, biosUARTSize); ok {
-		return m.loadUART(off, width), true, nil
+	if index, off, ok := biosUARTRangeOffset(addr, width); ok {
+		return m.loadUARTPort(index, off, width), true, nil
 	}
 	if m.hostio != nil {
 		if off, ok := mmioRangeOffset(addr, width, biosHostIOBase, biosHostIOSize); ok {
@@ -437,7 +474,7 @@ func (m *biosMMIO) Load(addr, width uint64) (uint64, bool, *riscv.MemFault) {
 		return m.loadPLIC(off, width), true, nil
 	}
 	if mmioRangeTouches(addr, width, biosSysconBase, biosSysconSize) ||
-		mmioRangeTouches(addr, width, biosUARTBase, biosUARTSize) ||
+		biosUARTRangeTouches(addr, width) ||
 		(m.hostio != nil && mmioRangeTouches(addr, width, biosHostIOBase, biosHostIOSize)) ||
 		(m.virtioNet != nil && mmioRangeTouches(addr, width, biosVirtioNetBase, biosVirtioNetSize)) ||
 		mmioRangeTouches(addr, width, biosCLINTBase, biosCLINTSize) ||
@@ -452,8 +489,8 @@ func (m *biosMMIO) Store(addr, width, value uint64) (bool, *riscv.MemFault) {
 		m.storeSyscon(off, width, value)
 		return true, nil
 	}
-	if off, ok := mmioRangeOffset(addr, width, biosUARTBase, biosUARTSize); ok {
-		m.storeUART(off, width, value)
+	if index, off, ok := biosUARTRangeOffset(addr, width); ok {
+		m.storeUARTPort(index, off, width, value)
 		return true, nil
 	}
 	if m.hostio != nil {
@@ -475,7 +512,7 @@ func (m *biosMMIO) Store(addr, width, value uint64) (bool, *riscv.MemFault) {
 		return true, nil
 	}
 	if mmioRangeTouches(addr, width, biosSysconBase, biosSysconSize) ||
-		mmioRangeTouches(addr, width, biosUARTBase, biosUARTSize) ||
+		biosUARTRangeTouches(addr, width) ||
 		(m.hostio != nil && mmioRangeTouches(addr, width, biosHostIOBase, biosHostIOSize)) ||
 		(m.virtioNet != nil && mmioRangeTouches(addr, width, biosVirtioNetBase, biosVirtioNetSize)) ||
 		mmioRangeTouches(addr, width, biosCLINTBase, biosCLINTSize) ||
@@ -487,7 +524,8 @@ func (m *biosMMIO) Store(addr, width, value uint64) (bool, *riscv.MemFault) {
 
 func (m *biosMMIO) MMIOOverlaps(addr, size uint64) bool {
 	return rangesOverlap(addr, addr+size, biosSysconBase, biosSysconBase+biosSysconSize) ||
-		rangesOverlap(addr, addr+size, biosUARTBase, biosUARTBase+biosUARTSize) ||
+		(rangesOverlap(addr, addr+size, biosUARTBase, biosUARTBase+biosUARTSize) ||
+			rangesOverlap(addr, addr+size, biosUART1Base, biosUART1Base+biosUARTSize)) ||
 		(m.hostio != nil && rangesOverlap(addr, addr+size, biosHostIOBase, biosHostIOBase+biosHostIOSize)) ||
 		(m.virtioNet != nil && rangesOverlap(addr, addr+size, biosVirtioNetBase, biosVirtioNetBase+biosVirtioNetSize)) ||
 		rangesOverlap(addr, addr+size, biosCLINTBase, biosCLINTBase+biosCLINTSize) ||
@@ -508,77 +546,114 @@ func (m *biosMMIO) storeSyscon(off, width, value uint64) {
 	}
 }
 
+func biosUARTRangeOffset(addr, width uint64) (int, uint64, bool) {
+	if off, ok := mmioRangeOffset(addr, width, biosUARTBase, biosUARTSize); ok {
+		return 0, off, true
+	}
+	if off, ok := mmioRangeOffset(addr, width, biosUART1Base, biosUARTSize); ok {
+		return 1, off, true
+	}
+	return 0, 0, false
+}
+
+func biosUARTRangeTouches(addr, width uint64) bool {
+	return mmioRangeTouches(addr, width, biosUARTBase, biosUARTSize) ||
+		mmioRangeTouches(addr, width, biosUART1Base, biosUARTSize)
+}
+
 func (m *biosMMIO) loadUART(off, width uint64) uint64 {
+	return m.loadUARTPort(0, off, width)
+}
+
+func (m *biosMMIO) loadUARTPort(index int, off, width uint64) uint64 {
 	var value uint64
 	for i := uint64(0); i < width; i++ {
-		value |= uint64(m.uartByte(off+i)) << (8 * i)
+		value |= uint64(m.uartByte(index, off+i)) << (8 * i)
 	}
 	return value
 }
 
-func (m *biosMMIO) uartByte(off uint64) byte {
-	m.drainUARTInput()
-	dlab := m.uart[3]&uartLCRDLAB != 0
+func (m *biosMMIO) uartByte(index int, off uint64) byte {
+	if index < 0 || index >= len(m.uarts) {
+		return 0
+	}
+	uart := &m.uarts[index]
+	m.drainUARTInput(index)
+	dlab := uart.regs[3]&uartLCRDLAB != 0
 	switch off {
 	case 0:
 		if !dlab {
-			if len(m.uartRX) == 0 {
+			if len(uart.rx) == 0 {
 				return 0
 			}
-			b := m.uartRX[0]
-			copy(m.uartRX, m.uartRX[1:])
-			m.uartRX = m.uartRX[:len(m.uartRX)-1]
+			b := uart.rx[0]
+			copy(uart.rx, uart.rx[1:])
+			uart.rx = uart.rx[:len(uart.rx)-1]
 			return b
 		}
-		return m.uart[0]
+		return uart.regs[0]
 	case 1:
-		return m.uart[1]
+		return uart.regs[1]
 	case 2:
-		if !dlab && m.uartRXInterruptPending() {
+		if !dlab && m.uartRXInterruptPending(index) {
 			return uartIIRRDI
 		}
-		if !dlab && m.uartTXInterruptPending() {
-			m.uartTXInterrupt = false
+		if !dlab && m.uartTXInterruptPending(index) {
+			uart.txInterrupt = false
 			return uartIIRTHRI
 		}
 		return uartIIRNone
 	case 5:
 		lsr := uartLSRTHRE | uartLSRTEMT
-		if len(m.uartRX) != 0 {
+		if len(uart.rx) != 0 {
 			lsr |= uartLSRDR
 		}
 		return lsr
 	default:
-		return m.uart[off]
+		return uart.regs[off]
 	}
 }
 
 func (m *biosMMIO) storeUART(off, width, value uint64) {
+	m.storeUARTPort(0, off, width, value)
+}
+
+func (m *biosMMIO) storeUARTPort(index int, off, width, value uint64) {
+	if index < 0 || index >= len(m.uarts) {
+		return
+	}
+	uart := &m.uarts[index]
 	for i := uint64(0); i < width; i++ {
 		b := byte(value >> (8 * i))
 		idx := off + i
-		dlab := m.uart[3]&uartLCRDLAB != 0
-		m.uart[idx] = b
+		dlab := uart.regs[3]&uartLCRDLAB != 0
+		uart.regs[idx] = b
 		if idx == 0 && !dlab {
-			m.writeUARTOutput(b)
-			if m.uart[1]&uartIERTHRI != 0 {
-				m.uartTXInterrupt = true
+			m.writeUARTOutput(index, b)
+			if uart.regs[1]&uartIERTHRI != 0 {
+				uart.txInterrupt = true
 			}
 		}
 		if idx == 1 && !dlab {
 			if b&uartIERTHRI != 0 {
-				m.uartTXInterrupt = true
+				uart.txInterrupt = true
 			} else {
-				m.uartTXInterrupt = false
+				uart.txInterrupt = false
 			}
 		}
 	}
-	m.uart[5] = uartLSRTHRE | uartLSRTEMT
+	uart.regs[5] = uartLSRTHRE | uartLSRTEMT
 }
 
-func (m *biosMMIO) writeUARTOutput(b byte) {
-	if m.uartOut != nil {
-		m.uartOut.WriteByte(b)
+func (m *biosMMIO) writeUARTOutput(index int, b byte) {
+	if index < 0 || index >= len(m.uarts) {
+		return
+	}
+	if m.uarts[index].out != nil {
+		m.uarts[index].out.WriteByte(b)
+		return
+	}
+	if index != 0 {
 		return
 	}
 	var one [1]byte
@@ -587,11 +662,13 @@ func (m *biosMMIO) writeUARTOutput(b byte) {
 }
 
 func (m *biosMMIO) closeUARTOutput() {
-	if m.uartOut == nil {
-		return
+	for i := range m.uarts {
+		if m.uarts[i].out == nil {
+			continue
+		}
+		_ = m.uarts[i].out.Close()
+		m.uarts[i].out = nil
 	}
-	m.uartOut.Close()
-	m.uartOut = nil
 }
 
 func (m *biosMMIO) closeHostIO() {
@@ -628,9 +705,10 @@ func (o *asyncUARTOutput) WriteByte(b byte) {
 	o.ch <- b
 }
 
-func (o *asyncUARTOutput) Close() {
+func (o *asyncUARTOutput) Close() error {
 	close(o.ch)
 	<-o.done
+	return nil
 }
 
 func (o *asyncUARTOutput) run(w io.Writer) {
@@ -661,27 +739,48 @@ func (o *asyncUARTOutput) run(w io.Writer) {
 }
 
 func (m *biosMMIO) uartInterruptPending() bool {
-	m.drainUARTInput()
-	return m.uartRXInterruptPending() || m.uartTXInterruptPending()
+	for i := range m.uarts {
+		if m.uartInterruptPendingAt(i) {
+			return true
+		}
+	}
+	return false
 }
 
-func (m *biosMMIO) uartRXInterruptPending() bool {
-	return m.uart[1]&uartIERRDI != 0 && len(m.uartRX) != 0
+func (m *biosMMIO) uartInterruptPendingAt(index int) bool {
+	m.drainUARTInput(index)
+	return m.uartRXInterruptPending(index) || m.uartTXInterruptPending(index)
 }
 
-func (m *biosMMIO) uartTXInterruptPending() bool {
-	return m.uart[1]&uartIERTHRI != 0 && m.uartTXInterrupt
+func (m *biosMMIO) uartRXInterruptPending(index int) bool {
+	if index < 0 || index >= len(m.uarts) {
+		return false
+	}
+	uart := &m.uarts[index]
+	return uart.regs[1]&uartIERRDI != 0 && len(uart.rx) != 0
 }
 
-func (m *biosMMIO) drainUARTInput() {
-	for m.uartRXCh != nil && len(m.uartRX) < uartRXLimit {
+func (m *biosMMIO) uartTXInterruptPending(index int) bool {
+	if index < 0 || index >= len(m.uarts) {
+		return false
+	}
+	uart := &m.uarts[index]
+	return uart.regs[1]&uartIERTHRI != 0 && uart.txInterrupt
+}
+
+func (m *biosMMIO) drainUARTInput(index int) {
+	if index < 0 || index >= len(m.uarts) {
+		return
+	}
+	uart := &m.uarts[index]
+	for uart.rxCh != nil && len(uart.rx) < uartRXLimit {
 		select {
-		case b, ok := <-m.uartRXCh:
+		case b, ok := <-uart.rxCh:
 			if !ok {
-				m.uartRXCh = nil
+				uart.rxCh = nil
 				return
 			}
-			m.uartRX = append(m.uartRX, b)
+			uart.rx = append(uart.rx, b)
 		default:
 			return
 		}
@@ -789,8 +888,11 @@ func (m *biosMMIO) storePLIC(off, width, value uint64) {
 
 func (m *biosMMIO) plicPendingBits() uint32 {
 	pending := uint32(0)
-	if m.uartInterruptPending() {
+	if m.uartInterruptPendingAt(0) {
 		pending |= uint32(1) << biosUARTIRQ
+	}
+	if m.uartInterruptPendingAt(1) {
+		pending |= uint32(1) << biosUART1IRQ
 	}
 	if m.virtioNet != nil && m.virtioNet.InterruptPending() {
 		pending |= uint32(1) << biosVirtioNetIRQ
@@ -1030,6 +1132,11 @@ func buildVirtFDT(memSize uint64, opts virtFDTOptions) ([]byte, error) {
 	}
 	b.endNode()
 
+	b.beginNode("aliases")
+	b.propString("serial0", "/soc/uart@10000000")
+	b.propString("serial1", "/soc/uart@10000100")
+	b.endNode()
+
 	b.beginNode("memory@80000000")
 	b.propString("device_type", "memory")
 	b.propCells64("reg", virtRAMBase, ramSize)
@@ -1100,11 +1207,20 @@ func buildVirtFDT(memSize uint64, opts virtFDTOptions) ([]byte, error) {
 
 	b.beginNode("uart@10000000")
 	b.propString("compatible", "ns16550a")
-	b.propCells64("reg", 0x10000000, 0x100)
+	b.propCells64("reg", biosUARTBase, biosUARTSize)
 	b.propCells("clock-frequency", 3686400)
 	b.propCells("current-speed", 115200)
 	b.propCells("interrupt-parent", virtPLICPH)
-	b.propCells("interrupts", 10)
+	b.propCells("interrupts", biosUARTIRQ)
+	b.endNode()
+
+	b.beginNode("uart@10000100")
+	b.propString("compatible", "ns16550a")
+	b.propCells64("reg", biosUART1Base, biosUARTSize)
+	b.propCells("clock-frequency", 3686400)
+	b.propCells("current-speed", 115200)
+	b.propCells("interrupt-parent", virtPLICPH)
+	b.propCells("interrupts", biosUART1IRQ)
 	b.endNode()
 
 	if opts.HostIO {

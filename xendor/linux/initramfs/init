@@ -9,12 +9,36 @@ mount -t hostfs none /host -o /
 
 /bin/busybox --install -s
 
-#bring up the network
-netup
-#turn on loopback interface for 127.0.0.1
-ifconfig lo up
+# Bring up networking only when a virtio-net interface has actually bound.
+# Keep this bounded and in the background so boot reaches a shell even if DHCP
+# is unavailable.
+EMUNET_IFACE=
+for netdev in /sys/class/net/*; do
+	[ -e "$netdev" ] || continue
+	iface="${netdev##*/}"
+	[ "$iface" = lo ] && continue
+	driver="$(readlink "$netdev/device/driver" 2>/dev/null || true)"
+	case "$driver" in
+	*/virtio_net)
+		EMUNET_IFACE="$iface"
+		break
+		;;
+	esac
+done
+
+if [ -n "$EMUNET_IFACE" ]; then
+	(NET_IFACE="$EMUNET_IFACE" netup -n -T 1 -t 5 >/tmp/netup.log 2>&1 || true) &
+fi
+
+# Turn on loopback interface for 127.0.0.1.
+if [ -d /sys/class/net/lo ]; then
+	ifconfig lo up
+fi
 
 echo ""
 echo "=== RISC-V initramfs booted ==="
 echo ""
+if [ -e /dev/ttyS1 ]; then
+	/bin/busybox setsid /bin/sh -c 'exec /bin/sh -i </dev/ttyS1 >/dev/ttyS1 2>&1' &
+fi
 exec /bin/busybox setsid /bin/sh -c 'exec /bin/sh -i </dev/ttyS0 >/dev/ttyS0 2>&1'

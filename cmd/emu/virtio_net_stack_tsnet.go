@@ -24,7 +24,6 @@ import (
 )
 
 const (
-	defaultEmunetSubdir     = ".emunet"
 	defaultTsnetStateSubdir = "riscv-emu"
 
 	etherTypeIPv4 = uint16(0x0800)
@@ -1011,13 +1010,6 @@ func tsnetDir() string {
 		return v
 	}
 	return filepath.Join(emunetDir(), defaultTsnetStateSubdir)
-}
-
-func emunetDir() string {
-	if home := os.Getenv("HOME"); home != "" {
-		return filepath.Join(home, defaultEmunetSubdir)
-	}
-	return filepath.Join(os.TempDir(), defaultEmunetSubdir)
 }
 
 func tsnetOpLogPath() string {

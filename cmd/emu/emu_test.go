@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -407,7 +408,7 @@ func TestBiosUARTAsyncOutputFlushesPromptWithoutNewline(t *testing.T) {
 
 func TestBiosUARTReceiveInterruptThroughPLIC(t *testing.T) {
 	m := newBiosMMIO(nil, io.Discard, nil)
-	m.uartRX = append(m.uartRX, "ls\n"...)
+	m.uarts[0].rx = append(m.uarts[0].rx, "ls\n"...)
 
 	m.storePLIC(4*uint64(biosUARTIRQ), 4, 1)
 	m.storePLIC(0x2000+0x80*uint64(plicSContext), 4, uint64(1)<<biosUARTIRQ)
@@ -447,11 +448,11 @@ func TestBiosUARTReceiveInterruptThroughPLIC(t *testing.T) {
 func TestBiosUARTInputReaderFeedsReceiveFIFO(t *testing.T) {
 	m := newBiosMMIO(strings.NewReader("x\n"), io.Discard, nil)
 	deadline := time.Now().Add(time.Second)
-	for len(m.uartRX) < 2 && time.Now().Before(deadline) {
-		m.drainUARTInput()
+	for len(m.uarts[0].rx) < 2 && time.Now().Before(deadline) {
+		m.drainUARTInput(0)
 	}
-	if len(m.uartRX) < 2 {
-		t.Fatalf("UART RX len = %d, want stdin bytes", len(m.uartRX))
+	if len(m.uarts[0].rx) < 2 {
+		t.Fatalf("UART RX len = %d, want stdin bytes", len(m.uarts[0].rx))
 	}
 	if got := m.loadUART(5, 1); byte(got)&uartLSRDR == 0 {
 		t.Fatalf("UART LSR = 0x%x, want data-ready", got)
@@ -461,6 +462,47 @@ func TestBiosUARTInputReaderFeedsReceiveFIFO(t *testing.T) {
 	}
 	if got := m.loadUART(0, 1); byte(got) != '\n' {
 		t.Fatalf("UART RBR second byte = %q, want newline", byte(got))
+	}
+}
+
+func TestBiosUART1ConsoleSocketRoundTrip(t *testing.T) {
+	t.Setenv("HOME", shortTempHome(t))
+	m := newBiosMMIOWithConsoleSockets(nil, io.Discard, nil, true)
+	defer m.closeUARTOutput()
+
+	path := emuConsoleSocketPath(os.Getpid(), 1)
+	conn, err := net.Dial("unix", path)
+	if err != nil {
+		t.Fatalf("dial console socket: %v", err)
+	}
+	defer conn.Close()
+	console := m.uarts[1].out.(*emuConsoleSocket)
+	deadline := time.Now().Add(time.Second)
+	for console.activeConn() == nil && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if console.activeConn() == nil {
+		t.Fatal("console socket did not accept connection")
+	}
+
+	m.storeUARTPort(1, 0, 1, 'Z')
+	buf := make([]byte, 1)
+	if _, err := io.ReadFull(conn, buf); err != nil {
+		t.Fatalf("read console socket output: %v", err)
+	}
+	if buf[0] != 'Z' {
+		t.Fatalf("console socket output = %q, want Z", buf[0])
+	}
+
+	if _, err := conn.Write([]byte("q")); err != nil {
+		t.Fatalf("write console socket input: %v", err)
+	}
+	deadline = time.Now().Add(time.Second)
+	for len(m.uarts[1].rx) < 1 && time.Now().Before(deadline) {
+		m.drainUARTInput(1)
+	}
+	if got := m.loadUARTPort(1, 0, 1); byte(got) != 'q' {
+		t.Fatalf("UART1 RBR = %q, want q", byte(got))
 	}
 }
 
@@ -682,6 +724,22 @@ func TestBiosVirtioNetFDTAdvertisedWhenEnabled(t *testing.T) {
 	}
 	if !bytes.Contains(with, fdtU64(biosVirtioNetBase)) {
 		t.Fatal("virtio-net base missing from FDT")
+	}
+}
+
+func TestBiosSecondUARTFDTAdvertised(t *testing.T) {
+	fdt, err := buildVirtFDT(riscv.Size4GB, virtFDTOptions{})
+	if err != nil {
+		t.Fatalf("build FDT: %v", err)
+	}
+	for _, want := range [][]byte{
+		[]byte("serial1"),
+		[]byte("uart@10000100"),
+		fdtU64(biosUART1Base),
+	} {
+		if !bytes.Contains(fdt, want) {
+			t.Fatalf("FDT missing %q", want)
+		}
 	}
 }
 
@@ -1062,6 +1120,99 @@ func TestEnableRawTerminalIgnoresNonFileStdin(t *testing.T) {
 	if restore != nil {
 		t.Fatal("enableRawTerminal returned restore callback for non-file stdin")
 	}
+}
+
+func TestRunEmuListShowsLiveConsoleSocket(t *testing.T) {
+	t.Setenv("HOME", shortTempHome(t))
+	dir := emuInstanceDir(os.Getpid())
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(emuConsoleSocketPath(os.Getpid(), 1), []byte{}, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout bytes.Buffer
+	code, err := runEmu(EmuConfig{List: true, Stdout: &stdout})
+	if err != nil {
+		t.Fatalf("runEmu list: %v", err)
+	}
+	if code != 0 {
+		t.Fatalf("runEmu list exit = %d, want 0", code)
+	}
+	out := stdout.String()
+	if !strings.Contains(out, strconv.Itoa(os.Getpid())) || !strings.Contains(out, "\t1\t") {
+		t.Fatalf("list output = %q, want current pid with console 1", out)
+	}
+}
+
+func TestRunEmuAttachConsoleCopiesBytes(t *testing.T) {
+	t.Setenv("HOME", shortTempHome(t))
+	path := emuConsoleSocketPath(os.Getpid(), 1)
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		t.Fatal(err)
+	}
+	addr := &net.UnixAddr{Name: path, Net: "unix"}
+	ln, err := net.ListenUnix("unix", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	defer os.Remove(path)
+
+	done := make(chan string, 1)
+	go func() {
+		conn, err := ln.AcceptUnix()
+		if err != nil {
+			done <- "accept: " + err.Error()
+			return
+		}
+		defer conn.Close()
+		got, err := io.ReadAll(conn)
+		if err != nil {
+			done <- "read: " + err.Error()
+			return
+		}
+		if _, err := conn.Write([]byte("ack:" + string(got))); err != nil {
+			done <- "write: " + err.Error()
+			return
+		}
+		done <- string(got)
+	}()
+
+	var stdout bytes.Buffer
+	code, err := runEmu(EmuConfig{
+		AttachPID:     os.Getpid(),
+		AttachConsole: 1,
+		Stdin:         strings.NewReader("hello"),
+		Stdout:        &stdout,
+	})
+	if err != nil {
+		t.Fatalf("runEmu attach: %v", err)
+	}
+	if code != 0 {
+		t.Fatalf("runEmu attach exit = %d, want 0", code)
+	}
+	if got := <-done; got != "hello" {
+		t.Fatalf("server read = %q, want hello", got)
+	}
+	if got := stdout.String(); got != "ack:hello" {
+		t.Fatalf("attach stdout = %q, want ack:hello", got)
+	}
+}
+
+func shortTempHome(t *testing.T) string {
+	t.Helper()
+	base := "/private/tmp"
+	if st, err := os.Stat(base); err != nil || !st.IsDir() {
+		base = os.TempDir()
+	}
+	dir, err := os.MkdirTemp(base, "ris-emu-home-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return dir
 }
 
 func TestPrepareBiosGuestRejectsFwJumpFDTKernelOverlap(t *testing.T) {
