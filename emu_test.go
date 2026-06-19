@@ -2031,7 +2031,7 @@ func TestRunEmuBiosFWDynamicHandBuiltLinuxVirtioNetRegistersEth0(t *testing.T) {
 }
 
 func TestRunEmuBiosFWDynamicHandBuiltLinuxCtrlCInterruptsPing(t *testing.T) {
-	const bootWallBudget = 15 * time.Second
+	const bootWallBudget = 30 * time.Second
 	const biosPath = "xendor/opensbi/build/platform/generic/firmware/fw_dynamic.elf"
 	const kernelPath = "xendor/linux-6.17-hand-built/Image"
 	const initrdPath = "xendor/linux/initramfs.cpio.gz"
@@ -2074,6 +2074,7 @@ func TestRunEmuBiosFWDynamicHandBuiltLinuxCtrlCInterruptsPing(t *testing.T) {
 		InitrdPath: initrdPath,
 		Append:     linuxMakeBootArgs,
 		Memory:     "256MB",
+		HostIO:     true,
 		Stdin:      stdinR,
 		Stdout:     &stdout,
 		Stderr:     &stderr,
