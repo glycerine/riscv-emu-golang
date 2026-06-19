@@ -514,6 +514,41 @@ func TestBiosUART1ConsoleSocketRoundTrip(t *testing.T) {
 	}
 }
 
+func TestBiosUART1DTRDropClosesActiveConsoleSocket(t *testing.T) {
+	t.Setenv("HOME", shortTempHome(t))
+	m := newBiosMMIOWithConsoleSockets(nil, io.Discard, nil, true)
+	defer m.closeUARTOutput()
+
+	path := emuConsoleSocketPath(os.Getpid(), 1)
+	conn, err := net.Dial("unix", path)
+	if err != nil {
+		t.Fatalf("dial console socket: %v", err)
+	}
+	defer conn.Close()
+	console := m.uarts[1].out.(*emuConsoleSocket)
+	deadline := time.Now().Add(time.Second)
+	for console.activeConn() == nil && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if console.activeConn() == nil {
+		t.Fatal("console socket did not accept connection")
+	}
+
+	m.storeUARTPort(1, 4, 1, uint64(uartMCRDTR))
+	m.storeUARTPort(1, 4, 1, 0)
+	if console.activeConn() != nil {
+		t.Fatal("console active connection still present after UART1 DTR drop")
+	}
+	if err := conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("set read deadline: %v", err)
+	}
+	var buf [1]byte
+	n, err := conn.Read(buf[:])
+	if err == nil {
+		t.Fatalf("console socket read after DTR drop returned n=%d nil error, want close", n)
+	}
+}
+
 func TestBiosSysconResetInvokesCallback(t *testing.T) {
 	calls := 0
 	m := newBiosMMIO(nil, io.Discard, func() {

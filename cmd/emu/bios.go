@@ -61,6 +61,7 @@ const (
 	uartIIRTHRI = byte(0x02)
 	uartIIRRDI  = byte(0x04)
 	uartLCRDLAB = byte(0x80)
+	uartMCRDTR  = byte(0x01)
 	uartLSRDR   = byte(0x01)
 	uartLSRTHRE = byte(0x20)
 	uartLSRTEMT = byte(0x40)
@@ -627,6 +628,7 @@ func (m *biosMMIO) storeUARTPort(index int, off, width, value uint64) {
 		b := byte(value >> (8 * i))
 		idx := off + i
 		dlab := uart.regs[3]&uartLCRDLAB != 0
+		old := uart.regs[idx]
 		uart.regs[idx] = b
 		if idx == 0 && !dlab {
 			m.writeUARTOutput(index, b)
@@ -641,8 +643,23 @@ func (m *biosMMIO) storeUARTPort(index int, off, width, value uint64) {
 				uart.txInterrupt = false
 			}
 		}
+		if idx == 4 {
+			m.uartModemControlChanged(index, old, b)
+		}
 	}
 	uart.regs[5] = uartLSRTHRE | uartLSRTEMT
+}
+
+func (m *biosMMIO) uartModemControlChanged(index int, old, new byte) {
+	if old&uartMCRDTR == 0 || new&uartMCRDTR != 0 {
+		return
+	}
+	out := m.uarts[index].out
+	guestClose, ok := out.(interface{ GuestClose() error })
+	if !ok {
+		return
+	}
+	_ = guestClose.GuestClose()
 }
 
 func (m *biosMMIO) writeUARTOutput(index int, b byte) {

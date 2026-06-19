@@ -227,6 +227,11 @@ func (c *emuConsoleSocket) Close() error {
 	return err
 }
 
+func (c *emuConsoleSocket) GuestClose() error {
+	c.closeActiveConn(nil)
+	return nil
+}
+
 func (c *emuConsoleSocket) acceptLoop() {
 	for {
 		conn, err := c.ln.AcceptUnix()
