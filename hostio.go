@@ -449,16 +449,15 @@ func (d *hostIODevice) execute(cmd *hostIOCommand) (int64, uint32) {
 		if err != nil {
 			return -1, hostIOErrno(err)
 		}
-		if uint64(len(target)) > cmd.Len {
-			return int64(len(target)), uint32(syscall.ENOBUFS)
+		need := uint64(len(target)) + 1
+		if need > cmd.Len {
+			return int64(need), uint32(syscall.ENOBUFS)
 		}
 		if fault := d.mem.WriteBytes(cmd.Buf, []byte(target)); fault != nil {
 			return -1, uint32(syscall.EFAULT)
 		}
-		if uint64(len(target)) < cmd.Len {
-			if fault := d.mem.WriteBytes(cmd.Buf+uint64(len(target)), []byte{0}); fault != nil {
-				return -1, uint32(syscall.EFAULT)
-			}
+		if fault := d.mem.WriteBytes(cmd.Buf+uint64(len(target)), []byte{0}); fault != nil {
+			return -1, uint32(syscall.EFAULT)
 		}
 		return int64(len(target)), 0
 	case hostIOOpSymlink:

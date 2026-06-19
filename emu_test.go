@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -920,6 +921,47 @@ func TestBiosHostIOReadlinkNullTerminatesWhenSpaceAllows(t *testing.T) {
 	}
 }
 
+func TestBiosHostIOReadlinkRequiresSpaceForTerminator(t *testing.T) {
+	mem, _ := newHostIOTestDevice(t)
+	dir := t.TempDir()
+	target := "go/src/github.com/glycerine/riscv-emu-golang"
+	link := filepath.Join(dir, "ris")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	const bufAddr = uint64(0x4000)
+	fill := bytes.Repeat([]byte{0xaa}, len(target))
+	if fault := mem.WriteBytes(bufAddr, fill); fault != nil {
+		t.Fatalf("fill guest buffer: %v", fault)
+	}
+
+	got := runHostIOTestCmdAnyStatus(t, mem, hostIOCommand{
+		Op:      hostIOOpReadlink,
+		Path:    writeHostIOTestBytes(t, mem, 0x2000, []byte(link)),
+		PathLen: uint64(len(link)),
+		Buf:     bufAddr,
+		Len:     uint64(len(target)),
+	})
+	if got.Status != hostIOStatusErr {
+		t.Fatalf("readlink status = %d errno=%d result=%d, want error", got.Status, got.Errno, got.Result)
+	}
+	if got.Errno != uint32(syscall.ENOBUFS) {
+		t.Fatalf("readlink errno = %d, want ENOBUFS", got.Errno)
+	}
+	if got.Result != int64(len(target)+1) {
+		t.Fatalf("readlink required size = %d, want %d", got.Result, len(target)+1)
+	}
+
+	readBack := make([]byte, len(fill))
+	if fault := mem.ReadBytes(bufAddr, readBack); fault != nil {
+		t.Fatalf("read guest buffer: %v", fault)
+	}
+	if !bytes.Equal(readBack, fill) {
+		t.Fatalf("failed readlink modified buffer = %x, want %x", readBack, fill)
+	}
+}
+
 func TestBiosVirtioNetFDTAdvertisedWhenEnabled(t *testing.T) {
 	without, err := buildVirtFDT(Size4GB, virtFDTOptions{})
 	if err != nil {
@@ -1247,18 +1289,7 @@ func newHostIOTestDevice(t *testing.T) (*GuestMemory, *biosMMIO) {
 
 func runHostIOTestCmd(t *testing.T, mem *GuestMemory, cmd hostIOCommand) hostIOCommand {
 	t.Helper()
-	const cmdAddr = uint64(0x1000)
-	writeHostIOTestCmd(t, mem, cmdAddr, cmd)
-	if fault := mem.Store64(biosHostIOBase+hostIORegCmdAddr, cmdAddr); fault != nil {
-		t.Fatalf("store hostio cmd addr: %v", fault)
-	}
-	if fault := mem.Store64(biosHostIOBase+hostIORegCmdSize, hostIOCmdSize); fault != nil {
-		t.Fatalf("store hostio cmd size: %v", fault)
-	}
-	if fault := mem.Store32(biosHostIOBase+hostIORegSubmit, 1); fault != nil {
-		t.Fatalf("submit hostio cmd: %v", fault)
-	}
-	got := readHostIOTestCmd(t, mem, cmdAddr)
+	got := runHostIOTestCmdAnyStatus(t, mem, cmd)
 	if got.Status != hostIOStatusOK {
 		t.Fatalf("hostio op %d status=%d errno=%d result=%d", got.Op, got.Status, got.Errno, got.Result)
 	}
@@ -1270,6 +1301,22 @@ func runHostIOTestCmd(t *testing.T, mem *GuestMemory, cmd hostIOCommand) hostIOC
 		t.Fatalf("hostio status register = %d, want OK", status)
 	}
 	return got
+}
+
+func runHostIOTestCmdAnyStatus(t *testing.T, mem *GuestMemory, cmd hostIOCommand) hostIOCommand {
+	t.Helper()
+	const cmdAddr = uint64(0x1000)
+	writeHostIOTestCmd(t, mem, cmdAddr, cmd)
+	if fault := mem.Store64(biosHostIOBase+hostIORegCmdAddr, cmdAddr); fault != nil {
+		t.Fatalf("store hostio cmd addr: %v", fault)
+	}
+	if fault := mem.Store64(biosHostIOBase+hostIORegCmdSize, hostIOCmdSize); fault != nil {
+		t.Fatalf("store hostio cmd size: %v", fault)
+	}
+	if fault := mem.Store32(biosHostIOBase+hostIORegSubmit, 1); fault != nil {
+		t.Fatalf("submit hostio cmd: %v", fault)
+	}
+	return readHostIOTestCmd(t, mem, cmdAddr)
 }
 
 func writeHostIOTestBytes(t *testing.T, mem *GuestMemory, addr uint64, data []byte) uint64 {
