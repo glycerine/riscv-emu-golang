@@ -22,7 +22,7 @@
 #   make clean          # remove xendor/build_capi and generated ELF
 #   make help           # this message
 
-.PHONY: all help bench-setup bench bench-quick \
+.PHONY: all help bench-setup softfloat bench bench-quick \
         bench-raw bench-ours bench-cpu lazy-bench bench-libriscv bench-mem \
         bench-smoke bench-summary bench-lots test clean check-tools \
         libriscv-build guest-elf guest-native guest-wasm \
@@ -104,6 +104,10 @@ GUEST_ELF   := $(GUEST_DIR)/bench_guest.elf
 GUEST_NATIVE := $(GUEST_DIR)/bench_guest.native
 GUEST_WASM   := $(GUEST_DIR)/bench_guest.wasm
 OUR_LINUX    := $(ROOT)xendor/linux-6.17-hand-built
+UCB_BAR      := $(ROOT)xendor/ucb-bar
+SOFTFLOAT_BUILD := $(UCB_BAR)/SoftFloat-3e/build/Linux-x86_64-GCC
+TESTFLOAT_BUILD := $(UCB_BAR)/berkeley-testfloat-3/build/Linux-x86_64-GCC
+TESTFLOAT_OPTS_NO16 := -DFLOAT64 -DEXTFLOAT80 -DFLOAT128 -DFLOAT_ROUND_ODD -DLONG_DOUBLE_IS_EXTFLOAT80
 
 # -- profile guided optimization
 
@@ -207,6 +211,7 @@ endif
 	@echo ""
 	@echo "  Other:"
 	@echo "    make test             unit tests"
+	@echo "    make softfloat        build vendored Berkeley SoftFloat/TestFloat"
 	@echo "    make test-arm64-qemu           cross-build root/riscv-tests/lockstep under qemu-system-aarch64"
 	@echo "    make test-arm64-qemu-main      same, but skip sharded lockstep"
 	@echo "    make test-arm64-qemu-lockstep  sharded non-FP lockstep only"
@@ -226,6 +231,15 @@ bench-setup: check-tools libriscv-build guest-elf
 	@echo "we use vendored xendor/libriscv now, and do not pull from github."
 	@echo ""
 	@echo "  ✓ bench-setup complete — run 'make bench' to start"
+	@echo ""
+
+softfloat:
+	@echo "── building Berkeley SoftFloat/TestFloat ───────────────────────"
+	$(MAKE) -C $(SOFTFLOAT_BUILD)
+	$(MAKE) -C $(TESTFLOAT_BUILD) clean
+	$(MAKE) -C $(TESTFLOAT_BUILD) TESTFLOAT_OPTS='$(TESTFLOAT_OPTS_NO16)'
+	@echo ""
+	@echo "  ✓ softfloat complete — TestFloat built without FLOAT16/BFLOAT16"
 	@echo ""
 
 check-tools:

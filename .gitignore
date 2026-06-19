@@ -17,3 +17,5 @@ hellobench
 debug_vizjit_dir/
 debug_libriscv_dir/
 vizjit_debug_dir/
+*.o
+*.a
