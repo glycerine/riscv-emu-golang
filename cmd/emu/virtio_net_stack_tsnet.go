@@ -19,6 +19,7 @@ import (
 
 	emunetpkg "github.com/glycerine/riscv-emu-golang/emunet"
 	"github.com/tailscale/wireguard-go/tun"
+	"tailscale.com/ipn"
 	"tailscale.com/tsnet"
 )
 
@@ -611,6 +612,9 @@ func (s *tsnetVirtioStack) waitTsnetUp(ctx context.Context) {
 		}
 		return
 	}
+	if !s.directTailnetGuest {
+		s.configureEmunetLeaderTsnetPrefs(ctx)
+	}
 	appendTsnetOpLog("authorized ips=%v state_dir=%q", status.TailscaleIPs, s.stateDir)
 	for _, ip := range status.TailscaleIPs {
 		if ip.Is4() {
@@ -620,6 +624,31 @@ func (s *tsnetVirtioStack) waitTsnetUp(ctx context.Context) {
 		}
 	}
 	appendTsnetOpLog("authorized_no_ipv4 ips=%v", status.TailscaleIPs)
+}
+
+func (s *tsnetVirtioStack) configureEmunetLeaderTsnetPrefs(ctx context.Context) {
+	lc, err := s.srv.LocalClient()
+	if err != nil {
+		appendTsnetOpLog("prefs_error routeall=true auto_exit_node=%q error=%q", ipn.AnyExitNode, err)
+		return
+	}
+	prefs, err := lc.EditPrefs(ctx, emunetLeaderTsnetPrefs())
+	if err != nil {
+		appendTsnetOpLog("prefs_error routeall=true auto_exit_node=%q error=%q", ipn.AnyExitNode, err)
+		return
+	}
+	appendTsnetOpLog("prefs routeall=%t auto_exit_node=%q exit_node_id=%q exit_node_ip=%s", prefs.RouteAll, prefs.AutoExitNode, prefs.ExitNodeID, prefs.ExitNodeIP)
+}
+
+func emunetLeaderTsnetPrefs() *ipn.MaskedPrefs {
+	return &ipn.MaskedPrefs{
+		RouteAllSet:     true,
+		AutoExitNodeSet: true,
+		Prefs: ipn.Prefs{
+			RouteAll:     true,
+			AutoExitNode: ipn.AnyExitNode,
+		},
+	}
 }
 
 func (s *tsnetVirtioStack) setTailIPv4(ip netip.Addr) {

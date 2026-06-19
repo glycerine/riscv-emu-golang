@@ -161,7 +161,8 @@ BENCH_FLAGS := \
 # ── top-level ──────────────────────────────────────────────────────────────
 
 all: help
-	go install ./cmd/emu
+	@#go install ./cmd/emu
+	go install -tags 'tsnet' ./cmd/emu
 
 help:
 	@echo ""

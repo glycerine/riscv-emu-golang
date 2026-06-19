@@ -20,6 +20,7 @@ import (
 	"time"
 
 	emunetpkg "github.com/glycerine/riscv-emu-golang/emunet"
+	"tailscale.com/ipn"
 )
 
 func TestTsnetVirtioStackEmunetDHCPDiscoverAndRequest(t *testing.T) {
@@ -709,6 +710,16 @@ func TestTsnetUserLogfAppendsUserVisibleLinesToOpLog(t *testing.T) {
 	}
 	if !strings.Contains(text, "tsnet_user status: waiting") {
 		t.Fatalf("oplog missing second user log line: %q", text)
+	}
+}
+
+func TestEmunetLeaderTsnetPrefsEnableRoutesAndAutoExitNode(t *testing.T) {
+	prefs := emunetLeaderTsnetPrefs()
+	if !prefs.RouteAllSet || !prefs.Prefs.RouteAll {
+		t.Fatalf("RouteAll prefs = set:%t value:%t, want true/true", prefs.RouteAllSet, prefs.Prefs.RouteAll)
+	}
+	if !prefs.AutoExitNodeSet || prefs.Prefs.AutoExitNode != ipn.AnyExitNode {
+		t.Fatalf("AutoExitNode prefs = set:%t value:%q, want true/%q", prefs.AutoExitNodeSet, prefs.Prefs.AutoExitNode, ipn.AnyExitNode)
 	}
 }
 
