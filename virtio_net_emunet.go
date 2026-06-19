@@ -1,11 +1,8 @@
-//go:build tsnet
-
 package riscv
 
 import (
 	"encoding/binary"
 	"net/netip"
-	"os"
 	"time"
 )
 
@@ -575,7 +572,7 @@ func (s *tsnetVirtioStack) incDrop(reason string) {
 	s.counters.Drops[reason]++
 	count := s.counters.Drops[reason]
 	s.mu.Unlock()
-	if os.Getenv("RISCV_EMU_EMUNET_TRACE") != "" {
+	if s.cfg.EmunetTrace {
 		appendTsnetOpLog("emunet_trace drop reason=%q count=%d", reason, count)
 	}
 }

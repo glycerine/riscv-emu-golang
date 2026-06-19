@@ -1,5 +1,3 @@
-//go:build tsnet
-
 package riscv
 
 import (
@@ -22,8 +20,8 @@ func TestRunEmuBiosFWDynamicHandBuiltLinuxEmunetNetupGatewaySmoke(t *testing.T) 
 	}
 
 	t.Setenv("RPC25519_SERVER_DATA_DIR", t.TempDir())
-	t.Setenv("HOME", t.TempDir())
-	t.Setenv("RISCV_EMU_EMUNET_ADDR", reserveTestEmunetAddr(t))
+	setTestEmunetHome(t, t.TempDir())
+	emunetAddr := reserveTestEmunetAddr(t)
 	installFakeEmunetLeaderHook(t, 20*time.Millisecond)
 
 	const doneMarker = "EMUNET-SMOKE-42"
@@ -63,6 +61,7 @@ func TestRunEmuBiosFWDynamicHandBuiltLinuxEmunetNetupGatewaySmoke(t *testing.T) 
 		Memory:     "256MB",
 		HostIO:     true,
 		Net:        true,
+		EmunetAddr: emunetAddr,
 		Stdin:      stdinR,
 		Stdout:     &stdout,
 		Stderr:     &stderr,

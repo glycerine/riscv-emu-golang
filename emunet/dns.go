@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"os"
 	"sync"
 	"time"
 )
@@ -15,9 +14,6 @@ import (
 const (
 	DefaultAddr = "127.0.0.1:7557"
 	DNSHello    = "HELLO EMUNET\n"
-
-	envAddr             = "RISCV_EMU_EMUNET_ADDR"
-	envAllowNonLoopback = "RISCV_EMU_EMUNET_ALLOW_NON_LOOPBACK"
 )
 
 type DNSProvider func() EmunetDNS
@@ -28,16 +24,9 @@ type DNSServer struct {
 	wg     sync.WaitGroup
 }
 
-func AddrFromEnv() string {
-	if v := os.Getenv(envAddr); v != "" {
-		return v
-	}
-	return DefaultAddr
-}
-
 func ListenRendezvous(ctx context.Context, addr string) (net.Listener, error) {
 	if addr == "" {
-		addr = AddrFromEnv()
+		addr = DefaultAddr
 	}
 	if err := validateLoopbackAddr(addr); err != nil {
 		return nil, err
@@ -115,7 +104,7 @@ func serveDNSConn(ctx context.Context, conn net.Conn, provider DNSProvider) erro
 
 func LookupDNS(ctx context.Context, addr string) (EmunetDNS, error) {
 	if addr == "" {
-		addr = AddrFromEnv()
+		addr = DefaultAddr
 	}
 	if err := validateLoopbackAddr(addr); err != nil {
 		return EmunetDNS{}, err
@@ -143,9 +132,6 @@ func LookupDNS(ctx context.Context, addr string) (EmunetDNS, error) {
 }
 
 func validateLoopbackAddr(addr string) error {
-	if os.Getenv(envAllowNonLoopback) != "" {
-		return nil
-	}
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
 		return fmt.Errorf("emunet address %q: %w", addr, err)

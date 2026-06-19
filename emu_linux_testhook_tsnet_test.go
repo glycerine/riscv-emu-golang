@@ -1,5 +1,3 @@
-//go:build tsnet
-
 package riscv
 
 import (
@@ -7,10 +5,10 @@ import (
 	"time"
 )
 
-func installFakeEmunetForLinuxSmoke(t *testing.T) {
+func installFakeEmunetForLinuxSmoke(t *testing.T) string {
 	t.Helper()
 	t.Setenv("RPC25519_SERVER_DATA_DIR", t.TempDir())
-	t.Setenv("HOME", t.TempDir())
-	t.Setenv("RISCV_EMU_EMUNET_ADDR", reserveTestEmunetAddr(t))
+	setTestEmunetHome(t, t.TempDir())
 	installFakeEmunetLeaderHook(t, 20*time.Millisecond)
+	return reserveTestEmunetAddr(t)
 }

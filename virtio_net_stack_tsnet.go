@@ -1,5 +1,3 @@
-//go:build tsnet
-
 package riscv
 
 import (
@@ -12,7 +10,6 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -71,6 +68,7 @@ type emunetVirtioStack struct {
 type tsnetVirtioStack struct {
 	srv *tsnet.Server
 	tun *virtioNetMemoryTUN
+	cfg EmuConfig
 
 	mu                 sync.Mutex
 	cancel             context.CancelFunc
@@ -97,7 +95,7 @@ var (
 )
 
 func newVirtioNetPacketStack(cfg EmuConfig) (virtioNetPacketStack, error) {
-	if tsnetEnvBool("RISCV_EMU_EMUNET_DISABLE") {
+	if cfg.NetDirectTailnet {
 		return newTsnetVirtioStack(cfg, true)
 	}
 	return newEmunetVirtioStack(cfg)
@@ -113,20 +111,21 @@ func newEmunetLeaderTsnetVirtioStack(cfg EmuConfig) (*tsnetVirtioStack, error) {
 
 func newTsnetVirtioStack(cfg EmuConfig, directTailnetGuest bool) (*tsnetVirtioStack, error) {
 	stack := &tsnetVirtioStack{
+		cfg:                cfg,
 		hostMAC:            emunetRouterMAC,
 		directTailnetGuest: directTailnetGuest,
 	}
 	stack.tun = newVirtioNetMemoryTUN(stack.handleTsnetPacket)
-	stateDir := tsnetDir()
-	hostname := tsnetHostname()
-	ephemeral := tsnetEnvBool("RISCV_EMU_TSNET_EPHEMERAL")
+	stateDir := tsnetDir(cfg)
+	hostname := tsnetHostname(cfg)
+	ephemeral := cfg.TsnetEphemeral
 	stack.stateDir = stateDir
 	appendTsnetOpLog("start state_dir=%q state_file=%q hostname=%q ephemeral=%t authkey_set=%t",
-		stateDir, filepath.Join(stateDir, "tailscaled.state"), hostname, ephemeral, os.Getenv("TS_AUTHKEY") != "")
+		stateDir, filepath.Join(stateDir, "tailscaled.state"), hostname, ephemeral, cfg.TsnetAuthKey != "")
 	stack.srv = &tsnet.Server{
 		Dir:       stateDir,
 		Hostname:  hostname,
-		AuthKey:   os.Getenv("TS_AUTHKEY"),
+		AuthKey:   cfg.TsnetAuthKey,
 		Ephemeral: ephemeral,
 		Tun:       stack.tun,
 		UserLogf:  tsnetUserLogf,
@@ -139,7 +138,7 @@ func newTsnetVirtioStack(cfg EmuConfig, directTailnetGuest bool) (*tsnetVirtioSt
 	appendTsnetOpLog("started state_dir=%q", stateDir)
 	ctx, cancel := context.WithCancel(context.Background())
 	stack.cancel = cancel
-	if ip := tsnetEnvAddr("RISCV_EMU_TSNET_GUEST_IPV4"); ip.Is4() {
+	if ip := parseTsnetAddr(cfg.TsnetGuestIPv4); ip.Is4() {
 		stack.setTailIPv4(ip)
 		appendTsnetOpLog("guest_ipv4_override ip=%s", ip)
 	}
@@ -162,7 +161,8 @@ func newEmunetVirtioStack(cfg EmuConfig) (virtioNetPacketStack, error) {
 	}
 	go stack.readEmunetEvents(ctx)
 
-	ln, listenErr := emunetpkg.ListenRendezvous(ctx, emunetpkg.AddrFromEnv())
+	addr := emunetAddr(cfg)
+	ln, listenErr := emunetpkg.ListenRendezvous(ctx, addr)
 	if listenErr == nil {
 		if err := stack.promoteToLeader(ctx, cfg, ln, "initial"); err != nil {
 			_ = ln.Close()
@@ -172,13 +172,13 @@ func newEmunetVirtioStack(cfg EmuConfig) (virtioNetPacketStack, error) {
 		return stack, nil
 	}
 
-	dns, lookupErr := emunetpkg.LookupDNS(ctx, emunetpkg.AddrFromEnv())
+	dns, lookupErr := emunetpkg.LookupDNS(ctx, addr)
 	if lookupErr != nil {
 		_ = stack.Close()
 		return nil, errors.Join(listenErr, lookupErr)
 	}
 	appendTsnetOpLog("emunet_election role=follower addr=%q leader_url=%q follower_count=%d peer_url=%q",
-		emunetpkg.AddrFromEnv(), dns.LeaderURL, len(dns.KnownFollowerURLs), node.PeerURL())
+		addr, dns.LeaderURL, len(dns.KnownFollowerURLs), node.PeerURL())
 	if err := stack.connectToLeader(ctx, dns); err != nil {
 		_ = stack.Close()
 		return nil, err
@@ -263,7 +263,7 @@ func (s *emunetVirtioStack) connectToLeader(ctx context.Context, dns emunetpkg.E
 }
 
 func (s *emunetVirtioStack) startFollowerWatchDog(ctx context.Context, cfg EmuConfig) {
-	appendTsnetOpLog("emunet_watchDog_start role=follower addr=%q interval=%s", emunetpkg.AddrFromEnv(), emunetWatchDogInterval)
+	appendTsnetOpLog("emunet_watchDog_start role=follower addr=%q interval=%s", emunetAddr(cfg), emunetWatchDogInterval)
 	go s.runFollowerWatchDog(ctx, cfg)
 }
 
@@ -279,7 +279,8 @@ func (s *emunetVirtioStack) runFollowerWatchDog(ctx context.Context, cfg EmuConf
 		if !s.isFollower() {
 			return
 		}
-		ln, err := emunetpkg.ListenRendezvous(ctx, emunetpkg.AddrFromEnv())
+		addr := emunetAddr(cfg)
+		ln, err := emunetpkg.ListenRendezvous(ctx, addr)
 		if err == nil {
 			if err := s.promoteToLeader(ctx, cfg, ln, "watchDog"); err != nil {
 				_ = ln.Close()
@@ -290,10 +291,10 @@ func (s *emunetVirtioStack) runFollowerWatchDog(ctx context.Context, cfg EmuConf
 		if !s.isFollower() {
 			continue
 		}
-		dns, lookupErr := emunetpkg.LookupDNS(ctx, emunetpkg.AddrFromEnv())
+		dns, lookupErr := emunetpkg.LookupDNS(ctx, addr)
 		if lookupErr != nil {
 			if s.needsLeaderReconnect() {
-				appendTsnetOpLog("emunet_watchDog_reconnect_error addr=%q error=%q", emunetpkg.AddrFromEnv(), lookupErr)
+				appendTsnetOpLog("emunet_watchDog_reconnect_error addr=%q error=%q", addr, lookupErr)
 			}
 			continue
 		}
@@ -792,8 +793,8 @@ func (s *tsnetVirtioStack) handleDHCP(portID string, frame []byte, emit func([]b
 		if !ok {
 			return true
 		}
-		serverIP = tsnetDHCPServerIPv4()
-		dnsIP = tsnetDNSIPv4()
+		serverIP = tsnetDHCPServerIPv4(s.cfg)
+		dnsIP = tsnetDNSIPv4(s.cfg)
 	} else {
 		var guestMAC [6]byte
 		copy(guestMAC[:], dhcp[28:34])
@@ -1005,19 +1006,23 @@ func (t *virtioNetMemoryTUN) Close() error {
 	return nil
 }
 
-func tsnetDir() string {
-	if v := os.Getenv("RISCV_EMU_TSNET_DIR"); v != "" {
-		return v
+func emunetAddr(cfg EmuConfig) string {
+	if cfg.EmunetAddr != "" {
+		return cfg.EmunetAddr
+	}
+	return emunetpkg.DefaultAddr
+}
+
+func tsnetDir(cfg EmuConfig) string {
+	if cfg.TsnetDir != "" {
+		return cfg.TsnetDir
 	}
 	return filepath.Join(emunetDir(), defaultTsnetStateSubdir)
 }
 
 func tsnetOpLogPath() string {
 	name := fmt.Sprintf("oplog.%d", os.Getpid())
-	if home := os.Getenv("HOME"); home != "" {
-		return filepath.Join(home, ".local", "state", "emunet", name)
-	}
-	return filepath.Join(os.TempDir(), ".local", "state", "emunet", name)
+	return filepath.Join(emunetStateDir(), name)
 }
 
 func emunetLeaderOpLogLinkPath() string {
@@ -1106,24 +1111,15 @@ func appendTsnetOpLog(format string, args ...any) {
 	_, _ = fmt.Fprintf(f, "%s %s\n", time.Now().Format(rfc3339MsecTz0), msg)
 }
 
-func tsnetHostname() string {
-	if v := os.Getenv("RISCV_EMU_TSNET_HOSTNAME"); v != "" {
-		return v
+func tsnetHostname(cfg EmuConfig) string {
+	if cfg.TsnetHostname != "" {
+		return cfg.TsnetHostname
 	}
 	return "riscv-emu"
 }
 
-func tsnetEnvBool(name string) bool {
-	v := strings.TrimSpace(strings.ToLower(os.Getenv(name)))
-	if v == "" {
-		return false
-	}
-	ok, err := strconv.ParseBool(v)
-	return err == nil && ok
-}
-
-func tsnetEnvAddr(name string) netip.Addr {
-	v := strings.TrimSpace(os.Getenv(name))
+func parseTsnetAddr(raw string) netip.Addr {
+	v := strings.TrimSpace(raw)
 	if v == "" {
 		return netip.Addr{}
 	}
@@ -1134,16 +1130,16 @@ func tsnetEnvAddr(name string) netip.Addr {
 	return ip
 }
 
-func tsnetDHCPServerIPv4() netip.Addr {
-	if ip := tsnetEnvAddr("RISCV_EMU_TSNET_DHCP_SERVER_IPV4"); ip.Is4() {
+func tsnetDHCPServerIPv4(cfg EmuConfig) netip.Addr {
+	if ip := parseTsnetAddr(cfg.TsnetDHCPServerIPv4); ip.Is4() {
 		return ip
 	}
 	return netip.MustParseAddr("100.100.100.100")
 }
 
-func tsnetDNSIPv4() netip.Addr {
-	if ip := tsnetEnvAddr("RISCV_EMU_TSNET_DNS_IPV4"); ip.Is4() {
+func tsnetDNSIPv4(cfg EmuConfig) netip.Addr {
+	if ip := parseTsnetAddr(cfg.TsnetDNSIPv4); ip.Is4() {
 		return ip
 	}
-	return tsnetDHCPServerIPv4()
+	return tsnetDHCPServerIPv4(cfg)
 }

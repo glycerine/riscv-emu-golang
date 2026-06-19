@@ -1,5 +1,3 @@
-//go:build tsnet
-
 package riscv
 
 import (
@@ -584,9 +582,8 @@ func TestTsnetVirtioStackEmunetCountersRecordSuccessesAndDrops(t *testing.T) {
 
 func TestTsnetVirtioStackEmunetTraceLogsDrops(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("RISCV_EMU_EMUNET_TRACE", "1")
-	stack := &tsnetVirtioStack{hostMAC: emunetRouterMAC}
+	setTestEmunetHome(t, home)
+	stack := &tsnetVirtioStack{hostMAC: emunetRouterMAC, cfg: EmuConfig{EmunetTrace: true}}
 	tailIP := netip.MustParseAddr("100.64.12.34")
 	fragment := udpIPv4Packet([4]byte{10, 77, 0, 2}, [4]byte{8, 8, 8, 8}, 1234, 53, []byte("hello"))
 	binary.BigEndian.PutUint16(fragment[6:8], 0x2000)
@@ -653,22 +650,20 @@ func TestTsnetVirtioStackEmunetCounterSnapshotsDuringTraffic(t *testing.T) {
 }
 
 func TestTsnetDirDefaultsToHostPersistentStateDir(t *testing.T) {
-	t.Setenv("RISCV_EMU_TSNET_DIR", "")
-	t.Setenv("HOME", "/tmp/riscv-emu-home")
+	setTestEmunetHome(t, "/tmp/riscv-emu-home")
 	want := "/tmp/riscv-emu-home/.emunet/riscv-emu"
-	if got := tsnetDir(); got != want {
+	if got := tsnetDir(EmuConfig{}); got != want {
 		t.Fatalf("tsnetDir default = %q, want %q", got, want)
 	}
 
-	t.Setenv("RISCV_EMU_TSNET_DIR", "/tmp/emutail-test")
-	if got := tsnetDir(); got != "/tmp/emutail-test" {
-		t.Fatalf("tsnetDir override = %q, want env value", got)
+	if got := tsnetDir(EmuConfig{TsnetDir: "/tmp/emutail-test"}); got != "/tmp/emutail-test" {
+		t.Fatalf("tsnetDir override = %q, want config value", got)
 	}
 }
 
 func TestTsnetOpLogDefaultsToPerProcessEmunetStateDir(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setTestEmunetHome(t, home)
 
 	if got, want := tsnetOpLogPath(), filepath.Join(home, ".local", "state", "emunet", fmt.Sprintf("oplog.%d", os.Getpid())); got != want {
 		t.Fatalf("tsnetOpLogPath = %q, want %q", got, want)
@@ -696,7 +691,7 @@ func TestTsnetOpLogDefaultsToPerProcessEmunetStateDir(t *testing.T) {
 
 func TestTsnetUserLogfAppendsUserVisibleLinesToOpLog(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setTestEmunetHome(t, home)
 
 	tsnetUserLogf("auth url: %s\nstatus: %s", "https://login.tailscale.com/a/example", "waiting")
 
@@ -725,7 +720,7 @@ func TestEmunetLeaderTsnetPrefsEnableRoutesAndAutoExitNode(t *testing.T) {
 
 func TestUpdateEmunetLeaderOpLogLinkPointsToCurrentOpLog(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setTestEmunetHome(t, home)
 
 	appendTsnetOpLog("leader_ready")
 	link := updateEmunetLeaderOpLogLink()
@@ -751,7 +746,7 @@ func TestUpdateEmunetLeaderOpLogLinkPointsToCurrentOpLog(t *testing.T) {
 
 func TestUpdateEmunetLeaderOpLogLinkReplacesRegularFile(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setTestEmunetHome(t, home)
 	link := emunetLeaderOpLogLinkPath()
 	if err := os.MkdirAll(filepath.Dir(link), 0700); err != nil {
 		t.Fatal(err)
@@ -772,7 +767,7 @@ func TestUpdateEmunetLeaderOpLogLinkReplacesRegularFile(t *testing.T) {
 
 func TestWriteEmunetLeaderPIDFileReplacesStaleLeaderFiles(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setTestEmunetHome(t, home)
 	dir := emunetDir()
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		t.Fatal(err)
@@ -808,18 +803,18 @@ func TestWriteEmunetLeaderPIDFileReplacesStaleLeaderFiles(t *testing.T) {
 
 func TestEmunetFollowerDoesNotStartTsnetBeforePromotion(t *testing.T) {
 	t.Setenv("RPC25519_SERVER_DATA_DIR", t.TempDir())
-	t.Setenv("HOME", t.TempDir())
+	setTestEmunetHome(t, t.TempDir())
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	leader, dnsSrv, addr := startTestEmunetLeaderDNS(t, ctx)
 	defer leader.Close()
 	defer dnsSrv.Close()
-	t.Setenv("RISCV_EMU_EMUNET_ADDR", addr)
+	cfg := EmuConfig{EmunetAddr: addr}
 
 	starts := installFakeEmunetLeaderHook(t, 20*time.Millisecond)
 
-	stackIf, err := newEmunetVirtioStack(EmuConfig{})
+	stackIf, err := newEmunetVirtioStack(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -848,17 +843,17 @@ func TestEmunetFollowerDoesNotStartTsnetBeforePromotion(t *testing.T) {
 
 func TestEmunetFollowerWatchDogPromotesAfterRendezvousFreed(t *testing.T) {
 	t.Setenv("RPC25519_SERVER_DATA_DIR", t.TempDir())
-	t.Setenv("HOME", t.TempDir())
+	setTestEmunetHome(t, t.TempDir())
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	leader, dnsSrv, addr := startTestEmunetLeaderDNS(t, ctx)
 	defer leader.Close()
-	t.Setenv("RISCV_EMU_EMUNET_ADDR", addr)
+	cfg := EmuConfig{EmunetAddr: addr}
 
 	starts := installFakeEmunetLeaderHook(t, 10*time.Millisecond)
 
-	stackIf, err := newEmunetVirtioStack(EmuConfig{})
+	stackIf, err := newEmunetVirtioStack(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -894,17 +889,17 @@ func TestEmunetFollowerWatchDogPromotesAfterRendezvousFreed(t *testing.T) {
 
 func TestEmunetFollowerWatchDogRacePromotesOneAndReconnectsLosers(t *testing.T) {
 	t.Setenv("RPC25519_SERVER_DATA_DIR", t.TempDir())
-	t.Setenv("HOME", t.TempDir())
+	setTestEmunetHome(t, t.TempDir())
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
 
 	leader, dnsSrv, addr := startTestEmunetLeaderDNS(t, ctx)
-	t.Setenv("RISCV_EMU_EMUNET_ADDR", addr)
+	cfg := EmuConfig{EmunetAddr: addr}
 	starts := installFakeEmunetLeaderHook(t, 10*time.Millisecond)
 
 	stacks := make([]*emunetVirtioStack, 0, 3)
 	for range 3 {
-		stackIf, err := newEmunetVirtioStack(EmuConfig{})
+		stackIf, err := newEmunetVirtioStack(cfg)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -951,16 +946,16 @@ func TestEmunetFollowerWatchDogRacePromotesOneAndReconnectsLosers(t *testing.T) 
 
 func TestEmunetFollowerCloseStopsWatchDogPromotion(t *testing.T) {
 	t.Setenv("RPC25519_SERVER_DATA_DIR", t.TempDir())
-	t.Setenv("HOME", t.TempDir())
+	setTestEmunetHome(t, t.TempDir())
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	leader, dnsSrv, addr := startTestEmunetLeaderDNS(t, ctx)
 	defer leader.Close()
-	t.Setenv("RISCV_EMU_EMUNET_ADDR", addr)
+	cfg := EmuConfig{EmunetAddr: addr}
 	starts := installFakeEmunetLeaderHook(t, 10*time.Millisecond)
 
-	stackIf, err := newEmunetVirtioStack(EmuConfig{})
+	stackIf, err := newEmunetVirtioStack(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1018,17 +1013,17 @@ func TestEmunetLeaderForgetsFollowerCircuitAndPort(t *testing.T) {
 
 func TestEmunetFollowerDHCPOverCircuit(t *testing.T) {
 	t.Setenv("RPC25519_SERVER_DATA_DIR", t.TempDir())
-	t.Setenv("HOME", t.TempDir())
-	t.Setenv("RISCV_EMU_EMUNET_ADDR", reserveTestEmunetAddr(t))
+	setTestEmunetHome(t, t.TempDir())
+	cfg := EmuConfig{EmunetAddr: reserveTestEmunetAddr(t)}
 	starts, _ := installFakeEmunetLeaderCoreHook(t, 20*time.Millisecond, nil)
 
-	leaderIf, err := newEmunetVirtioStack(EmuConfig{})
+	leaderIf, err := newEmunetVirtioStack(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
 	leader := leaderIf.(*emunetVirtioStack)
 	defer leader.Close()
-	followerIf, err := newEmunetVirtioStack(EmuConfig{})
+	followerIf, err := newEmunetVirtioStack(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1054,14 +1049,14 @@ func TestEmunetFollowerDHCPOverCircuit(t *testing.T) {
 
 func TestEmunetLeaderRoutesNATReplyOnlyToOwningFollower(t *testing.T) {
 	t.Setenv("RPC25519_SERVER_DATA_DIR", t.TempDir())
-	t.Setenv("HOME", t.TempDir())
-	t.Setenv("RISCV_EMU_EMUNET_ADDR", reserveTestEmunetAddr(t))
+	setTestEmunetHome(t, t.TempDir())
+	cfg := EmuConfig{EmunetAddr: reserveTestEmunetAddr(t)}
 	tailIP := netip.MustParseAddr("100.64.12.34")
 	_, cores := installFakeEmunetLeaderCoreHook(t, 20*time.Millisecond, func(core *tsnetVirtioStack) {
 		core.setTailIPv4(tailIP)
 	})
 
-	leaderIf, err := newEmunetVirtioStack(EmuConfig{})
+	leaderIf, err := newEmunetVirtioStack(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1069,13 +1064,13 @@ func TestEmunetLeaderRoutesNATReplyOnlyToOwningFollower(t *testing.T) {
 	defer leader.Close()
 	core := recvLeaderCore(t, cores)
 
-	followerAIf, err := newEmunetVirtioStack(EmuConfig{})
+	followerAIf, err := newEmunetVirtioStack(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
 	followerA := followerAIf.(*emunetVirtioStack)
 	defer followerA.Close()
-	followerBIf, err := newEmunetVirtioStack(EmuConfig{})
+	followerBIf, err := newEmunetVirtioStack(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1113,21 +1108,21 @@ func TestEmunetLeaderRoutesNATReplyOnlyToOwningFollower(t *testing.T) {
 
 func TestEmunetLeaderDropsUnmatchedTUNPacket(t *testing.T) {
 	t.Setenv("RPC25519_SERVER_DATA_DIR", t.TempDir())
-	t.Setenv("HOME", t.TempDir())
-	t.Setenv("RISCV_EMU_EMUNET_ADDR", reserveTestEmunetAddr(t))
+	setTestEmunetHome(t, t.TempDir())
+	cfg := EmuConfig{EmunetAddr: reserveTestEmunetAddr(t)}
 	tailIP := netip.MustParseAddr("100.64.12.34")
 	_, cores := installFakeEmunetLeaderCoreHook(t, 20*time.Millisecond, func(core *tsnetVirtioStack) {
 		core.setTailIPv4(tailIP)
 	})
 
-	leaderIf, err := newEmunetVirtioStack(EmuConfig{})
+	leaderIf, err := newEmunetVirtioStack(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
 	leader := leaderIf.(*emunetVirtioStack)
 	defer leader.Close()
 	core := recvLeaderCore(t, cores)
-	followerIf, err := newEmunetVirtioStack(EmuConfig{})
+	followerIf, err := newEmunetVirtioStack(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1214,6 +1209,18 @@ func reserveTestEmunetAddr(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return addr
+}
+
+func setTestEmunetHome(t *testing.T, home string) {
+	t.Helper()
+	oldDir := emunetDirOverride
+	oldStateDir := emunetStateDirOverride
+	emunetDirOverride = filepath.Join(home, ".emunet")
+	emunetStateDirOverride = filepath.Join(home, ".local", "state", "emunet")
+	t.Cleanup(func() {
+		emunetDirOverride = oldDir
+		emunetStateDirOverride = oldStateDir
+	})
 }
 
 func recvLeaderCore(t *testing.T, cores <-chan *tsnetVirtioStack) *tsnetVirtioStack {

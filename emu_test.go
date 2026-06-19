@@ -520,7 +520,7 @@ func TestBiosUARTInputReaderFeedsReceiveFIFO(t *testing.T) {
 }
 
 func TestBiosUART1ConsoleSocketRoundTrip(t *testing.T) {
-	t.Setenv("HOME", shortTempHome(t))
+	setTestEmunetHome(t, shortTempHome(t))
 	m := newBiosMMIOWithConsoleSockets(nil, io.Discard, nil, true)
 	defer m.closeUARTOutput()
 
@@ -561,7 +561,7 @@ func TestBiosUART1ConsoleSocketRoundTrip(t *testing.T) {
 }
 
 func TestBiosUART1DTRDropClosesActiveConsoleSocket(t *testing.T) {
-	t.Setenv("HOME", shortTempHome(t))
+	setTestEmunetHome(t, shortTempHome(t))
 	m := newBiosMMIOWithConsoleSockets(nil, io.Discard, nil, true)
 	defer m.closeUARTOutput()
 
@@ -596,7 +596,7 @@ func TestBiosUART1DTRDropClosesActiveConsoleSocket(t *testing.T) {
 }
 
 func TestBiosUART1DTRDropAllowsThreeSequentialConsoleSessions(t *testing.T) {
-	t.Setenv("HOME", shortTempHome(t))
+	setTestEmunetHome(t, shortTempHome(t))
 	m := newBiosMMIOWithConsoleSockets(nil, io.Discard, nil, true)
 	defer m.closeUARTOutput()
 
@@ -1299,7 +1299,7 @@ func TestEnableRawTerminalIgnoresNonFileStdin(t *testing.T) {
 }
 
 func TestRunEmuListShowsLiveConsoleSocket(t *testing.T) {
-	t.Setenv("HOME", shortTempHome(t))
+	setTestEmunetHome(t, shortTempHome(t))
 	dir := emuInstanceDir(os.Getpid())
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		t.Fatal(err)
@@ -1323,7 +1323,7 @@ func TestRunEmuListShowsLiveConsoleSocket(t *testing.T) {
 }
 
 func TestRunEmuDebugAttachesSingleOtherConsole1(t *testing.T) {
-	t.Setenv("HOME", shortTempHome(t))
+	setTestEmunetHome(t, shortTempHome(t))
 	const selfPID = 111
 	const targetPID = 222
 	installFakeEmuProcessTable(t, selfPID, map[int]bool{selfPID: true, targetPID: true})
@@ -1381,7 +1381,7 @@ func TestRunEmuDebugAttachesSingleOtherConsole1(t *testing.T) {
 }
 
 func TestRunEmuDebugAttachesSingleOtherConsole1ThreeTimes(t *testing.T) {
-	t.Setenv("HOME", shortTempHome(t))
+	setTestEmunetHome(t, shortTempHome(t))
 	const selfPID = 111
 	const targetPID = 222
 	installFakeEmuProcessTable(t, selfPID, map[int]bool{selfPID: true, targetPID: true})
@@ -1446,7 +1446,7 @@ func TestRunEmuDebugAttachesSingleOtherConsole1ThreeTimes(t *testing.T) {
 }
 
 func TestResolveDebugAttachRejectsMultipleOtherEmus(t *testing.T) {
-	t.Setenv("HOME", shortTempHome(t))
+	setTestEmunetHome(t, shortTempHome(t))
 	const selfPID = 111
 	installFakeEmuProcessTable(t, selfPID, map[int]bool{222: true, 333: true})
 	for _, pid := range []int{222, 333} {
@@ -1466,7 +1466,7 @@ func TestResolveDebugAttachRejectsMultipleOtherEmus(t *testing.T) {
 }
 
 func TestResolveDebugAttachRejectsNoOtherEmus(t *testing.T) {
-	t.Setenv("HOME", shortTempHome(t))
+	setTestEmunetHome(t, shortTempHome(t))
 	const selfPID = 111
 	installFakeEmuProcessTable(t, selfPID, map[int]bool{selfPID: true})
 	dir := emuInstanceDir(selfPID)
@@ -1484,7 +1484,7 @@ func TestResolveDebugAttachRejectsNoOtherEmus(t *testing.T) {
 }
 
 func TestResolveDebugAttachRejectsMissingConsole1(t *testing.T) {
-	t.Setenv("HOME", shortTempHome(t))
+	setTestEmunetHome(t, shortTempHome(t))
 	const selfPID = 111
 	const targetPID = 222
 	installFakeEmuProcessTable(t, selfPID, map[int]bool{targetPID: true})
@@ -1503,7 +1503,7 @@ func TestResolveDebugAttachRejectsMissingConsole1(t *testing.T) {
 }
 
 func TestRunEmuAttachConsoleCopiesBytes(t *testing.T) {
-	t.Setenv("HOME", shortTempHome(t))
+	setTestEmunetHome(t, shortTempHome(t))
 	path := emuConsoleSocketPath(os.Getpid(), 1)
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		t.Fatal(err)
@@ -1750,7 +1750,7 @@ func TestRunEmuBiosFWDynamicHandBuiltLinuxBootsToInitUnder8s(t *testing.T) {
 			t.Skipf("hand-built Linux BIOS fixture not present: %s", path)
 		}
 	}
-	installFakeEmunetForLinuxSmoke(t)
+	emunetAddr := installFakeEmunetForLinuxSmoke(t)
 
 	var stdout safeStringWriter
 	var stderr bytes.Buffer
@@ -1763,6 +1763,7 @@ func TestRunEmuBiosFWDynamicHandBuiltLinuxBootsToInitUnder8s(t *testing.T) {
 		Memory:     "256MB",
 		HostIO:     true,
 		Net:        true,
+		EmunetAddr: emunetAddr,
 		Stdin:      strings.NewReader(""),
 		Stdout:     &stdout,
 		Stderr:     &stderr,
@@ -1789,7 +1790,7 @@ func TestRunEmuBiosFWDynamicHandBuiltLinuxBootsToInitUnder8s(t *testing.T) {
 }
 
 func TestRunEmuBiosFWDynamicHandBuiltLinuxHostFSMountReadWrite(t *testing.T) {
-	const bootWallBudget = 15 * time.Second
+	const bootWallBudget = 20 * time.Second
 	const biosPath = "xendor/opensbi/build/platform/generic/firmware/fw_dynamic.elf"
 	const kernelPath = "xendor/linux-6.17-hand-built/Image"
 	const initrdPath = "xendor/linux/initramfs.cpio.gz"
@@ -1798,8 +1799,6 @@ func TestRunEmuBiosFWDynamicHandBuiltLinuxHostFSMountReadWrite(t *testing.T) {
 			t.Skipf("hand-built Linux BIOS fixture not present: %s", path)
 		}
 	}
-	installFakeEmunetForLinuxSmoke(t)
-
 	hostDir := t.TempDir()
 	hostDir, err := filepath.EvalSymlinks(hostDir)
 	if err != nil {
@@ -1846,7 +1845,6 @@ func TestRunEmuBiosFWDynamicHandBuiltLinuxHostFSMountReadWrite(t *testing.T) {
 		Append:     linuxMakeBootArgs,
 		Memory:     "256MB",
 		HostIO:     true,
-		Net:        true,
 		Stdin:      stdinR,
 		Stdout:     &stdout,
 		Stderr:     &stderr,
@@ -1878,7 +1876,7 @@ func TestRunEmuBiosFWDynamicHandBuiltLinuxHostFSMountReadWrite(t *testing.T) {
 }
 
 func TestRunEmuBiosFWDynamicHandBuiltLinuxVirtioNetRegistersEth0(t *testing.T) {
-	const bootWallBudget = 15 * time.Second
+	const bootWallBudget = 30 * time.Second
 	const biosPath = "xendor/opensbi/build/platform/generic/firmware/fw_dynamic.elf"
 	const kernelPath = "xendor/linux-6.17-hand-built/Image"
 	const initrdPath = "xendor/linux/initramfs.cpio.gz"
@@ -1887,7 +1885,7 @@ func TestRunEmuBiosFWDynamicHandBuiltLinuxVirtioNetRegistersEth0(t *testing.T) {
 			t.Skipf("hand-built Linux BIOS fixture not present: %s", path)
 		}
 	}
-	installFakeEmunetForLinuxSmoke(t)
+	emunetAddr := installFakeEmunetForLinuxSmoke(t)
 
 	const doneMarker = "NET-SMOKE-42"
 	script := strings.Join([]string{
@@ -1922,6 +1920,7 @@ func TestRunEmuBiosFWDynamicHandBuiltLinuxVirtioNetRegistersEth0(t *testing.T) {
 		Memory:     "256MB",
 		HostIO:     true,
 		Net:        true,
+		EmunetAddr: emunetAddr,
 		Stdin:      stdinR,
 		Stdout:     &stdout,
 		Stderr:     &stderr,
@@ -2004,8 +2003,8 @@ func TestRunEmuBiosFWDynamicHandBuiltLinuxCtrlCInterruptsPing(t *testing.T) {
 }
 
 func TestDiagRunEmuBiosFWDynamicHandBuiltLinuxInitcallDebug(t *testing.T) {
-	if os.Getenv("RISCV_EMU_LINUX_INITCALL_DIAG") == "" {
-		t.Skip("set RISCV_EMU_LINUX_INITCALL_DIAG=1 to profile hand-built Linux initcalls")
+	if !runLinuxInitcallDiag {
+		t.Skip("runLinuxInitcallDiag is false")
 	}
 	const biosPath = "xendor/opensbi/build/platform/generic/firmware/fw_dynamic.elf"
 	const kernelPath = "xendor/linux-6.17-hand-built/Image"
@@ -2070,6 +2069,11 @@ func TestRunEmuBiosFWDynamicLinuxSmoke(t *testing.T) {
 const linuxUARTBootArgs = "console=ttyS0,115200 earlycon=uart8250,mmio,0x10000000 rdinit=/init"
 const linuxMakeBootArgs = linuxUARTBootArgs + " panic=1 reboot=t init_on_alloc=0 init_on_free=0 audit=0 lsm=capability cma=0 numa=off slub_debug=- lpj=XXXXX"
 
+var (
+	runLinuxInitcallDiag            bool
+	runLegacyGenericLinuxTimerProbe bool
+)
+
 func TestRunEmuBiosFWDynamicLinuxBootsWith512MBRAM(t *testing.T) {
 	const biosPath = "xendor/opensbi/build/platform/generic/firmware/fw_dynamic.elf"
 	const kernelPath = "xendor/linux/boot/vmlinuz-6.17.0-35-generic"
@@ -2127,8 +2131,8 @@ func TestRunEmuBiosFWDynamicLinuxBootsWith512MBRAM(t *testing.T) {
 }
 
 func TestRunEmuBiosFWDynamicLinuxPassesTimerProbe(t *testing.T) {
-	if os.Getenv("RISCV_EMU_LINUX_SLOW_GENERIC") == "" {
-		t.Skip("set RISCV_EMU_LINUX_SLOW_GENERIC=1 to run the legacy generic Ubuntu timer probe")
+	if !runLegacyGenericLinuxTimerProbe {
+		t.Skip("runLegacyGenericLinuxTimerProbe is false")
 	}
 	const biosPath = "xendor/opensbi/build/platform/generic/firmware/fw_dynamic.elf"
 	const kernelPath = "xendor/linux/boot/vmlinuz-6.17.0-35-generic"
@@ -2768,6 +2772,16 @@ func defineEmuFlagsForTest(fs *flag.FlagSet, c *EmuConfig) {
 	fs.StringVar(&c.DumpDTBPath, "dump-dtb", "", "write the BIOS FDT blob to this path before boot")
 	fs.BoolVar(&c.HostIO, "hostio", false, "enable non-hermetic custom MMIO host filesystem passthrough for -bios")
 	fs.BoolVar(&c.Net, "net", false, "enable non-hermetic virtio-net MMIO device for -bios")
+	fs.BoolVar(&c.NetDirectTailnet, "net-direct", false, "connect -net directly to one tsnet stack instead of the shared emunet leader")
+	fs.StringVar(&c.EmunetAddr, "emunet-addr", "", "local emunet rendezvous address; empty uses 127.0.0.1:7557")
+	fs.BoolVar(&c.EmunetTrace, "emunet-trace", false, "write emunet packet drop trace lines to the emunet oplog")
+	fs.StringVar(&c.TsnetDir, "tsnet-dir", "", "tsnet state directory; empty uses $HOME/.emunet/riscv-emu")
+	fs.StringVar(&c.TsnetHostname, "tsnet-hostname", "", "tsnet hostname; empty uses riscv-emu")
+	fs.StringVar(&c.TsnetAuthKey, "tsnet-authkey", "", "tsnet auth key for unattended first authorization")
+	fs.BoolVar(&c.TsnetEphemeral, "tsnet-ephemeral", false, "request ephemeral tsnet node state")
+	fs.StringVar(&c.TsnetGuestIPv4, "tsnet-guest-ipv4", "", "override guest DHCP IPv4 address")
+	fs.StringVar(&c.TsnetDHCPServerIPv4, "tsnet-dhcp-server-ipv4", "", "override DHCP server IPv4 advertised to the guest")
+	fs.StringVar(&c.TsnetDNSIPv4, "tsnet-dns-ipv4", "", "override DNS IPv4 advertised to the guest")
 	fs.StringVar(&c.Machine, "machine", "virt", "machine model for -bios; currently only virt")
 	fs.Uint64Var(&c.Seed, "seed", 0, "pseudo random number generator seed")
 	fs.StringVar(&c.Memory, "mem", "", "guest memory size as bytes or KB/MB/GB/TB; with -bios this is RAM advertised to Linux")

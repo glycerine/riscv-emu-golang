@@ -6,6 +6,7 @@ import (
 	"io"
 	"math"
 	"math/bits"
+	"net/netip"
 	"os"
 	"strconv"
 	"strings"
@@ -23,41 +24,51 @@ const (
 )
 
 type EmuConfig struct {
-	RunPath           string
-	BiosPath          string
-	KernelPath        string
-	KernelAddr        uint64
-	InitrdPath        string
-	Append            string
-	DTBPath           string
-	DumpDTBPath       string
-	HostIO            bool
-	Net               bool
-	Machine           string
-	Seed              uint64
-	Memory            string
-	MemorySize        uint64
-	BiosRAMSize       uint64
-	Budget            string
-	InstructionBudget uint64
-	JITLazy           bool
-	JITAOT            bool
-	Hermit            bool
-	Deadlock          bool
-	PRNG              bool
-	Chaos             bool
-	RealtimeOffsetNS  int64
-	Idle              string
-	List              bool
-	Debug             bool
-	AttachPID         int
-	AttachConsole     int
-	Args              []string
-	Env               []string
-	Stdin             io.Reader
-	Stdout            io.Writer
-	Stderr            io.Writer
-	JITStats          *EmuJITStats
+	RunPath             string
+	BiosPath            string
+	KernelPath          string
+	KernelAddr          uint64
+	InitrdPath          string
+	Append              string
+	DTBPath             string
+	DumpDTBPath         string
+	HostIO              bool
+	Net                 bool
+	NetDirectTailnet    bool
+	EmunetAddr          string
+	EmunetTrace         bool
+	TsnetDir            string
+	TsnetHostname       string
+	TsnetAuthKey        string
+	TsnetEphemeral      bool
+	TsnetGuestIPv4      string
+	TsnetDHCPServerIPv4 string
+	TsnetDNSIPv4        string
+	Machine             string
+	Seed                uint64
+	Memory              string
+	MemorySize          uint64
+	BiosRAMSize         uint64
+	Budget              string
+	InstructionBudget   uint64
+	JITLazy             bool
+	JITAOT              bool
+	Hermit              bool
+	Deadlock            bool
+	PRNG                bool
+	Chaos               bool
+	RealtimeOffsetNS    int64
+	Idle                string
+	List                bool
+	Debug               bool
+	AttachPID           int
+	AttachConsole       int
+	Args                []string
+	Env                 []string
+	Stdin               io.Reader
+	Stdout              io.Writer
+	Stderr              io.Writer
+	JITStats            *EmuJITStats
 }
 
 type EmuJITStats struct {
@@ -206,6 +217,32 @@ func (c *EmuConfig) ValidateConfig() error {
 	}
 	if _, _, err := c.idleSleepCap(); err != nil {
 		return err
+	}
+	for _, flag := range []struct {
+		name  string
+		value string
+	}{
+		{"-tsnet-guest-ipv4", c.TsnetGuestIPv4},
+		{"-tsnet-dhcp-server-ipv4", c.TsnetDHCPServerIPv4},
+		{"-tsnet-dns-ipv4", c.TsnetDNSIPv4},
+	} {
+		if err := validateOptionalIPv4Flag(flag.name, flag.value); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateOptionalIPv4Flag(name, value string) error {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	ip, err := netip.ParseAddr(strings.TrimSpace(value))
+	if err != nil || !ip.Is4() {
+		if err == nil {
+			err = fmt.Errorf("not an IPv4 address")
+		}
+		return fmt.Errorf("%s must be an IPv4 address, got %q: %w", name, value, err)
 	}
 	return nil
 }
