@@ -562,6 +562,9 @@ func (s *tsnetVirtioStack) handleGuestFrameForPort(portID string, frame []byte, 
 			emit(reply)
 			return
 		}
+		if s.deliverLocalIPv4(portID, frame, emit) {
+			return
+		}
 		if pkt := s.natOutbound(portID, frame[14:], emit); len(pkt) != 0 {
 			s.tun.InjectIPPacket(pkt)
 		}

@@ -1046,12 +1046,12 @@ save-linux-config:
 #
 # either a)
 #   cp ~/ris/xendor/linux-6.17-hand-built/dot.config ~/linux/.config
-#   make ARCH=riscv olddefconfig
+#   gmake ARCH=riscv olddefconfig
 #
 # or b)
 #   if using savedefconfig:
 #   cp ~/ris/xendor/linux-6.17-hand-built/defconfig arch/riscv/configs/ris_fastboot_defconfig
-#   make ARCH=riscv ris_fastboot_defconfig
+#   gmake ARCH=riscv ris_fastboot_defconfig
 
 build-slim-linux:
 	@# note that on darwin we needed to use clang to cross compile to riscv64. 

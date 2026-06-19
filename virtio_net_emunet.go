@@ -29,6 +29,7 @@ const (
 	emunetDropBadHeaderLength   = "bad_header_length"
 	emunetDropTTLExpired        = "ttl_expired"
 	emunetDropClosedEmunetPort  = "closed_emunet_port"
+	emunetDropNoLocalPort       = "no_local_port"
 	emunetDropUnsupportedEth    = "unsupported_ethertype"
 	emunetDropMalformedEthernet = "malformed_ethernet"
 )
@@ -104,6 +105,18 @@ func (s *tsnetVirtioStack) emunetPortLocked(id string, emit func([]byte)) *emune
 	return p
 }
 
+func (s *tsnetVirtioStack) portByLeaseLocked(ip netip.Addr) *emunetPort {
+	if !ip.Is4() {
+		return nil
+	}
+	for _, p := range s.ports {
+		if p != nil && p.lease == ip {
+			return p
+		}
+	}
+	return nil
+}
+
 func (s *tsnetVirtioStack) nextLeaseLocked() netip.Addr {
 	if s.nextLease < 2 || s.nextLease > 254 {
 		s.nextLease = 2
@@ -154,22 +167,40 @@ func (s *tsnetVirtioStack) arpReplyForPort(portID string, req []byte, emit func(
 		binary.BigEndian.Uint16(req[20:22]) != 1 {
 		return nil
 	}
-	if netip.AddrFrom4([4]byte{req[38], req[39], req[40], req[41]}) != emunetRouterIPv4 {
-		return nil
-	}
+	targetIP := netip.AddrFrom4([4]byte{req[38], req[39], req[40], req[41]})
 	var guestMAC [6]byte
 	copy(guestMAC[:], req[22:28])
 	s.learnPortMAC(portID, guestMAC, emit)
 
-	router4 := emunetRouterIPv4.As4()
+	var senderMAC [6]byte
+	senderIP := targetIP
+	switch targetIP {
+	case emunetRouterIPv4:
+		senderMAC = emunetRouterMAC
+	default:
+		s.mu.Lock()
+		target := s.portByLeaseLocked(targetIP)
+		if target != nil {
+			senderMAC = target.guestMAC
+			if target.id == portID {
+				senderMAC = [6]byte{}
+			}
+		}
+		s.mu.Unlock()
+		if senderMAC == ([6]byte{}) {
+			return nil
+		}
+	}
+
+	sender4 := senderIP.As4()
 	reply := make([]byte, 42)
 	copy(reply[0:6], req[6:12])
-	copy(reply[6:12], emunetRouterMAC[:])
+	copy(reply[6:12], senderMAC[:])
 	binary.BigEndian.PutUint16(reply[12:14], etherTypeARP)
 	copy(reply[14:20], req[14:20])
 	binary.BigEndian.PutUint16(reply[20:22], 2)
-	copy(reply[22:28], emunetRouterMAC[:])
-	copy(reply[28:32], router4[:])
+	copy(reply[22:28], senderMAC[:])
+	copy(reply[28:32], sender4[:])
 	copy(reply[32:38], req[22:28])
 	copy(reply[38:42], req[28:32])
 	s.incARPReply()
@@ -223,6 +254,59 @@ func (s *tsnetVirtioStack) natOutbound(portID string, packet []byte, emit func([
 		return nil
 	}
 	return s.translateOutboundIPv4(portID, packet, tailIP, emit)
+}
+
+func (s *tsnetVirtioStack) deliverLocalIPv4(portID string, frame []byte, emit func([]byte)) bool {
+	if len(frame) < 14+20 {
+		return false
+	}
+	ip := frame[14:]
+	if ip[0]>>4 != 4 {
+		return false
+	}
+	ihl := int(ip[0]&0x0f) * 4
+	if ihl < 20 || len(ip) < ihl {
+		return false
+	}
+	totalLen := int(binary.BigEndian.Uint16(ip[2:4]))
+	if totalLen < ihl || totalLen > len(ip) {
+		return false
+	}
+	dst := netip.AddrFrom4([4]byte{ip[16], ip[17], ip[18], ip[19]})
+	if !emunetIPv4LANContains(dst) {
+		return false
+	}
+
+	var srcMAC [6]byte
+	copy(srcMAC[:], frame[6:12])
+	if srcMAC != ([6]byte{}) {
+		s.learnPortMAC(portID, srcMAC, emit)
+	}
+
+	s.mu.Lock()
+	target := s.portByLeaseLocked(dst)
+	var targetID string
+	var targetEmit func([]byte)
+	if target != nil {
+		targetID = target.id
+		targetEmit = target.emit
+	}
+	s.mu.Unlock()
+
+	if targetID == "" || targetID == portID || targetEmit == nil {
+		s.incDrop(emunetDropNoLocalPort)
+		return true
+	}
+	targetEmit(append([]byte(nil), frame...))
+	return true
+}
+
+func emunetIPv4LANContains(ip netip.Addr) bool {
+	if !ip.Is4() {
+		return false
+	}
+	ip4 := ip.As4()
+	return ip4[0] == 10 && ip4[1] == 77 && ip4[2] == 0
 }
 
 func (s *tsnetVirtioStack) translateOutboundIPv4(portID string, packet []byte, tailIP netip.Addr, emit func([]byte)) []byte {

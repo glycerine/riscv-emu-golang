@@ -131,6 +131,59 @@ func TestTsnetVirtioStackEmunetARPForUnrelatedIPDoesNotReply(t *testing.T) {
 	}
 }
 
+func TestTsnetVirtioStackEmunetARPForPeerLease(t *testing.T) {
+	stack := &tsnetVirtioStack{hostMAC: emunetRouterMAC}
+	macA := [6]byte{0x02, 0, 0, 0, 3, 0x01}
+	macB := [6]byte{0x02, 0, 0, 0, 3, 0x02}
+	var framesA [][]byte
+	emitA := func(frame []byte) { framesA = append(framesA, append([]byte(nil), frame...)) }
+	emitB := func([]byte) {}
+
+	stack.handleGuestFrameForPort("port-a", dhcpTestFrame(t, dhcpDiscover, 0x33330001, macA), emitA)
+	if len(framesA) != 1 {
+		t.Fatalf("DHCP replies for port A = %d, want 1", len(framesA))
+	}
+	assertDHCPReply(t, framesA[0], dhcpOffer, netip.MustParseAddr("10.77.0.2"))
+	stack.handleGuestFrameForPort("port-b", dhcpTestFrame(t, dhcpDiscover, 0x33330002, macB), emitB)
+	framesA = nil
+
+	stack.handleGuestFrameForPort("port-a", arpRequestFrame(macA, [4]byte{10, 77, 0, 2}, [4]byte{10, 77, 0, 3}), emitA)
+	if len(framesA) != 1 {
+		t.Fatalf("peer ARP replies for port A = %d, want 1", len(framesA))
+	}
+	reply := framesA[0]
+	if got := binary.BigEndian.Uint16(reply[12:14]); got != etherTypeARP {
+		t.Fatalf("peer ARP ether type = %#x, want ARP", got)
+	}
+	if !bytes.Equal(reply[0:6], macA[:]) {
+		t.Fatalf("peer ARP dst MAC = %x, want requester %x", reply[0:6], macA)
+	}
+	if !bytes.Equal(reply[6:12], macB[:]) {
+		t.Fatalf("peer ARP src MAC = %x, want peer %x", reply[6:12], macB)
+	}
+	if !bytes.Equal(reply[22:28], macB[:]) {
+		t.Fatalf("peer ARP sender MAC = %x, want peer %x", reply[22:28], macB)
+	}
+	if got := [4]byte{reply[28], reply[29], reply[30], reply[31]}; got != [4]byte{10, 77, 0, 3} {
+		t.Fatalf("peer ARP sender IP = %v, want 10.77.0.3", got)
+	}
+}
+
+func TestTsnetVirtioStackEmunetARPForOwnLeaseDoesNotReply(t *testing.T) {
+	stack := &tsnetVirtioStack{hostMAC: emunetRouterMAC}
+	macA := [6]byte{0x02, 0, 0, 0, 3, 0x03}
+	var framesA [][]byte
+	emitA := func(frame []byte) { framesA = append(framesA, append([]byte(nil), frame...)) }
+
+	stack.handleGuestFrameForPort("port-a", dhcpTestFrame(t, dhcpDiscover, 0x33330003, macA), emitA)
+	framesA = nil
+
+	stack.handleGuestFrameForPort("port-a", arpRequestFrame(macA, [4]byte{10, 77, 0, 2}, [4]byte{10, 77, 0, 2}), emitA)
+	if len(framesA) != 0 {
+		t.Fatalf("ARP for own lease produced %d replies, want 0", len(framesA))
+	}
+}
+
 func TestTsnetVirtioStackEmunetGatewayPing(t *testing.T) {
 	guestMAC := [6]byte{0x02, 0, 0, 0, 1, 0x11}
 	stack := &tsnetVirtioStack{hostMAC: emunetRouterMAC}
@@ -153,6 +206,35 @@ func TestTsnetVirtioStackEmunetGatewayPing(t *testing.T) {
 	}
 	if got := [4]byte{ip[16], ip[17], ip[18], ip[19]}; got != [4]byte{10, 77, 0, 2} {
 		t.Fatalf("reply dst IP = %v, want guest", got)
+	}
+}
+
+func TestTsnetVirtioStackEmunetDeliversIPv4ToPeerLease(t *testing.T) {
+	stack := &tsnetVirtioStack{hostMAC: emunetRouterMAC}
+	macA := [6]byte{0x02, 0, 0, 0, 3, 0x04}
+	macB := [6]byte{0x02, 0, 0, 0, 3, 0x05}
+	var framesA [][]byte
+	var framesB [][]byte
+	emitA := func(frame []byte) { framesA = append(framesA, append([]byte(nil), frame...)) }
+	emitB := func(frame []byte) { framesB = append(framesB, append([]byte(nil), frame...)) }
+
+	stack.handleGuestFrameForPort("port-a", dhcpTestFrame(t, dhcpDiscover, 0x33330004, macA), emitA)
+	stack.handleGuestFrameForPort("port-b", dhcpTestFrame(t, dhcpDiscover, 0x33330005, macB), emitB)
+	framesA = nil
+	framesB = nil
+
+	packet := icmpIPv4Packet([4]byte{10, 77, 0, 2}, [4]byte{10, 77, 0, 3}, icmpEchoRequest, 0x1234, 1)
+	frame := ethernetIPv4Frame(macB, macA, packet)
+	stack.handleGuestFrameForPort("port-a", frame, emitA)
+
+	if len(framesA) != 0 {
+		t.Fatalf("sender received %d local-delivery frames, want 0", len(framesA))
+	}
+	if len(framesB) != 1 {
+		t.Fatalf("peer received %d local-delivery frames, want 1", len(framesB))
+	}
+	if !bytes.Equal(framesB[0], frame) {
+		t.Fatalf("delivered peer frame changed:\n got %x\nwant %x", framesB[0], frame)
 	}
 }
 
