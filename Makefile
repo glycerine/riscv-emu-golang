@@ -1015,7 +1015,10 @@ standard:
 	    -run='^$$' -bench='^BenchmarkRVTests_UI_(AotJIT|LazyJIT)$$' \
 	    ./bench/ 2>&1
 
-EMU_IDLE ?=
+# this allows idle emu to consume only 1% of cpu when
+# real network (non-deterministic) mode is active: we 
+# aggressively yield time to the host when we don't need it.
+EMU_IDLE ?= -idle 1s
 
 linux:
 	go install ./cmd/emu
