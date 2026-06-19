@@ -12,7 +12,7 @@ package fuzzoracle
 import (
 	"testing"
 
-	riscv "riscv"
+	riscv "github.com/glycerine/riscv-emu-golang"
 )
 
 const (

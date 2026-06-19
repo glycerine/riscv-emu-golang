@@ -14,7 +14,7 @@ import (
 	"math"
 	"testing"
 
-	riscv "riscv"
+	riscv "github.com/glycerine/riscv-emu-golang"
 )
 
 // ── C.FLD / C.FSD / C.FLDSP / C.FSDSP encoders ───────────────────────────

@@ -4,7 +4,7 @@ import (
 	"encoding/binary"
 	"testing"
 
-	riscv "riscv"
+	riscv "github.com/glycerine/riscv-emu-golang"
 )
 
 // FuzzBitmanipVsLibriscv fuzzes Zicsr, Zba, and Zbs instructions against libriscv.

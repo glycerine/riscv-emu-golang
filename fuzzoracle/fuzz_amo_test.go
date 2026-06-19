@@ -4,7 +4,7 @@ import (
 	"encoding/binary"
 	"testing"
 
-	riscv "riscv"
+	riscv "github.com/glycerine/riscv-emu-golang"
 )
 
 // FuzzAMOVsLibriscv compares RV64A atomic memory operations against libriscv.

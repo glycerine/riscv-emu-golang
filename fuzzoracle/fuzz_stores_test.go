@@ -4,7 +4,7 @@ import (
 	"encoding/binary"
 	"testing"
 
-	riscv "riscv"
+	riscv "github.com/glycerine/riscv-emu-golang"
 )
 
 // Store fuzz layout: 256-byte tiny memory.

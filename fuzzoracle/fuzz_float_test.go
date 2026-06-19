@@ -5,7 +5,7 @@ import (
 	"math"
 	"testing"
 
-	riscv "riscv"
+	riscv "github.com/glycerine/riscv-emu-golang"
 )
 
 // FuzzFDVsLibriscv fuzzes RV64F+D instructions against libriscv.

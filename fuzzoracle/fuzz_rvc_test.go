@@ -4,7 +4,7 @@ import (
 	"encoding/binary"
 	"testing"
 
-	riscv "riscv"
+	riscv "github.com/glycerine/riscv-emu-golang"
 )
 
 // FuzzRVCVsLibriscv compares RVC (compressed, 16-bit) instructions against

@@ -6,7 +6,7 @@ package fuzzoracle
 import (
 	"testing"
 
-	riscv "riscv"
+	riscv "github.com/glycerine/riscv-emu-golang"
 )
 
 // runOneF executes one floating-point instruction in both our CPU and

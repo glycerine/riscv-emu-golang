@@ -4,7 +4,7 @@ import (
 	"encoding/binary"
 	"testing"
 
-	riscv "riscv"
+	riscv "github.com/glycerine/riscv-emu-golang"
 )
 
 // ALU + M-extension layout: 64KB memory, code at 0x10000.
