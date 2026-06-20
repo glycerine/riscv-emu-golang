@@ -112,10 +112,14 @@ github.com/glycerine/rpc25519 v1.44.7 h1:SjW/ObSRy2fNH6QBcFQAs4j7gPNYeXRJjmzxim+
 github.com/glycerine/rpc25519 v1.44.7/go.mod h1:aeItevPFn7Bj4aL3K/Q7kMv9wlTNuNAqHU7pxtFPFz0=
 github.com/glycerine/rpc25519 v1.44.8 h1:UieviGswsIHXdprNVNVnrNxujN4VxmGVOdEiiIisPS8=
 github.com/glycerine/rpc25519 v1.44.8/go.mod h1:IE3m/Ew8UIoj/NwEbwedWnL3sfuU94IAWH7wfNfS17I=
+github.com/glycerine/rpc25519 v1.44.9 h1:x2wVQ2CdX5AbVQbuu2WeFDtU7P6xRl42UtHDGMdfExI=
+github.com/glycerine/rpc25519 v1.44.9/go.mod h1:XDak2tJE+PjRRuTqH1074RLaPEOYgqK3eRPWspguFzA=
 github.com/glycerine/zygomys/v9 v9.1.2 h1:Rnk+l5aV6JailGp5BzrgYJU7wC+XKU3/NDOTEJMo3K4=
 github.com/glycerine/zygomys/v9 v9.1.2/go.mod h1:hckAUIPikusS9epDmMmEkfXeOK2qvWhmeVK6Su8y/1k=
 github.com/glycerine/zygomys/v9 v9.6.1 h1:cjj4zafAyeAoTs11TOlmeug1v/dLotgEXTiucEj1KVo=
 github.com/glycerine/zygomys/v9 v9.6.1/go.mod h1:+5AzbzmLb9nv3wrE44I7ilaV1dxkm3u2BmkA7+xKCbI=
+github.com/glycerine/zygomys/v9 v9.6.2 h1:8rskYqdSDN5vtG0VZlR5q5FFg4M/CDYTwXpfpxf2vyE=
+github.com/glycerine/zygomys/v9 v9.6.2/go.mod h1:QxK9vGJWOmsLppNmqQE3MePHkxpba7mkCLJby9FGxJY=
 github.com/go-json-experiment/json v0.0.0-20250813024750-ebf49471dced h1:Q311OHjMh/u5E2TITc++WlTP5We0xNseRMkHDyvhW7I=
 github.com/go-json-experiment/json v0.0.0-20250813024750-ebf49471dced/go.mod h1:TiCD2a1pcmjd7YnhGH0f/zKNcCD06B029pHhzV23c2M=
 github.com/go-ole/go-ole v1.3.0 h1:Dt6ye7+vXGIKZ7Xtk4s6/xVdGDQynvom7xCFEdWr6uE=
