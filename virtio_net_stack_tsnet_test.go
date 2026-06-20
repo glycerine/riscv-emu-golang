@@ -209,6 +209,99 @@ func TestTsnetVirtioStackEmunetGatewayPing(t *testing.T) {
 	}
 }
 
+func TestTsnetVirtioStackEmunetGuestCanPingSharedTsnetIPs(t *testing.T) {
+	guestMAC := [6]byte{0x02, 0, 0, 0, 1, 0x21}
+	tail4 := netip.MustParseAddr("100.64.12.34")
+	tail6 := netip.MustParseAddr("fd7a:115c:a1e0::1234")
+	stack := &tsnetVirtioStack{hostMAC: emunetRouterMAC}
+	stack.setTailIPv4(tail4)
+	stack.setTailIPv6(tail6)
+
+	stack.InjectInboundPacket(icmpEchoFrame(guestMAC, [4]byte{10, 77, 0, 2}, tail4.As4(), 0x1234, 1))
+	reply4 := onlyPendingEthernetFrame(t, stack)
+	if got := binary.BigEndian.Uint16(reply4[12:14]); got != etherTypeIPv4 {
+		t.Fatalf("IPv4 self-ping ether type = %#x, want IPv4", got)
+	}
+	if !bytes.Equal(reply4[0:6], guestMAC[:]) || !bytes.Equal(reply4[6:12], emunetRouterMAC[:]) {
+		t.Fatalf("IPv4 self-ping MACs = dst %x src %x, want guest/router", reply4[0:6], reply4[6:12])
+	}
+	assertIPv4ChecksumValid(t, reply4[14:])
+	assertICMPChecksumValid(t, reply4[14:])
+	ip4 := reply4[14:]
+	ihl4 := int(ip4[0]&0x0f) * 4
+	if ip4[ihl4] != icmpEchoReply {
+		t.Fatalf("IPv4 self-ping ICMP type = %d, want echo reply", ip4[ihl4])
+	}
+	if got := [4]byte{ip4[12], ip4[13], ip4[14], ip4[15]}; got != tail4.As4() {
+		t.Fatalf("IPv4 self-ping src = %v, want %s", got, tail4)
+	}
+	if got := [4]byte{ip4[16], ip4[17], ip4[18], ip4[19]}; got != [4]byte{10, 77, 0, 2} {
+		t.Fatalf("IPv4 self-ping dst = %v, want guest", got)
+	}
+	clearTsnetPending(stack)
+
+	guest6 := netip.MustParseAddr("fd7a:115c:a1e0::feed").As16()
+	stack.InjectInboundPacket(ethernetIPv6Frame(emunetRouterMAC, guestMAC, icmpIPv6Packet(guest6, tail6.As16(), icmpv6EchoRequest, 0x2345, 2)))
+	reply6 := onlyPendingEthernetFrame(t, stack)
+	if got := binary.BigEndian.Uint16(reply6[12:14]); got != etherTypeIPv6 {
+		t.Fatalf("IPv6 self-ping ether type = %#x, want IPv6", got)
+	}
+	if !bytes.Equal(reply6[0:6], guestMAC[:]) || !bytes.Equal(reply6[6:12], emunetRouterMAC[:]) {
+		t.Fatalf("IPv6 self-ping MACs = dst %x src %x, want guest/router", reply6[0:6], reply6[6:12])
+	}
+	assertICMPv6ChecksumValid(t, reply6[14:])
+	ip6 := reply6[14:]
+	if ip6[40] != icmpv6EchoReply {
+		t.Fatalf("IPv6 self-ping ICMP type = %d, want echo reply", ip6[40])
+	}
+	if got := netipAddrFrom16(ip6[8:24]); got != tail6 {
+		t.Fatalf("IPv6 self-ping src = %s, want %s", got, tail6)
+	}
+	if got := netipAddrFrom16(ip6[24:40]); got != netip.AddrFrom16(guest6) {
+		t.Fatalf("IPv6 self-ping dst = %s, want guest", got)
+	}
+}
+
+func TestTsnetVirtioStackEmunetTailnetPeersCanPingSharedTsnetIPs(t *testing.T) {
+	tail4 := netip.MustParseAddr("100.64.12.34")
+	tail6 := netip.MustParseAddr("fd7a:115c:a1e0::1234")
+	stack := &tsnetVirtioStack{
+		hostMAC: emunetRouterMAC,
+		tun:     newVirtioNetMemoryTUN(nil),
+	}
+	stack.setTailIPv4(tail4)
+	stack.setTailIPv6(tail6)
+
+	stack.handleTsnetPacket(icmpIPv4Packet([4]byte{100, 99, 88, 77}, tail4.As4(), icmpEchoRequest, 0x3456, 3))
+	reply4 := waitOutboundIPPacket(t, stack.tun, time.Second)
+	assertIPv4ChecksumValid(t, reply4)
+	assertICMPChecksumValid(t, reply4)
+	ihl4 := int(reply4[0]&0x0f) * 4
+	if reply4[ihl4] != icmpEchoReply {
+		t.Fatalf("tailnet IPv4 ICMP type = %d, want echo reply", reply4[ihl4])
+	}
+	if got := [4]byte{reply4[12], reply4[13], reply4[14], reply4[15]}; got != tail4.As4() {
+		t.Fatalf("tailnet IPv4 reply src = %v, want %s", got, tail4)
+	}
+	if got := [4]byte{reply4[16], reply4[17], reply4[18], reply4[19]}; got != [4]byte{100, 99, 88, 77} {
+		t.Fatalf("tailnet IPv4 reply dst = %v, want requester", got)
+	}
+
+	remote6 := netip.MustParseAddr("fd7a:115c:a1e0::5678").As16()
+	stack.handleTsnetPacket(icmpIPv6Packet(remote6, tail6.As16(), icmpv6EchoRequest, 0x4567, 4))
+	reply6 := waitOutboundIPPacket(t, stack.tun, time.Second)
+	assertICMPv6ChecksumValid(t, reply6)
+	if reply6[40] != icmpv6EchoReply {
+		t.Fatalf("tailnet IPv6 ICMP type = %d, want echo reply", reply6[40])
+	}
+	if got := netipAddrFrom16(reply6[8:24]); got != tail6 {
+		t.Fatalf("tailnet IPv6 reply src = %s, want %s", got, tail6)
+	}
+	if got := netipAddrFrom16(reply6[24:40]); got != netip.AddrFrom16(remote6) {
+		t.Fatalf("tailnet IPv6 reply dst = %s, want requester", got)
+	}
+}
+
 func TestTsnetVirtioStackEmunetDeliversIPv4ToPeerLease(t *testing.T) {
 	stack := &tsnetVirtioStack{hostMAC: emunetRouterMAC}
 	macA := [6]byte{0x02, 0, 0, 0, 3, 0x04}
@@ -1427,6 +1520,17 @@ func waitPendingTsnetFrame(t *testing.T, stack *tsnetVirtioStack, timeout time.D
 	return nil
 }
 
+func waitOutboundIPPacket(t *testing.T, tun *virtioNetMemoryTUN, timeout time.Duration) []byte {
+	t.Helper()
+	select {
+	case pkt := <-tun.outbound:
+		return append([]byte(nil), pkt...)
+	case <-time.After(timeout):
+		t.Fatal("timed out waiting for outbound TUN packet")
+		return nil
+	}
+}
+
 func waitForNATExternal(t *testing.T, core *tsnetVirtioStack, portID string, proto byte, guestPort uint16, remoteIP [4]byte, remotePort uint16) uint16 {
 	t.Helper()
 	wantRemote := netip.AddrFrom4(remoteIP)
@@ -1701,6 +1805,17 @@ func icmpIPv4Packet(src, dst [4]byte, typ byte, id, seq uint16) []byte {
 	return ipv4Packet(src, dst, ipProtoICMP, icmp)
 }
 
+func icmpIPv6Packet(src, dst [16]byte, typ byte, id, seq uint16) []byte {
+	icmp := make([]byte, 8+4)
+	icmp[0] = typ
+	binary.BigEndian.PutUint16(icmp[4:6], id)
+	binary.BigEndian.PutUint16(icmp[6:8], seq)
+	copy(icmp[8:], []byte("ping"))
+	ip := ipv6Packet(src, dst, ipProtoICMPv6, icmp)
+	binary.BigEndian.PutUint16(ip[40+2:40+4], icmpv6Checksum(ip[:40], ip[40:]))
+	return ip
+}
+
 func ipv4Packet(src, dst [4]byte, proto byte, payload []byte) []byte {
 	ip := make([]byte, 20+len(payload))
 	ip[0] = 0x45
@@ -1711,6 +1826,18 @@ func ipv4Packet(src, dst [4]byte, proto byte, payload []byte) []byte {
 	copy(ip[16:20], dst[:])
 	copy(ip[20:], payload)
 	binary.BigEndian.PutUint16(ip[10:12], ipv4HeaderChecksum(ip[:20]))
+	return ip
+}
+
+func ipv6Packet(src, dst [16]byte, nextHeader byte, payload []byte) []byte {
+	ip := make([]byte, 40+len(payload))
+	ip[0] = 0x60
+	binary.BigEndian.PutUint16(ip[4:6], uint16(len(payload)))
+	ip[6] = nextHeader
+	ip[7] = 64
+	copy(ip[8:24], src[:])
+	copy(ip[24:40], dst[:])
+	copy(ip[40:], payload)
 	return ip
 }
 
@@ -1749,5 +1876,20 @@ func assertICMPChecksumValid(t *testing.T, packet []byte) {
 	}
 	if got := internetChecksum(packet[ihl:totalLen]); got != 0 {
 		t.Fatalf("ICMP checksum validation = %#x, want 0", got)
+	}
+}
+
+func assertICMPv6ChecksumValid(t *testing.T, packet []byte) {
+	t.Helper()
+	if len(packet) < 40 || packet[0]>>4 != 6 {
+		t.Fatalf("bad IPv6 packet length/version: len=%d first=%#x", len(packet), packet[0])
+	}
+	payloadLen := int(binary.BigEndian.Uint16(packet[4:6]))
+	totalLen := 40 + payloadLen
+	if payloadLen < 8 || totalLen > len(packet) || packet[6] != ipProtoICMPv6 {
+		t.Fatalf("bad ICMPv6 packet: payload=%d len=%d next=%d", payloadLen, len(packet), packet[6])
+	}
+	if got := icmpv6Checksum(packet[:40], packet[40:totalLen]); got != 0 {
+		t.Fatalf("ICMPv6 checksum validation = %#x, want 0", got)
 	}
 }

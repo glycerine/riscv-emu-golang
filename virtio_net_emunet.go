@@ -8,11 +8,14 @@ import (
 )
 
 const (
-	ipProtoICMP = byte(1)
-	ipProtoTCP  = byte(6)
+	ipProtoICMP   = byte(1)
+	ipProtoTCP    = byte(6)
+	ipProtoICMPv6 = byte(58)
 
-	icmpEchoReply   = byte(0)
-	icmpEchoRequest = byte(8)
+	icmpEchoReply     = byte(0)
+	icmpEchoRequest   = byte(8)
+	icmpv6EchoRequest = byte(128)
+	icmpv6EchoReply   = byte(129)
 
 	emunetLocalPortID = "local"
 
@@ -40,6 +43,7 @@ type emunetCounters struct {
 	DHCPAcks           uint64
 	ARPReplies         uint64
 	GatewayICMPReplies uint64
+	TailnetICMPReplies uint64
 	NATOutboundUDP     uint64
 	NATOutboundTCP     uint64
 	NATOutboundICMP    uint64
@@ -248,6 +252,66 @@ func (s *tsnetVirtioStack) gatewayICMPEchoReply(portID string, frame []byte, emi
 	icmp[2], icmp[3] = 0, 0
 	binary.BigEndian.PutUint16(icmp[2:4], internetChecksum(icmp[:totalLen-ihl]))
 	s.incGatewayICMPReply()
+	return reply
+}
+
+func (s *tsnetVirtioStack) tsnetICMPEchoReplyForGuest(portID string, frame []byte, emit func([]byte)) []byte {
+	if len(frame) < 14 {
+		return nil
+	}
+	etherType := binary.BigEndian.Uint16(frame[12:14])
+	packet := frame[14:]
+	var reply []byte
+	switch etherType {
+	case etherTypeIPv4:
+		tailIP, ok := s.tailscaleIPv4()
+		if !ok {
+			return nil
+		}
+		reply = icmpEchoReplyIPv4(packet, tailIP)
+	case etherTypeIPv6:
+		tailIP, ok := s.tailscaleIPv6()
+		if !ok {
+			return nil
+		}
+		reply = icmpEchoReplyIPv6(packet, tailIP)
+	default:
+		return nil
+	}
+	if len(reply) == 0 {
+		return nil
+	}
+	var guestMAC [6]byte
+	copy(guestMAC[:], frame[6:12])
+	s.learnPortMAC(portID, guestMAC, emit)
+	s.incTailnetICMPReply()
+	return ethernetFrame(guestMAC, emunetRouterMAC, etherType, reply)
+}
+
+func (s *tsnetVirtioStack) tsnetICMPEchoReplyForTailnet(packet []byte) []byte {
+	if len(packet) == 0 {
+		return nil
+	}
+	var reply []byte
+	switch packet[0] >> 4 {
+	case 4:
+		tailIP, ok := s.tailscaleIPv4()
+		if !ok {
+			return nil
+		}
+		reply = icmpEchoReplyIPv4(packet, tailIP)
+	case 6:
+		tailIP, ok := s.tailscaleIPv6()
+		if !ok {
+			return nil
+		}
+		reply = icmpEchoReplyIPv6(packet, tailIP)
+	default:
+		return nil
+	}
+	if len(reply) != 0 {
+		s.incTailnetICMPReply()
+	}
 	return reply
 }
 
@@ -628,6 +692,12 @@ func (s *tsnetVirtioStack) incGatewayICMPReply() {
 	s.mu.Unlock()
 }
 
+func (s *tsnetVirtioStack) incTailnetICMPReply() {
+	s.mu.Lock()
+	s.counters.TailnetICMPReplies++
+	s.mu.Unlock()
+}
+
 func (s *tsnetVirtioStack) incNATOutbound(proto byte) {
 	s.mu.Lock()
 	switch proto {
@@ -682,12 +752,102 @@ func (s *tsnetVirtioStack) traceLocked(format string, args ...any) {
 }
 
 func ethernetIPv4Frame(dst, src [6]byte, packet []byte) []byte {
+	return ethernetFrame(dst, src, etherTypeIPv4, packet)
+}
+
+func ethernetIPv6Frame(dst, src [6]byte, packet []byte) []byte {
+	return ethernetFrame(dst, src, etherTypeIPv6, packet)
+}
+
+func ethernetFrame(dst, src [6]byte, etherType uint16, packet []byte) []byte {
 	frame := make([]byte, 14+len(packet))
 	copy(frame[0:6], dst[:])
 	copy(frame[6:12], src[:])
-	binary.BigEndian.PutUint16(frame[12:14], etherTypeIPv4)
+	binary.BigEndian.PutUint16(frame[12:14], etherType)
 	copy(frame[14:], packet)
 	return frame
+}
+
+func icmpEchoReplyIPv4(packet []byte, dst netip.Addr) []byte {
+	if len(packet) < 20 || packet[0]>>4 != 4 || !dst.Is4() {
+		return nil
+	}
+	ihl := int(packet[0]&0x0f) * 4
+	if ihl < 20 || len(packet) < ihl+8 || packet[9] != ipProtoICMP {
+		return nil
+	}
+	totalLen := int(binary.BigEndian.Uint16(packet[2:4]))
+	if totalLen < ihl+8 || totalLen > len(packet) {
+		return nil
+	}
+	if frag := binary.BigEndian.Uint16(packet[6:8]); frag&0x3fff != 0 {
+		return nil
+	}
+	packetDst := netip.AddrFrom4([4]byte{packet[16], packet[17], packet[18], packet[19]})
+	if packetDst != dst || packet[ihl] != icmpEchoRequest {
+		return nil
+	}
+
+	reply := append([]byte(nil), packet[:totalLen]...)
+	copy(reply[12:16], packet[16:20])
+	copy(reply[16:20], packet[12:16])
+	reply[8] = 64
+	reply[10], reply[11] = 0, 0
+	binary.BigEndian.PutUint16(reply[10:12], ipv4HeaderChecksum(reply[:ihl]))
+	icmp := reply[ihl:]
+	icmp[0] = icmpEchoReply
+	icmp[2], icmp[3] = 0, 0
+	binary.BigEndian.PutUint16(icmp[2:4], internetChecksum(icmp[:totalLen-ihl]))
+	return reply
+}
+
+func icmpEchoReplyIPv6(packet []byte, dst netip.Addr) []byte {
+	if len(packet) < 40 || packet[0]>>4 != 6 || !dst.Is6() {
+		return nil
+	}
+	payloadLen := int(binary.BigEndian.Uint16(packet[4:6]))
+	totalLen := 40 + payloadLen
+	if payloadLen < 8 || totalLen > len(packet) || packet[6] != ipProtoICMPv6 {
+		return nil
+	}
+	packetDst := netipAddrFrom16(packet[24:40])
+	if packetDst != dst || packet[40] != icmpv6EchoRequest {
+		return nil
+	}
+
+	reply := append([]byte(nil), packet[:totalLen]...)
+	copy(reply[8:24], packet[24:40])
+	copy(reply[24:40], packet[8:24])
+	reply[7] = 64
+	icmp := reply[40:]
+	icmp[0] = icmpv6EchoReply
+	icmp[2], icmp[3] = 0, 0
+	binary.BigEndian.PutUint16(icmp[2:4], icmpv6Checksum(reply[:40], icmp))
+	return reply
+}
+
+func netipAddrFrom16(b []byte) netip.Addr {
+	var a [16]byte
+	copy(a[:], b)
+	return netip.AddrFrom16(a)
+}
+
+func icmpv6Checksum(ipHeader, icmp []byte) uint16 {
+	sum := uint32(0)
+	for i := 8; i+1 < 40 && i+1 < len(ipHeader); i += 2 {
+		sum += uint32(binary.BigEndian.Uint16(ipHeader[i:]))
+	}
+	n := uint32(len(icmp))
+	sum += (n >> 16) & 0xffff
+	sum += n & 0xffff
+	sum += uint32(ipProtoICMPv6)
+	for i := 0; i+1 < len(icmp); i += 2 {
+		sum += uint32(binary.BigEndian.Uint16(icmp[i:]))
+	}
+	if len(icmp)%2 == 1 {
+		sum += uint32(icmp[len(icmp)-1]) << 8
+	}
+	return foldInternetChecksum(sum)
 }
 
 func transportChecksum(ipHeader, segment []byte, proto byte) uint16 {

@@ -78,6 +78,7 @@ type tsnetVirtioStack struct {
 	hostMAC            [6]byte
 	guestMAC           [6]byte
 	tailIPv4           netip.Addr
+	tailIPv6           netip.Addr
 	directTailnetGuest bool
 
 	ports     map[string]*emunetPort
@@ -562,6 +563,10 @@ func (s *tsnetVirtioStack) handleGuestFrameForPort(portID string, frame []byte, 
 			emit(reply)
 			return
 		}
+		if reply := s.tsnetICMPEchoReplyForGuest(portID, frame, emit); len(reply) != 0 {
+			emit(reply)
+			return
+		}
 		if s.deliverLocalIPv4(portID, frame, emit) {
 			return
 		}
@@ -571,6 +576,10 @@ func (s *tsnetVirtioStack) handleGuestFrameForPort(portID string, frame []byte, 
 	case etherTypeIPv6:
 		if s.directTailnetGuest {
 			s.tun.InjectIPPacket(frame[14:])
+			return
+		}
+		if reply := s.tsnetICMPEchoReplyForGuest(portID, frame, emit); len(reply) != 0 {
+			emit(reply)
 			return
 		}
 		s.incDrop(emunetDropUnsupportedEth)
@@ -619,14 +628,26 @@ func (s *tsnetVirtioStack) waitTsnetUp(ctx context.Context) {
 		s.configureEmunetLeaderTsnetPrefs(ctx)
 	}
 	appendTsnetOpLog("authorized ips=%v state_dir=%q", status.TailscaleIPs, s.stateDir)
+	have4 := false
+	have6 := false
 	for _, ip := range status.TailscaleIPs {
 		if ip.Is4() {
 			s.setTailIPv4(ip)
 			appendTsnetOpLog("guest_ipv4_ready ip=%s", ip)
-			return
+			have4 = true
+		}
+		if ip.Is6() {
+			s.setTailIPv6(ip)
+			appendTsnetOpLog("guest_ipv6_ready ip=%s", ip)
+			have6 = true
 		}
 	}
-	appendTsnetOpLog("authorized_no_ipv4 ips=%v", status.TailscaleIPs)
+	if !have4 {
+		appendTsnetOpLog("authorized_no_ipv4 ips=%v", status.TailscaleIPs)
+	}
+	if !have6 {
+		appendTsnetOpLog("authorized_no_ipv6 ips=%v", status.TailscaleIPs)
+	}
 }
 
 func (s *tsnetVirtioStack) configureEmunetLeaderTsnetPrefs(ctx context.Context) {
@@ -663,6 +684,15 @@ func (s *tsnetVirtioStack) setTailIPv4(ip netip.Addr) {
 	s.mu.Unlock()
 }
 
+func (s *tsnetVirtioStack) setTailIPv6(ip netip.Addr) {
+	if !ip.Is6() {
+		return
+	}
+	s.mu.Lock()
+	s.tailIPv6 = ip
+	s.mu.Unlock()
+}
+
 func (s *tsnetVirtioStack) tailscaleIPv4() (netip.Addr, bool) {
 	s.mu.Lock()
 	ip := s.tailIPv4
@@ -671,10 +701,33 @@ func (s *tsnetVirtioStack) tailscaleIPv4() (netip.Addr, bool) {
 		return ip, true
 	}
 	if s.srv != nil {
-		ip, _ = s.srv.TailscaleIPs()
-		if ip.Is4() {
-			s.setTailIPv4(ip)
-			return ip, true
+		ip4, ip6 := s.srv.TailscaleIPs()
+		if ip6.Is6() {
+			s.setTailIPv6(ip6)
+		}
+		if ip4.Is4() {
+			s.setTailIPv4(ip4)
+			return ip4, true
+		}
+	}
+	return netip.Addr{}, false
+}
+
+func (s *tsnetVirtioStack) tailscaleIPv6() (netip.Addr, bool) {
+	s.mu.Lock()
+	ip := s.tailIPv6
+	s.mu.Unlock()
+	if ip.Is6() {
+		return ip, true
+	}
+	if s.srv != nil {
+		ip4, ip6 := s.srv.TailscaleIPs()
+		if ip4.Is4() {
+			s.setTailIPv4(ip4)
+		}
+		if ip6.Is6() {
+			s.setTailIPv6(ip6)
+			return ip6, true
 		}
 	}
 	return netip.Addr{}, false
@@ -685,6 +738,10 @@ func (s *tsnetVirtioStack) handleTsnetPacket(pkt []byte) {
 		return
 	}
 	if !s.directTailnetGuest {
+		if reply := s.tsnetICMPEchoReplyForTailnet(pkt); len(reply) != 0 {
+			s.tun.InjectIPPacket(reply)
+			return
+		}
 		_, guestMAC, guestPkt, emit, ok := s.natInbound(pkt)
 		if !ok {
 			return
