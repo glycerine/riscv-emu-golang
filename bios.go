@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -389,6 +390,9 @@ type biosMMIO struct {
 	plicEnable    [2]uint64
 	plicThreshold [2]uint32
 	plicClaimed   [2]uint32
+
+	supervisorExternalPending bool
+	externalInterruptDirty    uint32
 }
 
 type biosUARTPort struct {
@@ -410,7 +414,7 @@ func newBiosMMIOWithConsoleSockets(stdin io.Reader, stdout io.Writer, onSystemRe
 	if stdout == nil {
 		stdout = io.Discard
 	}
-	m := &biosMMIO{stdout: stdout, onSystemReset: onSystemReset}
+	m := &biosMMIO{stdout: stdout, onSystemReset: onSystemReset, externalInterruptDirty: 1}
 	if _, ok := stdout.(*bytes.Buffer); !ok && stdout != io.Discard {
 		m.uarts[0].out = newAsyncUARTOutput(stdout)
 	}
@@ -454,8 +458,12 @@ func (m *biosMMIO) enableAsyncWFIWake() {
 
 func (m *biosMMIO) wakeWFI() {
 	if m == nil || m.wfiWake == nil {
+		if m != nil {
+			m.markExternalInterruptDirty()
+		}
 		return
 	}
+	m.markExternalInterruptDirty()
 	select {
 	case m.wfiWake <- struct{}{}:
 	default:
@@ -560,7 +568,9 @@ func (m *biosMMIO) Store(addr, width, value uint64) (bool, *MemFault) {
 	}
 	if m.virtioNet != nil {
 		if off, ok := mmioRangeOffset(addr, width, biosVirtioNetBase, biosVirtioNetSize); ok {
-			return true, m.virtioNet.Store(off, width, value)
+			fault := m.virtioNet.Store(off, width, value)
+			m.markExternalInterruptDirty()
+			return true, fault
 		}
 	}
 	if off, ok := mmioRangeOffset(addr, width, biosCLINTBase, biosCLINTSize); ok {
@@ -649,6 +659,7 @@ func (m *biosMMIO) uartByte(index int, off uint64) byte {
 			b := uart.rx[0]
 			copy(uart.rx, uart.rx[1:])
 			uart.rx = uart.rx[:len(uart.rx)-1]
+			m.markExternalInterruptDirty()
 			return b
 		}
 		return uart.regs[0]
@@ -660,6 +671,7 @@ func (m *biosMMIO) uartByte(index int, off uint64) byte {
 		}
 		if !dlab && m.uartTXInterruptPending(index) {
 			uart.txInterrupt = false
+			m.markExternalInterruptDirty()
 			return uartIIRTHRI
 		}
 		return uartIIRNone
@@ -682,6 +694,7 @@ func (m *biosMMIO) storeUARTPort(index int, off, width, value uint64) {
 	if index < 0 || index >= len(m.uarts) {
 		return
 	}
+	defer m.markExternalInterruptDirty()
 	uart := &m.uarts[index]
 	for i := uint64(0); i < width; i++ {
 		b := byte(value >> (8 * i))
@@ -849,14 +862,22 @@ func (m *biosMMIO) drainUARTInput(index int) {
 		return
 	}
 	uart := &m.uarts[index]
+	changed := false
+	defer func() {
+		if changed {
+			m.markExternalInterruptDirty()
+		}
+	}()
 	for uart.rxCh != nil && len(uart.rx) < uartRXLimit {
 		select {
 		case b, ok := <-uart.rxCh:
 			if !ok {
 				uart.rxCh = nil
+				changed = true
 				return
 			}
 			uart.rx = append(uart.rx, b)
+			changed = true
 		default:
 			return
 		}
@@ -886,7 +907,13 @@ func (m *biosMMIO) MachineTimerValue() uint64 {
 }
 
 func (m *biosMMIO) SupervisorExternalInterruptPending() bool {
-	return m.plicPendingForContext(plicSContext) != 0
+	if atomic.LoadUint32(&m.externalInterruptDirty) == 0 {
+		return m.supervisorExternalPending
+	}
+	if atomic.SwapUint32(&m.externalInterruptDirty, 0) != 0 {
+		m.supervisorExternalPending = m.plicPendingForContext(plicSContext) != 0
+	}
+	return m.supervisorExternalPending
 }
 
 func (m *biosMMIO) loadPLIC(off, width uint64) uint64 {
@@ -933,6 +960,7 @@ func (m *biosMMIO) storePLIC(off, width, value uint64) {
 	if width != 4 {
 		return
 	}
+	defer m.markExternalInterruptDirty()
 	if off < 0x1000 {
 		source := off / 4
 		if source < uint64(len(m.plicPriority)) {
@@ -1001,13 +1029,19 @@ func (m *biosMMIO) plicPendingForContext(ctx uint32) uint32 {
 func (m *biosMMIO) plicClaim(ctx uint32) uint32 {
 	source := m.plicPendingForContext(ctx)
 	m.plicClaimed[ctx] = source
+	m.markExternalInterruptDirty()
 	return source
 }
 
 func (m *biosMMIO) plicComplete(ctx, source uint32) {
 	if ctx < uint32(len(m.plicClaimed)) && m.plicClaimed[ctx] == source {
 		m.plicClaimed[ctx] = 0
+		m.markExternalInterruptDirty()
 	}
+}
+
+func (m *biosMMIO) markExternalInterruptDirty() {
+	atomic.StoreUint32(&m.externalInterruptDirty, 1)
 }
 
 func (m *biosMMIO) syncCLINTTime() {

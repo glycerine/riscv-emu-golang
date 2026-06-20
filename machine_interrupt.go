@@ -52,7 +52,9 @@ func SetBiosIdleSleepCap(d time.Duration) func() {
 func (c *CPU) serviceBiosMachineTimer() {
 	if c.mem.mmio != nil {
 		c.mem.mmio.AdvanceMachineTimer(biosTimerTicksPerInstruction)
-		c.refreshSupervisorTimerPendingAt(c.mem.mmio.MachineTimerValue())
+		if !c.stip && c.stimecmp != ^uint64(0) {
+			c.refreshSupervisorTimerPendingAt(c.mem.mmio.MachineTimerValue())
+		}
 	}
 	c.refreshSupervisorExternalPending()
 }
