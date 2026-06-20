@@ -258,6 +258,80 @@ func RunEmu(cfg EmuConfig) (int, error) {
 	return runEmu(cfg)
 }
 
+// PreparedEmu is a user-mode emulation prepared up to, and including, optional
+// accelerator compilation. Run executes the already-prepared guest once. Close
+// releases accelerator and guest-memory resources.
+type PreparedEmu struct {
+	Config         EmuConfig
+	Memory         *GuestMemory
+	CPU            *CPU
+	Machine        *Machine
+	Jea9Linux      *Jea9Linux
+	ELF            *ELF
+	AccelInstalled bool
+
+	restoreIdle func()
+	closed      bool
+}
+
+// PrepareEmu validates cfg, loads a user-mode RISCV64 ELF, initializes the
+// Jea9Linux personality, creates a Machine, and compiles any configured
+// accelerator. BIOS, attach, list, and debug modes continue to use RunEmu.
+func PrepareEmu(ctx context.Context, cfg EmuConfig) (*PreparedEmu, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	cfg = cfg.withDefaults()
+	if err := cfg.ValidateConfig(); err != nil {
+		return nil, err
+	}
+	switch {
+	case cfg.List:
+		return nil, fmt.Errorf("PrepareEmu does not support -list")
+	case cfg.Debug:
+		return nil, fmt.Errorf("PrepareEmu does not support -debug")
+	case cfg.AttachPID != 0:
+		return nil, fmt.Errorf("PrepareEmu does not support -pid/-console attach mode")
+	case cfg.BiosPath != "":
+		return nil, fmt.Errorf("PrepareEmu does not support -bios")
+	}
+	return prepareEmuValidated(ctx, cfg)
+}
+
+// Run executes this prepared user-mode emulation once.
+func (p *PreparedEmu) Run() (int, error) {
+	if p == nil || p.closed || p.CPU == nil || p.Jea9Linux == nil || p.Memory == nil || p.Machine == nil {
+		return 0, fmt.Errorf("prepared emu is closed or incomplete")
+	}
+	if p.Config.JITLazy || p.Config.JITAOT {
+		return runEmuJIT(p.CPU, p.Memory, p.Jea9Linux, p.Config.JITAOT, p.Config.JITStats)
+	}
+	if p.AccelInstalled {
+		return RunWithJea9LinuxMachine(p.Machine, p.Jea9Linux)
+	}
+	return RunWithJea9Linux(p.CPU, p.Jea9Linux)
+}
+
+// Close releases resources owned by this prepared emulation. It is idempotent.
+func (p *PreparedEmu) Close() {
+	if p == nil || p.closed {
+		return
+	}
+	p.closed = true
+	if p.Machine != nil {
+		p.Machine.Close()
+		p.Machine = nil
+	}
+	if p.Memory != nil {
+		p.Memory.Free()
+		p.Memory = nil
+	}
+	if p.restoreIdle != nil {
+		p.restoreIdle()
+		p.restoreIdle = nil
+	}
+}
+
 func runEmu(cfg EmuConfig) (int, error) {
 	cfg = cfg.withDefaults()
 	if err := cfg.ValidateConfig(); err != nil {
@@ -276,40 +350,67 @@ func runEmu(cfg EmuConfig) (int, error) {
 	if cfg.AttachPID != 0 {
 		return attachEmuConsole(cfg)
 	}
-	restoreIdle, err := cfg.applyIdleSleepCap()
+	if cfg.BiosPath != "" {
+		restoreIdle, err := cfg.applyIdleSleepCap()
+		if err != nil {
+			return 0, err
+		}
+		defer restoreIdle()
+
+		budget, err := cfg.schedulerBudget()
+		if err != nil {
+			return 0, err
+		}
+		return runEmuBios(cfg, budget)
+	}
+	prepared, err := prepareEmuValidated(context.Background(), cfg)
 	if err != nil {
 		return 0, err
 	}
-	defer restoreIdle()
+	defer prepared.Close()
+	return prepared.Run()
+}
+
+func prepareEmuValidated(ctx context.Context, cfg EmuConfig) (*PreparedEmu, error) {
+	restoreIdle, err := cfg.applyIdleSleepCap()
+	if err != nil {
+		return nil, err
+	}
+	prepared := &PreparedEmu{Config: cfg, restoreIdle: restoreIdle}
+	keep := false
+	defer func() {
+		if !keep {
+			prepared.Close()
+		}
+	}()
 
 	budget, err := cfg.schedulerBudget()
 	if err != nil {
-		return 0, err
-	}
-	if cfg.BiosPath != "" {
-		return runEmuBios(cfg, budget)
+		return nil, err
 	}
 	clockPolicy, err := cfg.clockPolicy()
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	instructionBudget, err := cfg.runInstructionBudget(budget)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 
 	mem, err := NewGuestMemory(cfg.MemorySize)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	defer mem.Free()
+	prepared.Memory = mem
 
 	elf, err := LoadELF(mem, cfg.RunPath)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
+	prepared.ELF = elf
 
 	cpu := NewCPU(*mem)
+	prepared.CPU = cpu
 	jlinux := NewJea9Linux(Jea9LinuxOptions{
 		EntropySeed:       seedBytes(cfg.Seed),
 		TimeMode:          cfg.timeMode(),
@@ -324,6 +425,7 @@ func runEmu(cfg EmuConfig) (int, error) {
 		Stderr:            cfg.Stderr,
 		AllowAllHostFiles: !cfg.Hermit,
 	})
+	prepared.Jea9Linux = jlinux
 
 	args := append([]string(nil), cfg.Args...)
 	if len(args) == 0 {
@@ -334,25 +436,18 @@ func runEmu(cfg EmuConfig) (int, error) {
 		Env:      append([]string(nil), cfg.Env...),
 		ExecPath: args[0],
 	}); err != nil {
-		return 0, err
+		return nil, err
 	}
 
 	m := NewMachine(cpu, nil)
-	accelInstalled, err := compileConfiguredAccelerator(context.Background(), cfg, m, elf.Entry)
+	prepared.Machine = m
+	accelInstalled, err := compileConfiguredAccelerator(ctx, cfg, m, elf.Entry)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	if accelInstalled {
-		defer m.Close()
-	}
-
-	if cfg.JITLazy || cfg.JITAOT {
-		return runEmuJIT(cpu, mem, jlinux, cfg.JITAOT, cfg.JITStats)
-	}
-	if accelInstalled {
-		return RunWithJea9LinuxMachine(m, jlinux)
-	}
-	return RunWithJea9Linux(cpu, jlinux)
+	prepared.AccelInstalled = accelInstalled
+	keep = true
+	return prepared, nil
 }
 
 func compileConfiguredAccelerator(ctx context.Context, cfg EmuConfig, m *Machine, loaderAOTSeedPCs ...uint64) (bool, error) {

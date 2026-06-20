@@ -2,6 +2,7 @@ package riscv
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"errors"
 	"flag"
@@ -38,6 +39,116 @@ func TestRunEmuDefaultRunsGoHelloFixture(t *testing.T) {
 	}
 	if got, want := stdout.String(), "hello jea9linux go\n"; got != want {
 		t.Fatalf("stdout = %q, want %q; stderr=%q", got, want, stderr.String())
+	}
+}
+
+func TestPrepareEmuRunsWriteStdoutFixture(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	prepared, err := PrepareEmu(context.Background(), EmuConfig{
+		RunPath:           "testvectors/jea9linux/elf/write_stdout.elf",
+		MemorySize:        Size64MB,
+		InstructionBudget: 1 << 20,
+		Stdin:             strings.NewReader(""),
+		Stdout:            &stdout,
+		Stderr:            &stderr,
+	})
+	if err != nil {
+		t.Fatalf("PrepareEmu: %v; stderr=%q", err, stderr.String())
+	}
+	defer prepared.Close()
+
+	if prepared.Memory == nil || prepared.CPU == nil || prepared.Machine == nil || prepared.Jea9Linux == nil || prepared.ELF == nil {
+		t.Fatalf("prepared emu is incomplete: %+v", prepared)
+	}
+	code, err := prepared.Run()
+	if err != nil {
+		t.Fatalf("prepared.Run: %v; stdout=%q stderr=%q", err, stdout.String(), stderr.String())
+	}
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if got, want := stdout.String(), "jea9linux stdout\n"; got != want {
+		t.Fatalf("stdout = %q, want %q; stderr=%q", got, want, stderr.String())
+	}
+}
+
+func TestPrepareEmuCompilesConfiguredAccelerator(t *testing.T) {
+	accel := &recordingAccelerator{code: 17}
+	var stdout, stderr bytes.Buffer
+	prepared, err := PrepareEmu(context.Background(), EmuConfig{
+		RunPath:           "testvectors/jea9linux/elf/write_stdout.elf",
+		MemorySize:        Size64MB,
+		InstructionBudget: 1 << 20,
+		Stdin:             strings.NewReader(""),
+		Stdout:            &stdout,
+		Stderr:            &stderr,
+		AccelFactory: func() (Accelerator, error) {
+			return accel, nil
+		},
+		AccelOptions: AccelOptions{
+			AOTSeedPCs: []uint64{0x1234},
+		},
+	})
+	if err != nil {
+		t.Fatalf("PrepareEmu with accelerator: %v", err)
+	}
+	defer prepared.Close()
+
+	if !prepared.AccelInstalled {
+		t.Fatal("PrepareEmu did not mark accelerator installed")
+	}
+	if accel.compileCalls != 1 {
+		t.Fatalf("accelerator compile calls = %d, want 1", accel.compileCalls)
+	}
+	if accel.compileMachine != prepared.Machine {
+		t.Fatalf("accelerator compiled machine = %p, want %p", accel.compileMachine, prepared.Machine)
+	}
+	if prepared.ELF == nil {
+		t.Fatal("prepared ELF is nil")
+	}
+	if accel.compilePC != prepared.ELF.Entry {
+		t.Fatalf("compile PC = %#x, want ELF entry %#x", accel.compilePC, prepared.ELF.Entry)
+	}
+	wantSeeds := []uint64{0x1234, prepared.ELF.Entry}
+	if !sameUint64Slice(accel.compileOptions.AOTSeedPCs, wantSeeds) {
+		t.Fatalf("AOTSeedPCs = %#x, want %#x", accel.compileOptions.AOTSeedPCs, wantSeeds)
+	}
+	code, err := prepared.Run()
+	if err != nil {
+		t.Fatalf("prepared.Run with accelerator: %v", err)
+	}
+	if code != 17 {
+		t.Fatalf("exit code = %d, want 17", code)
+	}
+	if accel.runCalls == 0 {
+		t.Fatal("prepared.Run did not call accelerator")
+	}
+	prepared.Close()
+	if !accel.closed {
+		t.Fatal("prepared.Close did not close accelerator")
+	}
+	if _, err := prepared.Run(); err == nil {
+		t.Fatal("prepared.Run after Close succeeded")
+	}
+}
+
+func TestPrepareEmuRejectsUnsupportedModes(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cfg  EmuConfig
+		want string
+	}{
+		{name: "list", cfg: EmuConfig{List: true}, want: "-list"},
+		{name: "debug", cfg: EmuConfig{Debug: true}, want: "-debug"},
+		{name: "attach", cfg: EmuConfig{AttachPID: 1}, want: "-pid/-console"},
+		{name: "bios", cfg: EmuConfig{BiosPath: "testvectors/jea9linux/elf/write_stdout.elf"}, want: "-bios"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := PrepareEmu(context.Background(), tc.cfg)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("PrepareEmu err = %v, want %q", err, tc.want)
+			}
+		})
 	}
 }
 

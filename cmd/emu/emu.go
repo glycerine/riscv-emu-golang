@@ -83,6 +83,8 @@ func defineFlags(fs *flag.FlagSet, c *riscv.EmuConfig) {
 	fs.StringVar(&c.Memory, "mem", "", "guest memory size as bytes or KB/MB/GB/TB; with -bios this is RAM advertised to Linux")
 	fs.StringVar(&c.Budget, "budget", "", "scheduler/run budget as an instruction count, duration, or max; defaults to "+defaultEmuRunBudgetDescription+" for -run and max for -bios")
 	fs.Var(jit0Flag{cfg: c}, "jit0", "run with the wazero RV64 AOT accelerator instead of the interpreter")
+	fs.BoolVar(&c.AccelOptions.ConservativeAOTSweep, "jit0-sweep", false, "with -jit0, conservatively precompile executable regions before running")
+	fs.IntVar(&c.AccelOptions.MaxAOTPrecompileBlocks, "jit0-max-aot-blocks", 0, "with -jit0, cap eager AOT blocks; 0 means unlimited")
 	fs.BoolVar(&c.JITLazy, "jitlazy", false, "run with the native lazy JIT instead of the interpreter")
 	fs.BoolVar(&c.JITAOT, "jitaot", false, "run with explicit AOT JIT instead of the interpreter")
 	fs.BoolVar(&c.Hermit, "hermit", false, "disable host filesystem passthrough")

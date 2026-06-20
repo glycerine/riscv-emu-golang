@@ -117,6 +117,13 @@ func (r *recordingAccelerator) RunMachineBudget(cpu *CPU, _ *NoteChain, _ uint64
 	return RunBudgetExit, nil
 }
 
+func (r *recordingAccelerator) RunMachineDualBudget(cpu *CPU, _ *NoteChain, _, _ uint64, mode AccelRunMode) (RunBudgetResult, RunBudgetLimit, error) {
+	r.runCalls++
+	r.lastMode = mode
+	cpu.ExitCode = r.code
+	return RunBudgetExit, RunBudgetLimitNone, nil
+}
+
 func (r *recordingAccelerator) Invalidate(uint64, uint64, InvalidateReason) {}
 
 func (r *recordingAccelerator) Close() error {
