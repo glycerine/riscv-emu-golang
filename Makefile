@@ -102,7 +102,9 @@ GUEST_ELF   := $(GUEST_DIR)/bench_guest.elf
 GUEST_NATIVE := $(GUEST_DIR)/bench_guest.native
 GUEST_WASM   := $(GUEST_DIR)/bench_guest.wasm
 OUR_LINUX    := $(ROOT)xendor/linux-6.17-hand-built
-RSTRACE_BIN  := $(ROOT)xendor/linux/initramfs/bin/rstrace
+INITRAMFS_DIR := $(ROOT)xendor/alpine-minirootfs-3.24.1-riscv64
+INITRAMFS_CPIO := $(ROOT)xendor/linux/initramfs.cpio.gz
+RSTRACE_BIN  := $(INITRAMFS_DIR)/bin/rstrace
 RSTRACE_GOCACHE ?= /tmp/riscv-emu-go-build-cache
 RSTRACE_GOMODCACHE ?= /tmp/riscv-emu-go-mod-cache
 UCB_BAR      := $(ROOT)xendor/ucb-bar
@@ -1023,9 +1025,9 @@ EMU_IDLE ?= -idle 1s
 linux:
 	go install ./cmd/emu
 	@# Older reference Ubuntu kernel, kept for comparison:
-	@# emu -mem 256MB -bios xendor/opensbi/build/platform/generic/firmware/fw_dynamic.elf -kernel xendor/linux/boot/vmlinuz-6.17.0-35-generic -initrd xendor/linux/initramfs.cpio.gz -append "console=ttyS0,115200 earlycon=uart8250,mmio,0x10000000 rdinit=/init panic=1 reboot=t init_on_alloc=0 init_on_free=0 audit=0 lsm=capability cma=0 numa=off slub_debug=- lpj=XXXXX"
+	@# emu -mem 256MB -bios xendor/opensbi/build/platform/generic/firmware/fw_dynamic.elf -kernel xendor/linux/boot/vmlinuz-6.17.0-35-generic -initrd $(INITRAMFS_CPIO) -append "console=ttyS0,115200 earlycon=uart8250,mmio,0x10000000 rdinit=/init panic=1 reboot=t init_on_alloc=0 init_on_free=0 audit=0 lsm=capability cma=0 numa=off slub_debug=- lpj=XXXXX"
 		@# Slim in-tree Image with built-in hostfs plus virtio-net MMIO.
-		emu $(EMU_IDLE) -hostio -net -mem 256MB -bios xendor/opensbi/build/platform/generic/firmware/fw_dynamic.elf -kernel xendor/linux-6.17-hand-built/Image -initrd xendor/linux/initramfs.cpio.gz -append "console=ttyS0,115200 earlycon=uart8250,mmio,0x10000000 rdinit=/init panic=1 reboot=t init_on_alloc=0 init_on_free=0 audit=0 lsm=capability cma=0 numa=off slub_debug=- lpj=XXXXX"
+		emu $(EMU_IDLE) -hostio -net -mem 256MB -bios xendor/opensbi/build/platform/generic/firmware/fw_dynamic.elf -kernel xendor/linux-6.17-hand-built/Image -initrd $(INITRAMFS_CPIO) -append "console=ttyS0,115200 earlycon=uart8250,mmio,0x10000000 rdinit=/init panic=1 reboot=t init_on_alloc=0 init_on_free=0 audit=0 lsm=capability cma=0 numa=off slub_debug=- lpj=XXXXX"
 
 rstrace:
 	GOOS=linux GOARCH=riscv64 CGO_ENABLED=0 \
@@ -1072,6 +1074,6 @@ build-slim-linux:
 	cp -p ~/linux/defconfig ~/ris/xendor/linux-6.17-hand-built/defconfig
 
 repack-initramfs:
-	cd ~/ris/xendor/linux/initramfs/ && find . -print0 | \
+	cd $(INITRAMFS_DIR) && find . -print0 | \
 	cpio --null --create --format=newc --owner=root | \
-	gzip -9 > ../initramfs.cpio.gz
+	gzip -9 > $(INITRAMFS_CPIO)
