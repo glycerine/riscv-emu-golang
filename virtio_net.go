@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -247,7 +248,7 @@ func (d *virtioNetDevice) Load(off, width uint64) uint64 {
 			reg = 1
 		}
 	case virtioMMIOInterruptStatus:
-		reg = d.interruptStatus
+		reg = atomic.LoadUint32(&d.interruptStatus)
 	case virtioMMIOStatus:
 		reg = d.status
 	case virtioMMIOConfigGeneration:
@@ -303,7 +304,7 @@ func (d *virtioNetDevice) Store(off, width, value uint64) *MemFault {
 	case virtioMMIOQueueNotify:
 		frames, fault = d.notifyQueueLocked(uint16(value))
 	case virtioMMIOInterruptACK:
-		d.interruptStatus &^= uint32(value)
+		atomic.AndUint32(&d.interruptStatus, ^uint32(value))
 	case virtioMMIOStatus:
 		d.status = uint32(value)
 		if value == 0 {
@@ -319,9 +320,7 @@ func (d *virtioNetDevice) Store(off, width, value uint64) *MemFault {
 }
 
 func (d *virtioNetDevice) InterruptPending() bool {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	return d.interruptStatus != 0
+	return atomic.LoadUint32(&d.interruptStatus) != 0
 }
 
 func (d *virtioNetDevice) InjectGuestFrame(frame []byte) bool {
@@ -365,7 +364,7 @@ func (d *virtioNetDevice) resetLocked() {
 	d.driverFeaturesSel = 0
 	d.deviceFeaturesSel = 0
 	d.queueSel = 0
-	d.interruptStatus = 0
+	atomic.StoreUint32(&d.interruptStatus, 0)
 	d.pendingRX = nil
 	for i := range d.queues {
 		d.queues[i] = virtioNetQueue{numMax: virtioQueueSize}
@@ -455,7 +454,7 @@ func (d *virtioNetDevice) pumpRXLocked() bool {
 }
 
 func (d *virtioNetDevice) raiseVringInterruptLocked() {
-	d.interruptStatus |= virtioMMIOIntVring
+	atomic.OrUint32(&d.interruptStatus, virtioMMIOIntVring)
 }
 
 func (d *virtioNetDevice) readDescriptorChainLocked(q *virtioNetQueue, head uint16, requireWrite bool) ([]byte, *MemFault) {

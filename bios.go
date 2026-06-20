@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/bits"
 	"os"
 	"path/filepath"
 	"strings"
@@ -863,6 +864,8 @@ func (m *biosMMIO) drainUARTInput(index int) {
 }
 
 func (m *biosMMIO) loadCLINT(off, width uint64) uint64 {
+	// mtime advances every emulated instruction; publish it lazily when the
+	// guest actually reads the CLINT byte image.
 	m.syncCLINTTime()
 	return loadLittleEndian(m.clint[:], off, width)
 }
@@ -876,7 +879,6 @@ func (m *biosMMIO) storeCLINT(off, width, value uint64) {
 
 func (m *biosMMIO) AdvanceMachineTimer(delta uint64) {
 	m.mtime += delta
-	m.syncCLINTTime()
 }
 
 func (m *biosMMIO) MachineTimerValue() uint64 {
@@ -979,15 +981,15 @@ func (m *biosMMIO) plicPendingForContext(ctx uint32) uint32 {
 	if ctx >= uint32(len(m.plicEnable)) || m.plicClaimed[ctx] != 0 {
 		return 0
 	}
-	pending := m.plicPendingBits()
+	pending := m.plicPendingBits() & uint32(m.plicEnable[ctx])
 	best := uint32(0)
 	bestPriority := uint32(0)
-	for source := uint32(1); source < uint32(len(m.plicPriority)); source++ {
-		if pending&(uint32(1)<<source) == 0 || m.plicEnable[ctx]&(uint64(1)<<source) == 0 {
-			continue
-		}
+	threshold := m.plicThreshold[ctx]
+	for pending != 0 {
+		source := uint32(bits.TrailingZeros32(pending))
+		pending &^= uint32(1) << source
 		priority := m.plicPriority[source]
-		if priority <= m.plicThreshold[ctx] || priority <= bestPriority {
+		if priority <= threshold || priority <= bestPriority {
 			continue
 		}
 		best = source
