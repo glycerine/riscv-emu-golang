@@ -57,7 +57,7 @@ echo "── cross-building linux/arm64 test binary (${ARM64_QEMU_PACKAGE})"
 	GOCACHE="${GOCACHE:-/tmp/gocache-riscv-arm64}" \
 	GOCPU_VIZJIT_OFF=1 \
 	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 \
-	"${GO}" test -c -o "${testbin}" "${ARM64_QEMU_PACKAGE}"
+	"${GO}" test -tags timetzdata -c -o "${testbin}" "${ARM64_QEMU_PACKAGE}"
 )
 
 echo "── building tiny linux/arm64 init"
