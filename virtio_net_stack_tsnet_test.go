@@ -209,6 +209,95 @@ func TestTsnetVirtioStackEmunetGatewayPing(t *testing.T) {
 	}
 }
 
+func TestTsnetVirtioStackEmunetIPv6RouterSolicitation(t *testing.T) {
+	guestMAC := [6]byte{0x02, 0, 0, 0, 1, 0x31}
+	guestLL := ipv6LinkLocalFromMAC(guestMAC)
+	stack := &tsnetVirtioStack{hostMAC: emunetRouterMAC}
+
+	stack.InjectInboundPacket(routerSolicitationFrame(guestMAC, guestLL))
+	reply := onlyPendingEthernetFrame(t, stack)
+	if got := binary.BigEndian.Uint16(reply[12:14]); got != etherTypeIPv6 {
+		t.Fatalf("RA ether type = %#x, want IPv6", got)
+	}
+	if !bytes.Equal(reply[0:6], guestMAC[:]) || !bytes.Equal(reply[6:12], emunetRouterMAC[:]) {
+		t.Fatalf("RA MACs = dst %x src %x, want guest/router", reply[0:6], reply[6:12])
+	}
+	ip := reply[14:]
+	assertICMPv6ChecksumValid(t, ip)
+	if got := netipAddrFrom16(ip[8:24]); got != emunetRouterIPv6LinkLocal {
+		t.Fatalf("RA src = %s, want router link-local %s", got, emunetRouterIPv6LinkLocal)
+	}
+	if got := netipAddrFrom16(ip[24:40]); got != guestLL {
+		t.Fatalf("RA dst = %s, want guest link-local %s", got, guestLL)
+	}
+	if ip[7] != 255 || ip[40] != icmpv6RouterAdvertisement {
+		t.Fatalf("RA hop/type = %d/%d, want 255/%d", ip[7], ip[40], icmpv6RouterAdvertisement)
+	}
+	assertRouterAdvertisementPrefix(t, ip[40:], emunetIPv6Prefix)
+}
+
+func TestTsnetVirtioStackEmunetIPv6NeighborSolicitationForRouter(t *testing.T) {
+	guestMAC := [6]byte{0x02, 0, 0, 0, 1, 0x32}
+	guestLL := ipv6LinkLocalFromMAC(guestMAC)
+	stack := &tsnetVirtioStack{hostMAC: emunetRouterMAC}
+
+	stack.InjectInboundPacket(neighborSolicitationFrame(guestMAC, guestLL, emunetRouterIPv6LinkLocal))
+	reply := onlyPendingEthernetFrame(t, stack)
+	if got := binary.BigEndian.Uint16(reply[12:14]); got != etherTypeIPv6 {
+		t.Fatalf("NA ether type = %#x, want IPv6", got)
+	}
+	if !bytes.Equal(reply[0:6], guestMAC[:]) || !bytes.Equal(reply[6:12], emunetRouterMAC[:]) {
+		t.Fatalf("NA MACs = dst %x src %x, want guest/router", reply[0:6], reply[6:12])
+	}
+	ip := reply[14:]
+	assertICMPv6ChecksumValid(t, ip)
+	if got := netipAddrFrom16(ip[8:24]); got != emunetRouterIPv6LinkLocal {
+		t.Fatalf("NA src = %s, want target link-local %s", got, emunetRouterIPv6LinkLocal)
+	}
+	if got := netipAddrFrom16(ip[24:40]); got != guestLL {
+		t.Fatalf("NA dst = %s, want guest link-local %s", got, guestLL)
+	}
+	icmp := ip[40:]
+	if icmp[0] != icmpv6NeighborAdvertisement {
+		t.Fatalf("NA type = %d, want %d", icmp[0], icmpv6NeighborAdvertisement)
+	}
+	if icmp[4]&0xe0 != 0xe0 {
+		t.Fatalf("NA flags = %#x, want router|solicited|override", icmp[4])
+	}
+	if got := netipAddrFrom16(icmp[8:24]); got != emunetRouterIPv6LinkLocal {
+		t.Fatalf("NA target = %s, want router link-local", got)
+	}
+	if icmp[24] != 2 || icmp[25] != 1 || !bytes.Equal(icmp[26:32], emunetRouterMAC[:]) {
+		t.Fatalf("NA target link-layer option = %x, want router MAC", icmp[24:32])
+	}
+}
+
+func TestTsnetVirtioStackEmunetIPv6GatewayPing(t *testing.T) {
+	guestMAC := [6]byte{0x02, 0, 0, 0, 1, 0x33}
+	guest6 := netip.MustParseAddr("fd7a:115c:a1e0:77::abcd")
+	stack := &tsnetVirtioStack{hostMAC: emunetRouterMAC}
+
+	stack.InjectInboundPacket(ethernetIPv6Frame(emunetRouterMAC, guestMAC, icmpIPv6Packet(guest6.As16(), emunetRouterIPv6.As16(), icmpv6EchoRequest, 0x3456, 1)))
+	reply := onlyPendingEthernetFrame(t, stack)
+	if got := binary.BigEndian.Uint16(reply[12:14]); got != etherTypeIPv6 {
+		t.Fatalf("IPv6 gateway ping ether type = %#x, want IPv6", got)
+	}
+	if !bytes.Equal(reply[0:6], guestMAC[:]) || !bytes.Equal(reply[6:12], emunetRouterMAC[:]) {
+		t.Fatalf("IPv6 gateway ping MACs = dst %x src %x, want guest/router", reply[0:6], reply[6:12])
+	}
+	ip := reply[14:]
+	assertICMPv6ChecksumValid(t, ip)
+	if ip[40] != icmpv6EchoReply {
+		t.Fatalf("IPv6 gateway ping ICMP type = %d, want echo reply", ip[40])
+	}
+	if got := netipAddrFrom16(ip[8:24]); got != emunetRouterIPv6 {
+		t.Fatalf("IPv6 gateway ping src = %s, want router global %s", got, emunetRouterIPv6)
+	}
+	if got := netipAddrFrom16(ip[24:40]); got != guest6 {
+		t.Fatalf("IPv6 gateway ping dst = %s, want guest %s", got, guest6)
+	}
+}
+
 func TestTsnetVirtioStackEmunetGuestCanPingSharedTsnetIPs(t *testing.T) {
 	guestMAC := [6]byte{0x02, 0, 0, 0, 1, 0x21}
 	tail4 := netip.MustParseAddr("100.64.12.34")
@@ -1816,6 +1905,45 @@ func icmpIPv6Packet(src, dst [16]byte, typ byte, id, seq uint16) []byte {
 	return ip
 }
 
+func routerSolicitationFrame(mac [6]byte, src netip.Addr) []byte {
+	dst := netip.MustParseAddr("ff02::2")
+	icmp := make([]byte, 16)
+	icmp[0] = icmpv6RouterSolicitation
+	icmp[8] = 1
+	icmp[9] = 1
+	copy(icmp[10:16], mac[:])
+	ip := ipv6Packet(src.As16(), dst.As16(), ipProtoICMPv6, icmp)
+	ip[7] = 255
+	binary.BigEndian.PutUint16(ip[40+2:40+4], icmpv6Checksum(ip[:40], ip[40:]))
+	return ethernetIPv6Frame(ipv6MulticastMAC(dst), mac, ip)
+}
+
+func neighborSolicitationFrame(mac [6]byte, src, target netip.Addr) []byte {
+	dst := solicitedNodeMulticast(target)
+	icmp := make([]byte, 32)
+	icmp[0] = icmpv6NeighborSolicitation
+	target16 := target.As16()
+	copy(icmp[8:24], target16[:])
+	icmp[24] = 1
+	icmp[25] = 1
+	copy(icmp[26:32], mac[:])
+	ip := ipv6Packet(src.As16(), dst.As16(), ipProtoICMPv6, icmp)
+	ip[7] = 255
+	binary.BigEndian.PutUint16(ip[40+2:40+4], icmpv6Checksum(ip[:40], ip[40:]))
+	return ethernetIPv6Frame(ipv6MulticastMAC(dst), mac, ip)
+}
+
+func solicitedNodeMulticast(target netip.Addr) netip.Addr {
+	var b [16]byte
+	b[0] = 0xff
+	b[1] = 0x02
+	b[11] = 0x01
+	b[12] = 0xff
+	target16 := target.As16()
+	copy(b[13:16], target16[13:16])
+	return netip.AddrFrom16(b)
+}
+
 func ipv4Packet(src, dst [4]byte, proto byte, payload []byte) []byte {
 	ip := make([]byte, 20+len(payload))
 	ip[0] = 0x45
@@ -1892,4 +2020,39 @@ func assertICMPv6ChecksumValid(t *testing.T, packet []byte) {
 	if got := icmpv6Checksum(packet[:40], packet[40:totalLen]); got != 0 {
 		t.Fatalf("ICMPv6 checksum validation = %#x, want 0", got)
 	}
+}
+
+func assertRouterAdvertisementPrefix(t *testing.T, icmp []byte, want netip.Prefix) {
+	t.Helper()
+	if len(icmp) < 16 || icmp[0] != icmpv6RouterAdvertisement {
+		t.Fatalf("bad RA payload: len=%d type=%d", len(icmp), icmp[0])
+	}
+	for i := 16; i+2 <= len(icmp); {
+		typ := icmp[i]
+		words := int(icmp[i+1])
+		if words == 0 {
+			t.Fatalf("RA option %d has zero length", typ)
+		}
+		n := words * 8
+		if i+n > len(icmp) {
+			t.Fatalf("RA option %d length %d overruns payload length %d", typ, n, len(icmp))
+		}
+		if typ == 3 {
+			if n != 32 {
+				t.Fatalf("prefix option length = %d, want 32", n)
+			}
+			if got := int(icmp[i+2]); got != want.Bits() {
+				t.Fatalf("prefix length = %d, want %d", got, want.Bits())
+			}
+			if icmp[i+3]&0xc0 != 0xc0 {
+				t.Fatalf("prefix flags = %#x, want on-link+autonomous", icmp[i+3])
+			}
+			if got := netipAddrFrom16(icmp[i+16 : i+32]); got != want.Addr() {
+				t.Fatalf("prefix addr = %s, want %s", got, want.Addr())
+			}
+			return
+		}
+		i += n
+	}
+	t.Fatalf("RA prefix option for %s not found", want)
 }

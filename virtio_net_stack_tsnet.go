@@ -578,6 +578,14 @@ func (s *tsnetVirtioStack) handleGuestFrameForPort(portID string, frame []byte, 
 			s.tun.InjectIPPacket(frame[14:])
 			return
 		}
+		if reply := s.handleICMPv6Control(portID, frame, emit); len(reply) != 0 {
+			emit(reply)
+			return
+		}
+		if reply := s.gatewayICMPv6EchoReply(portID, frame, emit); len(reply) != 0 {
+			emit(reply)
+			return
+		}
 		if reply := s.tsnetICMPEchoReplyForGuest(portID, frame, emit); len(reply) != 0 {
 			emit(reply)
 			return

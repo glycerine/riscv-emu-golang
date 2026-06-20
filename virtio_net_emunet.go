@@ -12,10 +12,14 @@ const (
 	ipProtoTCP    = byte(6)
 	ipProtoICMPv6 = byte(58)
 
-	icmpEchoReply     = byte(0)
-	icmpEchoRequest   = byte(8)
-	icmpv6EchoRequest = byte(128)
-	icmpv6EchoReply   = byte(129)
+	icmpEchoReply               = byte(0)
+	icmpEchoRequest             = byte(8)
+	icmpv6RouterSolicitation    = byte(133)
+	icmpv6RouterAdvertisement   = byte(134)
+	icmpv6NeighborSolicitation  = byte(135)
+	icmpv6NeighborAdvertisement = byte(136)
+	icmpv6EchoRequest           = byte(128)
+	icmpv6EchoReply             = byte(129)
 
 	emunetLocalPortID = "local"
 
@@ -54,8 +58,12 @@ type emunetCounters struct {
 }
 
 var (
-	emunetRouterIPv4 = netip.MustParseAddr("10.77.0.1")
-	emunetDNSIPv4    = netip.MustParseAddr("100.100.100.100")
+	emunetRouterIPv4          = netip.MustParseAddr("10.77.0.1")
+	emunetDNSIPv4             = netip.MustParseAddr("100.100.100.100")
+	emunetIPv6Prefix          = netip.MustParsePrefix("fd7a:115c:a1e0:77::/64")
+	emunetRouterIPv6          = netip.MustParseAddr("fd7a:115c:a1e0:77::1")
+	emunetRouterIPv6LinkLocal = ipv6LinkLocalFromMAC(emunetRouterMAC)
+	ipv6AllNodesMulticast     = netip.MustParseAddr("ff02::1")
 )
 
 type emunetPort struct {
@@ -253,6 +261,74 @@ func (s *tsnetVirtioStack) gatewayICMPEchoReply(portID string, frame []byte, emi
 	binary.BigEndian.PutUint16(icmp[2:4], internetChecksum(icmp[:totalLen-ihl]))
 	s.incGatewayICMPReply()
 	return reply
+}
+
+func (s *tsnetVirtioStack) gatewayICMPv6EchoReply(portID string, frame []byte, emit func([]byte)) []byte {
+	if len(frame) < 14+40 {
+		return nil
+	}
+	packet := frame[14:]
+	if packet[0]>>4 != 6 || packet[6] != ipProtoICMPv6 {
+		return nil
+	}
+	payloadLen := int(binary.BigEndian.Uint16(packet[4:6]))
+	totalLen := 40 + payloadLen
+	if payloadLen < 8 || totalLen > len(packet) {
+		return nil
+	}
+	dst := netipAddrFrom16(packet[24:40])
+	if dst != emunetRouterIPv6 && dst != emunetRouterIPv6LinkLocal {
+		return nil
+	}
+	reply := icmpEchoReplyIPv6(packet, dst)
+	if len(reply) == 0 {
+		return nil
+	}
+	var guestMAC [6]byte
+	copy(guestMAC[:], frame[6:12])
+	s.learnPortMAC(portID, guestMAC, emit)
+	s.incGatewayICMPReply()
+	return ethernetIPv6Frame(guestMAC, emunetRouterMAC, reply)
+}
+
+func (s *tsnetVirtioStack) handleICMPv6Control(portID string, frame []byte, emit func([]byte)) []byte {
+	if len(frame) < 14+40+8 {
+		return nil
+	}
+	packet := frame[14:]
+	if packet[0]>>4 != 6 || packet[6] != ipProtoICMPv6 || packet[7] != 255 {
+		return nil
+	}
+	payloadLen := int(binary.BigEndian.Uint16(packet[4:6]))
+	totalLen := 40 + payloadLen
+	if payloadLen < 8 || totalLen > len(packet) {
+		return nil
+	}
+	icmp := packet[40:totalLen]
+	var guestMAC [6]byte
+	copy(guestMAC[:], frame[6:12])
+	if guestMAC != ([6]byte{}) {
+		s.learnPortMAC(portID, guestMAC, emit)
+	}
+
+	switch icmp[0] {
+	case icmpv6RouterSolicitation:
+		if icmp[1] != 0 || len(icmp) < 8 {
+			return nil
+		}
+		return routerAdvertisementFrame(packet, guestMAC)
+	case icmpv6NeighborSolicitation:
+		if icmp[1] != 0 || len(icmp) < 24 {
+			return nil
+		}
+		target := netipAddrFrom16(icmp[8:24])
+		if target != emunetRouterIPv6 && target != emunetRouterIPv6LinkLocal {
+			return nil
+		}
+		return neighborAdvertisementFrame(packet, guestMAC, target)
+	default:
+		return nil
+	}
 }
 
 func (s *tsnetVirtioStack) tsnetICMPEchoReplyForGuest(portID string, frame []byte, emit func([]byte)) []byte {
@@ -766,6 +842,124 @@ func ethernetFrame(dst, src [6]byte, etherType uint16, packet []byte) []byte {
 	binary.BigEndian.PutUint16(frame[12:14], etherType)
 	copy(frame[14:], packet)
 	return frame
+}
+
+func routerAdvertisementFrame(request []byte, guestMAC [6]byte) []byte {
+	if len(request) < 40 {
+		return nil
+	}
+	dstIP := netipAddrFrom16(request[8:24])
+	if ipv6AddrIsUnspecified(dstIP) {
+		dstIP = ipv6AllNodesMulticast
+	}
+	icmp := make([]byte, 16+8+8+32)
+	icmp[0] = icmpv6RouterAdvertisement
+	icmp[4] = 64
+	binary.BigEndian.PutUint16(icmp[6:8], 1800)
+
+	i := 16
+	icmp[i] = 1 // Source link-layer address.
+	icmp[i+1] = 1
+	copy(icmp[i+2:i+8], emunetRouterMAC[:])
+
+	i += 8
+	icmp[i] = 5 // MTU.
+	icmp[i+1] = 1
+	binary.BigEndian.PutUint32(icmp[i+4:i+8], uint32(virtioNetMTU))
+
+	i += 8
+	icmp[i] = 3 // Prefix information.
+	icmp[i+1] = 4
+	icmp[i+2] = byte(emunetIPv6Prefix.Bits())
+	icmp[i+3] = 0xc0 // On-link + autonomous address configuration.
+	binary.BigEndian.PutUint32(icmp[i+4:i+8], 86400)
+	binary.BigEndian.PutUint32(icmp[i+8:i+12], 14400)
+	prefix := emunetIPv6Prefix.Addr().As16()
+	copy(icmp[i+16:i+32], prefix[:])
+
+	src := emunetRouterIPv6LinkLocal.As16()
+	dst := dstIP.As16()
+	packet := ipv6Packet(src, dst, ipProtoICMPv6, icmp)
+	packet[7] = 255
+	binary.BigEndian.PutUint16(packet[42:44], icmpv6Checksum(packet[:40], packet[40:]))
+
+	dstMAC := guestMAC
+	if ipv6AddrIsMulticast(dstIP) || dstMAC == ([6]byte{}) {
+		dstMAC = ipv6MulticastMAC(dstIP)
+	}
+	return ethernetIPv6Frame(dstMAC, emunetRouterMAC, packet)
+}
+
+func neighborAdvertisementFrame(request []byte, guestMAC [6]byte, target netip.Addr) []byte {
+	if len(request) < 40 || !target.Is6() {
+		return nil
+	}
+	dstIP := netipAddrFrom16(request[8:24])
+	flags := byte(0x80 | 0x20) // Router + override.
+	if ipv6AddrIsUnspecified(dstIP) {
+		dstIP = ipv6AllNodesMulticast
+	} else {
+		flags |= 0x40 // Solicited.
+	}
+
+	icmp := make([]byte, 32)
+	icmp[0] = icmpv6NeighborAdvertisement
+	icmp[4] = flags
+	target16 := target.As16()
+	copy(icmp[8:24], target16[:])
+	icmp[24] = 2 // Target link-layer address.
+	icmp[25] = 1
+	copy(icmp[26:32], emunetRouterMAC[:])
+
+	src := target.As16()
+	dst := dstIP.As16()
+	packet := ipv6Packet(src, dst, ipProtoICMPv6, icmp)
+	packet[7] = 255
+	binary.BigEndian.PutUint16(packet[42:44], icmpv6Checksum(packet[:40], packet[40:]))
+
+	dstMAC := guestMAC
+	if ipv6AddrIsMulticast(dstIP) || dstMAC == ([6]byte{}) {
+		dstMAC = ipv6MulticastMAC(dstIP)
+	}
+	return ethernetIPv6Frame(dstMAC, emunetRouterMAC, packet)
+}
+
+func ipv6LinkLocalFromMAC(mac [6]byte) netip.Addr {
+	var b [16]byte
+	b[0] = 0xfe
+	b[1] = 0x80
+	b[8] = mac[0] ^ 0x02
+	b[9] = mac[1]
+	b[10] = mac[2]
+	b[11] = 0xff
+	b[12] = 0xfe
+	b[13] = mac[3]
+	b[14] = mac[4]
+	b[15] = mac[5]
+	return netip.AddrFrom16(b)
+}
+
+func ipv6MulticastMAC(ip netip.Addr) [6]byte {
+	var mac [6]byte
+	mac[0] = 0x33
+	mac[1] = 0x33
+	if ip.Is6() {
+		b := ip.As16()
+		copy(mac[2:6], b[12:16])
+	}
+	return mac
+}
+
+func ipv6AddrIsMulticast(ip netip.Addr) bool {
+	if !ip.Is6() {
+		return false
+	}
+	b := ip.As16()
+	return b[0] == 0xff
+}
+
+func ipv6AddrIsUnspecified(ip netip.Addr) bool {
+	return ip == netip.IPv6Unspecified()
 }
 
 func icmpEchoReplyIPv4(packet []byte, dst netip.Addr) []byte {
