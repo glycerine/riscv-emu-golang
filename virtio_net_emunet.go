@@ -879,7 +879,7 @@ func routerAdvertisementFrame(request []byte, guestMAC [6]byte) []byte {
 
 	src := emunetRouterIPv6LinkLocal.As16()
 	dst := dstIP.As16()
-	packet := ipv6Packet(src, dst, ipProtoICMPv6, icmp)
+	packet := makeIPv6Packet(src, dst, ipProtoICMPv6, icmp)
 	packet[7] = 255
 	binary.BigEndian.PutUint16(packet[42:44], icmpv6Checksum(packet[:40], packet[40:]))
 
@@ -913,7 +913,7 @@ func neighborAdvertisementFrame(request []byte, guestMAC [6]byte, target netip.A
 
 	src := target.As16()
 	dst := dstIP.As16()
-	packet := ipv6Packet(src, dst, ipProtoICMPv6, icmp)
+	packet := makeIPv6Packet(src, dst, ipProtoICMPv6, icmp)
 	packet[7] = 255
 	binary.BigEndian.PutUint16(packet[42:44], icmpv6Checksum(packet[:40], packet[40:]))
 
@@ -960,6 +960,18 @@ func ipv6AddrIsMulticast(ip netip.Addr) bool {
 
 func ipv6AddrIsUnspecified(ip netip.Addr) bool {
 	return ip == netip.IPv6Unspecified()
+}
+
+func makeIPv6Packet(src, dst [16]byte, nextHeader byte, payload []byte) []byte {
+	ip := make([]byte, 40+len(payload))
+	ip[0] = 0x60
+	binary.BigEndian.PutUint16(ip[4:6], uint16(len(payload)))
+	ip[6] = nextHeader
+	ip[7] = 64
+	copy(ip[8:24], src[:])
+	copy(ip[24:40], dst[:])
+	copy(ip[40:], payload)
+	return ip
 }
 
 func icmpEchoReplyIPv4(packet []byte, dst netip.Addr) []byte {
