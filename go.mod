@@ -14,11 +14,16 @@ require (
 	github.com/spf13/pflag v1.0.10
 	github.com/tailscale/wireguard-go v0.0.0-20260427181203-e3ac4a0afb4e
 	github.com/tetratelabs/wazero v1.11.0
+	github.com/tetratelabs/wazero/rv64emu v0.0.0
 	golang.org/x/arch v0.26.0
 	golang.org/x/net v0.55.0
 	golang.org/x/sys v0.45.0
 	tailscale.com v1.98.5
 )
+
+replace github.com/tetratelabs/wazero => ../../tetratelabs/wazero
+
+replace github.com/tetratelabs/wazero/rv64emu => ../../tetratelabs/wazero/rv64emu
 
 require (
 	4d63.com/embedfiles v0.0.0-20190311033909-995e0740726f // indirect

@@ -4,8 +4,10 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strconv"
 
 	riscv "github.com/glycerine/riscv-emu-golang"
+	"github.com/tetratelabs/wazero/rv64emu"
 )
 
 const (
@@ -80,6 +82,7 @@ func defineFlags(fs *flag.FlagSet, c *riscv.EmuConfig) {
 	fs.Uint64Var(&c.Seed, "seed", 0, "pseudo random number generator seed")
 	fs.StringVar(&c.Memory, "mem", "", "guest memory size as bytes or KB/MB/GB/TB; with -bios this is RAM advertised to Linux")
 	fs.StringVar(&c.Budget, "budget", "", "scheduler/run budget as an instruction count, duration, or max; defaults to "+defaultEmuRunBudgetDescription+" for -run and max for -bios")
+	fs.Var(jit0Flag{cfg: c}, "jit0", "run with the wazero RV64 AOT accelerator instead of the interpreter")
 	fs.BoolVar(&c.JITLazy, "jitlazy", false, "run with the native lazy JIT instead of the interpreter")
 	fs.BoolVar(&c.JITAOT, "jitaot", false, "run with explicit AOT JIT instead of the interpreter")
 	fs.BoolVar(&c.Hermit, "hermit", false, "disable host filesystem passthrough")
@@ -92,6 +95,36 @@ func defineFlags(fs *flag.FlagSet, c *riscv.EmuConfig) {
 	fs.BoolVar(&c.Debug, "debug", false, "attach to console 1 of the single other running emu instance")
 	fs.IntVar(&c.AttachPID, "pid", 0, "attach mode: host PID of an existing emu process")
 	fs.IntVar(&c.AttachConsole, "console", -1, "attach mode: console index to attach to with -pid")
+}
+
+type jit0Flag struct {
+	cfg *riscv.EmuConfig
+}
+
+func (f jit0Flag) String() string {
+	return strconv.FormatBool(f.cfg != nil && f.cfg.AccelFactory != nil)
+}
+
+func (f jit0Flag) Set(raw string) error {
+	enabled, err := strconv.ParseBool(raw)
+	if err != nil {
+		return err
+	}
+	if f.cfg == nil {
+		return nil
+	}
+	if !enabled {
+		f.cfg.AccelFactory = nil
+		return nil
+	}
+	f.cfg.AccelFactory = rv64emu.NewAccelerator
+	f.cfg.AccelOptions.ExactInstructionAccounting = true
+	f.cfg.AccelOptions.DebugInterpreterFallback = true
+	return nil
+}
+
+func (f jit0Flag) IsBoolFlag() bool {
+	return true
 }
 
 func programPath(c *riscv.EmuConfig) string {
