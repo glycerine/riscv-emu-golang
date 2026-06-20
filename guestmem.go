@@ -155,6 +155,9 @@ type GuestMemory struct {
 	// AddExecRegion / RemoveExecRegion / FindExecRegion in guestmem_exec.go.
 	// The list stays small (≤ handful of entries); linear scan is fine.
 	execRegions []ExecRegion
+	// execPageGenerations tracks code identity for executable guest pages.
+	// Keys are guest page bases. Missing entries have generation zero.
+	execPageGenerations map[uint64]uint64
 
 	// loadedELFSize remembers the byte length of the most recent ELF loaded
 	// into this memory. loadedELFImageSize remembers the summed PT_LOAD
@@ -264,13 +267,21 @@ func (m *GuestMemory) CowClone() (*GuestMemory, error) {
 	if len(m.execRegions) > 0 {
 		execRegionsCopy = append(execRegionsCopy, m.execRegions...)
 	}
+	var execPageGenerationsCopy map[uint64]uint64
+	if len(m.execPageGenerations) > 0 {
+		execPageGenerationsCopy = make(map[uint64]uint64, len(m.execPageGenerations))
+		for page, gen := range m.execPageGenerations {
+			execPageGenerationsCopy[page] = gen
+		}
+	}
 	return &GuestMemory{
-		base:               newBase,
-		mask:               m.mask,
-		size:               m.size,
-		execRegions:        execRegionsCopy,
-		loadedELFSize:      m.loadedELFSize,
-		loadedELFImageSize: m.loadedELFImageSize,
+		base:                newBase,
+		mask:                m.mask,
+		size:                m.size,
+		execRegions:         execRegionsCopy,
+		execPageGenerations: execPageGenerationsCopy,
+		loadedELFSize:       m.loadedELFSize,
+		loadedELFImageSize:  m.loadedELFImageSize,
 	}, nil
 }
 
@@ -508,6 +519,7 @@ func (m *GuestMemory) Store8(addr uint64, v uint8) *MemFault {
 		return m.fault(addr, 1, FaultStore)
 	}
 	*(*uint8)(m.hostPtr(addr)) = v
+	m.bumpExecGenerationForStore(addr, 1)
 	return nil
 }
 
@@ -530,6 +542,7 @@ func (m *GuestMemory) Store16(addr uint64, v uint16) *MemFault {
 		return m.fault(addr, 2, FaultStore)
 	}
 	*(*uint16)(m.hostPtr(addr)) = v
+	m.bumpExecGenerationForStore(addr, 2)
 	return nil
 }
 
@@ -552,6 +565,7 @@ func (m *GuestMemory) Store32(addr uint64, v uint32) *MemFault {
 		return m.fault(addr, 4, FaultStore)
 	}
 	*(*uint32)(m.hostPtr(addr)) = v
+	m.bumpExecGenerationForStore(addr, 4)
 	return nil
 }
 
@@ -574,6 +588,7 @@ func (m *GuestMemory) Store64(addr uint64, v uint64) *MemFault {
 		return m.fault(addr, 8, FaultStore)
 	}
 	*(*uint64)(m.hostPtr(addr)) = v
+	m.bumpExecGenerationForStore(addr, 8)
 	return nil
 }
 

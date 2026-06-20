@@ -51,6 +51,44 @@ func TestMMU_Sv39Translates4KiBPage(t *testing.T) {
 	}
 }
 
+func TestMMU_StoreBumpsExecGenerationForVirtualExecRegion(t *testing.T) {
+	mem, err := NewGuestMemory(Size64MB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mem.Free()
+
+	const (
+		root = uint64(0x1000)
+		l1   = uint64(0x2000)
+		l0   = uint64(0x3000)
+		phys = uint64(0x5000)
+		virt = uint64(0x400000)
+	)
+	writePTE(t, mem, root+vpnIndex(virt, 2)*8, tablePTE(l1))
+	writePTE(t, mem, l1+vpnIndex(virt, 1)*8, tablePTE(l0))
+	writePTE(t, mem, l0+vpnIndex(virt, 0)*8, leafPTE(phys, pteR|pteW|pteX))
+	mem.AddExecRegion(virt, virt+GuestPageSize, true)
+	if got := mem.ExecPageGeneration(virt); got != 1 {
+		t.Fatalf("generation after AddExecRegion = %d, want 1", got)
+	}
+
+	cpu := NewCPU(*mem)
+	cpu.EnableMMU()
+	cpu.SetPrivilegeMode(PrivSupervisor)
+	cpu.satp = sv39SATP(root)
+
+	if fault := cpu.store32(virt+0x38, 0x12345678); fault != nil {
+		t.Fatalf("store32 translated: %v", fault)
+	}
+	if got := mem.ExecPageGeneration(virt); got != 2 {
+		t.Fatalf("generation after virtual executable store = %d, want 2", got)
+	}
+	if got, fault := mem.Load32(phys + 0x38); fault != nil || got != 0x12345678 {
+		t.Fatalf("physical store got 0x%x fault %v", got, fault)
+	}
+}
+
 func TestMMU_Sv39TranslatesLargePages(t *testing.T) {
 	mem, err := NewGuestMemory(Size4GB)
 	if err != nil {

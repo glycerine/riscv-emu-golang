@@ -27,6 +27,12 @@ type ExecRegion struct {
 	IsLikelyJIT bool
 }
 
+// ExecPageGeneration is a snapshot of the code generation for one guest page.
+type ExecPageGeneration struct {
+	Page       uint64
+	Generation uint64
+}
+
 // Contains reports whether pc falls inside the region.
 func (r *ExecRegion) Contains(pc uint64) bool {
 	return pc >= r.VAddrBegin && pc < r.VAddrEnd
@@ -41,6 +47,7 @@ func (m *GuestMemory) AddExecRegion(begin, end uint64, isJIT bool) {
 	if begin >= end {
 		return
 	}
+	m.BumpExecGeneration(begin, end)
 	newReg := ExecRegion{VAddrBegin: begin, VAddrEnd: end, IsLikelyJIT: isJIT}
 	out := m.execRegions[:0]
 	for _, r := range m.execRegions {
@@ -68,6 +75,7 @@ func (m *GuestMemory) RemoveExecRegion(begin, end uint64) {
 	if begin >= end {
 		return
 	}
+	m.BumpExecGeneration(begin, end)
 	out := m.execRegions[:0]
 	for _, r := range m.execRegions {
 		if r.VAddrEnd <= begin || r.VAddrBegin >= end {
@@ -112,4 +120,73 @@ func (m *GuestMemory) ExecRegions() []ExecRegion {
 	out := make([]ExecRegion, len(m.execRegions))
 	copy(out, m.execRegions)
 	return out
+}
+
+// ExecPageGeneration returns the code generation for addr's guest page.
+func (m *GuestMemory) ExecPageGeneration(addr uint64) uint64 {
+	if len(m.execPageGenerations) == 0 {
+		return 0
+	}
+	return m.execPageGenerations[execPageBase(addr)]
+}
+
+// BumpExecGeneration advances the code generation for every guest page touched
+// by [begin, end). This is the invalidation primitive used for executable
+// stores, FENCE.I synchronization, mapping changes, and future native block
+// cache validation.
+func (m *GuestMemory) BumpExecGeneration(begin, end uint64) {
+	if begin >= end {
+		return
+	}
+	if m.execPageGenerations == nil {
+		m.execPageGenerations = make(map[uint64]uint64)
+	}
+	for page, last := execPageBase(begin), execPageBase(end-1); ; page += GuestPageSize {
+		next := m.execPageGenerations[page] + 1
+		if next == 0 {
+			next = 1
+		}
+		m.execPageGenerations[page] = next
+		if page == last {
+			return
+		}
+	}
+}
+
+// ExecPageGenerations returns a generation snapshot for every guest page
+// touched by [begin, end). Missing pages report generation zero.
+func (m *GuestMemory) ExecPageGenerations(begin, end uint64) []ExecPageGeneration {
+	if begin >= end {
+		return nil
+	}
+	out := make([]ExecPageGeneration, 0, (end-begin+GuestPageSize-1)/GuestPageSize)
+	for page, last := execPageBase(begin), execPageBase(end-1); ; page += GuestPageSize {
+		out = append(out, ExecPageGeneration{
+			Page:       page,
+			Generation: m.ExecPageGeneration(page),
+		})
+		if page == last {
+			return out
+		}
+	}
+}
+
+func execPageBase(addr uint64) uint64 {
+	return addr &^ (GuestPageSize - 1)
+}
+
+func (m *GuestMemory) bumpExecGenerationForStore(addr, width uint64) {
+	if width == 0 || len(m.execRegions) == 0 {
+		return
+	}
+	end := addr + width
+	if end < addr {
+		end = ^uint64(0)
+	}
+	for _, r := range m.execRegions {
+		if addr < r.VAddrEnd && r.VAddrBegin < end {
+			m.BumpExecGeneration(addr, end)
+			return
+		}
+	}
 }

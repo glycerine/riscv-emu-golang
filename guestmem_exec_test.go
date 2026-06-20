@@ -177,3 +177,91 @@ func TestExecRegion_Multiple_Disjoint(t *testing.T) {
 		t.Fatalf("find 0x3000 (gap): got %+v, want nil", got)
 	}
 }
+
+func TestExecPageGeneration_BumpAndSnapshot(t *testing.T) {
+	mem := execMem(t)
+
+	if got := mem.ExecPageGeneration(0x1000); got != 0 {
+		t.Fatalf("initial generation = %d, want 0", got)
+	}
+	mem.BumpExecGeneration(0x1000, 0x1001)
+	if got := mem.ExecPageGeneration(0x1000); got != 1 {
+		t.Fatalf("generation after one-page bump = %d, want 1", got)
+	}
+	mem.BumpExecGeneration(0x1fff, 0x3001)
+	if got := mem.ExecPageGeneration(0x1000); got != 2 {
+		t.Fatalf("generation for first touched page = %d, want 2", got)
+	}
+	if got := mem.ExecPageGeneration(0x2000); got != 1 {
+		t.Fatalf("generation for second touched page = %d, want 1", got)
+	}
+	if got := mem.ExecPageGeneration(0x3000); got != 1 {
+		t.Fatalf("generation for third touched page = %d, want 1", got)
+	}
+	gens := mem.ExecPageGenerations(0x1000, 0x4000)
+	if len(gens) != 3 {
+		t.Fatalf("len(ExecPageGenerations) = %d, want 3", len(gens))
+	}
+	want := []ExecPageGeneration{
+		{Page: 0x1000, Generation: 2},
+		{Page: 0x2000, Generation: 1},
+		{Page: 0x3000, Generation: 1},
+	}
+	for i := range want {
+		if gens[i] != want[i] {
+			t.Fatalf("generation[%d] = %+v, want %+v", i, gens[i], want[i])
+		}
+	}
+}
+
+func TestExecRegion_BumpsGeneration(t *testing.T) {
+	mem := execMem(t)
+
+	mem.AddExecRegion(0x1000, 0x2000, false)
+	if got := mem.ExecPageGeneration(0x1000); got != 1 {
+		t.Fatalf("generation after AddExecRegion = %d, want 1", got)
+	}
+	mem.RemoveExecRegion(0x1000, 0x2000)
+	if got := mem.ExecPageGeneration(0x1000); got != 2 {
+		t.Fatalf("generation after RemoveExecRegion = %d, want 2", got)
+	}
+}
+
+func TestExecRegion_StoreBumpsGeneration(t *testing.T) {
+	mem := execMem(t)
+
+	if f := mem.Store32(0x1000, 0x11111111); f != nil {
+		t.Fatalf("Store32 before exec region: %v", f)
+	}
+	if got := mem.ExecPageGeneration(0x1000); got != 0 {
+		t.Fatalf("generation before exec region = %d, want 0", got)
+	}
+
+	mem.AddExecRegion(0x1000, 0x2000, true)
+	if got := mem.ExecPageGeneration(0x1000); got != 1 {
+		t.Fatalf("generation after AddExecRegion = %d, want 1", got)
+	}
+	if f := mem.Store32(0x1000, 0x22222222); f != nil {
+		t.Fatalf("Store32 in exec region: %v", f)
+	}
+	if got := mem.ExecPageGeneration(0x1000); got != 2 {
+		t.Fatalf("generation after exec store = %d, want 2", got)
+	}
+	if f := mem.Store32(0x3000, 0x33333333); f != nil {
+		t.Fatalf("Store32 outside exec region: %v", f)
+	}
+	if got := mem.ExecPageGeneration(0x1000); got != 2 {
+		t.Fatalf("generation after non-exec store = %d, want 2", got)
+	}
+
+	mem.RemoveExecRegion(0x1000, 0x2000)
+	if got := mem.ExecPageGeneration(0x1000); got != 3 {
+		t.Fatalf("generation after RemoveExecRegion = %d, want 3", got)
+	}
+	if f := mem.Store32(0x1000, 0x44444444); f != nil {
+		t.Fatalf("Store32 after remove: %v", f)
+	}
+	if got := mem.ExecPageGeneration(0x1000); got != 3 {
+		t.Fatalf("generation after removed-region store = %d, want 3", got)
+	}
+}

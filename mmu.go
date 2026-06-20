@@ -221,28 +221,44 @@ func (c *CPU) store8(addr uint64, v uint8) *MemFault {
 	if c.mmu == nil {
 		return (&c.mem).Store8(addr, v)
 	}
-	return c.mmu.store(c, addr, 1, uint64(v))
+	f := c.mmu.store(c, addr, 1, uint64(v))
+	if f == nil {
+		c.mem.bumpExecGenerationForStore(addr, 1)
+	}
+	return f
 }
 
 func (c *CPU) store16(addr uint64, v uint16) *MemFault {
 	if c.mmu == nil {
 		return (&c.mem).Store16(addr, v)
 	}
-	return c.mmu.store(c, addr, 2, uint64(v))
+	f := c.mmu.store(c, addr, 2, uint64(v))
+	if f == nil {
+		c.mem.bumpExecGenerationForStore(addr, 2)
+	}
+	return f
 }
 
 func (c *CPU) store32(addr uint64, v uint32) *MemFault {
 	if c.mmu == nil {
 		return (&c.mem).Store32(addr, v)
 	}
-	return c.mmu.store(c, addr, 4, uint64(v))
+	f := c.mmu.store(c, addr, 4, uint64(v))
+	if f == nil {
+		c.mem.bumpExecGenerationForStore(addr, 4)
+	}
+	return f
 }
 
 func (c *CPU) store64(addr uint64, v uint64) *MemFault {
 	if c.mmu == nil {
 		return (&c.mem).Store64(addr, v)
 	}
-	return c.mmu.store(c, addr, 8, v)
+	f := c.mmu.store(c, addr, 8, v)
+	if f == nil {
+		c.mem.bumpExecGenerationForStore(addr, 8)
+	}
+	return f
 }
 
 func (c *CPU) store16U(addr uint64, v uint16) *MemFault {

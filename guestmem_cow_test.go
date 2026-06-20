@@ -59,6 +59,7 @@ func TestGuestMemory_CowClone_PreservesExecRegions(t *testing.T) {
 
 	parent.AddExecRegion(0x1000, 0x2000, false)
 	parent.AddExecRegion(0x3000, 0x4000, true)
+	parent.BumpExecGeneration(0x3000, 0x4000)
 
 	child, err := parent.CowClone()
 	if err != nil {
@@ -76,10 +77,20 @@ func TestGuestMemory_CowClone_PreservesExecRegions(t *testing.T) {
 	if got[1].VAddrBegin != 0x3000 || got[1].VAddrEnd != 0x4000 || !got[1].IsLikelyJIT {
 		t.Errorf("child exec region[1] = %+v", got[1])
 	}
+	if got := child.ExecPageGeneration(0x1000); got != parent.ExecPageGeneration(0x1000) {
+		t.Errorf("child generation[0x1000] = %d, want parent generation %d", got, parent.ExecPageGeneration(0x1000))
+	}
+	if got := child.ExecPageGeneration(0x3000); got != parent.ExecPageGeneration(0x3000) {
+		t.Errorf("child generation[0x3000] = %d, want parent generation %d", got, parent.ExecPageGeneration(0x3000))
+	}
 
 	// Mutating the child's exec regions must not affect the parent.
 	child.RemoveExecRegion(0x1000, 0x2000)
 	if len(parent.ExecRegions()) != 2 {
 		t.Errorf("parent exec regions mutated by child RemoveExecRegion: %d, want 2", len(parent.ExecRegions()))
+	}
+	if child.ExecPageGeneration(0x1000) == parent.ExecPageGeneration(0x1000) {
+		t.Errorf("child generation mutation leaked or failed: child=%d parent=%d",
+			child.ExecPageGeneration(0x1000), parent.ExecPageGeneration(0x1000))
 	}
 }

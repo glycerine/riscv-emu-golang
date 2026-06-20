@@ -17,6 +17,10 @@ package riscv
 type Machine struct {
 	CPU *CPU
 	JIT *JIT // nil ⇒ interpreter-only sandbox
+	// Accel is an optional external native RV64 backend. It is additive while
+	// the old JIT is still present; future accelerated runners should use this
+	// field instead of depending on JIT internals.
+	Accel Accelerator
 
 	// OS records the most recently installed OS personality (via
 	// InstallOS). Clone reads this field to auto-install the same OS
@@ -110,8 +114,10 @@ func (m *Machine) Clone() (*Machine, error) {
 		childJIT = m.JIT.CloneConfig()
 	}
 	child := &Machine{
-		CPU:      childCPU,
-		JIT:      childJIT,
+		CPU: childCPU,
+		JIT: childJIT,
+		// Accel intentionally starts nil. Native code caches need their own
+		// clone-safe policy before they can be shared or recreated here.
 		ownedMem: childMem,
 	}
 	if m.OS != nil {
@@ -144,6 +150,10 @@ func (m *Machine) InstallOS(os *OS) {
 // After Close, the Machine's CPU and JIT must not be used.
 // Idempotent — subsequent calls are no-ops.
 func (m *Machine) Close() {
+	if m.Accel != nil {
+		_ = m.Accel.Close()
+		m.Accel = nil
+	}
 	if m.JIT != nil {
 		m.JIT.Close()
 	}
