@@ -470,6 +470,60 @@ func TestTsnetVirtioStackEmunetDeliversIPv4ToPeerLease(t *testing.T) {
 	}
 }
 
+func TestTsnetVirtioStackEmunetIPv4NATThroughGuestAndTUN(t *testing.T) {
+	tailIP := netip.MustParseAddr("100.64.12.34")
+	stack := &tsnetVirtioStack{
+		hostMAC: emunetRouterMAC,
+		tun:     newVirtioNetMemoryTUN(nil),
+	}
+	stack.setTailIPv4(tailIP)
+	guestMAC := [6]byte{0x02, 0, 0, 0, 3, 0x06}
+	portID := "port-a"
+	var frames [][]byte
+	emit := func(frame []byte) { frames = append(frames, append([]byte(nil), frame...)) }
+
+	stack.learnPortMAC(portID, guestMAC, emit)
+	frame := ethernetIPv4Frame(emunetRouterMAC, guestMAC, icmpIPv4Packet([4]byte{10, 77, 0, 2}, [4]byte{1, 1, 1, 1}, icmpEchoRequest, 0x1234, 1))
+	stack.handleGuestFrameForPort(portID, frame, emit)
+
+	out := waitOutboundIPPacket(t, stack.tun, time.Second)
+	assertIPv4ChecksumValid(t, out)
+	assertICMPChecksumValid(t, out)
+	ihl := int(out[0]&0x0f) * 4
+	if got := [4]byte{out[12], out[13], out[14], out[15]}; got != tailIP.As4() {
+		t.Fatalf("NAT-through-TUN src = %v, want %s", got, tailIP)
+	}
+	if got := [4]byte{out[16], out[17], out[18], out[19]}; got != [4]byte{1, 1, 1, 1} {
+		t.Fatalf("NAT-through-TUN dst = %v, want 1.1.1.1", got)
+	}
+	ext := binary.BigEndian.Uint16(out[ihl+4 : ihl+6])
+	if ext == 0x1234 {
+		t.Fatalf("NAT-through-TUN ICMP id was not rewritten")
+	}
+
+	stack.handleTsnetPacket(icmpIPv4Packet([4]byte{1, 1, 1, 1}, tailIP.As4(), icmpEchoReply, ext, 1))
+	if len(frames) != 1 {
+		t.Fatalf("guest received %d frames, want 1", len(frames))
+	}
+	reply := frames[0]
+	if !bytes.Equal(reply[0:6], guestMAC[:]) || !bytes.Equal(reply[6:12], emunetRouterMAC[:]) {
+		t.Fatalf("reply MACs = dst %x src %x, want guest/router", reply[0:6], reply[6:12])
+	}
+	replyIP := reply[14:]
+	assertIPv4ChecksumValid(t, replyIP)
+	assertICMPChecksumValid(t, replyIP)
+	replyIHL := int(replyIP[0]&0x0f) * 4
+	if replyIP[replyIHL] != icmpEchoReply {
+		t.Fatalf("reply ICMP type = %d, want echo reply", replyIP[replyIHL])
+	}
+	if got := [4]byte{replyIP[16], replyIP[17], replyIP[18], replyIP[19]}; got != [4]byte{10, 77, 0, 2} {
+		t.Fatalf("reply dst IP = %v, want guest", got)
+	}
+	if got := binary.BigEndian.Uint16(replyIP[replyIHL+4 : replyIHL+6]); got != 0x1234 {
+		t.Fatalf("reply ICMP id = %#x, want restored 0x1234", got)
+	}
+}
+
 func TestTsnetVirtioStackEmunetDeliversIPv6ToPeerAddress(t *testing.T) {
 	stack := &tsnetVirtioStack{hostMAC: emunetRouterMAC}
 	macA := [6]byte{0x02, 0, 0, 0, 6, 0x03}
