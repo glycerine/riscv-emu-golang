@@ -1,13 +1,18 @@
 package riscv
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"unsafe"
 )
 
 var _ Accelerator = (*noopAccelerator)(nil)
+var _ DualBudgetAccelerator = (*dualNoopAccelerator)(nil)
 
 type noopAccelerator struct {
 	closed     bool
@@ -29,6 +34,113 @@ func (n *noopAccelerator) RunMachineBudget(cpu *CPU, nc *NoteChain, budget uint6
 	n.lastBudget = budget
 	n.lastMode = mode
 	return RunBudgetExpired, nil
+}
+
+type dualNoopAccelerator struct {
+	noopAccelerator
+	dualCalls       int
+	lastAttempt     uint64
+	lastRetired     uint64
+	lastDualMode    AccelRunMode
+	lastDualCPU     *CPU
+	lastDualNotePtr *NoteChain
+}
+
+func (d *dualNoopAccelerator) RunMachineDualBudget(cpu *CPU, nc *NoteChain, attemptBudget, retiredBudget uint64, mode AccelRunMode) (RunBudgetResult, RunBudgetLimit, error) {
+	d.dualCalls++
+	d.lastAttempt = attemptBudget
+	d.lastRetired = retiredBudget
+	d.lastDualMode = mode
+	d.lastDualCPU = cpu
+	d.lastDualNotePtr = nc
+	return RunBudgetExpired, RunBudgetLimitRetired, nil
+}
+
+type exitAccelerator struct {
+	code         int
+	compileCalls int
+	runCalls     int
+	closed       bool
+}
+
+func (e *exitAccelerator) CompileMachine(_ context.Context, m *Machine, _ AccelOptions) error {
+	e.compileCalls++
+	m.Accel = e
+	return nil
+}
+
+func (e *exitAccelerator) RunMachineBudget(cpu *CPU, _ *NoteChain, _ uint64, _ AccelRunMode) (RunBudgetResult, error) {
+	e.runCalls++
+	cpu.ExitCode = e.code
+	return RunBudgetExit, nil
+}
+
+func (e *exitAccelerator) RunMachineDualBudget(cpu *CPU, _ *NoteChain, _, _ uint64, _ AccelRunMode) (RunBudgetResult, RunBudgetLimit, error) {
+	e.runCalls++
+	cpu.ExitCode = e.code
+	return RunBudgetExit, RunBudgetLimitNone, nil
+}
+
+func (e *exitAccelerator) Invalidate(uint64, uint64, InvalidateReason) {}
+
+func (e *exitAccelerator) Close() error {
+	e.closed = true
+	return nil
+}
+
+type recordingAccelerator struct {
+	code           int
+	compileCalls   int
+	runCalls       int
+	closed         bool
+	compileMachine *Machine
+	compilePC      uint64
+	compileOptions AccelOptions
+	lastMode       AccelRunMode
+}
+
+func (r *recordingAccelerator) CompileMachine(_ context.Context, m *Machine, opts AccelOptions) error {
+	r.compileCalls++
+	r.compileMachine = m
+	r.compileOptions = opts
+	if m != nil && m.CPU != nil {
+		r.compilePC = m.CPU.PC()
+		m.Accel = r
+	}
+	return nil
+}
+
+func (r *recordingAccelerator) RunMachineBudget(cpu *CPU, _ *NoteChain, _ uint64, mode AccelRunMode) (RunBudgetResult, error) {
+	r.runCalls++
+	r.lastMode = mode
+	cpu.ExitCode = r.code
+	return RunBudgetExit, nil
+}
+
+func (r *recordingAccelerator) Invalidate(uint64, uint64, InvalidateReason) {}
+
+func (r *recordingAccelerator) Close() error {
+	r.closed = true
+	return nil
+}
+
+type recordedInvalidation struct {
+	addr   uint64
+	length uint64
+	reason InvalidateReason
+}
+
+type invalidationRecorderAccelerator struct {
+	noopAccelerator
+	invalidations []recordedInvalidation
+}
+
+func (r *invalidationRecorderAccelerator) Invalidate(addr, length uint64, reason InvalidateReason) {
+	r.invalidations = append(r.invalidations, recordedInvalidation{
+		addr:   addr,
+		length: length,
+		reason: reason,
+	})
 }
 
 func (n *noopAccelerator) Invalidate(uint64, uint64, InvalidateReason) {}
@@ -257,6 +369,18 @@ func TestCurrentAccelABI_Helpers(t *testing.T) {
 	}
 }
 
+func sameUint64Slice(got, want []uint64) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func TestMachineAcceleratorLifecycle(t *testing.T) {
 	mem, err := NewGuestMemory(Size1MB)
 	if err != nil {
@@ -282,6 +406,89 @@ func TestMachineAcceleratorLifecycle(t *testing.T) {
 	}
 	if m.Accel != nil {
 		t.Fatalf("Machine.Accel after Close = %#v, want nil", m.Accel)
+	}
+}
+
+func TestCompileConfiguredAcceleratorMergesLoaderAOTSeeds(t *testing.T) {
+	mem, err := NewGuestMemory(Size1MB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mem.Free()
+
+	accel := &recordingAccelerator{}
+	m := NewMachine(NewCPU(*mem), nil)
+	installed, err := compileConfiguredAccelerator(context.Background(), EmuConfig{
+		AccelFactory: func() (Accelerator, error) {
+			return accel, nil
+		},
+		AccelOptions: AccelOptions{
+			AOTSeedPCs: []uint64{0x1000, 0x2000},
+		},
+	}, m, 0x2000, 0x3000, 0x3000)
+	if err != nil {
+		t.Fatalf("compileConfiguredAccelerator: %v", err)
+	}
+	if !installed {
+		t.Fatal("compileConfiguredAccelerator installed = false, want true")
+	}
+	if accel.compileCalls != 1 {
+		t.Fatalf("compile calls = %d, want 1", accel.compileCalls)
+	}
+	want := []uint64{0x1000, 0x2000, 0x3000}
+	if !sameUint64Slice(accel.compileOptions.AOTSeedPCs, want) {
+		t.Fatalf("AOTSeedPCs = %#x, want %#x", accel.compileOptions.AOTSeedPCs, want)
+	}
+}
+
+func TestJea9LinuxExecMetadataNotifiesMachineAccelerator(t *testing.T) {
+	mem, err := NewGuestMemory(Size64MB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mem.Free()
+	cpu := NewCPU(*mem)
+	m := NewMachine(cpu, nil)
+	accel := &invalidationRecorderAccelerator{}
+	m.Accel = accel
+	jlinux := NewJea9Linux(Jea9LinuxOptions{})
+	jlinux.activeMachine = m
+
+	mapped := jlinux.sysMmap(cpu, 0, GuestPageSize, jea9LinuxProtRead|jea9LinuxProtExec, jea9LinuxMapAnonymous, 0, 0)
+	if mapped < 0 {
+		t.Fatalf("sysMmap executable = %d, want guest address", mapped)
+	}
+	addr := uint64(mapped)
+	cpuMem := &cpu.mem
+	if got := cpuMem.FindExecRegion(addr); got == nil || !got.Contains(addr) || got.IsLikelyJIT {
+		t.Fatalf("exec region after mmap = %+v, want non-JIT region containing %#x", got, addr)
+	}
+	if rc := jlinux.sysMprotect(cpu, addr, GuestPageSize, jea9LinuxProtRead|jea9LinuxProtWrite); rc != 0 {
+		t.Fatalf("sysMprotect remove exec = %d, want 0", rc)
+	}
+	if got := cpuMem.FindExecRegion(addr); got != nil {
+		t.Fatalf("exec region after mprotect RW = %+v, want nil", got)
+	}
+	if rc := jlinux.sysMprotect(cpu, addr, GuestPageSize, jea9LinuxProtRead|jea9LinuxProtExec); rc != 0 {
+		t.Fatalf("sysMprotect add exec = %d, want 0", rc)
+	}
+	if rc := jlinux.sysMunmap(cpu, addr, GuestPageSize); rc != 0 {
+		t.Fatalf("sysMunmap = %d, want 0", rc)
+	}
+
+	want := []recordedInvalidation{
+		{addr: addr, length: GuestPageSize, reason: InvalidateExecRegionAdd},
+		{addr: addr, length: GuestPageSize, reason: InvalidateExecRegionRemove},
+		{addr: addr, length: GuestPageSize, reason: InvalidateExecRegionAdd},
+		{addr: addr, length: GuestPageSize, reason: InvalidateExecRegionRemove},
+	}
+	if len(accel.invalidations) != len(want) {
+		t.Fatalf("invalidations = %+v, want %+v", accel.invalidations, want)
+	}
+	for i := range want {
+		if accel.invalidations[i] != want[i] {
+			t.Fatalf("invalidation[%d] = %+v, want %+v", i, accel.invalidations[i], want[i])
+		}
 	}
 }
 
@@ -341,5 +548,194 @@ func TestMachineRunBudgetUsesAccelerator(t *testing.T) {
 	}
 	if accel.lastMode != AccelRunBIOS {
 		t.Fatalf("accelerator mode = %v, want BIOS", accel.lastMode)
+	}
+}
+
+func TestMachineRunDualBudgetFallsBackToInterpreter(t *testing.T) {
+	mem, err := NewGuestMemory(Size1MB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mem.Free()
+	cpu := NewCPU(*mem)
+	m := NewMachine(cpu, nil)
+	if f := mem.Store32(0, 0x00000013); f != nil { // ADDI x0, x0, 0
+		t.Fatalf("Store32: %v", f)
+	}
+
+	res, limit, err := m.RunMachineDualBudget(&cpu.Notes, 1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res != RunBudgetExpired || limit != RunBudgetLimitRetired {
+		t.Fatalf("RunMachineDualBudget result = (%v, %v), want (%v, %v)", res, limit, RunBudgetExpired, RunBudgetLimitRetired)
+	}
+	if got := cpu.PC(); got != 4 {
+		t.Fatalf("PC = %d, want 4", got)
+	}
+}
+
+func TestMachineRunDualBudgetUsesAccelerator(t *testing.T) {
+	mem, err := NewGuestMemory(Size1MB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mem.Free()
+	cpu := NewCPU(*mem)
+	m := NewMachine(cpu, nil)
+	accel := &dualNoopAccelerator{}
+	m.Accel = accel
+
+	res, limit, err := m.RunMachineDualBudget(&cpu.Notes, 3, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res != RunBudgetExpired || limit != RunBudgetLimitRetired {
+		t.Fatalf("RunMachineDualBudget result = (%v, %v), want (%v, %v)", res, limit, RunBudgetExpired, RunBudgetLimitRetired)
+	}
+	if accel.dualCalls != 1 {
+		t.Fatalf("dual accelerator calls = %d, want 1", accel.dualCalls)
+	}
+	if accel.lastDualCPU != cpu {
+		t.Fatalf("dual accelerator CPU = %#v, want test CPU", accel.lastDualCPU)
+	}
+	if accel.lastDualNotePtr != &cpu.Notes {
+		t.Fatalf("dual accelerator NoteChain = %#v, want CPU notes", accel.lastDualNotePtr)
+	}
+	if accel.lastAttempt != 3 || accel.lastRetired != 5 {
+		t.Fatalf("dual budgets = (%d, %d), want (3, 5)", accel.lastAttempt, accel.lastRetired)
+	}
+	if accel.lastDualMode != AccelRunPlain {
+		t.Fatalf("dual accelerator mode = %v, want plain", accel.lastDualMode)
+	}
+}
+
+func TestMachineRunBiosDualBudgetFallsBackToInterpreter(t *testing.T) {
+	mem, err := NewGuestMemory(Size1MB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mem.Free()
+	cpu := NewCPU(*mem)
+	m := NewMachine(cpu, nil)
+	if f := mem.Store32(0, 0x00000013); f != nil { // ADDI x0, x0, 0
+		t.Fatalf("Store32: %v", f)
+	}
+
+	res, limit, err := m.RunBiosMachineDualBudget(&cpu.Notes, 1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res != RunBudgetExpired || limit != RunBudgetLimitRetired {
+		t.Fatalf("RunBiosMachineDualBudget result = (%v, %v), want (%v, %v)", res, limit, RunBudgetExpired, RunBudgetLimitRetired)
+	}
+	if got := cpu.PC(); got != 4 {
+		t.Fatalf("PC = %d, want 4", got)
+	}
+}
+
+func TestMachineRunBiosDualBudgetUsesAccelerator(t *testing.T) {
+	mem, err := NewGuestMemory(Size1MB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mem.Free()
+	cpu := NewCPU(*mem)
+	m := NewMachine(cpu, nil)
+	accel := &dualNoopAccelerator{}
+	m.Accel = accel
+
+	res, limit, err := m.RunBiosMachineDualBudget(&cpu.Notes, 3, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res != RunBudgetExpired || limit != RunBudgetLimitRetired {
+		t.Fatalf("RunBiosMachineDualBudget result = (%v, %v), want (%v, %v)", res, limit, RunBudgetExpired, RunBudgetLimitRetired)
+	}
+	if accel.dualCalls != 1 {
+		t.Fatalf("dual accelerator calls = %d, want 1", accel.dualCalls)
+	}
+	if accel.lastDualMode != AccelRunBIOS {
+		t.Fatalf("dual accelerator mode = %v, want BIOS", accel.lastDualMode)
+	}
+}
+
+func TestRunEmuUsesConfiguredAccelerator(t *testing.T) {
+	elfPath := filepath.Join(t.TempDir(), "tiny.elf")
+	if err := os.WriteFile(elfPath, BuildELF(0x10000, []uint32{0x00000013}), 0644); err != nil {
+		t.Fatal(err)
+	}
+	accel := &exitAccelerator{code: 23}
+	code, err := runEmu(EmuConfig{
+		RunPath: elfPath,
+		Memory:  "64MB",
+		AccelFactory: func() (Accelerator, error) {
+			return accel, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runEmu with accelerator: %v", err)
+	}
+	if code != 23 {
+		t.Fatalf("exit code = %d, want 23", code)
+	}
+	if accel.compileCalls != 1 {
+		t.Fatalf("compile calls = %d, want 1", accel.compileCalls)
+	}
+	if accel.runCalls == 0 {
+		t.Fatal("accelerator was compiled but not used")
+	}
+	if !accel.closed {
+		t.Fatal("runEmu did not close configured accelerator")
+	}
+}
+
+func TestRunEmuBiosUsesConfiguredAccelerator(t *testing.T) {
+	biosPath := filepath.Join(t.TempDir(), "tiny-bios.elf")
+	if err := os.WriteFile(biosPath, BuildELF(0x10000, []uint32{0x00000013}), 0644); err != nil {
+		t.Fatal(err)
+	}
+	accel := &exitAccelerator{code: 29}
+	var stdout, stderr bytes.Buffer
+	code, err := runEmu(EmuConfig{
+		BiosPath: biosPath,
+		Memory:   "512MB",
+		Budget:   "1",
+		Stdin:    strings.NewReader(""),
+		Stdout:   &stdout,
+		Stderr:   &stderr,
+		AccelFactory: func() (Accelerator, error) {
+			return accel, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runEmu BIOS with accelerator: %v; stdout=%q stderr=%q", err, stdout.String(), stderr.String())
+	}
+	if code != 29 {
+		t.Fatalf("exit code = %d, want 29", code)
+	}
+	if accel.compileCalls != 1 {
+		t.Fatalf("compile calls = %d, want 1", accel.compileCalls)
+	}
+	if accel.runCalls == 0 {
+		t.Fatal("BIOS accelerator was compiled but not used")
+	}
+	if !accel.closed {
+		t.Fatal("runEmu BIOS did not close configured accelerator")
+	}
+}
+
+func TestEmuConfigRejectsAcceleratorWithOldJIT(t *testing.T) {
+	elfPath := filepath.Join(t.TempDir(), "tiny.elf")
+	if err := os.WriteFile(elfPath, BuildELF(0x10000, []uint32{0x00000013}), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := EmuConfig{
+		RunPath:      elfPath,
+		JITLazy:      true,
+		AccelFactory: func() (Accelerator, error) { return &exitAccelerator{}, nil },
+	}
+	if err := cfg.ValidateConfig(); err == nil {
+		t.Fatal("ValidateConfig accepted accelerator with old JIT")
 	}
 }

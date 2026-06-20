@@ -20,6 +20,14 @@ type Accelerator interface {
 	Close() error
 }
 
+// DualBudgetAccelerator is implemented by accelerators that can preserve both
+// attempted-instruction and retired-instruction budget boundaries. Jea9Linux's
+// deterministic scheduler uses this to keep accelerated execution aligned with
+// the interpreter's scheduling quantum semantics.
+type DualBudgetAccelerator interface {
+	RunMachineDualBudget(cpu *CPU, nc *NoteChain, attemptBudget, retiredBudget uint64, mode AccelRunMode) (RunBudgetResult, RunBudgetLimit, error)
+}
+
 // AccelOptions configures accelerator compilation for a Machine.
 type AccelOptions struct {
 	// DebugInterpreterFallback allows an accelerator under development to fall
@@ -36,6 +44,21 @@ type AccelOptions struct {
 	// CompileMachine. Runtime block discovery remains available for dynamic or
 	// indirect targets.
 	DisableAOTPrecompile bool
+
+	// AOTSeedPCs are extra guest PCs an accelerator should try to discover
+	// during CompileMachine. Loaders can use these for firmware reset vectors,
+	// kernel entry points, vmlinux symbols, module entries, or other metadata.
+	// They are hints only: accelerators should ignore seeds outside executable
+	// regions and must not treat them as function-boundary truth.
+	AOTSeedPCs []uint64
+
+	// ConservativeAOTSweep asks accelerators to discover every halfword-aligned
+	// candidate PC in executable regions during CompileMachine. This is useful
+	// for stripped binaries or indirect-only entry points where symbols and
+	// direct CFG edges are insufficient. Accelerators may still skip writable or
+	// JIT-like regions and should pair this with MaxAOTPrecompileBlocks for
+	// exploratory runs over large kernel images.
+	ConservativeAOTSweep bool
 
 	// MaxAOTPrecompileBlocks caps eager block discovery. Zero means no explicit
 	// cap. This protects tests and exploratory runs from pathological executable

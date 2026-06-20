@@ -759,6 +759,7 @@ type Jea9Linux struct {
 	nanosleepTotalNS      uint64
 	nanosleepMaxNS        uint64
 	activeEcallTrap       jea9LinuxEcallTrapFrame
+	activeMachine         *Machine
 }
 
 type jea9LinuxAuxEntry struct {
@@ -2299,14 +2300,22 @@ func (vm *jea9LinuxVM) allocRange(memSize, length uint64) (uint64, bool) {
 	return 0, false
 }
 
-func (vm *jea9LinuxVM) updateExecMetadata(mem *GuestMemory, addr, length, prot uint64) {
+func (vm *jea9LinuxVM) updateExecMetadata(mem *GuestMemory, addr, length, prot uint64) (uint64, uint64, InvalidateReason, bool) {
 	begin := jea9LinuxAlignDown(addr)
 	end := jea9LinuxAlignUp(addr + length)
 	if prot&jea9LinuxProtExec != 0 {
 		mem.AddExecRegion(begin, end, prot&jea9LinuxProtWrite != 0)
-		return
+		return begin, end, InvalidateExecRegionAdd, true
 	}
 	mem.RemoveExecRegion(begin, end)
+	return begin, end, InvalidateExecRegionRemove, true
+}
+
+func (jos *Jea9Linux) notifyExecRegionChange(begin, end uint64, reason InvalidateReason, ok bool) {
+	if !ok || begin >= end || jos.activeMachine == nil || jos.activeMachine.Accel == nil {
+		return
+	}
+	jos.activeMachine.Accel.Invalidate(begin, end-begin, reason)
 }
 
 func newJea9LinuxStackBuilder(cpu *CPU, stackTop uint64) jea9LinuxStackBuilder {
@@ -2550,7 +2559,33 @@ func elfProgramBreak(ef *ELF) uint64 {
 	return jea9LinuxAlignUp(maxEnd)
 }
 
+type jea9LinuxDualBudgetRunner func(attemptBudget, retiredBudget uint64) (RunBudgetResult, RunBudgetLimit, error)
+
 func (jos *Jea9Linux) Run(cpu *CPU) error {
+	return jos.runWithDualBudget(cpu, func(attemptBudget, retiredBudget uint64) (RunBudgetResult, RunBudgetLimit, error) {
+		return RunDefaultDualBudget(cpu, &cpu.Notes, attemptBudget, retiredBudget)
+	})
+}
+
+// RunMachine executes Jea9Linux through a Machine, using Machine.Accel when a
+// dual-budget accelerator is installed. This preserves the scheduler's
+// attempted-instruction and retired-instruction budget boundaries while letting
+// the CPU core dispatch through an external backend.
+func (jos *Jea9Linux) RunMachine(m *Machine) error {
+	if m == nil || m.CPU == nil {
+		return errors.New("jea9linux: RunMachine requires a machine with a CPU")
+	}
+	previousMachine := jos.activeMachine
+	jos.activeMachine = m
+	defer func() {
+		jos.activeMachine = previousMachine
+	}()
+	return jos.runWithDualBudget(m.CPU, func(attemptBudget, retiredBudget uint64) (RunBudgetResult, RunBudgetLimit, error) {
+		return m.RunMachineDualBudget(&m.CPU.Notes, attemptBudget, retiredBudget)
+	})
+}
+
+func (jos *Jea9Linux) runWithDualBudget(cpu *CPU, run jea9LinuxDualBudgetRunner) error {
 	budget := jos.instructionBudget
 	var used uint64
 	for {
@@ -2570,7 +2605,7 @@ func (jos *Jea9Linux) Run(cpu *CPU) error {
 		}
 
 		attemptsBefore := cpu.RiscvInstrBegun()
-		res, limit, err := RunDefaultDualBudget(cpu, &cpu.Notes, attemptRemaining, retiredRemaining)
+		res, limit, err := run(attemptRemaining, retiredRemaining)
 		attemptDelta := cpu.RiscvInstrBegun() - attemptsBefore
 		used += attemptDelta
 		jos.accountInsAttempts(attemptDelta)
@@ -3836,7 +3871,7 @@ func (jos *Jea9Linux) ensureSignalRestorer(cpu *CPU) (uint64, int64) {
 		return 0, jea9LinuxErrENOMEM
 	}
 	vm.mapRange(addr, GuestPageSize, jea9LinuxProtRead|jea9LinuxProtExec)
-	vm.updateExecMetadata(&cpu.mem, addr, GuestPageSize, jea9LinuxProtRead|jea9LinuxProtExec)
+	jos.notifyExecRegionChange(vm.updateExecMetadata(&cpu.mem, addr, GuestPageSize, jea9LinuxProtRead|jea9LinuxProtExec))
 	jos.signalRestorer = addr
 	return addr, 0
 }
@@ -5175,6 +5210,7 @@ func (jos *Jea9Linux) sysBrk(cpu *CPU, addr uint64) uint64 {
 		if end > begin {
 			vm.unmapRange(begin, end-begin)
 			cpu.mem.RemoveExecRegion(begin, end)
+			jos.notifyExecRegionChange(begin, end, InvalidateExecRegionRemove, true)
 		}
 	}
 	vm.brk = addr
@@ -5214,7 +5250,7 @@ func (jos *Jea9Linux) sysMmap(cpu *CPU, addr, length, prot, flags, fd, off uint6
 		return jea9LinuxErrENOMEM
 	}
 	vm.mapRangeState(chosen, length, prot, extra)
-	vm.updateExecMetadata(&cpu.mem, chosen, length, prot)
+	jos.notifyExecRegionChange(vm.updateExecMetadata(&cpu.mem, chosen, length, prot))
 	return int64(chosen)
 }
 
@@ -5229,6 +5265,7 @@ func (jos *Jea9Linux) sysMunmap(cpu *CPU, addr, length uint64) int64 {
 	}
 	vm.unmapRange(begin, end-begin)
 	cpu.mem.RemoveExecRegion(begin, end)
+	jos.notifyExecRegionChange(begin, end, InvalidateExecRegionRemove, true)
 	return 0
 }
 
@@ -5250,7 +5287,7 @@ func (jos *Jea9Linux) sysMprotect(cpu *CPU, addr, length, prot uint64) int64 {
 		}
 	}
 	vm.protectRange(begin, end-begin, prot)
-	vm.updateExecMetadata(&cpu.mem, begin, end-begin, prot)
+	jos.notifyExecRegionChange(vm.updateExecMetadata(&cpu.mem, begin, end-begin, prot))
 	return 0
 }
 
@@ -5580,6 +5617,32 @@ func RunWithJea9Linux(cpu *CPU, jos *Jea9Linux) (exitCode int, err error) {
 			return 0, err
 		}
 		return cpu.ExitCode, nil
+	}
+}
+
+func RunWithJea9LinuxMachine(m *Machine, jos *Jea9Linux) (exitCode int, err error) {
+	if m == nil || m.CPU == nil {
+		return 0, errors.New("jea9linux: RunWithJea9LinuxMachine requires a machine with a CPU")
+	}
+	cleanup := InstallJea9Linux(m.CPU, jos)
+	defer cleanup()
+	for {
+		err = jos.RunMachine(m)
+		if errors.Is(err, ErrJea9LinuxBudget) {
+			continue
+		}
+		if errors.Is(err, ErrJea9LinuxBlocked) && jos.TimeMode() == RealTime {
+			if jos.waitRealTimeBlocked(m.CPU) {
+				continue
+			}
+		}
+		if err != nil {
+			if ex, ok := err.(*ExitError); ok {
+				return ex.Code, nil
+			}
+			return 0, err
+		}
+		return m.CPU.ExitCode, nil
 	}
 }
 

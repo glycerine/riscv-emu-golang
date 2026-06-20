@@ -315,6 +315,12 @@ func TestPrepareBiosGuestLoadsKernelInitrdAndBootArgs(t *testing.T) {
 	if got := guestMemoryBytes(t, guest.mem, guest.kernel.addr, len(kernel)); !bytes.Equal(got, kernel) {
 		t.Fatalf("kernel bytes at %#x = %x, want %x", guest.kernel.addr, got, kernel)
 	}
+	if got := guest.mem.FindExecRegion(guest.kernel.addr); got == nil ||
+		got.IsLikelyJIT ||
+		!got.Contains(guest.kernel.addr+uint64(len(kernel))-1) {
+		t.Fatalf("kernel exec region = %+v, want non-JIT range covering %#x..%#x",
+			got, guest.kernel.addr, guest.kernel.addr+uint64(len(kernel)))
+	}
 	if got := guestMemoryBytes(t, guest.mem, guest.initrd.addr, len(initrd)); !bytes.Equal(got, initrd) {
 		t.Fatalf("initrd bytes at %#x = %x, want %x", guest.initrd.addr, got, initrd)
 	}
@@ -348,6 +354,59 @@ func TestPrepareBiosGuestLoadsKernelInitrdAndBootArgs(t *testing.T) {
 	}
 	if !bytes.Equal(dumped, guest.fdt) {
 		t.Fatalf("dumped DTB differs from guest FDT")
+	}
+}
+
+func TestRunEmuBiosPassesLoaderAOTSeedsToAccelerator(t *testing.T) {
+	dir := t.TempDir()
+	biosPath := filepath.Join(dir, "bios.elf")
+	kernelPath := filepath.Join(dir, "Image")
+	const (
+		biosEntry  = uint64(0x10000)
+		kernelAddr = uint64(0x80400000)
+	)
+	if err := os.WriteFile(biosPath, BuildELF(biosEntry, []uint32{0x00000013}), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(kernelPath, []byte{0x13, 0x00, 0x00, 0x00}, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	accel := &recordingAccelerator{code: 23}
+	var stdout, stderr bytes.Buffer
+	code, err := runEmu(EmuConfig{
+		BiosPath:   biosPath,
+		KernelPath: kernelPath,
+		KernelAddr: kernelAddr,
+		Memory:     "512MB",
+		Stdin:      strings.NewReader(""),
+		Stdout:     &stdout,
+		Stderr:     &stderr,
+		AccelFactory: func() (Accelerator, error) {
+			return accel, nil
+		},
+		AccelOptions: AccelOptions{
+			AOTSeedPCs: []uint64{0x1234},
+		},
+	})
+	if err != nil {
+		t.Fatalf("runEmu BIOS with accelerator: %v", err)
+	}
+	if code != 23 {
+		t.Fatalf("exit code = %d, want 23", code)
+	}
+	if accel.compileCalls != 1 {
+		t.Fatalf("accelerator compile calls = %d, want 1", accel.compileCalls)
+	}
+	if accel.lastMode != AccelRunBIOS {
+		t.Fatalf("accelerator mode = %v, want BIOS", accel.lastMode)
+	}
+	if accel.compilePC != biosEntry {
+		t.Fatalf("compile PC = %#x, want BIOS entry %#x", accel.compilePC, biosEntry)
+	}
+	wantSeeds := []uint64{0x1234, biosEntry, kernelAddr}
+	if !sameUint64Slice(accel.compileOptions.AOTSeedPCs, wantSeeds) {
+		t.Fatalf("AOTSeedPCs = %#x, want %#x", accel.compileOptions.AOTSeedPCs, wantSeeds)
 	}
 }
 

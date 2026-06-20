@@ -1,6 +1,7 @@
 package riscv
 
 import (
+	"context"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -70,6 +71,8 @@ type EmuConfig struct {
 	Stdout              io.Writer
 	Stderr              io.Writer
 	JITStats            *EmuJITStats
+	AccelFactory        func() (Accelerator, error)
+	AccelOptions        AccelOptions
 }
 
 type EmuJITStats struct {
@@ -210,6 +213,9 @@ func (c *EmuConfig) ValidateConfig() error {
 	if c.JITLazy && c.JITAOT {
 		return fmt.Errorf("-jitlazy and -jitaot are mutually exclusive")
 	}
+	if c.AccelFactory != nil && (c.JITLazy || c.JITAOT) {
+		return fmt.Errorf("accelerator cannot be combined with -jitlazy or -jitaot")
+	}
 	if _, err := c.timingMode(); err != nil {
 		return err
 	}
@@ -331,10 +337,68 @@ func runEmu(cfg EmuConfig) (int, error) {
 		return 0, err
 	}
 
+	m := NewMachine(cpu, nil)
+	accelInstalled, err := compileConfiguredAccelerator(context.Background(), cfg, m, elf.Entry)
+	if err != nil {
+		return 0, err
+	}
+	if accelInstalled {
+		defer m.Close()
+	}
+
 	if cfg.JITLazy || cfg.JITAOT {
 		return runEmuJIT(cpu, mem, jlinux, cfg.JITAOT, cfg.JITStats)
 	}
+	if accelInstalled {
+		return RunWithJea9LinuxMachine(m, jlinux)
+	}
 	return RunWithJea9Linux(cpu, jlinux)
+}
+
+func compileConfiguredAccelerator(ctx context.Context, cfg EmuConfig, m *Machine, loaderAOTSeedPCs ...uint64) (bool, error) {
+	if cfg.AccelFactory == nil {
+		return false, nil
+	}
+	accel, err := cfg.AccelFactory()
+	if err != nil {
+		return false, err
+	}
+	if accel == nil {
+		return false, nil
+	}
+	opts := mergeLoaderAOTSeedPCs(cfg.AccelOptions, loaderAOTSeedPCs)
+	if err := accel.CompileMachine(ctx, m, opts); err != nil {
+		_ = accel.Close()
+		return false, err
+	}
+	if m.Accel == nil {
+		m.Accel = accel
+	}
+	return true, nil
+}
+
+func mergeLoaderAOTSeedPCs(opts AccelOptions, loaderSeeds []uint64) AccelOptions {
+	if len(loaderSeeds) == 0 {
+		return opts
+	}
+	seen := make(map[uint64]struct{}, len(opts.AOTSeedPCs)+len(loaderSeeds))
+	merged := make([]uint64, 0, len(opts.AOTSeedPCs)+len(loaderSeeds))
+	for _, seed := range opts.AOTSeedPCs {
+		if _, ok := seen[seed]; ok {
+			continue
+		}
+		seen[seed] = struct{}{}
+		merged = append(merged, seed)
+	}
+	for _, seed := range loaderSeeds {
+		if _, ok := seen[seed]; ok {
+			continue
+		}
+		seen[seed] = struct{}{}
+		merged = append(merged, seed)
+	}
+	opts.AOTSeedPCs = merged
+	return opts
 }
 
 func (c EmuConfig) programPath() string {

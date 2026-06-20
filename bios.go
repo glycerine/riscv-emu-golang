@@ -3,6 +3,7 @@ package riscv
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -110,9 +111,27 @@ func runEmuBios(cfg EmuConfig, budget uint64) (int, error) {
 	defer guest.mmio.closeHostIO()
 	defer guest.mmio.closeVirtioNet()
 
-	res, err := RunBiosMachineBudget(guest.cpu, &guest.cpu.Notes, budget)
-	if err != nil {
-		return 0, err
+	var (
+		res    RunBudgetResult
+		runErr error
+	)
+	if cfg.AccelFactory != nil {
+		m := NewMachine(guest.cpu, nil)
+		accelInstalled, accelErr := compileConfiguredAccelerator(context.Background(), cfg, m, biosAOTSeedPCs(guest)...)
+		if accelErr != nil {
+			return 0, accelErr
+		}
+		if accelInstalled {
+			defer m.Close()
+			res, runErr = m.RunBiosMachineBudget(&guest.cpu.Notes, budget)
+		} else {
+			res, runErr = RunBiosMachineBudget(guest.cpu, &guest.cpu.Notes, budget)
+		}
+	} else {
+		res, runErr = RunBiosMachineBudget(guest.cpu, &guest.cpu.Notes, budget)
+	}
+	if runErr != nil {
+		return 0, runErr
 	}
 	if res == RunBudgetExit {
 		return guest.cpu.ExitCode, nil
@@ -121,6 +140,34 @@ func runEmuBios(cfg EmuConfig, budget uint64) (int, error) {
 		return 0, fmt.Errorf("%w after %d instructions", errBiosBudgetExpired, budget)
 	}
 	return 0, nil
+}
+
+func biosAOTSeedPCs(guest *biosGuest) []uint64 {
+	if guest == nil {
+		return nil
+	}
+	seeds := make([]uint64, 0, 4)
+	seen := map[uint64]struct{}{}
+	add := func(pc uint64) {
+		if _, ok := seen[pc]; ok {
+			return
+		}
+		seen[pc] = struct{}{}
+		seeds = append(seeds, pc)
+	}
+	if guest.elf != nil {
+		add(guest.elf.Entry)
+	}
+	if guest.cpu != nil {
+		add(guest.cpu.PC())
+	}
+	if guest.nextAddr != 0 {
+		add(guest.nextAddr)
+	}
+	if guest.kernel.loaded {
+		add(guest.kernel.addr)
+	}
+	return seeds
 }
 
 func prepareBiosGuest(cfg EmuConfig) (*biosGuest, error) {
@@ -278,6 +325,7 @@ func loadBiosKernel(mem *GuestMemory, cfg EmuConfig) (biosBlob, error) {
 	if fault := mem.WriteBytes(addr, data); fault != nil {
 		return biosBlob{}, fault
 	}
+	mem.AddExecRegion(addr, addr+uint64(len(data)), false)
 	return biosBlob{
 		path:   cfg.KernelPath,
 		addr:   addr,
