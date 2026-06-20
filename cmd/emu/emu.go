@@ -57,7 +57,7 @@ func defineFlags(fs *flag.FlagSet, c *riscv.EmuConfig) {
 		c.MemorySize = riscv.Size16GB
 	}
 	fs.StringVar(&c.RunPath, "run", "", "path to RISCV ELF binary to run")
-	fs.StringVar(&c.BiosPath, "bios", "", "path to RISCV machine-mode BIOS/firmware ELF to boot")
+	fs.StringVar(&c.BiosPath, "bios", "", "path to RISCV machine-mode BIOS/firmware ELF to boot. bios mode is non-deterministic and conflicts with -hermit")
 	fs.StringVar(&c.KernelPath, "kernel", "", "path to kernel or next-stage payload to load with -bios")
 	fs.Uint64Var(&c.KernelAddr, "kernel-addr", 0, "guest physical address for raw -kernel payloads; default 0x80200000")
 	fs.StringVar(&c.InitrdPath, "initrd", "", "path to initrd image to load and advertise in the BIOS FDT")
@@ -82,7 +82,7 @@ func defineFlags(fs *flag.FlagSet, c *riscv.EmuConfig) {
 	fs.StringVar(&c.Budget, "budget", "", "scheduler/run budget as an instruction count, duration, or max; defaults to "+defaultEmuRunBudgetDescription+" for -run and max for -bios")
 	fs.BoolVar(&c.JITLazy, "jitlazy", false, "run with the native lazy JIT instead of the interpreter")
 	fs.BoolVar(&c.JITAOT, "jitaot", false, "run with explicit AOT JIT instead of the interpreter")
-	fs.BoolVar(&c.Hermit, "hermit", false, "disable host filesystem passthrough")
+	fs.BoolVar(&c.Hermit, "hermit", false, "disable host filesystem passthrough and networking for determinism. conflicts with -bios and -net")
 	fs.BoolVar(&c.Deadlock, "deadlock", false, "run each thread until it blocks before scheduling another thread (at most one of -deadlock -prng or -chaos may be given; if none the default is a fixed quantum of -budget duration)")
 	fs.BoolVar(&c.PRNG, "prng", false, "use deterministic PRNG scheduling quantum and clock advancement")
 	fs.BoolVar(&c.Chaos, "chaos", false, "use deterministic chaos scheduling")
