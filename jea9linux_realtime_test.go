@@ -234,8 +234,8 @@ func runRealtimeCGuestSocketClientServer(t *testing.T, interleaving string) {
 	client1, client1Done := startRealtimeCGuestWithStdin(t, "testvectors/jea9linux/elf/tcp_socket_client.elf", []string{portArg, "1", "gate"}, client1Out, client1StdinR)
 	defer client1.closeAllFDs()
 
-	waitSignalOrGuestExit(t, "client_0 gate", client0Out, client0Done)
-	waitSignalOrGuestExit(t, "client_1 gate", client1Out, client1Done)
+	waitSignalOrGuestExit(t, "client_0 gate", client0Out, client0Done, namedRealtimeCGuestDone{name: "server", done: serverDone})
+	waitSignalOrGuestExit(t, "client_1 gate", client1Out, client1Done, namedRealtimeCGuestDone{name: "server", done: serverDone})
 
 	var client0Res realtimeCGuestResult
 	var client1Res realtimeCGuestResult
@@ -358,6 +358,11 @@ type realtimeCGuestResult struct {
 	stderr string
 }
 
+type namedRealtimeCGuestDone struct {
+	name string
+	done <-chan realtimeCGuestResult
+}
+
 func startRealtimeCGuest(t *testing.T, path string, args []string, stdout interface {
 	io.Writer
 	String() string
@@ -429,16 +434,45 @@ func startRealtimeCGuestWithStdin(t *testing.T, path string, args []string, stdo
 	return jos, done
 }
 
-func waitSignalOrGuestExit(t *testing.T, name string, out *signalBuffer, done <-chan realtimeCGuestResult) {
+func waitSignalOrGuestExit(t *testing.T, name string, out *signalBuffer, done <-chan realtimeCGuestResult, peers ...namedRealtimeCGuestDone) {
 	t.Helper()
 	select {
 	case <-out.signal:
 		return
 	case res := <-done:
-		t.Fatalf("%s guest exited before signal: code=%d err=%v stdout=%q stderr=%q", name, res.code, res.err, res.stdout, res.stderr)
+		t.Fatalf("%s guest exited before signal: code=%d err=%v stdout=%q stderr=%q%s",
+			name, res.code, res.err, res.stdout, res.stderr, realtimePeerExitSummary(peers))
 	case <-time.After(2 * time.Second):
 		t.Fatalf("%s timed out; stdout=%q", name, out.String())
 	}
+}
+
+func realtimePeerExitSummary(peers []namedRealtimeCGuestDone) string {
+	var b strings.Builder
+	for _, peer := range peers {
+		select {
+		case res := <-peer.done:
+			b.WriteString("; ")
+			b.WriteString(peer.name)
+			b.WriteString(" result: code=")
+			b.WriteString(strconv.Itoa(res.code))
+			b.WriteString(" err=")
+			if res.err == nil {
+				b.WriteString("<nil>")
+			} else {
+				b.WriteString(res.err.Error())
+			}
+			b.WriteString(" stdout=")
+			b.WriteString(strconv.Quote(res.stdout))
+			b.WriteString(" stderr=")
+			b.WriteString(strconv.Quote(res.stderr))
+		default:
+			b.WriteString("; ")
+			b.WriteString(peer.name)
+			b.WriteString(" still running")
+		}
+	}
+	return b.String()
 }
 
 func waitOutputContainsOrGuestExit(t *testing.T, name string, out *signalBuffer, done <-chan realtimeCGuestResult, want string) {

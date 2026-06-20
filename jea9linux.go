@@ -2574,9 +2574,20 @@ func (jos *Jea9Linux) Run(cpu *CPU) error {
 		attemptDelta := cpu.RiscvInstrBegun() - attemptsBefore
 		used += attemptDelta
 		jos.accountInsAttempts(attemptDelta)
+		// A blocked single-context syscall returns through the NoteExit path.
+		// Remember that raw state before external socket events can wake it.
+		wasBlocked := jos.blocked
 		jos.drainExternalEvents(cpu)
 		jos.refreshEpollReadiness(cpu)
-		if jos.Blocked() {
+		if wasBlocked {
+			jos.refreshBlocked()
+			if jos.loadFirstRunnableAfterBlocked(cpu) {
+				continue
+			}
+			if jos.blocked {
+				return ErrJea9LinuxBlocked
+			}
+		} else if jos.Blocked() {
 			return ErrJea9LinuxBlocked
 		}
 		if err != nil {
@@ -2629,9 +2640,19 @@ func (jos *Jea9Linux) RunJIT(cpu *CPU, jit *JIT) error {
 		attemptDelta := cpu.RiscvInstrBegun() - attemptsBefore
 		used += attemptDelta
 		jos.accountInsAttempts(attemptDelta)
+		// Keep this in sync with Run: NoteExit can also mean blocked.
+		wasBlocked := jos.blocked
 		jos.drainExternalEvents(cpu)
 		jos.refreshEpollReadiness(cpu)
-		if jos.Blocked() {
+		if wasBlocked {
+			jos.refreshBlocked()
+			if jos.loadFirstRunnableAfterBlocked(cpu) {
+				continue
+			}
+			if jos.blocked {
+				return ErrJea9LinuxBlocked
+			}
+		} else if jos.Blocked() {
 			return ErrJea9LinuxBlocked
 		}
 		if cpu.watchAddr != 0 {
