@@ -31,7 +31,8 @@
         darwin-perf bench-wasm build-luajit-riscv \
         hello hello-elfs quad standard test-arm64-qemu \
         test-arm64-qemu-main test-arm64-qemu-lockstep \
-        bench-arm64-qemu bench-arm64-qemu-full rstrace
+        bench-arm64-qemu bench-arm64-qemu-full rstrace \
+        build-slim-linux build-slim-linux-amd64
 
 # ── platform detection ─────────────────────────────────────────────────────
 
@@ -102,6 +103,7 @@ GUEST_ELF   := $(GUEST_DIR)/bench_guest.elf
 GUEST_NATIVE := $(GUEST_DIR)/bench_guest.native
 GUEST_WASM   := $(GUEST_DIR)/bench_guest.wasm
 OUR_LINUX    := $(ROOT)xendor/linux-6.17-hand-built
+OUR_LINUX_AMD64 := $(OUR_LINUX)/amd64
 INITRAMFS_DIR := $(ROOT)xendor/alpine-minirootfs-3.24.1-riscv64
 INITRAMFS_CPIO := $(ROOT)xendor/linux/initramfs.cpio.gz
 RSTRACE_BIN  := $(INITRAMFS_DIR)/bin/rstrace
@@ -214,6 +216,8 @@ endif
 	@echo "  Other:"
 	@echo "    make test             unit tests"
 	@echo "    make rstrace          build guest linux/riscv64 syscall tracer"
+	@echo "    make build-slim-linux        build slim riscv64 Linux kernel"
+	@echo "    make build-slim-linux-amd64  build slim amd64/x86_64 Linux kernel"
 	@echo "    make softfloat        build vendored Berkeley SoftFloat/TestFloat"
 	@echo "    make test-softfloat   stream TestFloat gold cases into cpu.go FP tests"
 	@echo "    make test-arm64-qemu           cross-build root/riscv-tests/lockstep under qemu-system-aarch64"
@@ -1072,6 +1076,21 @@ build-slim-linux:
 	cp -p ~/linux/arch/riscv/boot/Image ~/ris/xendor/linux-6.17-hand-built/ && \
 	cp -p ~/linux/.config ~/ris/xendor/linux-6.17-hand-built/dot.config && \
 	cp -p ~/linux/defconfig ~/ris/xendor/linux-6.17-hand-built/defconfig
+
+build-slim-linux-amd64:
+	@# Build the same ~/linux tree for 64-bit amd64/x86_64.
+	@# LLVM=1 gives the target build clang/ld.lld; HOSTLD stays Darwin for host tools.
+	cd ~/linux && PATH='$(OUR_LINUX)/linux-host-tools:/usr/local/opt/coreutils/libexec/gnubin:/opt/local/libexec/gnubin:/usr/local/opt/llvm/bin:/usr/local/bin:$(PATH)' \
+	PKG_CONFIG_PATH='/opt/local/lib/pkgconfig:$(PKG_CONFIG_PATH)' \
+	gmake -j6 ARCH=x86_64 LLVM=1 \
+	HOSTLD=/usr/bin/ld \
+	HOSTCFLAGS=\
+	'-Wno-macro-redefined -I$(OUR_LINUX)/linux-host-elf-include -I$(HOME)/linux/tools/arch/x86/include/uapi -I$(HOME)/linux/arch/x86/include/generated/uapi -idirafter $(HOME)/linux/include/uapi -include $(OUR_LINUX)/linux-host-elf-include/darwin_compat.h' \
+	clean olddefconfig bzImage savedefconfig && \
+	mkdir -p $(OUR_LINUX_AMD64) && \
+	cp -p ~/linux/arch/x86/boot/bzImage $(OUR_LINUX_AMD64)/bzImage && \
+	cp -p ~/linux/.config $(OUR_LINUX_AMD64)/dot.config && \
+	cp -p ~/linux/defconfig $(OUR_LINUX_AMD64)/defconfig
 
 repack-initramfs:
 	cd $(INITRAMFS_DIR) && find . -print0 | \
