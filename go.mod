@@ -6,7 +6,7 @@ require (
 	4d63.com/tz v1.2.0
 	github.com/glycerine/greenpack v0.541.0
 	github.com/glycerine/rbtree v0.2.1
-	github.com/glycerine/rpc25519 v1.44.7
+	github.com/glycerine/rpc25519 v1.44.8
 	github.com/tailscale/wireguard-go v0.0.0-20260427181203-e3ac4a0afb4e
 	github.com/tetratelabs/wazero v1.11.0
 	golang.org/x/arch v0.26.0
@@ -39,7 +39,7 @@ require (
 	github.com/glycerine/loquet v0.0.19 // indirect
 	github.com/glycerine/one_tree_rwmut v1.0.0 // indirect
 	github.com/glycerine/rate v0.0.1 // indirect
-	github.com/glycerine/zygomys/v9 v9.1.2 // indirect
+	github.com/glycerine/zygomys/v9 v9.6.1 // indirect
 	github.com/go-json-experiment/json v0.0.0-20250813024750-ebf49471dced // indirect
 	github.com/godbus/dbus/v5 v5.1.1-0.20230522191255-76236955d466 // indirect
 	github.com/golang/groupcache v0.0.0-20241129210726-2c02b8208cf8 // indirect
