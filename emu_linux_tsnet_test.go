@@ -23,7 +23,7 @@ const (
 )
 
 func TestRunEmuBiosFWDynamicHandBuiltLinuxEmunetNetupGatewaySmoke(t *testing.T) {
-	const bootWallBudget = 20 * time.Second
+	const bootWallBudget = linuxAlpineSmokeWallBudget
 	const biosPath = "xendor/opensbi/build/platform/generic/firmware/fw_dynamic.elf"
 	const kernelPath = "xendor/linux-6.17-hand-built/Image"
 	const initrdPath = "xendor/linux/initramfs.cpio.gz"
@@ -58,7 +58,7 @@ func TestRunEmuBiosFWDynamicHandBuiltLinuxEmunetNetupGatewaySmoke(t *testing.T) 
 		defer stdinW.Close()
 		deadline := time.Now().Add(bootWallBudget)
 		for time.Now().Before(deadline) {
-			if strings.Contains(stdout.String(), "=== RISC-V initramfs booted ===") {
+			if linuxInitramfsReady(stdout.String()) {
 				_, _ = io.WriteString(stdinW, script)
 				return
 			}

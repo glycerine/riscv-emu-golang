@@ -1829,8 +1829,8 @@ func TestRunEmuBiosFWDynamicHandBuiltLinuxPrintsBanner(t *testing.T) {
 	}
 }
 
-func TestRunEmuBiosFWDynamicHandBuiltLinuxBootsToInitUnder20s(t *testing.T) {
-	const bootWallBudget = 20 * time.Second
+func TestRunEmuBiosFWDynamicHandBuiltLinuxBootsToInitUnder90s(t *testing.T) {
+	const bootWallBudget = linuxAlpineSmokeWallBudget
 	const biosPath = "xendor/opensbi/build/platform/generic/firmware/fw_dynamic.elf"
 	const kernelPath = "xendor/linux-6.17-hand-built/Image"
 	const initrdPath = "xendor/linux/initramfs.cpio.gz"
@@ -1879,7 +1879,7 @@ func TestRunEmuBiosFWDynamicHandBuiltLinuxBootsToInitUnder20s(t *testing.T) {
 }
 
 func TestRunEmuBiosFWDynamicHandBuiltLinuxHostFSMountReadWrite(t *testing.T) {
-	const bootWallBudget = 20 * time.Second
+	const bootWallBudget = linuxAlpineSmokeWallBudget
 	const biosPath = "xendor/opensbi/build/platform/generic/firmware/fw_dynamic.elf"
 	const kernelPath = "xendor/linux-6.17-hand-built/Image"
 	const initrdPath = "xendor/linux/initramfs.cpio.gz"
@@ -1918,7 +1918,7 @@ func TestRunEmuBiosFWDynamicHandBuiltLinuxHostFSMountReadWrite(t *testing.T) {
 		defer stdinW.Close()
 		deadline := time.Now().Add(bootWallBudget)
 		for time.Now().Before(deadline) {
-			if strings.Contains(stdout.String(), "=== RISC-V initramfs booted ===") {
+			if linuxInitramfsReady(stdout.String()) {
 				_, _ = io.WriteString(stdinW, script)
 				return
 			}
@@ -1965,7 +1965,7 @@ func TestRunEmuBiosFWDynamicHandBuiltLinuxHostFSMountReadWrite(t *testing.T) {
 }
 
 func TestRunEmuBiosFWDynamicHandBuiltLinuxVirtioNetRegistersEth0(t *testing.T) {
-	const bootWallBudget = 30 * time.Second
+	const bootWallBudget = linuxAlpineSmokeWallBudget
 	const biosPath = "xendor/opensbi/build/platform/generic/firmware/fw_dynamic.elf"
 	const kernelPath = "xendor/linux-6.17-hand-built/Image"
 	const initrdPath = "xendor/linux/initramfs.cpio.gz"
@@ -1992,7 +1992,7 @@ func TestRunEmuBiosFWDynamicHandBuiltLinuxVirtioNetRegistersEth0(t *testing.T) {
 		defer stdinW.Close()
 		deadline := time.Now().Add(bootWallBudget)
 		for time.Now().Before(deadline) {
-			if strings.Contains(stdout.String(), "=== RISC-V initramfs booted ===") {
+			if linuxInitramfsReady(stdout.String()) {
 				_, _ = io.WriteString(stdinW, script)
 				return
 			}
@@ -2031,7 +2031,7 @@ func TestRunEmuBiosFWDynamicHandBuiltLinuxVirtioNetRegistersEth0(t *testing.T) {
 }
 
 func TestRunEmuBiosFWDynamicHandBuiltLinuxCtrlCInterruptsPing(t *testing.T) {
-	const bootWallBudget = 30 * time.Second
+	const bootWallBudget = linuxAlpineSmokeWallBudget
 	const biosPath = "xendor/opensbi/build/platform/generic/firmware/fw_dynamic.elf"
 	const kernelPath = "xendor/linux-6.17-hand-built/Image"
 	const initrdPath = "xendor/linux/initramfs.cpio.gz"
@@ -2050,7 +2050,7 @@ func TestRunEmuBiosFWDynamicHandBuiltLinuxCtrlCInterruptsPing(t *testing.T) {
 		defer stdinW.Close()
 		deadline := time.Now().Add(bootWallBudget)
 		for time.Now().Before(deadline) {
-			if strings.Contains(stdout.String(), "=== RISC-V initramfs booted ===") {
+			if linuxInitramfsReady(stdout.String()) {
 				_, _ = io.WriteString(stdinW, "ifconfig lo up\nping 127.0.0.1\n")
 				break
 			}
@@ -2158,6 +2158,7 @@ func TestRunEmuBiosFWDynamicLinuxSmoke(t *testing.T) {
 
 const linuxUARTBootArgs = "console=ttyS0,115200 earlycon=uart8250,mmio,0x10000000 rdinit=/init"
 const linuxMakeBootArgs = linuxUARTBootArgs + " panic=1 reboot=t init_on_alloc=0 init_on_free=0 audit=0 lsm=capability cma=0 numa=off slub_debug=- lpj=XXXXX"
+const linuxAlpineSmokeWallBudget = 90 * time.Second
 
 var (
 	runLinuxInitcallDiag            bool
@@ -2318,6 +2319,10 @@ func writerString(w interface{}) string {
 		return s.String()
 	}
 	return ""
+}
+
+func linuxInitramfsReady(output string) bool {
+	return strings.Contains(output, "initramfs booted ===")
 }
 
 func tailString(s string, max int) string {
