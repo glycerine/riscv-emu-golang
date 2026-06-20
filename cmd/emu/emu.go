@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 
+	_ "time/tzdata"
+
 	riscv "github.com/glycerine/riscv-emu-golang"
 )
 
