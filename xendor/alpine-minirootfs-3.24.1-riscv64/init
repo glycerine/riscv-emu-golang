@@ -1,11 +1,12 @@
 #!/bin/sh
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-mount -t proc none /proc
-mount -t sysfs none /sys
+mkdir -p /proc /sys /dev /host /tmp /run
+
+mount -t proc none /proc 2>/dev/null || true
+mount -t sysfs none /sys 2>/dev/null || true
 mount -t devtmpfs none /dev 2>/dev/null || true
 
-mkdir -p /host /tmp /run
 chmod 1777 /tmp
 mount -t hostfs none /host -o /
 
@@ -24,6 +25,12 @@ for netdev in /sys/class/net/*; do
 		;;
 	esac
 done
+
+if [ -z "$EMUNET_IFACE" ]; then
+	if ip link show eth0 >/dev/null 2>&1 || /bin/busybox ifconfig eth0 >/dev/null 2>&1; then
+		EMUNET_IFACE=eth0
+	fi
+fi
 
 if [ -n "$EMUNET_IFACE" ]; then
 	NET_IFACE="$EMUNET_IFACE" netup -n -T 1 -t 5 || true
