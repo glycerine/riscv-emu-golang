@@ -3,4 +3,9 @@ alpine-keys
 alpine-release
 apk-tools
 busybox
+iproute2-minimal><Q122OvQ/NC7jM38DwjGnWCv1Bw9xc=
+libcap2><Q1voCD2hSQJGpefm8PWzv+orMRHVE=
+libelf><Q1SXWWLpOVnuR3i5xcEXhV/10eHYo=
+libmnl><Q1TNPcszr7iIjjHZd/0HdcbGJdDyA=
 musl-utils
+zstd-libs><Q13dImluNSLvIUv5WDcB9Mbvnta9A=

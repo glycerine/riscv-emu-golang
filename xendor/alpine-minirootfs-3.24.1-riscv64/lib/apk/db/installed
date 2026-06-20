@@ -462,6 +462,48 @@ R:certs
 a:0:0:777
 Z:Q1qE3WqZ1tRpwrmptYdQcZwzvJgds=
 
+C:Q122OvQ/NC7jM38DwjGnWCv1Bw9xc=
+P:iproute2-minimal
+V:7.0.0-r0
+A:riscv64
+S:287718
+I:586075
+T:IP Routing Utilities (/sbin/ip only)
+U:https://wiki.linuxfoundation.org/networking/iproute2
+L:GPL-2.0-or-later
+o:iproute2
+m:Natanael Copa <ncopa@alpinelinux.org>
+t:1776346063
+c:3ee752ad0c8445c8105177cd5cebdd730789bcd8
+D:so:libc.musl-riscv64.so.1 so:libcap.so.2 so:libelf.so.1 so:libmnl.so.0
+p:cmd:ip=7.0.0-r0
+r:iproute2
+F:sbin
+R:ip
+a:0:0:755
+Z:Q1KFmPq6p0/h+qKxkg19cM2IJHdBo=
+F:usr
+F:usr/share
+F:usr/share/iproute2
+R:bpf_pinning
+Z:Q1SkKkwvB44KLDhFvFwKV8F63BRLs=
+R:ematch_map
+Z:Q1ZqeOinGu9ubqxWhPvZjBByIWjQc=
+R:group
+Z:Q1logdIO6dUht01L3mwS1vG9shDJY=
+R:nl_protos
+Z:Q1yajmxZBn8Na8X8xKbOoLW92vMU8=
+R:rt_dsfield
+Z:Q10ryZjxTLyZfNBTgk0htWHbON8ok=
+R:rt_protos
+Z:Q1EgEkWcDQmvF68oa97/z+onktRWk=
+R:rt_realms
+Z:Q1q2Ryb8/rBQuGqzGCXLey7GcAAC0=
+R:rt_scopes
+Z:Q1caTHGvSFvKV6VittDHP+wjqTwRw=
+R:rt_tables
+Z:Q12m7NPCcrIqSVp0mMHaLmg0i44is=
+
 C:Q1Ch56o4+qRQqlKBrJ//bKyoTcY5c=
 P:libapk
 V:3.0.6-r0
@@ -483,6 +525,37 @@ F:usr/lib
 R:libapk.so.3.0.0
 a:0:0:755
 Z:Q1glSak3rBah8cqlAiWg2pvcfym5Q=
+
+C:Q1voCD2hSQJGpefm8PWzv+orMRHVE=
+P:libcap2
+V:2.78-r0
+A:riscv64
+S:22179
+I:48704
+T:POSIX 1003.1e capabilities (libraries)
+U:https://sites.google.com/site/fullycapable/
+L:BSD-3-Clause OR GPL-2.0-only
+o:libcap
+m:Natanael Copa <ncopa@alpinelinux.org>
+t:1775763313
+c:0c35848136c4c16a1b1672cb812efa88fffef1c2
+D:so:libc.musl-riscv64.so.1
+p:so:libcap.so.2=2.78 so:libpsx.so.2=2.78
+r:libcap<2.64-r1
+F:usr
+F:usr/lib
+R:libcap.so.2
+a:0:0:777
+Z:Q1afQPyUhc+ETX7NDBelj0+XTyLgE=
+R:libcap.so.2.78
+a:0:0:755
+Z:Q1KLyw9toNf33/+wzQisBuTLx/AEA=
+R:libpsx.so.2
+a:0:0:777
+Z:Q1cWMzBIqDxewWwQDF0HzJuqzKSeY=
+R:libpsx.so.2.78
+a:0:0:755
+Z:Q1FbtfAgW1xMonQUrPk5CVfb4LAag=
 
 C:Q18RRcJkH3w3NStm+2MyY7cS+0BJ4=
 P:libcrypto3
@@ -535,6 +608,54 @@ F:usr/lib/ossl-modules
 R:legacy.so
 a:0:0:755
 Z:Q1pc1JzHqjREXK82vsShCj2HwwCLE=
+
+C:Q1SXWWLpOVnuR3i5xcEXhV/10eHYo=
+P:libelf
+V:0.195-r0
+A:riscv64
+S:44992
+I:83912
+T:Library to read, modify and create ELF files
+U:https://sourceware.org/elfutils/
+L:GPL-3.0-or-later AND ( GPL-2.0-or-later OR LGPL-3.0-or-later )
+o:elfutils
+m:Natanael Copa <ncopa@alpinelinux.org>
+t:1776354702
+c:8f13294206888f3dd44ed74a8eb3dd9934499e81
+D:so:libc.musl-riscv64.so.1 so:libz.so.1 so:libzstd.so.1
+p:elfutils-libelf=0.195-r0 so:libelf.so.1=0
+F:usr
+F:usr/lib
+R:libelf-0.195.so
+a:0:0:755
+Z:Q1MCYQ1zKG3V/yylCkmt/ADr8ZApU=
+R:libelf.so.1
+a:0:0:777
+Z:Q1vzu5hGWG+kLkNqk0pBP6kFUzSzo=
+
+C:Q1TNPcszr7iIjjHZd/0HdcbGJdDyA=
+P:libmnl
+V:1.0.5-r2
+A:riscv64
+S:8893
+I:18304
+T:Library for minimalistic netlink
+U:https://www.netfilter.org/projects/libmnl/
+L:LGPL-2.1-or-later
+o:libmnl
+m:Francesco Colista <fcolista@alpinelinux.org>
+t:1710257622
+c:fc95c59998285564fbcb0bfb2443898c62e10171
+D:so:libc.musl-riscv64.so.1
+p:so:libmnl.so.0=0.2.0
+F:usr
+F:usr/lib
+R:libmnl.so.0
+a:0:0:777
+Z:Q1PMv2otWyEfj8yQeauliel8cDTYQ=
+R:libmnl.so.0.2.0
+a:0:0:755
+Z:Q1lDDPcAd8qGhvZpXCqSz0Wwk51NE=
 
 C:Q1OTnevMvbge4dw77dalRVD42jB04=
 P:libssl3
@@ -683,4 +804,28 @@ Z:Q1tB+V0rGZ237TINW/WVwfykixU6w=
 R:libz.so.1.3.2
 a:0:0:755
 Z:Q1cvw+FsyfiV4P0eGuBZAC+2sg5Kg=
+
+C:Q13dImluNSLvIUv5WDcB9Mbvnta9A=
+P:zstd-libs
+V:1.5.7-r2
+A:riscv64
+S:453654
+I:689992
+T:Zstandard - Fast real-time compression algorithm (libraries)
+U:https://facebook.github.io/zstd/
+L:BSD-3-Clause OR GPL-2.0-or-later
+o:zstd
+m:Natanael Copa <ncopa@alpinelinux.org>
+t:1753704404
+c:3c6e2ee2b16f403d53eab39c4426eb61f003c322
+D:so:libc.musl-riscv64.so.1
+p:so:libzstd.so.1=1.5.7
+F:usr
+F:usr/lib
+R:libzstd.so.1
+a:0:0:777
+Z:Q1AZb7n4ySmGzGV+JSB5vAJcht86U=
+R:libzstd.so.1.5.7
+a:0:0:755
+Z:Q1iu5zHby6s+q0i2PIYYCfi7GCrZA=
 
