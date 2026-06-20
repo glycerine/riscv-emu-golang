@@ -272,6 +272,56 @@ func TestTsnetVirtioStackEmunetIPv6NeighborSolicitationForRouter(t *testing.T) {
 	}
 }
 
+func TestTsnetVirtioStackEmunetIPv6NeighborSolicitationForPeer(t *testing.T) {
+	stack := &tsnetVirtioStack{hostMAC: emunetRouterMAC}
+	macA := [6]byte{0x02, 0, 0, 0, 6, 0x01}
+	macB := [6]byte{0x02, 0, 0, 0, 6, 0x02}
+	ipA := netip.MustParseAddr("fd7a:115c:a1e0:77::a")
+	ipB := netip.MustParseAddr("fd7a:115c:a1e0:77::b")
+	var framesA [][]byte
+	var framesB [][]byte
+	emitA := func(frame []byte) { framesA = append(framesA, append([]byte(nil), frame...)) }
+	emitB := func(frame []byte) { framesB = append(framesB, append([]byte(nil), frame...)) }
+
+	stack.learnPortIPv6("port-b", ipB, macB, emitB)
+	stack.handleGuestFrameForPort("port-a", neighborSolicitationFrame(macA, ipA, ipB), emitA)
+
+	if len(framesB) != 0 {
+		t.Fatalf("peer received %d NDP frames, want 0", len(framesB))
+	}
+	if len(framesA) != 1 {
+		t.Fatalf("requester received %d NDP frames, want 1", len(framesA))
+	}
+	reply := framesA[0]
+	if got := binary.BigEndian.Uint16(reply[12:14]); got != etherTypeIPv6 {
+		t.Fatalf("peer NA ether type = %#x, want IPv6", got)
+	}
+	if !bytes.Equal(reply[0:6], macA[:]) || !bytes.Equal(reply[6:12], macB[:]) {
+		t.Fatalf("peer NA MACs = dst %x src %x, want requester/peer", reply[0:6], reply[6:12])
+	}
+	ip := reply[14:]
+	assertICMPv6ChecksumValid(t, ip)
+	if got := netipAddrFrom16(ip[8:24]); got != ipB {
+		t.Fatalf("peer NA src = %s, want target %s", got, ipB)
+	}
+	if got := netipAddrFrom16(ip[24:40]); got != ipA {
+		t.Fatalf("peer NA dst = %s, want requester %s", got, ipA)
+	}
+	icmp := ip[40:]
+	if icmp[0] != icmpv6NeighborAdvertisement {
+		t.Fatalf("peer NA type = %d, want %d", icmp[0], icmpv6NeighborAdvertisement)
+	}
+	if icmp[4]&0x80 != 0 || icmp[4]&0x60 != 0x60 {
+		t.Fatalf("peer NA flags = %#x, want solicited|override without router", icmp[4])
+	}
+	if got := netipAddrFrom16(icmp[8:24]); got != ipB {
+		t.Fatalf("peer NA target = %s, want %s", got, ipB)
+	}
+	if icmp[24] != 2 || icmp[25] != 1 || !bytes.Equal(icmp[26:32], macB[:]) {
+		t.Fatalf("peer NA target link-layer option = %x, want peer MAC", icmp[24:32])
+	}
+}
+
 func TestTsnetVirtioStackEmunetIPv6GatewayPing(t *testing.T) {
 	guestMAC := [6]byte{0x02, 0, 0, 0, 1, 0x33}
 	guest6 := netip.MustParseAddr("fd7a:115c:a1e0:77::abcd")
@@ -417,6 +467,33 @@ func TestTsnetVirtioStackEmunetDeliversIPv4ToPeerLease(t *testing.T) {
 	}
 	if !bytes.Equal(framesB[0], frame) {
 		t.Fatalf("delivered peer frame changed:\n got %x\nwant %x", framesB[0], frame)
+	}
+}
+
+func TestTsnetVirtioStackEmunetDeliversIPv6ToPeerAddress(t *testing.T) {
+	stack := &tsnetVirtioStack{hostMAC: emunetRouterMAC}
+	macA := [6]byte{0x02, 0, 0, 0, 6, 0x03}
+	macB := [6]byte{0x02, 0, 0, 0, 6, 0x04}
+	ipA := netip.MustParseAddr("fd7a:115c:a1e0:77::c")
+	ipB := netip.MustParseAddr("fd7a:115c:a1e0:77::d")
+	var framesA [][]byte
+	var framesB [][]byte
+	emitA := func(frame []byte) { framesA = append(framesA, append([]byte(nil), frame...)) }
+	emitB := func(frame []byte) { framesB = append(framesB, append([]byte(nil), frame...)) }
+
+	stack.learnPortIPv6("port-b", ipB, macB, emitB)
+	packet := icmpIPv6Packet(ipA.As16(), ipB.As16(), icmpv6EchoRequest, 0x6789, 1)
+	frame := ethernetIPv6Frame(macB, macA, packet)
+	stack.handleGuestFrameForPort("port-a", frame, emitA)
+
+	if len(framesA) != 0 {
+		t.Fatalf("sender received %d local IPv6 frames, want 0", len(framesA))
+	}
+	if len(framesB) != 1 {
+		t.Fatalf("peer received %d local IPv6 frames, want 1", len(framesB))
+	}
+	if !bytes.Equal(framesB[0], frame) {
+		t.Fatalf("delivered IPv6 peer frame changed:\n got %x\nwant %x", framesB[0], frame)
 	}
 }
 
@@ -576,6 +653,55 @@ func TestTsnetVirtioStackEmunetICMPNATRoundTrip(t *testing.T) {
 	assertICMPChecksumValid(t, guestPkt)
 	if got := binary.BigEndian.Uint16(guestPkt[24:26]); got != 0x1234 {
 		t.Fatalf("NAT ICMP restored id = %#x, want 0x1234", got)
+	}
+}
+
+func TestTsnetVirtioStackEmunetICMPv6NATRoundTrip(t *testing.T) {
+	stack := &tsnetVirtioStack{hostMAC: emunetRouterMAC}
+	tailIP := netip.MustParseAddr("fd7a:115c:a1e0::1234")
+	guestIP := netip.MustParseAddr("fd7a:115c:a1e0:77::1234")
+	remoteIP := netip.MustParseAddr("fd7a:115c:a1e0::5678")
+	stack.setTailIPv6(tailIP)
+	guestMAC := [6]byte{0x02, 0, 0, 0, 1, 0x66}
+	portID := "icmpv6-follower"
+	stack.learnPortIPv6(portID, guestIP, guestMAC, func([]byte) {})
+
+	out := stack.translateOutboundIPv6(portID, icmpIPv6Packet(guestIP.As16(), remoteIP.As16(), icmpv6EchoRequest, 0x1234, 1), tailIP, func([]byte) {})
+	if len(out) == 0 {
+		t.Fatal("NAT66 outbound dropped ICMPv6 echo packet")
+	}
+	assertICMPv6ChecksumValid(t, out)
+	if got := out[7]; got != 63 {
+		t.Fatalf("NAT66 hop limit = %d, want 63", got)
+	}
+	if got := netipAddrFrom16(out[8:24]); got != tailIP {
+		t.Fatalf("NAT66 src IP = %s, want %s", got, tailIP)
+	}
+	if got := netipAddrFrom16(out[24:40]); got != remoteIP {
+		t.Fatalf("NAT66 dst IP = %s, want %s", got, remoteIP)
+	}
+	ext := binary.BigEndian.Uint16(out[44:46])
+	if ext == 0x1234 {
+		t.Fatalf("NAT66 ICMPv6 identifier was not rewritten")
+	}
+
+	reply := icmpIPv6Packet(remoteIP.As16(), tailIP.As16(), icmpv6EchoReply, ext, 1)
+	gotPortID, gotMAC, guestPkt, _, ok := stack.natInboundIPv6(reply)
+	if !ok {
+		t.Fatal("NAT66 inbound did not match ICMPv6 echo reply")
+	}
+	if gotPortID != portID {
+		t.Fatalf("NAT66 port ID = %q, want %q", gotPortID, portID)
+	}
+	if gotMAC != guestMAC {
+		t.Fatalf("NAT66 guest MAC = %x, want %x", gotMAC, guestMAC)
+	}
+	assertICMPv6ChecksumValid(t, guestPkt)
+	if got := netipAddrFrom16(guestPkt[24:40]); got != guestIP {
+		t.Fatalf("NAT66 restored dst IP = %s, want %s", got, guestIP)
+	}
+	if got := binary.BigEndian.Uint16(guestPkt[44:46]); got != 0x1234 {
+		t.Fatalf("NAT66 restored id = %#x, want 0x1234", got)
 	}
 }
 

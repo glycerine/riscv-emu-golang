@@ -590,6 +590,15 @@ func (s *tsnetVirtioStack) handleGuestFrameForPort(portID string, frame []byte, 
 			emit(reply)
 			return
 		}
+		if s.deliverLocalIPv6(portID, frame, emit) {
+			return
+		}
+		if NAT66Support {
+			if pkt := s.natOutboundIPv6(portID, frame[14:], emit); len(pkt) != 0 {
+				s.tun.InjectIPPacket(pkt)
+			}
+			return
+		}
 		s.incDrop(emunetDropUnsupportedEth)
 	case etherTypeARP:
 		if s.directTailnetGuest {
@@ -750,11 +759,23 @@ func (s *tsnetVirtioStack) handleTsnetPacket(pkt []byte) {
 			s.tun.InjectIPPacket(reply)
 			return
 		}
-		_, guestMAC, guestPkt, emit, ok := s.natInbound(pkt)
-		if !ok {
-			return
+		switch pkt[0] >> 4 {
+		case 4:
+			_, guestMAC, guestPkt, emit, ok := s.natInbound(pkt)
+			if !ok {
+				return
+			}
+			emit(ethernetIPv4Frame(guestMAC, s.hostMAC, guestPkt))
+		case 6:
+			if !NAT66Support {
+				return
+			}
+			_, guestMAC, guestPkt, emit, ok := s.natInboundIPv6(pkt)
+			if !ok {
+				return
+			}
+			emit(ethernetIPv6Frame(guestMAC, s.hostMAC, guestPkt))
 		}
-		emit(ethernetIPv4Frame(guestMAC, s.hostMAC, guestPkt))
 		return
 	}
 	etherType := uint16(0)

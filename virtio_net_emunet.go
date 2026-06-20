@@ -26,10 +26,13 @@ const (
 	emunetICMPIdleTimeout = 30 * time.Second
 	emunetUDPIdleTimeout  = 2 * time.Minute
 	emunetTCPIdleTimeout  = 10 * time.Minute
+
+	NAT66Support = false
 )
 
 const (
 	emunetDropNoTailIPv4        = "no_tail_ipv4"
+	emunetDropNoTailIPv6        = "no_tail_ipv6"
 	emunetDropNoNATMapping      = "no_nat_mapping"
 	emunetDropIPv4Fragment      = "ipv4_fragment"
 	emunetDropUnsupportedProto  = "unsupported_protocol"
@@ -70,6 +73,7 @@ type emunetPort struct {
 	id       string
 	lease    netip.Addr
 	guestMAC [6]byte
+	ipv6     map[netip.Addr]struct{}
 	emit     func([]byte)
 }
 
@@ -131,6 +135,21 @@ func (s *tsnetVirtioStack) portByLeaseLocked(ip netip.Addr) *emunetPort {
 	return nil
 }
 
+func (s *tsnetVirtioStack) portByIPv6Locked(ip netip.Addr) *emunetPort {
+	if !emunetIPv6PortAddress(ip) {
+		return nil
+	}
+	for _, p := range s.ports {
+		if p == nil {
+			continue
+		}
+		if _, ok := p.ipv6[ip]; ok {
+			return p
+		}
+	}
+	return nil
+}
+
 func (s *tsnetVirtioStack) nextLeaseLocked() netip.Addr {
 	if s.nextLease < 2 || s.nextLease > 254 {
 		s.nextLease = 2
@@ -154,6 +173,25 @@ func (s *tsnetVirtioStack) learnPortMAC(id string, mac [6]byte, emit func([]byte
 	defer s.mu.Unlock()
 	p := s.emunetPortLocked(id, emit)
 	p.guestMAC = mac
+}
+
+func (s *tsnetVirtioStack) learnPortIPv6(id string, ip netip.Addr, mac [6]byte, emit func([]byte)) {
+	if !emunetIPv6PortAddress(ip) {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	p := s.emunetPortLocked(id, emit)
+	if mac != ([6]byte{}) {
+		p.guestMAC = mac
+	}
+	if p.ipv6 == nil {
+		p.ipv6 = make(map[netip.Addr]struct{})
+	}
+	if _, ok := p.ipv6[ip]; !ok {
+		p.ipv6[ip] = struct{}{}
+		s.traceLocked("ipv6_learn port=%q ip=%s mac=%x", id, ip, p.guestMAC)
+	}
 }
 
 func (s *tsnetVirtioStack) removeEmunetPort(id string) {
@@ -310,6 +348,8 @@ func (s *tsnetVirtioStack) handleICMPv6Control(portID string, frame []byte, emit
 	if guestMAC != ([6]byte{}) {
 		s.learnPortMAC(portID, guestMAC, emit)
 	}
+	srcIP := netipAddrFrom16(packet[8:24])
+	s.learnPortIPv6(portID, srcIP, guestMAC, emit)
 
 	switch icmp[0] {
 	case icmpv6RouterSolicitation:
@@ -322,10 +362,25 @@ func (s *tsnetVirtioStack) handleICMPv6Control(portID string, frame []byte, emit
 			return nil
 		}
 		target := netipAddrFrom16(icmp[8:24])
-		if target != emunetRouterIPv6 && target != emunetRouterIPv6LinkLocal {
-			return nil
+		if ipv6AddrIsUnspecified(srcIP) && emunetIPv6PortAddress(target) {
+			s.learnPortIPv6(portID, target, guestMAC, emit)
 		}
-		return neighborAdvertisementFrame(packet, guestMAC, target)
+		if target != emunetRouterIPv6 && target != emunetRouterIPv6LinkLocal {
+			s.mu.Lock()
+			targetPort := s.portByIPv6Locked(target)
+			var targetID string
+			var targetMAC [6]byte
+			if targetPort != nil {
+				targetID = targetPort.id
+				targetMAC = targetPort.guestMAC
+			}
+			s.mu.Unlock()
+			if targetID == "" || targetID == portID || targetMAC == ([6]byte{}) {
+				return nil
+			}
+			return neighborAdvertisementFrame(packet, guestMAC, target, targetMAC, false)
+		}
+		return neighborAdvertisementFrame(packet, guestMAC, target, emunetRouterMAC, true)
 	default:
 		return nil
 	}
@@ -400,6 +455,15 @@ func (s *tsnetVirtioStack) natOutbound(portID string, packet []byte, emit func([
 	return s.translateOutboundIPv4(portID, packet, tailIP, emit)
 }
 
+func (s *tsnetVirtioStack) natOutboundIPv6(portID string, packet []byte, emit func([]byte)) []byte {
+	tailIP, ok := s.tailscaleIPv6()
+	if !ok || !tailIP.Is6() {
+		s.incDrop(emunetDropNoTailIPv6)
+		return nil
+	}
+	return s.translateOutboundIPv6(portID, packet, tailIP, emit)
+}
+
 func (s *tsnetVirtioStack) deliverLocalIPv4(portID string, frame []byte, emit func([]byte)) bool {
 	if len(frame) < 14+20 {
 		return false
@@ -447,12 +511,91 @@ func (s *tsnetVirtioStack) deliverLocalIPv4(portID string, frame []byte, emit fu
 	return true
 }
 
+func (s *tsnetVirtioStack) deliverLocalIPv6(portID string, frame []byte, emit func([]byte)) bool {
+	if len(frame) < 14+40 {
+		return false
+	}
+	packet := frame[14:]
+	if packet[0]>>4 != 6 {
+		return false
+	}
+	payloadLen := int(binary.BigEndian.Uint16(packet[4:6]))
+	totalLen := 40 + payloadLen
+	if totalLen > len(packet) {
+		return false
+	}
+	src := netipAddrFrom16(packet[8:24])
+	dst := netipAddrFrom16(packet[24:40])
+
+	var srcMAC [6]byte
+	copy(srcMAC[:], frame[6:12])
+	if srcMAC != ([6]byte{}) {
+		s.learnPortMAC(portID, srcMAC, emit)
+	}
+	s.learnPortIPv6(portID, src, srcMAC, emit)
+
+	if ipv6AddrIsMulticast(dst) {
+		delivered := 0
+		s.mu.Lock()
+		targets := make([]func([]byte), 0, len(s.ports))
+		for _, p := range s.ports {
+			if p == nil || p.id == portID || p.emit == nil {
+				continue
+			}
+			targets = append(targets, p.emit)
+		}
+		s.mu.Unlock()
+		for _, targetEmit := range targets {
+			targetEmit(append([]byte(nil), frame...))
+			delivered++
+		}
+		s.trace("local_ipv6_multicast src_port=%q dst=%s delivered=%d len=%d", portID, dst, delivered, len(frame))
+		return true
+	}
+	if !emunetIPv6LocalAddress(dst) {
+		return false
+	}
+
+	s.mu.Lock()
+	target := s.portByIPv6Locked(dst)
+	var targetID string
+	var targetEmit func([]byte)
+	if target != nil {
+		targetID = target.id
+		targetEmit = target.emit
+	}
+	s.mu.Unlock()
+
+	if targetID == "" || targetID == portID || targetEmit == nil {
+		s.incDrop(emunetDropNoLocalPort)
+		s.trace("local_ipv6_no_port src_port=%q dst=%s target_port=%q target_emit=%t", portID, dst, targetID, targetEmit != nil)
+		return true
+	}
+	targetEmit(append([]byte(nil), frame...))
+	s.trace("local_ipv6_deliver src_port=%q dst=%s target_port=%q len=%d", portID, dst, targetID, len(frame))
+	return true
+}
+
 func emunetIPv4LANContains(ip netip.Addr) bool {
 	if !ip.Is4() {
 		return false
 	}
 	ip4 := ip.As4()
 	return ip4[0] == 10 && ip4[1] == 77 && ip4[2] == 0
+}
+
+func emunetIPv6PortAddress(ip netip.Addr) bool {
+	if !emunetIPv6LocalAddress(ip) {
+		return false
+	}
+	return ip != emunetRouterIPv6 && ip != emunetRouterIPv6LinkLocal
+}
+
+func emunetIPv6LocalAddress(ip netip.Addr) bool {
+	if !ip.Is6() || ipv6AddrIsUnspecified(ip) || ipv6AddrIsMulticast(ip) {
+		return false
+	}
+	return emunetIPv6Prefix.Contains(ip) || ipv6AddrIsLinkLocalUnicast(ip)
 }
 
 func (s *tsnetVirtioStack) translateOutboundIPv4(portID string, packet []byte, tailIP netip.Addr, emit func([]byte)) []byte {
@@ -536,6 +679,82 @@ func (s *tsnetVirtioStack) translateOutboundIPv4(portID string, packet []byte, t
 	}
 	out[10], out[11] = 0, 0
 	binary.BigEndian.PutUint16(out[10:12], ipv4HeaderChecksum(out[:ihl]))
+	s.incNATOutbound(proto)
+	return out
+}
+
+func (s *tsnetVirtioStack) translateOutboundIPv6(portID string, packet []byte, tailIP netip.Addr, emit func([]byte)) []byte {
+	if len(packet) < 40 || packet[0]>>4 != 6 || !tailIP.Is6() {
+		s.incDrop(emunetDropBadPacketLength)
+		return nil
+	}
+	payloadLen := int(binary.BigEndian.Uint16(packet[4:6]))
+	totalLen := 40 + payloadLen
+	if totalLen > len(packet) {
+		s.incDrop(emunetDropBadPacketLength)
+		return nil
+	}
+	if packet[7] <= 1 {
+		s.incDrop(emunetDropTTLExpired)
+		return nil
+	}
+	guestIP := netipAddrFrom16(packet[8:24])
+	remoteIP := netipAddrFrom16(packet[24:40])
+	out := append([]byte(nil), packet[:totalLen]...)
+	out[7]--
+	tail6 := tailIP.As16()
+	copy(out[8:24], tail6[:])
+
+	proto := out[6]
+	payload := out[40:totalLen]
+	switch proto {
+	case ipProtoUDP:
+		if len(payload) < 8 {
+			s.incDrop(emunetDropBadPacketLength)
+			return nil
+		}
+		udpLen := int(binary.BigEndian.Uint16(payload[4:6]))
+		if udpLen < 8 || udpLen > len(payload) {
+			s.incDrop(emunetDropBadPacketLength)
+			return nil
+		}
+		udp := payload[:udpLen]
+		guestPort := binary.BigEndian.Uint16(udp[0:2])
+		remotePort := binary.BigEndian.Uint16(udp[2:4])
+		ext := s.natExternalLocked(emunetNATOutKey{proto: proto, portID: portID, guestIP: guestIP, guestPort: guestPort, remoteIP: remoteIP, remotePort: remotePort})
+		binary.BigEndian.PutUint16(udp[0:2], ext)
+		udp[6], udp[7] = 0, 0
+		binary.BigEndian.PutUint16(udp[6:8], transportChecksumIPv6NonZero(out[:40], udp, proto))
+	case ipProtoTCP:
+		if len(payload) < 20 {
+			s.incDrop(emunetDropBadPacketLength)
+			return nil
+		}
+		tcpHeaderLen := int(payload[12]>>4) * 4
+		if tcpHeaderLen < 20 || len(payload) < tcpHeaderLen {
+			s.incDrop(emunetDropBadHeaderLength)
+			return nil
+		}
+		guestPort := binary.BigEndian.Uint16(payload[0:2])
+		remotePort := binary.BigEndian.Uint16(payload[2:4])
+		ext := s.natExternalLocked(emunetNATOutKey{proto: proto, portID: portID, guestIP: guestIP, guestPort: guestPort, remoteIP: remoteIP, remotePort: remotePort})
+		binary.BigEndian.PutUint16(payload[0:2], ext)
+		payload[16], payload[17] = 0, 0
+		binary.BigEndian.PutUint16(payload[16:18], transportChecksumIPv6(out[:40], payload, proto))
+	case ipProtoICMPv6:
+		if len(payload) < 8 || payload[0] != icmpv6EchoRequest {
+			s.incDrop(emunetDropUnsupportedProto)
+			return nil
+		}
+		guestID := binary.BigEndian.Uint16(payload[4:6])
+		ext := s.natExternalLocked(emunetNATOutKey{proto: proto, portID: portID, guestIP: guestIP, guestPort: guestID, remoteIP: remoteIP})
+		binary.BigEndian.PutUint16(payload[4:6], ext)
+		payload[2], payload[3] = 0, 0
+		binary.BigEndian.PutUint16(payload[2:4], icmpv6Checksum(out[:40], payload))
+	default:
+		s.incDrop(emunetDropUnsupportedProto)
+		return nil
+	}
 	s.incNATOutbound(proto)
 	return out
 }
@@ -690,6 +909,110 @@ func (s *tsnetVirtioStack) natInbound(packet []byte) (string, [6]byte, []byte, f
 	return ent.portID, guestMAC, out, emit, true
 }
 
+func (s *tsnetVirtioStack) natInboundIPv6(packet []byte) (string, [6]byte, []byte, func([]byte), bool) {
+	tailIP, ok := s.tailscaleIPv6()
+	if !ok || !tailIP.Is6() {
+		s.incDrop(emunetDropNoTailIPv6)
+		return "", [6]byte{}, nil, nil, false
+	}
+	if len(packet) < 40 || packet[0]>>4 != 6 {
+		s.incDrop(emunetDropBadPacketLength)
+		return "", [6]byte{}, nil, nil, false
+	}
+	payloadLen := int(binary.BigEndian.Uint16(packet[4:6]))
+	totalLen := 40 + payloadLen
+	if totalLen > len(packet) {
+		s.incDrop(emunetDropBadPacketLength)
+		return "", [6]byte{}, nil, nil, false
+	}
+	dst := netipAddrFrom16(packet[24:40])
+	if dst != tailIP {
+		s.incDrop(emunetDropNoNATMapping)
+		return "", [6]byte{}, nil, nil, false
+	}
+	proto := packet[6]
+	remoteIP := netipAddrFrom16(packet[8:24])
+	payload := packet[40:totalLen]
+	var key emunetNATInKey
+	switch proto {
+	case ipProtoUDP:
+		if len(payload) < 8 {
+			s.incDrop(emunetDropBadPacketLength)
+			return "", [6]byte{}, nil, nil, false
+		}
+		udpLen := int(binary.BigEndian.Uint16(payload[4:6]))
+		if udpLen < 8 || udpLen > len(payload) {
+			s.incDrop(emunetDropBadPacketLength)
+			return "", [6]byte{}, nil, nil, false
+		}
+		udp := payload[:udpLen]
+		key = emunetNATInKey{proto: proto, external: binary.BigEndian.Uint16(udp[2:4]), remoteIP: remoteIP, remotePort: binary.BigEndian.Uint16(udp[0:2])}
+	case ipProtoTCP:
+		if len(payload) < 20 {
+			s.incDrop(emunetDropBadPacketLength)
+			return "", [6]byte{}, nil, nil, false
+		}
+		tcpHeaderLen := int(payload[12]>>4) * 4
+		if tcpHeaderLen < 20 || len(payload) < tcpHeaderLen {
+			s.incDrop(emunetDropBadHeaderLength)
+			return "", [6]byte{}, nil, nil, false
+		}
+		key = emunetNATInKey{proto: proto, external: binary.BigEndian.Uint16(payload[2:4]), remoteIP: remoteIP, remotePort: binary.BigEndian.Uint16(payload[0:2])}
+	case ipProtoICMPv6:
+		if len(payload) < 8 || payload[0] != icmpv6EchoReply {
+			s.incDrop(emunetDropUnsupportedProto)
+			return "", [6]byte{}, nil, nil, false
+		}
+		key = emunetNATInKey{proto: proto, external: binary.BigEndian.Uint16(payload[4:6]), remoteIP: remoteIP}
+	default:
+		s.incDrop(emunetDropUnsupportedProto)
+		return "", [6]byte{}, nil, nil, false
+	}
+
+	now := s.nowTime()
+	s.mu.Lock()
+	s.cleanupExpiredNATLocked(now)
+	ent := s.natByIn[key]
+	if ent == nil {
+		s.mu.Unlock()
+		s.incDrop(emunetDropNoNATMapping)
+		return "", [6]byte{}, nil, nil, false
+	}
+	ent.lastUsed = now
+	p := s.ports[ent.portID]
+	if p == nil || p.emit == nil {
+		s.mu.Unlock()
+		s.incDrop(emunetDropClosedEmunetPort)
+		return "", [6]byte{}, nil, nil, false
+	}
+	guestMAC := p.guestMAC
+	emit := p.emit
+	s.mu.Unlock()
+
+	out := append([]byte(nil), packet[:totalLen]...)
+	guest6 := ent.guestIP.As16()
+	copy(out[24:40], guest6[:])
+	outPayload := out[40:totalLen]
+	switch proto {
+	case ipProtoUDP:
+		udpLen := int(binary.BigEndian.Uint16(outPayload[4:6]))
+		udp := outPayload[:udpLen]
+		binary.BigEndian.PutUint16(udp[2:4], ent.guestPort)
+		udp[6], udp[7] = 0, 0
+		binary.BigEndian.PutUint16(udp[6:8], transportChecksumIPv6NonZero(out[:40], udp, proto))
+	case ipProtoTCP:
+		binary.BigEndian.PutUint16(outPayload[2:4], ent.guestPort)
+		outPayload[16], outPayload[17] = 0, 0
+		binary.BigEndian.PutUint16(outPayload[16:18], transportChecksumIPv6(out[:40], outPayload, proto))
+	case ipProtoICMPv6:
+		binary.BigEndian.PutUint16(outPayload[4:6], ent.guestPort)
+		outPayload[2], outPayload[3] = 0, 0
+		binary.BigEndian.PutUint16(outPayload[2:4], icmpv6Checksum(out[:40], outPayload))
+	}
+	s.incNATInbound(proto)
+	return ent.portID, guestMAC, out, emit, true
+}
+
 func (s *tsnetVirtioStack) cleanupExpiredNAT() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -723,7 +1046,7 @@ func (s *tsnetVirtioStack) nowTime() time.Time {
 
 func emunetNATIdleTimeout(proto byte) time.Duration {
 	switch proto {
-	case ipProtoICMP:
+	case ipProtoICMP, ipProtoICMPv6:
 		return emunetICMPIdleTimeout
 	case ipProtoTCP:
 		return emunetTCPIdleTimeout
@@ -781,7 +1104,7 @@ func (s *tsnetVirtioStack) incNATOutbound(proto byte) {
 		s.counters.NATOutboundUDP++
 	case ipProtoTCP:
 		s.counters.NATOutboundTCP++
-	case ipProtoICMP:
+	case ipProtoICMP, ipProtoICMPv6:
 		s.counters.NATOutboundICMP++
 	}
 	s.mu.Unlock()
@@ -794,7 +1117,7 @@ func (s *tsnetVirtioStack) incNATInbound(proto byte) {
 		s.counters.NATInboundUDP++
 	case ipProtoTCP:
 		s.counters.NATInboundTCP++
-	case ipProtoICMP:
+	case ipProtoICMP, ipProtoICMPv6:
 		s.counters.NATInboundICMP++
 	}
 	s.mu.Unlock()
@@ -890,12 +1213,15 @@ func routerAdvertisementFrame(request []byte, guestMAC [6]byte) []byte {
 	return ethernetIPv6Frame(dstMAC, emunetRouterMAC, packet)
 }
 
-func neighborAdvertisementFrame(request []byte, guestMAC [6]byte, target netip.Addr) []byte {
-	if len(request) < 40 || !target.Is6() {
+func neighborAdvertisementFrame(request []byte, guestMAC [6]byte, target netip.Addr, targetMAC [6]byte, router bool) []byte {
+	if len(request) < 40 || !target.Is6() || targetMAC == ([6]byte{}) {
 		return nil
 	}
 	dstIP := netipAddrFrom16(request[8:24])
-	flags := byte(0x80 | 0x20) // Router + override.
+	flags := byte(0x20) // Override.
+	if router {
+		flags |= 0x80
+	}
 	if ipv6AddrIsUnspecified(dstIP) {
 		dstIP = ipv6AllNodesMulticast
 	} else {
@@ -909,7 +1235,7 @@ func neighborAdvertisementFrame(request []byte, guestMAC [6]byte, target netip.A
 	copy(icmp[8:24], target16[:])
 	icmp[24] = 2 // Target link-layer address.
 	icmp[25] = 1
-	copy(icmp[26:32], emunetRouterMAC[:])
+	copy(icmp[26:32], targetMAC[:])
 
 	src := target.As16()
 	dst := dstIP.As16()
@@ -921,7 +1247,7 @@ func neighborAdvertisementFrame(request []byte, guestMAC [6]byte, target netip.A
 	if ipv6AddrIsMulticast(dstIP) || dstMAC == ([6]byte{}) {
 		dstMAC = ipv6MulticastMAC(dstIP)
 	}
-	return ethernetIPv6Frame(dstMAC, emunetRouterMAC, packet)
+	return ethernetIPv6Frame(dstMAC, targetMAC, packet)
 }
 
 func ipv6LinkLocalFromMAC(mac [6]byte) netip.Addr {
@@ -960,6 +1286,14 @@ func ipv6AddrIsMulticast(ip netip.Addr) bool {
 
 func ipv6AddrIsUnspecified(ip netip.Addr) bool {
 	return ip == netip.IPv6Unspecified()
+}
+
+func ipv6AddrIsLinkLocalUnicast(ip netip.Addr) bool {
+	if !ip.Is6() {
+		return false
+	}
+	b := ip.As16()
+	return b[0] == 0xfe && b[1]&0xc0 == 0x80
 }
 
 func makeIPv6Packet(src, dst [16]byte, nextHeader byte, payload []byte) []byte {
@@ -1039,21 +1373,33 @@ func netipAddrFrom16(b []byte) netip.Addr {
 }
 
 func icmpv6Checksum(ipHeader, icmp []byte) uint16 {
+	return transportChecksumIPv6(ipHeader, icmp, ipProtoICMPv6)
+}
+
+func transportChecksumIPv6(ipHeader, segment []byte, proto byte) uint16 {
 	sum := uint32(0)
 	for i := 8; i+1 < 40 && i+1 < len(ipHeader); i += 2 {
 		sum += uint32(binary.BigEndian.Uint16(ipHeader[i:]))
 	}
-	n := uint32(len(icmp))
+	n := uint32(len(segment))
 	sum += (n >> 16) & 0xffff
 	sum += n & 0xffff
-	sum += uint32(ipProtoICMPv6)
-	for i := 0; i+1 < len(icmp); i += 2 {
-		sum += uint32(binary.BigEndian.Uint16(icmp[i:]))
+	sum += uint32(proto)
+	for i := 0; i+1 < len(segment); i += 2 {
+		sum += uint32(binary.BigEndian.Uint16(segment[i:]))
 	}
-	if len(icmp)%2 == 1 {
-		sum += uint32(icmp[len(icmp)-1]) << 8
+	if len(segment)%2 == 1 {
+		sum += uint32(segment[len(segment)-1]) << 8
 	}
 	return foldInternetChecksum(sum)
+}
+
+func transportChecksumIPv6NonZero(ipHeader, segment []byte, proto byte) uint16 {
+	sum := transportChecksumIPv6(ipHeader, segment, proto)
+	if sum == 0 {
+		return 0xffff
+	}
+	return sum
 }
 
 func transportChecksum(ipHeader, segment []byte, proto byte) uint16 {
