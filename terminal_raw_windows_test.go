@@ -28,3 +28,20 @@ func TestRawConsoleInputModeKeepsCtrlCAsInputByte(t *testing.T) {
 		t.Fatal("raw console input mode dropped unrelated console input mode bits")
 	}
 }
+
+func TestWindowsConsoleCtrlShouldRestore(t *testing.T) {
+	for _, event := range []uint32{
+		windows.CTRL_C_EVENT,
+		windows.CTRL_BREAK_EVENT,
+		windows.CTRL_CLOSE_EVENT,
+		windows.CTRL_LOGOFF_EVENT,
+		windows.CTRL_SHUTDOWN_EVENT,
+	} {
+		if !windowsConsoleCtrlShouldRestore(event) {
+			t.Fatalf("windowsConsoleCtrlShouldRestore(%d) = false, want true", event)
+		}
+	}
+	if windowsConsoleCtrlShouldRestore(99) {
+		t.Fatal("windowsConsoleCtrlShouldRestore(99) = true, want false")
+	}
+}
