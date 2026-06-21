@@ -46,9 +46,9 @@ func TestJea9Linux_ZygoFib10_InterpreterBudget1000(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	code, err := RunWithJea9Linux(cpu, jos)
+	code, err := RunWithJea9LinuxInterp(cpu, jos)
 	if err != nil {
-		t.Fatalf("RunWithJea9Linux: %v\nstderr:\n%s\ntrace:\n%s", err, limitZygoBudgetString(stderr.String(), 2048), formatZygoBudgetTrace(cpu, jos))
+		t.Fatalf("RunWithJea9LinuxInterp: %v\nstderr:\n%s\ntrace:\n%s", err, limitZygoBudgetString(stderr.String(), 2048), formatZygoBudgetTrace(cpu, jos))
 	}
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0\nstderr:\n%s\ntrace:\n%s", code, limitZygoBudgetString(stderr.String(), 2048), formatZygoBudgetTrace(cpu, jos))

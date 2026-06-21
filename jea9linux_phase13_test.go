@@ -67,7 +67,7 @@ func runJea9LinuxELFFixture(t *testing.T, path string, useJIT bool, opts Jea9Lin
 			code = cpu.ExitCode
 		}
 	} else {
-		code, err = RunWithJea9Linux(cpu, j)
+		code, err = RunWithJea9LinuxInterp(cpu, j)
 	}
 	if err != nil {
 		t.Fatalf("run useJIT=%v: %v", useJIT, err)
@@ -194,7 +194,7 @@ func TestJea9Linux_JITRandomMatchesInterpreter(t *testing.T) {
 		if useJIT {
 			code, err = runJITWithJea9Linux(cpu, j)
 		} else {
-			code, err = RunWithJea9Linux(cpu, j)
+			code, err = RunWithJea9LinuxInterp(cpu, j)
 		}
 		if err != nil {
 			t.Fatalf("run useJIT=%v: %v", useJIT, err)

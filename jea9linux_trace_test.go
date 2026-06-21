@@ -38,10 +38,10 @@ func runJea9LinuxTraceFixture(t *testing.T) (*GuestMemory, *Jea9Linux, int) {
 			MaxQuantumRetired: 2,
 		},
 	})
-	code, err := RunWithJea9Linux(cpu, j)
+	code, err := RunWithJea9LinuxInterp(cpu, j)
 	if err != nil {
 		mem.Free()
-		t.Fatalf("RunWithJea9Linux: %v", err)
+		t.Fatalf("RunWithJea9LinuxInterp: %v", err)
 	}
 	return mem, j, code
 }
@@ -146,9 +146,9 @@ func TestJea9Linux_TraceDisabledByDefault(t *testing.T) {
 	cpu, mem := newTestCPU(t, Size64MB, codeVA, insns)
 	defer mem.Free()
 	j := NewJea9Linux(Jea9LinuxOptions{})
-	code, err := RunWithJea9Linux(cpu, j)
+	code, err := RunWithJea9LinuxInterp(cpu, j)
 	if err != nil {
-		t.Fatalf("RunWithJea9Linux: %v", err)
+		t.Fatalf("RunWithJea9LinuxInterp: %v", err)
 	}
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0", code)

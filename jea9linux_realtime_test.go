@@ -423,7 +423,7 @@ func startRealtimeCGuestWithStdin(t *testing.T, path string, args []string, stdo
 	go func() {
 		defer mem.Free()
 		defer jos.closeAllFDs()
-		code, err := RunWithJea9Linux(cpu, jos)
+		code, err := RunWithJea9LinuxInterp(cpu, jos)
 		done <- realtimeCGuestResult{
 			code:   code,
 			err:    err,

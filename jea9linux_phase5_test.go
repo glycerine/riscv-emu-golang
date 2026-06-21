@@ -1193,9 +1193,9 @@ func TestJea9Linux_Phase5ProcessFDELFFixtures(t *testing.T) {
 				Stdin:  bytes.NewBufferString(tc.stdin),
 				Stdout: &out,
 			})
-			code, err := RunWithJea9Linux(cpu, j)
+			code, err := RunWithJea9LinuxInterp(cpu, j)
 			if err != nil {
-				t.Fatalf("RunWithJea9Linux: %v", err)
+				t.Fatalf("RunWithJea9LinuxInterp: %v", err)
 			}
 			if code != 0 {
 				t.Fatalf("exit code = %d, want 0", code)

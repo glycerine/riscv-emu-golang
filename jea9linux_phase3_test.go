@@ -148,9 +148,9 @@ func TestJea9Linux_Phase3RandomELFFixtures(t *testing.T) {
 	cpu.SetPC(elf.Entry)
 	cpu.SetReg(2, 0x03F00000)
 	j := NewJea9Linux(Jea9LinuxOptions{})
-	code, err := RunWithJea9Linux(cpu, j)
+	code, err := RunWithJea9LinuxInterp(cpu, j)
 	if err != nil {
-		t.Fatalf("RunWithJea9Linux: %v", err)
+		t.Fatalf("RunWithJea9LinuxInterp: %v", err)
 	}
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0", code)

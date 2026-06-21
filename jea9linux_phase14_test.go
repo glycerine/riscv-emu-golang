@@ -170,9 +170,9 @@ func runJea9LinuxGoFixture(t *testing.T, cfg jea9LinuxGoRunConfig) jea9LinuxGoRu
 	t.Helper()
 	m := newJea9LinuxGoMachine(t, cfg)
 	defer m.mem.Free()
-	code, err := RunWithJea9Linux(m.cpu, m.os)
+	code, err := RunWithJea9LinuxInterp(m.cpu, m.os)
 	if err != nil {
-		t.Fatalf("RunWithJea9Linux: %v; pc=0x%x insn=%s stdout=%q stderr=%q", err, m.cpu.PC(), disasmGuestInsn(t, &m.cpu.mem, m.cpu.PC()), m.stdout.String(), m.stderr.String())
+		t.Fatalf("RunWithJea9LinuxInterp: %v; pc=0x%x insn=%s stdout=%q stderr=%q", err, m.cpu.PC(), disasmGuestInsn(t, &m.cpu.mem, m.cpu.PC()), m.stdout.String(), m.stderr.String())
 	}
 	return jea9LinuxGoRunResult{
 		code:   code,

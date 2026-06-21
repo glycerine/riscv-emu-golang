@@ -94,7 +94,7 @@ type EmuJITStats struct {
 // instruction-by-instruction directly. It goes
 // through the repo’s fast interpreter path:
 //
-// emu -> RunWithJea9Linux -> Jea9Linux.Run -> RunDefaultBudget -> runCachedBudget.
+// emu -> RunWithJea9LinuxInterp -> Jea9Linux.Run -> RunDefaultBudget -> runCachedBudget.
 //
 // What is cached is the decode, not execution results.
 // runCached uses a DecoderCache keyed by guest PC;
@@ -326,11 +326,44 @@ func RunEmu(cfg EmuConfig) (int, error) {
 	}); err != nil {
 		return 0, err
 	}
+	doJIT := cfg.JITLazy || cfg.JITAOT
+	if !doJIT {
+		// interpreter
+		return RunWithJea9LinuxInterp(cpu, jlinux)
+	} else {
+		// JIT. of some flavor.
 
-	if cfg.JITLazy || cfg.JITAOT {
-		return runEmuJIT(cpu, mem, jlinux, cfg.JITAOT, cfg.JITStats)
+		jit := NewJIT()
+		defer jit.Close()
+
+		jit.AutoAOT = cfg.JITAOT
+		if jit.AutoAOT {
+			if err := jit.InstallAOTFromMem(mem); err != nil {
+				panicf("jit.InstallAOTFromMem gave error: '%v'", err)
+				return 0, err
+			}
+		}
+
+		code, err := RunWithJea9LinuxJIT(cpu, jit, jlinux)
+		if cfg.JITStats != nil {
+			*(cfg.JITStats) = EmuJITStats{
+				DispatchOK:             jit.DispatchOK,
+				DispatchCompile:        jit.DispatchCompile,
+				DispatchInterp:         jit.DispatchInterp,
+				ChainPatchedJalr:       jit.ChainPatchedJalr,
+				JalrICMisses:           jit.JalrICMisses,
+				JalrICDeopts:           jit.JalrICDeopts,
+				AOTSegmentsInstalled:   jit.AOTSegmentsInstalled,
+				AOTBlocksInstalled:     jit.AOTBlocksInstalled,
+				AOTCompileFailures:     jit.AOTCompileFailures,
+				AOTDecoderCacheLookups: jit.AOTDecoderCacheLookups,
+				AOTDecoderCacheHits:    jit.AOTDecoderCacheHits,
+				AOTDecoderCacheMisses:  jit.AOTDecoderCacheMisses,
+				AOTDecoderCacheOutside: jit.AOTDecoderCacheOutside,
+			}
+		}
+		return code, err
 	}
-	return RunWithJea9Linux(cpu, jlinux)
 }
 
 func (c EmuConfig) programPath() string {
@@ -345,39 +378,6 @@ func (c EmuConfig) machine() string {
 		return "virt"
 	}
 	return c.Machine
-}
-
-func runEmuJIT(cpu *CPU, mem *GuestMemory, jlinux *Jea9Linux, aot bool, stats *EmuJITStats) (int, error) {
-	jit := NewJIT()
-	defer jit.Close()
-
-	jit.AutoAOT = aot
-	if aot {
-		if err := jit.InstallAOTFromMem(mem); err != nil {
-			panicf("jit.InstallAOTFromMem gave error: '%v'", err)
-			return 0, err
-		}
-	}
-
-	code, err := RunWithJea9LinuxJIT(cpu, jit, jlinux)
-	if stats != nil {
-		*stats = EmuJITStats{
-			DispatchOK:             jit.DispatchOK,
-			DispatchCompile:        jit.DispatchCompile,
-			DispatchInterp:         jit.DispatchInterp,
-			ChainPatchedJalr:       jit.ChainPatchedJalr,
-			JalrICMisses:           jit.JalrICMisses,
-			JalrICDeopts:           jit.JalrICDeopts,
-			AOTSegmentsInstalled:   jit.AOTSegmentsInstalled,
-			AOTBlocksInstalled:     jit.AOTBlocksInstalled,
-			AOTCompileFailures:     jit.AOTCompileFailures,
-			AOTDecoderCacheLookups: jit.AOTDecoderCacheLookups,
-			AOTDecoderCacheHits:    jit.AOTDecoderCacheHits,
-			AOTDecoderCacheMisses:  jit.AOTDecoderCacheMisses,
-			AOTDecoderCacheOutside: jit.AOTDecoderCacheOutside,
-		}
-	}
-	return code, err
 }
 
 func (c EmuConfig) withDefaults() EmuConfig {

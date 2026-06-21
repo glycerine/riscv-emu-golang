@@ -445,9 +445,9 @@ func TestJea9Linux_Phase8VMELFFixtures(t *testing.T) {
 			if err := j.InitELFStack(cpu, elf, Jea9LinuxStartOptions{StackTop: 0x03F00000}); err != nil {
 				t.Fatalf("InitELFStack: %v", err)
 			}
-			code, err := RunWithJea9Linux(cpu, j)
+			code, err := RunWithJea9LinuxInterp(cpu, j)
 			if err != nil {
-				t.Fatalf("RunWithJea9Linux: %v", err)
+				t.Fatalf("RunWithJea9LinuxInterp: %v", err)
 			}
 			if code != 0 {
 				t.Fatalf("exit code = %d, want 0", code)

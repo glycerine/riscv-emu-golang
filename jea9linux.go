@@ -5581,7 +5581,7 @@ func (jos *Jea9Linux) waitRealTimeBlocked(cpu *CPU) bool {
 	}
 }
 
-func RunWithJea9Linux(cpu *CPU, jos *Jea9Linux) (exitCode int, err error) {
+func RunWithJea9LinuxInterp(cpu *CPU, jos *Jea9Linux) (exitCode int, err error) {
 	cleanup := InstallJea9Linux(cpu, jos)
 	defer cleanup()
 	for {
