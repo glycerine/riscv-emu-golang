@@ -373,7 +373,7 @@ func BenchmarkCPU_ZygoFib10_Interpreter(b *testing.B) {
 	syscallPCCounts := make(map[uint64]uint64)
 	for i := 0; i < b.N; i++ {
 		cpu, mem, jlinux := newZygoJea9LinuxCPU(b, elfData)
-		code, err := riscv.RunWithJea9Linux(cpu, jlinux)
+		code, err := riscv.RunWithJea9LinuxInterp(cpu, jlinux)
 		insns := cpu.RiscvInstrBegun()
 		totalInsns += insns
 		totalSyscalls += jlinux.SyscallCount()
