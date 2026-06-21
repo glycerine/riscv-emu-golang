@@ -87,7 +87,7 @@ func defineFlags(fs *flag.FlagSet, c *riscv.EmuConfig) {
 	fs.BoolVar(&c.PRNG, "prng", false, "use deterministic PRNG scheduling quantum and clock advancement")
 	fs.BoolVar(&c.Chaos, "chaos", false, "use deterministic chaos scheduling")
 	fs.Int64Var(&c.RealtimeOffsetNS, "init", defaultEmuRealtimeStartNS, "initial realtime clock value in nanoseconds since Unix epoch; default is 2000-01-01T00:00:00Z")
-	fs.StringVar(&c.Idle, "idle", "", "BIOS/Linux WFI host sleep cap as a duration, e.g. 5ms; empty keeps the built-in 1ms default")
+	fs.StringVar(&c.Idle, "idle", "100ms", "BIOS/Linux WFI host sleep cap as a duration")
 	fs.BoolVar(&c.List, "list", false, "list running emu instances with attachable consoles")
 	fs.BoolVar(&c.Debug, "debug", false, "attach to console 1 of the single other running emu instance")
 	fs.IntVar(&c.AttachPID, "pid", 0, "attach mode: host PID of an existing emu process")
