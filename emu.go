@@ -248,6 +248,8 @@ func validateOptionalIPv4Flag(name, value string) error {
 	return nil
 }
 
+// RunEmu is the top-most entry point into the riscv
+// package. It is called directly by the cmd/emu command line tool.
 func RunEmu(cfg EmuConfig) (int, error) {
 	cfg = cfg.withDefaults()
 	if err := cfg.ValidateConfig(); err != nil {
@@ -329,9 +331,11 @@ func RunEmu(cfg EmuConfig) (int, error) {
 	doJIT := cfg.JITLazy || cfg.JITAOT
 	if !doJIT {
 		// interpreter
+
 		return RunWithJea9LinuxInterp(cpu, jlinux)
+
 	} else {
-		// JIT. of some flavor.
+		// JIT. of some flavor. AOT or Lazy.
 
 		jit := NewJIT()
 		defer jit.Close()
