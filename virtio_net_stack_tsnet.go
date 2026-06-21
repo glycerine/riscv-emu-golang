@@ -68,7 +68,7 @@ type emunetVirtioStack struct {
 type tsnetVirtioStack struct {
 	srv *tsnet.Server
 	tun *virtioNetMemoryTUN
-	cfg EmuConfig
+	cfg *EmuConfig
 
 	mu                 sync.Mutex
 	cancel             context.CancelFunc
@@ -95,22 +95,22 @@ var (
 	emunetWatchDogInterval              = 250 * time.Millisecond
 )
 
-func newVirtioNetPacketStack(cfg EmuConfig) (virtioNetPacketStack, error) {
+func newVirtioNetPacketStack(cfg *EmuConfig) (virtioNetPacketStack, error) {
 	if cfg.NetDirectTailnet {
 		return newTsnetVirtioStack(cfg, true)
 	}
 	return newEmunetVirtioStack(cfg)
 }
 
-func newDirectTsnetVirtioStack(cfg EmuConfig) (*tsnetVirtioStack, error) {
+func newDirectTsnetVirtioStack(cfg *EmuConfig) (*tsnetVirtioStack, error) {
 	return newTsnetVirtioStack(cfg, true)
 }
 
-func newEmunetLeaderTsnetVirtioStack(cfg EmuConfig) (*tsnetVirtioStack, error) {
+func newEmunetLeaderTsnetVirtioStack(cfg *EmuConfig) (*tsnetVirtioStack, error) {
 	return newTsnetVirtioStack(cfg, false)
 }
 
-func newTsnetVirtioStack(cfg EmuConfig, directTailnetGuest bool) (*tsnetVirtioStack, error) {
+func newTsnetVirtioStack(cfg *EmuConfig, directTailnetGuest bool) (*tsnetVirtioStack, error) {
 	stack := &tsnetVirtioStack{
 		cfg:                cfg,
 		hostMAC:            emunetRouterMAC,
@@ -147,7 +147,7 @@ func newTsnetVirtioStack(cfg EmuConfig, directTailnetGuest bool) (*tsnetVirtioSt
 	return stack, nil
 }
 
-func newEmunetVirtioStack(cfg EmuConfig) (virtioNetPacketStack, error) {
+func newEmunetVirtioStack(cfg *EmuConfig) (virtioNetPacketStack, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	node, err := emunetpkg.StartNode(ctx, emunetpkg.NodeOptions{})
 	if err != nil {
@@ -188,7 +188,7 @@ func newEmunetVirtioStack(cfg EmuConfig) (virtioNetPacketStack, error) {
 	return stack, nil
 }
 
-func (s *emunetVirtioStack) promoteToLeader(ctx context.Context, cfg EmuConfig, ln net.Listener, reason string) error {
+func (s *emunetVirtioStack) promoteToLeader(ctx context.Context, cfg *EmuConfig, ln net.Listener, reason string) error {
 	s.mu.Lock()
 	if s.role == "leader" || s.promoting {
 		s.mu.Unlock()
@@ -263,12 +263,12 @@ func (s *emunetVirtioStack) connectToLeader(ctx context.Context, dns emunetpkg.E
 	return nil
 }
 
-func (s *emunetVirtioStack) startFollowerWatchDog(ctx context.Context, cfg EmuConfig) {
+func (s *emunetVirtioStack) startFollowerWatchDog(ctx context.Context, cfg *EmuConfig) {
 	appendTsnetOpLog("emunet_watchDog_start role=follower addr=%q interval=%s", emunetAddr(cfg), emunetWatchDogInterval)
 	go s.runFollowerWatchDog(ctx, cfg)
 }
 
-func (s *emunetVirtioStack) runFollowerWatchDog(ctx context.Context, cfg EmuConfig) {
+func (s *emunetVirtioStack) runFollowerWatchDog(ctx context.Context, cfg *EmuConfig) {
 	ticker := time.NewTicker(emunetWatchDogInterval)
 	defer ticker.Stop()
 	for {
@@ -1096,14 +1096,14 @@ func (t *virtioNetMemoryTUN) Close() error {
 	return nil
 }
 
-func emunetAddr(cfg EmuConfig) string {
+func emunetAddr(cfg *EmuConfig) string {
 	if cfg.EmunetAddr != "" {
 		return cfg.EmunetAddr
 	}
 	return emunetpkg.DefaultAddr
 }
 
-func tsnetDir(cfg EmuConfig) string {
+func tsnetDir(cfg *EmuConfig) string {
 	if cfg.TsnetDir != "" {
 		return cfg.TsnetDir
 	}
@@ -1201,7 +1201,7 @@ func appendTsnetOpLog(format string, args ...any) {
 	_, _ = fmt.Fprintf(f, "%s %s\n", time.Now().Format(rfc3339MsecTz0), msg)
 }
 
-func tsnetHostname(cfg EmuConfig) string {
+func tsnetHostname(cfg *EmuConfig) string {
 	if cfg.TsnetHostname != "" {
 		return cfg.TsnetHostname
 	}
@@ -1220,14 +1220,14 @@ func parseTsnetAddr(raw string) netip.Addr {
 	return ip
 }
 
-func tsnetDHCPServerIPv4(cfg EmuConfig) netip.Addr {
+func tsnetDHCPServerIPv4(cfg *EmuConfig) netip.Addr {
 	if ip := parseTsnetAddr(cfg.TsnetDHCPServerIPv4); ip.Is4() {
 		return ip
 	}
 	return netip.MustParseAddr("100.100.100.100")
 }
 
-func tsnetDNSIPv4(cfg EmuConfig) netip.Addr {
+func tsnetDNSIPv4(cfg *EmuConfig) netip.Addr {
 	if ip := parseTsnetAddr(cfg.TsnetDNSIPv4); ip.Is4() {
 		return ip
 	}

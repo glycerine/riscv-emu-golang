@@ -67,7 +67,7 @@ func TestRunEmuBiosFWDynamicHandBuiltLinuxEmunetNetupGatewaySmoke(t *testing.T) 
 	}()
 
 	start := time.Now()
-	ok, err := runBiosUntilOutputWithin(EmuConfig{
+	cfg := &EmuConfig{
 		BiosPath:   biosPath,
 		KernelPath: kernelPath,
 		InitrdPath: initrdPath,
@@ -79,7 +79,8 @@ func TestRunEmuBiosFWDynamicHandBuiltLinuxEmunetNetupGatewaySmoke(t *testing.T) 
 		Stdin:      stdinR,
 		Stdout:     &stdout,
 		Stderr:     &stderr,
-	}, doneMarker, 2_500_000_000, bootWallBudget)
+	}
+	ok, err := runBiosUntilOutputWithin(cfg, doneMarker, 2_500_000_000, bootWallBudget)
 	elapsed := time.Since(start)
 	out := stdout.String()
 	if err != nil {
@@ -170,7 +171,7 @@ func TestEmunetLinuxPeerGuestHelper(t *testing.T) {
 		case <-done:
 		}
 	}()
-	code, err := RunEmu(EmuConfig{
+	cfg := &EmuConfig{
 		BiosPath:    biosPath,
 		KernelPath:  kernelPath,
 		InitrdPath:  initrdPath,
@@ -184,7 +185,8 @@ func TestEmunetLinuxPeerGuestHelper(t *testing.T) {
 		Stdin:       strings.NewReader(script),
 		Stdout:      os.Stdout,
 		Stderr:      &stderr,
-	})
+	}
+	code, err := RunEmu(cfg)
 	close(done)
 	if stderr.Len() != 0 {
 		fmt.Fprint(os.Stderr, stderr.String())

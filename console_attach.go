@@ -36,7 +36,7 @@ func emuConsoleSocketPath(pid, console int) string {
 	return filepath.Join(emuInstanceDir(pid), fmt.Sprintf("console%d%s", console, emuConsoleSocketSuffix))
 }
 
-func attachEmuConsole(cfg EmuConfig) (int, error) {
+func attachEmuConsole(cfg *EmuConfig) (int, error) {
 	if cfg.AttachPID <= 0 {
 		return 0, fmt.Errorf("-pid must name a running emu process")
 	}
@@ -117,10 +117,10 @@ func listEmuInstances(w io.Writer) error {
 	return nil
 }
 
-func resolveDebugAttach(cfg EmuConfig) (EmuConfig, error) {
+func resolveDebugAttach(cfg *EmuConfig) error {
 	instances, err := scanEmuInstances()
 	if err != nil {
-		return cfg, err
+		return err
 	}
 	self := emuCurrentPID()
 	var running []emuInstance
@@ -132,20 +132,20 @@ func resolveDebugAttach(cfg EmuConfig) (EmuConfig, error) {
 	}
 	switch len(running) {
 	case 0:
-		return cfg, fmt.Errorf("-debug found no other running emu instances")
+		return fmt.Errorf("-debug found no other running emu instances")
 	case 1:
 	default:
-		return cfg, fmt.Errorf("-debug found multiple other running emu instances (%s); use -pid PID -console 1", formatEmuPIDs(running))
+		return fmt.Errorf("-debug found multiple other running emu instances (%s); use -pid PID -console 1", formatEmuPIDs(running))
 	}
 	inst := running[0]
 	if !hasConsoleIndex(inst.Consoles, 1) {
-		return cfg, fmt.Errorf("-debug found emu pid %d, but console 1 is not available at %s", inst.PID, emuConsoleSocketPath(inst.PID, 1))
+		return fmt.Errorf("-debug found emu pid %d, but console 1 is not available at %s", inst.PID, emuConsoleSocketPath(inst.PID, 1))
 	}
 	cfg.Debug = false
 	cfg.AttachPID = inst.PID
 	cfg.AttachConsole = 1
 	cfg.AttachEnter = true
-	return cfg, nil
+	return nil
 }
 
 func scanEmuInstances() ([]emuInstance, error) {

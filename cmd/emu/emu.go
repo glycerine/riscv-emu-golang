@@ -44,7 +44,7 @@ func main() {
 	}
 	cfg.Args = append([]string{programPath(cfg)}, myflags.Args()...)
 
-	code, err := riscv.RunEmu(*cfg)
+	code, err := riscv.RunEmu(cfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "emu: %v\n", err)
 		os.Exit(1)

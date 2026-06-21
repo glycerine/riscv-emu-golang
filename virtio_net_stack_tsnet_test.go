@@ -1027,7 +1027,7 @@ func TestTsnetVirtioStackEmunetCountersRecordSuccessesAndDrops(t *testing.T) {
 func TestTsnetVirtioStackEmunetTraceLogsDrops(t *testing.T) {
 	home := t.TempDir()
 	setTestEmunetHome(t, home)
-	stack := &tsnetVirtioStack{hostMAC: emunetRouterMAC, cfg: EmuConfig{EmunetTrace: true}}
+	stack := &tsnetVirtioStack{hostMAC: emunetRouterMAC, cfg: &EmuConfig{EmunetTrace: true}}
 	tailIP := netip.MustParseAddr("100.64.12.34")
 	fragment := udpIPv4Packet([4]byte{10, 77, 0, 2}, [4]byte{8, 8, 8, 8}, 1234, 53, []byte("hello"))
 	binary.BigEndian.PutUint16(fragment[6:8], 0x2000)
@@ -1096,11 +1096,11 @@ func TestTsnetVirtioStackEmunetCounterSnapshotsDuringTraffic(t *testing.T) {
 func TestTsnetDirDefaultsToHostPersistentStateDir(t *testing.T) {
 	setTestEmunetHome(t, "/tmp/riscv-emu-home")
 	want := "/tmp/riscv-emu-home/.emunet/riscv-emu"
-	if got := tsnetDir(EmuConfig{}); got != want {
+	if got := tsnetDir(&EmuConfig{}); got != want {
 		t.Fatalf("tsnetDir default = %q, want %q", got, want)
 	}
 
-	if got := tsnetDir(EmuConfig{TsnetDir: "/tmp/emutail-test"}); got != "/tmp/emutail-test" {
+	if got := tsnetDir(&EmuConfig{TsnetDir: "/tmp/emutail-test"}); got != "/tmp/emutail-test" {
 		t.Fatalf("tsnetDir override = %q, want config value", got)
 	}
 }
@@ -1254,7 +1254,7 @@ func TestEmunetFollowerDoesNotStartTsnetBeforePromotion(t *testing.T) {
 	leader, dnsSrv, addr := startTestEmunetLeaderDNS(t, ctx)
 	defer leader.Close()
 	defer dnsSrv.Close()
-	cfg := EmuConfig{EmunetAddr: addr}
+	cfg := &EmuConfig{EmunetAddr: addr}
 
 	starts := installFakeEmunetLeaderHook(t, 20*time.Millisecond)
 
@@ -1293,7 +1293,7 @@ func TestEmunetFollowerWatchDogPromotesAfterRendezvousFreed(t *testing.T) {
 
 	leader, dnsSrv, addr := startTestEmunetLeaderDNS(t, ctx)
 	defer leader.Close()
-	cfg := EmuConfig{EmunetAddr: addr}
+	cfg := &EmuConfig{EmunetAddr: addr}
 
 	starts := installFakeEmunetLeaderHook(t, 10*time.Millisecond)
 
@@ -1338,7 +1338,7 @@ func TestEmunetFollowerWatchDogRacePromotesOneAndReconnectsLosers(t *testing.T) 
 	defer cancel()
 
 	leader, dnsSrv, addr := startTestEmunetLeaderDNS(t, ctx)
-	cfg := EmuConfig{EmunetAddr: addr}
+	cfg := &EmuConfig{EmunetAddr: addr}
 	starts := installFakeEmunetLeaderHook(t, 10*time.Millisecond)
 
 	stacks := make([]*emunetVirtioStack, 0, 3)
@@ -1396,7 +1396,7 @@ func TestEmunetFollowerCloseStopsWatchDogPromotion(t *testing.T) {
 
 	leader, dnsSrv, addr := startTestEmunetLeaderDNS(t, ctx)
 	defer leader.Close()
-	cfg := EmuConfig{EmunetAddr: addr}
+	cfg := &EmuConfig{EmunetAddr: addr}
 	starts := installFakeEmunetLeaderHook(t, 10*time.Millisecond)
 
 	stackIf, err := newEmunetVirtioStack(cfg)
@@ -1458,7 +1458,7 @@ func TestEmunetLeaderForgetsFollowerCircuitAndPort(t *testing.T) {
 func TestEmunetFollowerDHCPOverCircuit(t *testing.T) {
 	t.Setenv("RPC25519_SERVER_DATA_DIR", t.TempDir())
 	setTestEmunetHome(t, t.TempDir())
-	cfg := EmuConfig{EmunetAddr: reserveTestEmunetAddr(t)}
+	cfg := &EmuConfig{EmunetAddr: reserveTestEmunetAddr(t)}
 	starts, _ := installFakeEmunetLeaderCoreHook(t, 20*time.Millisecond, nil)
 
 	leaderIf, err := newEmunetVirtioStack(cfg)
@@ -1494,7 +1494,7 @@ func TestEmunetFollowerDHCPOverCircuit(t *testing.T) {
 func TestEmunetLeaderRoutesNATReplyOnlyToOwningFollower(t *testing.T) {
 	t.Setenv("RPC25519_SERVER_DATA_DIR", t.TempDir())
 	setTestEmunetHome(t, t.TempDir())
-	cfg := EmuConfig{EmunetAddr: reserveTestEmunetAddr(t)}
+	cfg := &EmuConfig{EmunetAddr: reserveTestEmunetAddr(t)}
 	tailIP := netip.MustParseAddr("100.64.12.34")
 	_, cores := installFakeEmunetLeaderCoreHook(t, 20*time.Millisecond, func(core *tsnetVirtioStack) {
 		core.setTailIPv4(tailIP)
@@ -1553,7 +1553,7 @@ func TestEmunetLeaderRoutesNATReplyOnlyToOwningFollower(t *testing.T) {
 func TestEmunetLeaderSwitchesFramesBetweenLocalGuestAndFollower(t *testing.T) {
 	t.Setenv("RPC25519_SERVER_DATA_DIR", t.TempDir())
 	setTestEmunetHome(t, t.TempDir())
-	cfg := EmuConfig{EmunetAddr: reserveTestEmunetAddr(t)}
+	cfg := &EmuConfig{EmunetAddr: reserveTestEmunetAddr(t)}
 	_, cores := installFakeEmunetLeaderCoreHook(t, 20*time.Millisecond, nil)
 
 	leaderIf, err := newEmunetVirtioStack(cfg)
@@ -1608,7 +1608,7 @@ func TestEmunetLeaderSwitchesFramesBetweenLocalGuestAndFollower(t *testing.T) {
 func TestEmunetLeaderDropsUnmatchedTUNPacket(t *testing.T) {
 	t.Setenv("RPC25519_SERVER_DATA_DIR", t.TempDir())
 	setTestEmunetHome(t, t.TempDir())
-	cfg := EmuConfig{EmunetAddr: reserveTestEmunetAddr(t)}
+	cfg := &EmuConfig{EmunetAddr: reserveTestEmunetAddr(t)}
 	tailIP := netip.MustParseAddr("100.64.12.34")
 	_, cores := installFakeEmunetLeaderCoreHook(t, 20*time.Millisecond, func(core *tsnetVirtioStack) {
 		core.setTailIPv4(tailIP)
@@ -1650,7 +1650,7 @@ func installFakeEmunetLeaderCoreHook(t *testing.T, interval time.Duration, confi
 	cores := make(chan *tsnetVirtioStack, 8)
 	oldHook := newEmunetLeaderTsnetVirtioStackHook
 	oldInterval := emunetWatchDogInterval
-	newEmunetLeaderTsnetVirtioStackHook = func(cfg EmuConfig) (*tsnetVirtioStack, error) {
+	newEmunetLeaderTsnetVirtioStackHook = func(cfg *EmuConfig) (*tsnetVirtioStack, error) {
 		starts.Add(1)
 		core := &tsnetVirtioStack{hostMAC: emunetRouterMAC, cfg: cfg}
 		core.tun = newVirtioNetMemoryTUN(core.handleTsnetPacket)

@@ -82,7 +82,7 @@ type biosGuest struct {
 	externalDTB bool
 }
 
-func runEmuBios(cfg EmuConfig, budget uint64) (int, error) {
+func runEmuBios(cfg *EmuConfig, budget uint64) (int, error) {
 	if cfg.JITLazy || cfg.JITAOT {
 		return 0, fmt.Errorf("-jitlazy and -jitaot are not supported with -bios yet")
 	}
@@ -125,12 +125,12 @@ func runEmuBios(cfg EmuConfig, budget uint64) (int, error) {
 	return 0, nil
 }
 
-func prepareBiosGuest(cfg EmuConfig) (*biosGuest, error) {
+func prepareBiosGuest(cfg *EmuConfig) (*biosGuest, error) {
 	return prepareBiosGuestWithReset(cfg, nil)
 }
 
-func prepareBiosGuestWithReset(cfg EmuConfig, onSystemReset func()) (*biosGuest, error) {
-	cfg = cfg.withDefaults()
+func prepareBiosGuestWithReset(cfg *EmuConfig, onSystemReset func()) (*biosGuest, error) {
+	cfg.setDefaults()
 	if err := cfg.resolveMemory(); err != nil {
 		return nil, err
 	}
@@ -248,7 +248,7 @@ type biosBlob struct {
 	elf    bool
 }
 
-func loadBiosKernel(mem *GuestMemory, cfg EmuConfig) (biosBlob, error) {
+func loadBiosKernel(mem *GuestMemory, cfg *EmuConfig) (biosBlob, error) {
 	if cfg.KernelPath == "" {
 		return biosBlob{}, nil
 	}
@@ -289,7 +289,7 @@ func loadBiosKernel(mem *GuestMemory, cfg EmuConfig) (biosBlob, error) {
 	}, nil
 }
 
-func loadBiosInitrd(mem *GuestMemory, cfg EmuConfig, kernel biosBlob) (biosBlob, error) {
+func loadBiosInitrd(mem *GuestMemory, cfg *EmuConfig, kernel biosBlob) (biosBlob, error) {
 	if cfg.InitrdPath == "" {
 		return biosBlob{}, nil
 	}
@@ -321,7 +321,7 @@ func loadBiosInitrd(mem *GuestMemory, cfg EmuConfig, kernel biosBlob) (biosBlob,
 	}, nil
 }
 
-func loadBiosFDT(cfg EmuConfig, initrd biosBlob) ([]byte, bool, error) {
+func loadBiosFDT(cfg *EmuConfig, initrd biosBlob) ([]byte, bool, error) {
 	if cfg.DTBPath != "" {
 		data, err := os.ReadFile(cfg.DTBPath)
 		if err != nil {
@@ -1110,7 +1110,7 @@ func (c EmuConfig) effectiveKernelAddr() uint64 {
 	return defaultBiosKernelAddr
 }
 
-func biosNextStageAddr(cfg EmuConfig, kernel biosBlob) uint64 {
+func biosNextStageAddr(cfg *EmuConfig, kernel biosBlob) uint64 {
 	if kernel.loaded {
 		return kernel.addr
 	}
