@@ -9,7 +9,6 @@ import (
 	"runtime/debug"
 	"sort"
 	"sync/atomic"
-	"syscall"
 	"unsafe"
 
 	"github.com/glycerine/riscv-emu-golang/abjit"
@@ -105,13 +104,13 @@ func (seg *DecodedExecuteSegment) free() {
 		return
 	}
 	if len(seg.nativeCodeMmap) > 0 {
-		_ = syscall.Munmap(seg.nativeCodeMmap)
+		_ = freeMapped(seg.nativeCodeMmap)
 		seg.nativeCodeMmap = nil
 		seg.nativeCodeBase = 0
 		seg.nativeCodeSize = 0
 	}
 	if len(seg.decoderCacheMmap) > 0 {
-		_ = syscall.Munmap(seg.decoderCacheMmap)
+		_ = freeMapped(seg.decoderCacheMmap)
 		seg.decoderCacheMmap = nil
 		seg.decoderCacheBase = 0
 	}
@@ -817,7 +816,7 @@ func (j *JIT) Close() {
 
 	for _, blk := range j.lazyBlocks {
 		if len(blk.nativeMmap) > 0 {
-			_ = syscall.Munmap(blk.nativeMmap)
+			_ = freeMapped(blk.nativeMmap)
 		}
 		blk.nativeMmap = nil
 		blk.fn = 0
@@ -825,7 +824,7 @@ func (j *JIT) Close() {
 		blk.liveChainEntry = 0
 	}
 	if len(j.lazyCodeArena) > 0 {
-		_ = syscall.Munmap(j.lazyCodeArena)
+		_ = freeMapped(j.lazyCodeArena)
 	}
 	j.lazyCodeArena = nil
 	j.lazyCodeOff = 0

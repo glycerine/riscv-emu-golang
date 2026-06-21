@@ -761,62 +761,9 @@ func socketWouldBlock(err error) bool {
 	if errors.As(err, &netErr) && netErr.Timeout() {
 		return true
 	}
-	return errors.Is(err, syscall.EAGAIN) || errors.Is(err, syscall.EWOULDBLOCK)
-}
-
-func socketNonblockingRead(conn *net.TCPConn, buf []byte) (int, error) {
-	raw, err := conn.SyscallConn()
-	if err != nil {
-		return 0, err
-	}
-	var n int
-	var opErr error
-	if err := raw.Control(func(fd uintptr) {
-		n, opErr = syscall.Read(int(fd), buf)
-	}); err != nil {
-		return n, err
-	}
-	return n, opErr
-}
-
-func socketNonblockingWrite(conn *net.TCPConn, buf []byte) (int, error) {
-	raw, err := conn.SyscallConn()
-	if err != nil {
-		return 0, err
-	}
-	var n int
-	var opErr error
-	if err := raw.Control(func(fd uintptr) {
-		n, opErr = syscall.Write(int(fd), buf)
-	}); err != nil {
-		return n, err
-	}
-	return n, opErr
-}
-
-func socketPeekReadable(conn *net.TCPConn) (bool, bool, error) {
-	raw, err := conn.SyscallConn()
-	if err != nil {
-		return false, false, err
-	}
-	var n int
-	var opErr error
-	var b [1]byte
-	if err := raw.Control(func(fd uintptr) {
-		n, _, opErr = syscall.Recvfrom(int(fd), b[:], syscall.MSG_PEEK)
-	}); err != nil {
-		return false, false, err
-	}
-	if opErr != nil {
-		if socketWouldBlock(opErr) {
-			return false, false, nil
-		}
-		return false, false, opErr
-	}
-	if n == 0 {
-		return true, true, nil
-	}
-	return true, false, nil
+	return errors.Is(err, syscall.EAGAIN) ||
+		errors.Is(err, syscall.EWOULDBLOCK) ||
+		socketPlatformWouldBlock(err)
 }
 
 func cloneTCPAddr(addr *net.TCPAddr) *net.TCPAddr {

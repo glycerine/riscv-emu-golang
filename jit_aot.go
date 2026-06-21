@@ -12,7 +12,6 @@ package riscv
 import (
 	"encoding/binary"
 	"fmt"
-	"syscall"
 	"unsafe"
 
 	"github.com/glycerine/riscv-emu-golang/goasm"
@@ -234,7 +233,7 @@ func (j *JIT) jitCompileAOTSegment(
 		}
 	})
 	if writeErr != nil {
-		_ = syscall.Munmap(execMem)
+		_ = freeMapped(execMem)
 		return nil, writeErr
 	}
 	flushIcache(codeBase, totalSize)
@@ -251,7 +250,7 @@ func (j *JIT) jitCompileAOTSegment(
 	}
 	cacheMmap, err := allocRWAnon(int(cacheSize))
 	if err != nil {
-		_ = syscall.Munmap(execMem)
+		_ = freeMapped(execMem)
 		return nil, fmt.Errorf("allocRWAnon (decoder_cache): %w", err)
 	}
 	for _, bc := range compiles {

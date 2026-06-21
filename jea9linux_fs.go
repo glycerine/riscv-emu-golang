@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"syscall"
 )
 
 type jea9LinuxStat struct {
@@ -435,11 +434,11 @@ func (jos *Jea9Linux) sysDup3(oldfdRaw, newfdRaw, flags uint64) int64 {
 		delete(jos.fds, newfd)
 	}
 	if f.kind == jea9LinuxFDHostFile && f.hostFile != nil {
-		dup, err := syscall.Dup(int(f.hostFile.Fd()))
+		dup, err := dupHostFile(f.hostFile)
 		if err != nil {
 			return jea9LinuxErrnoFromHost(err)
 		}
-		f.hostFile = os.NewFile(uintptr(dup), f.hostFile.Name())
+		f.hostFile = dup
 	}
 	f.flags &^= jea9LinuxFDCloexec
 	f.flags |= flags & jea9LinuxFDCloexec
