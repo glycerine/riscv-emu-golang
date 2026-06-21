@@ -25,6 +25,7 @@ func TestTsnetVirtioStackEmunetDHCPDiscoverAndRequest(t *testing.T) {
 	guestIP := netip.MustParseAddr("10.77.0.2")
 	guestMAC := [6]byte{0x02, 0x72, 0x69, 0x73, 0x00, 0x01}
 	stack := &tsnetVirtioStack{
+		cfg:     &EmuConfig{},
 		hostMAC: emunetRouterMAC,
 	}
 
