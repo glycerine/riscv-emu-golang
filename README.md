@@ -3,6 +3,10 @@ emu_net: RISCV64 emulator and network in Golang (Go)
 
 ![emu_net](emunet_grid2.png)
 
+* News 2026 June 21:
+
+Added windoze support. Tested and working using msys2 for the cgo.
+
 * News 2026 June 19:
 
 Real local grid network via the local NAT/DHCP works. Multiple
