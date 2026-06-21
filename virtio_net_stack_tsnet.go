@@ -68,7 +68,7 @@ type emunetVirtioStack struct {
 type tsnetVirtioStack struct {
 	srv *tsnet.Server
 	tun *virtioNetMemoryTUN
-	cfg *EmuConfig
+	cfg EmuConfig
 
 	mu                 sync.Mutex
 	cancel             context.CancelFunc
@@ -112,7 +112,7 @@ func newEmunetLeaderTsnetVirtioStack(cfg *EmuConfig) (*tsnetVirtioStack, error) 
 
 func newTsnetVirtioStack(cfg *EmuConfig, directTailnetGuest bool) (*tsnetVirtioStack, error) {
 	stack := &tsnetVirtioStack{
-		cfg:                cfg,
+		cfg:                *cfg,
 		hostMAC:            emunetRouterMAC,
 		directTailnetGuest: directTailnetGuest,
 	}
@@ -882,8 +882,8 @@ func (s *tsnetVirtioStack) handleDHCP(portID string, frame []byte, emit func([]b
 		if !ok {
 			return true
 		}
-		serverIP = tsnetDHCPServerIPv4(s.cfg)
-		dnsIP = tsnetDNSIPv4(s.cfg)
+		serverIP = tsnetDHCPServerIPv4(&s.cfg)
+		dnsIP = tsnetDNSIPv4(&s.cfg)
 	} else {
 		var guestMAC [6]byte
 		copy(guestMAC[:], dhcp[28:34])

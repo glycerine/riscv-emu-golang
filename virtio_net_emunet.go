@@ -1137,14 +1137,14 @@ func (s *tsnetVirtioStack) incDrop(reason string) {
 }
 
 func (s *tsnetVirtioStack) trace(format string, args ...any) {
-	if s == nil || s.cfg == nil || !s.cfg.EmunetTrace {
+	if s == nil || !s.cfg.EmunetTrace {
 		return
 	}
 	appendTsnetOpLog("emunet_trace %s", fmt.Sprintf(format, args...))
 }
 
 func (s *tsnetVirtioStack) traceLocked(format string, args ...any) {
-	if s == nil || s.cfg == nil || !s.cfg.EmunetTrace {
+	if s == nil || !s.cfg.EmunetTrace {
 		return
 	}
 	appendTsnetOpLog("emunet_trace %s", fmt.Sprintf(format, args...))

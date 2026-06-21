@@ -25,7 +25,6 @@ func TestTsnetVirtioStackEmunetDHCPDiscoverAndRequest(t *testing.T) {
 	guestIP := netip.MustParseAddr("10.77.0.2")
 	guestMAC := [6]byte{0x02, 0x72, 0x69, 0x73, 0x00, 0x01}
 	stack := &tsnetVirtioStack{
-		cfg:     &EmuConfig{},
 		hostMAC: emunetRouterMAC,
 	}
 
@@ -48,7 +47,9 @@ func TestTsnetVirtioStackEmunetDHCPDiscoverAndRequest(t *testing.T) {
 }
 
 func TestTsnetVirtioStackEmunetDHCPAllocatesDistinctPortLeases(t *testing.T) {
-	stack := &tsnetVirtioStack{hostMAC: emunetRouterMAC}
+	stack := &tsnetVirtioStack{
+		hostMAC: emunetRouterMAC,
+	}
 	macA := [6]byte{0x02, 0, 0, 0, 1, 0x01}
 	macB := [6]byte{0x02, 0, 0, 0, 1, 0x02}
 
@@ -1028,7 +1029,7 @@ func TestTsnetVirtioStackEmunetCountersRecordSuccessesAndDrops(t *testing.T) {
 func TestTsnetVirtioStackEmunetTraceLogsDrops(t *testing.T) {
 	home := t.TempDir()
 	setTestEmunetHome(t, home)
-	stack := &tsnetVirtioStack{hostMAC: emunetRouterMAC, cfg: &EmuConfig{EmunetTrace: true}}
+	stack := &tsnetVirtioStack{hostMAC: emunetRouterMAC, cfg: EmuConfig{EmunetTrace: true}}
 	tailIP := netip.MustParseAddr("100.64.12.34")
 	fragment := udpIPv4Packet([4]byte{10, 77, 0, 2}, [4]byte{8, 8, 8, 8}, 1234, 53, []byte("hello"))
 	binary.BigEndian.PutUint16(fragment[6:8], 0x2000)
@@ -1653,7 +1654,7 @@ func installFakeEmunetLeaderCoreHook(t *testing.T, interval time.Duration, confi
 	oldInterval := emunetWatchDogInterval
 	newEmunetLeaderTsnetVirtioStackHook = func(cfg *EmuConfig) (*tsnetVirtioStack, error) {
 		starts.Add(1)
-		core := &tsnetVirtioStack{hostMAC: emunetRouterMAC, cfg: cfg}
+		core := &tsnetVirtioStack{hostMAC: emunetRouterMAC, cfg: *cfg}
 		core.tun = newVirtioNetMemoryTUN(core.handleTsnetPacket)
 		if configure != nil {
 			configure(core)
