@@ -249,10 +249,6 @@ func validateOptionalIPv4Flag(name, value string) error {
 }
 
 func RunEmu(cfg EmuConfig) (int, error) {
-	return runEmu(cfg)
-}
-
-func runEmu(cfg EmuConfig) (int, error) {
 	cfg = cfg.withDefaults()
 	if err := cfg.ValidateConfig(); err != nil {
 		return 0, err

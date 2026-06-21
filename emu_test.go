@@ -22,7 +22,7 @@ import (
 
 func TestRunEmuDefaultRunsGoHelloFixture(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	code, err := runEmu(EmuConfig{
+	code, err := RunEmu(EmuConfig{
 		RunPath:           "testvectors/jea9linux/go/elf/hello.elf",
 		MemorySize:        Size16GB,
 		InstructionBudget: 1 << 20,
@@ -51,7 +51,7 @@ func TestTerminalStatusTextUsesCRLF(t *testing.T) {
 
 func TestRunEmuReturnsGuestExitCodeAndStderr(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	code, err := runEmu(EmuConfig{
+	code, err := RunEmu(EmuConfig{
 		RunPath:           "testvectors/jea9linux/go/elf/nilpanic.elf",
 		MemorySize:        Size16GB,
 		InstructionBudget: 1 << 20,
@@ -1397,7 +1397,7 @@ func TestRunEmuListShowsLiveConsoleSocket(t *testing.T) {
 	}
 
 	var stdout bytes.Buffer
-	code, err := runEmu(EmuConfig{List: true, Stdout: &stdout})
+	code, err := RunEmu(EmuConfig{List: true, Stdout: &stdout})
 	if err != nil {
 		t.Fatalf("runEmu list: %v", err)
 	}
@@ -1449,7 +1449,7 @@ func TestRunEmuDebugAttachesSingleOtherConsole1(t *testing.T) {
 	}()
 
 	var stdout bytes.Buffer
-	code, err := runEmu(EmuConfig{
+	code, err := RunEmu(EmuConfig{
 		Debug:  true,
 		Stdin:  strings.NewReader("hello"),
 		Stdout: &stdout,
@@ -1513,7 +1513,7 @@ func TestRunEmuDebugAttachesSingleOtherConsole1ThreeTimes(t *testing.T) {
 	for session := 0; session < 3; session++ {
 		msg := fmt.Sprintf("hello%d", session+1)
 		var stdout bytes.Buffer
-		code, err := runEmu(EmuConfig{
+		code, err := RunEmu(EmuConfig{
 			Debug:  true,
 			Stdin:  strings.NewReader(msg),
 			Stdout: &stdout,
@@ -1626,7 +1626,7 @@ func TestRunEmuAttachConsoleCopiesBytes(t *testing.T) {
 	}()
 
 	var stdout bytes.Buffer
-	code, err := runEmu(EmuConfig{
+	code, err := RunEmu(EmuConfig{
 		AttachPID:     os.Getpid(),
 		AttachConsole: 1,
 		Stdin:         strings.NewReader("hello"),
@@ -2137,7 +2137,7 @@ func TestRunEmuBiosFWDynamicLinuxSmoke(t *testing.T) {
 	}
 
 	var stdout, stderr bytes.Buffer
-	code, err := runEmu(EmuConfig{
+	code, err := RunEmu(EmuConfig{
 		BiosPath:   biosPath,
 		KernelPath: kernelPath,
 		InitrdPath: initrdPath,
@@ -2508,7 +2508,7 @@ func TestRunEmuBiosOpenSBIFwJumpGetsFDT(t *testing.T) {
 	}
 
 	var stdout, stderr bytes.Buffer
-	code, err := runEmu(EmuConfig{
+	code, err := RunEmu(EmuConfig{
 		BiosPath:   path,
 		MemorySize: Size16GB,
 		Budget:     "256",
@@ -2598,7 +2598,7 @@ func TestRunEmuJea9LinuxFixtureModes(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var stdout, stderr bytes.Buffer
-			code, err := runEmu(EmuConfig{
+			code, err := RunEmu(EmuConfig{
 				RunPath:           "testvectors/jea9linux/elf/write_stdout.elf",
 				MemorySize:        Size64MB,
 				InstructionBudget: 1 << 20,
@@ -2643,7 +2643,7 @@ func TestEmuDefaultFlagsRunGoTimeNowFixtureCompletes(t *testing.T) {
 	}
 	done := make(chan result, 1)
 	go func() {
-		code, err := runEmu(cfg)
+		code, err := RunEmu(cfg)
 		done <- result{code: code, err: err}
 	}()
 
@@ -2745,7 +2745,7 @@ func benchmarkRunEmuGoHello(b *testing.B, mode EmuConfig) {
 		cfg.Stderr = &stderr
 		cfg.JITStats = &stats
 
-		code, err := runEmu(cfg)
+		code, err := RunEmu(cfg)
 		if err != nil {
 			b.Fatalf("runEmu: %v; stderr=%q", err, stderr.String())
 		}
@@ -2898,7 +2898,7 @@ func defineEmuFlagsForTest(fs *flag.FlagSet, c *EmuConfig) {
 func runEmuFixtureOutput(t *testing.T, seed uint64) string {
 	t.Helper()
 	var stdout, stderr bytes.Buffer
-	code, err := runEmu(EmuConfig{
+	code, err := RunEmu(EmuConfig{
 		RunPath:           "testvectors/jea9linux/go/elf/cryptorand.elf",
 		MemorySize:        Size16GB,
 		InstructionBudget: 1 << 20,
