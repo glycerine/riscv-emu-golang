@@ -118,7 +118,7 @@ func RunEmu(cfg *EmuConfig) (int, error) {
 	if !doJIT {
 		// interpreter
 
-		return RunWithJea9LinuxInterp(cpu, jlinux)
+		return RunWithJea9LinuxInterp(cpu, jlinux) // in jea9linux.go
 
 	} else {
 		// JIT. of some flavor. AOT or Lazy.
@@ -134,9 +134,9 @@ func RunEmu(cfg *EmuConfig) (int, error) {
 			}
 		}
 
-		code, err := RunWithJea9LinuxJIT(cpu, jit, jlinux)
+		code, err := RunWithJea9LinuxJIT(cpu, jit, jlinux) // in jea9linux.go
 		if cfg.JITStats != nil {
-			*(cfg.JITStats) = EmuJITStats{
+			*cfg.JITStats = EmuJITStats{
 				DispatchOK:             jit.DispatchOK,
 				DispatchCompile:        jit.DispatchCompile,
 				DispatchInterp:         jit.DispatchInterp,
