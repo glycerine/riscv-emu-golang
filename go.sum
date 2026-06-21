@@ -114,6 +114,8 @@ github.com/glycerine/rpc25519 v1.44.8 h1:UieviGswsIHXdprNVNVnrNxujN4VxmGVOdEiiIi
 github.com/glycerine/rpc25519 v1.44.8/go.mod h1:IE3m/Ew8UIoj/NwEbwedWnL3sfuU94IAWH7wfNfS17I=
 github.com/glycerine/rpc25519 v1.44.9 h1:x2wVQ2CdX5AbVQbuu2WeFDtU7P6xRl42UtHDGMdfExI=
 github.com/glycerine/rpc25519 v1.44.9/go.mod h1:XDak2tJE+PjRRuTqH1074RLaPEOYgqK3eRPWspguFzA=
+github.com/glycerine/rpc25519 v1.44.10 h1:wFo7D+U2IH7cIwPPOBx+HCSdEhEpbWzw+m8p5zH6t9M=
+github.com/glycerine/rpc25519 v1.44.10/go.mod h1:XDak2tJE+PjRRuTqH1074RLaPEOYgqK3eRPWspguFzA=
 github.com/glycerine/zygomys/v9 v9.1.2 h1:Rnk+l5aV6JailGp5BzrgYJU7wC+XKU3/NDOTEJMo3K4=
 github.com/glycerine/zygomys/v9 v9.1.2/go.mod h1:hckAUIPikusS9epDmMmEkfXeOK2qvWhmeVK6Su8y/1k=
 github.com/glycerine/zygomys/v9 v9.6.1 h1:cjj4zafAyeAoTs11TOlmeug1v/dLotgEXTiucEj1KVo=
