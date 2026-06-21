@@ -76,12 +76,7 @@ func RunEmu(cfg *EmuConfig) (int, error) {
 		return 0, err
 	}
 
-	var mem *GuestMemory
-	if cfg.SandboxMem {
-		mem, err = NewGuestMemory(cfg.MemorySize)
-	} else {
-		mem, err = NewLinearGuestMemory(cfg.MemorySize)
-	}
+	mem, err := NewGuestMemoryWithModel(cfg.MemorySize, cfg.MemoryModel)
 	if err != nil {
 		return 0, err
 	}
@@ -131,7 +126,7 @@ func RunEmu(cfg *EmuConfig) (int, error) {
 		jit := NewJIT()
 		defer jit.Close()
 
-		jit.SandboxMem = cfg.SandboxMem
+		jit.MemoryModel = cfg.MemoryModel
 		jit.AutoAOT = cfg.JITAOT
 		if jit.AutoAOT {
 			if err := jit.InstallAOTFromMem(mem); err != nil {

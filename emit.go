@@ -88,8 +88,14 @@ func (e *Emitter) MemBase() VReg { return e.memBase }
 // MemMask returns the VReg holding the guest memory mask.
 func (e *Emitter) MemMask() VReg { return e.memMask }
 
-func (e *Emitter) SandboxMem() bool { return e.j == nil || e.j.SandboxMem }
+// SandboxMem reports whether this emission should use the containing
+// base+(addr&mask) memory path. A nil JIT keeps historical unit-test behavior.
+func (e *Emitter) SandboxMem() bool {
+	return e.j == nil || e.j.MemoryModel == MemoryModelSandbox
+}
 
+// LinearMem reports whether this emission should use naked base+addr guest
+// memory references. The jea9linux fast path uses this mode by default.
 func (e *Emitter) LinearMem() bool { return !e.SandboxMem() }
 
 // SRetBase returns the VReg holding the RV8 sret metadata pointer.
@@ -253,7 +259,8 @@ func (e *Emitter) Call(sym string, addr uintptr) int {
 }
 
 // MisalignedLoad emits a byte-by-byte load for a misaligned guest address.
-// The lowerer expands inline using [RBP+520]/[RBP+528] for memBase/memMask.
+// Linear mode expands here using base+addr byte accesses. Sandbox mode emits a
+// single IRMisalignLoad for the lowerer to expand through memBase/memMask.
 func (e *Emitter) MisalignedLoad(dst, addr VReg, t Type) {
 	if e.LinearMem() {
 		e.linearMisalignedLoad(dst, addr, t)

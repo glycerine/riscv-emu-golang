@@ -2718,8 +2718,8 @@ func TestParseEmuJITModeFlags(t *testing.T) {
 		"-run", "testvectors/jea9linux/elf/write_stdout.elf",
 		"-sandbox",
 	)
-	if !sandbox.SandboxMem {
-		t.Fatal("-sandbox parsed as SandboxMem=false")
+	if sandbox.MemoryModel != MemoryModelSandbox {
+		t.Fatalf("-sandbox parsed as MemoryModel=%s, want %s", sandbox.MemoryModel, MemoryModelSandbox)
 	}
 
 	lazy, _, _ := parseEmuConfigForTest(t,
@@ -2741,8 +2741,8 @@ func TestParseEmuJITModeFlags(t *testing.T) {
 	interp, _, _ := parseEmuConfigForTest(t,
 		"-run", "testvectors/jea9linux/elf/write_stdout.elf",
 	)
-	if interp.SandboxMem {
-		t.Fatal("default parsed as SandboxMem=true, want false")
+	if interp.MemoryModel != MemoryModelLinear {
+		t.Fatalf("default parsed as MemoryModel=%s, want %s", interp.MemoryModel, MemoryModelLinear)
 	}
 	if interp.JITLazy || interp.JITAOT {
 		t.Fatalf("default parsed as JITLazy=%v JITAOT=%v", interp.JITLazy, interp.JITAOT)
@@ -2913,7 +2913,7 @@ func defineEmuFlagsForTest(fs *flag.FlagSet, c *EmuConfig) {
 	fs.Uint64Var(&c.Seed, "seed", 0, "pseudo random number generator seed")
 	fs.StringVar(&c.Memory, "mem", "", "guest memory size as bytes or KB/MB/GB/TB; with -bios this is RAM advertised to Linux")
 	fs.StringVar(&c.Budget, "budget", "", "scheduler/run budget as an instruction count, duration, or max")
-	fs.BoolVar(&c.SandboxMem, "sandbox", false, "use sandboxed guest memory for -run instead of linear unsandboxed memory")
+	fs.Var(SandboxMemoryModelFlag{Model: &c.MemoryModel}, "sandbox", "use sandboxed guest memory for -run; default linear JIT skips the sandbox mask and jea9linux access checks")
 	fs.BoolVar(&c.JITLazy, "jitlazy", false, "run with the native lazy JIT instead of the interpreter")
 	fs.BoolVar(&c.JITAOT, "jitaot", false, "run with explicit AOT JIT instead of the interpreter")
 	fs.BoolVar(&c.Hermit, "hermit", false, "disable host filesystem passthrough")

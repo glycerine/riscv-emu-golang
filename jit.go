@@ -299,10 +299,10 @@ type JIT struct {
 	HotRegionsCompiled uint64
 	hotRegionCounts    map[uint64]uint32
 
-	// SandboxMem keeps guest memory references on the base+(addr&mask)
-	// path. When false, jea9linux JIT emissions use linear base+addr
-	// references without the sandbox mask or bounds branch.
-	SandboxMem bool
+	// MemoryModel must match the GuestMemory a JIT runs against. Linear
+	// memory emits base+addr loads/stores with no sandbox mask or bounds
+	// branch; sandbox memory emits the historical base+(addr&mask) path.
+	MemoryModel MemoryModel
 
 	irAlloc    RegAllocator
 	regPolicy  RegPolicy
@@ -391,8 +391,21 @@ func NewJIT() *JIT {
 // emu's jea9linux path can opt into direct memory through EmuConfig.
 func NewSandboxJIT() *JIT {
 	j := NewJIT()
-	j.SandboxMem = true
+	j.MemoryModel = MemoryModelSandbox
 	return j
+}
+
+func (j *JIT) checkMemoryModel(mem *GuestMemory) error {
+	if mem == nil {
+		return fmt.Errorf("jit: nil guest memory")
+	}
+	if err := j.MemoryModel.Validate(); err != nil {
+		return err
+	}
+	if j.MemoryModel != mem.MemoryModel() {
+		return fmt.Errorf("jit memory model %s does not match guest memory model %s", j.MemoryModel, mem.MemoryModel())
+	}
+	return nil
 }
 
 // SetAllocStrategy reinstalls the Fixed Static Mapping allocator and clears
@@ -614,6 +627,9 @@ func (j *JIT) StepBlockBudget(cpu *CPU, budget uint64) (RunBudgetResult, error) 
 	if budget == 0 {
 		return RunBudgetExpired, nil
 	}
+	if err := j.checkMemoryModel(&cpu.mem); err != nil {
+		return RunBudgetContinue, err
+	}
 	before := cpu.RiscvInstrBegun()
 	_, err := j.stepBlockWithBudget(cpu, budget)
 	if err != nil {
@@ -639,6 +655,9 @@ func (j *JIT) StepBlockDualBudget(cpu *CPU, attemptBudget, retiredBudget uint64)
 	}
 	if attemptBudget == 0 {
 		return RunBudgetExpired, RunBudgetLimitAttempt, nil
+	}
+	if err := j.checkMemoryModel(&cpu.mem); err != nil {
+		return RunBudgetContinue, RunBudgetLimitNone, err
 	}
 	attemptBase := cpu.RiscvInstrBegun()
 	retiredBase := cpu.RiscvInstrRetired()
@@ -697,6 +716,9 @@ func (j *JIT) StepBlockDualBudget(cpu *CPU, attemptBudget, retiredBudget uint64)
 // use the lazy path in that case). Individual segments that fail to
 // compile are skipped; other segments still install.
 func (j *JIT) InstallAOT(mem *GuestMemory, elfBytes []byte) error {
+	if err := j.checkMemoryModel(mem); err != nil {
+		return err
+	}
 	loads, ok := FindExecLoads(elfBytes)
 	if !ok || len(loads) == 0 {
 		return nil
@@ -720,6 +742,9 @@ func (j *JIT) InstallAOT(mem *GuestMemory, elfBytes []byte) error {
 // Individual segments that fail to compile are skipped silently — the
 // lazy compile path covers them at runtime.
 func (j *JIT) InstallAOTFromMem(mem *GuestMemory) error {
+	if err := j.checkMemoryModel(mem); err != nil {
+		return err
+	}
 	regions := mem.ExecRegions()
 	if len(regions) == 0 {
 		return nil
@@ -764,7 +789,7 @@ func (j *JIT) CloneConfig() *JIT {
 	child.InterpOnly = j.InterpOnly
 	child.AutoAOT = j.AutoAOT
 	child.HotRegionThreshold = j.HotRegionThreshold
-	child.SandboxMem = j.SandboxMem
+	child.MemoryModel = j.MemoryModel
 	child.UseR15InstructionCounter = j.UseR15InstructionCounter
 	child.DebugOneBlockLockstepMode = j.DebugOneBlockLockstepMode
 	child.LockstepModeBudget = j.LockstepModeBudget
@@ -1215,6 +1240,9 @@ func (j *JIT) maybeCompileHotRegion(mem *GuestMemory, pc uint64) bool {
 
 // StepBlock executes one dispatch cycle and returns.
 func (j *JIT) StepBlock(cpu *CPU) (ic uint64, err error) {
+	if err := j.checkMemoryModel(&cpu.mem); err != nil {
+		return cpu.riscvInstrBegun, err
+	}
 	return j.stepBlockWithBudget(cpu, j.stepBlockDispatchBudget())
 }
 
@@ -1355,6 +1383,9 @@ func (j *JIT) stepBlockResult(cpu *CPU, res jitcall.Result) (uint64, error) {
 // RunJIT executes the CPU using JIT-compiled blocks where possible,
 // falling back to the interpreter for untranslatable instructions.
 func (j *JIT) RunJIT(cpu *CPU) (err0 error) {
+	if err := j.checkMemoryModel(&cpu.mem); err != nil {
+		return err
+	}
 	old := debug.SetPanicOnFault(true)
 	defer debug.SetPanicOnFault(old)
 

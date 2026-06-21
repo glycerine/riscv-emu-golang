@@ -53,7 +53,7 @@ type EmuConfig struct {
 	BiosRAMSize         uint64
 	Budget              string
 	InstructionBudget   uint64
-	SandboxMem          bool
+	MemoryModel         MemoryModel
 	JITLazy             bool
 	JITAOT              bool
 	Hermit              bool
@@ -92,6 +92,9 @@ type EmuJITStats struct {
 }
 
 func (c *EmuConfig) ValidateConfig() error {
+	if err := c.MemoryModel.Validate(); err != nil {
+		return err
+	}
 	attachMode := c.AttachPID != 0
 	if c.List {
 		if c.Debug || attachMode {

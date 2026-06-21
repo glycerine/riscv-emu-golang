@@ -52,7 +52,7 @@ func abjitDispatch(
 	s.F = cpu.f
 	s.FCSR = cpu.fcsr
 	s.MemBase = cpu.mem.Base()
-	if j.SandboxMem {
+	if j.MemoryModel == MemoryModelSandbox {
 		s.MemMask = cpu.mem.Mask()
 	} else {
 		s.MemMask = ^uint64(0)

@@ -87,13 +87,10 @@ func TestNewLinearGuestMemory_UsesGuestOffsets(t *testing.T) {
 	if m.Sandbox() {
 		t.Fatal("Sandbox() = true, want false")
 	}
-	if m.GuestStart() != 0 {
-		t.Fatalf("GuestStart() = 0x%x, want 0", m.GuestStart())
+	if m.MemoryModel() != MemoryModelLinear {
+		t.Fatalf("MemoryModel() = %s, want %s", m.MemoryModel(), MemoryModelLinear)
 	}
-	addr := m.GuestAddr(0x1000)
-	if off, ok := m.GuestOffset(addr); !ok || off != 0x1000 {
-		t.Fatalf("GuestOffset(GuestAddr(0x1000)) = 0x%x, %v; want 0x1000, true", off, ok)
-	}
+	addr := uint64(0x1000)
 	if f := m.Store64(addr, 0x1122334455667788); f != nil {
 		t.Fatalf("Store64 linear addr: %v", f)
 	}

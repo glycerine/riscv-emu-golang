@@ -4,11 +4,10 @@
 //
 // Sandbox invariant
 // =================
-// hostPtr(addr) is always within [base, base+size), regardless of addr,
-// when sandbox mode is enabled, because (addr & mask) is in [0, size-1]
-// by construction. This holds even if the bounds-check logic in check()
-// has a bug: the mask is an absolute arithmetic containment guarantee
-// independent of the check.
+// In MemoryModelSandbox, hostPtr(addr) is always within [base, base+size),
+// regardless of addr, because (addr & mask) is in [0, size-1] by construction.
+// This holds even if the bounds-check logic in check() has a bug: the mask is
+// an absolute arithmetic containment guarantee independent of the check.
 //
 // GC invariant
 // ============
@@ -126,8 +125,9 @@ func (f *MemFault) Error() string {
 // the caller enforces its own synchronization (the scheduler does this).
 //
 // Interpreter loads and stores are bounds-checked and alignment-checked.
-// In sandbox mode, hostPtr cannot escape [base, base+size) by construction.
-// In linear mode, hostPtr is base+addr after the normal bounds check.
+// In MemoryModelSandbox, hostPtr cannot escape [base, base+size) by
+// construction. In MemoryModelLinear, hostPtr is base+addr after the normal
+// interpreter bounds check.
 type GuestMemory struct {
 	// base is the host address of the first byte of the guest memory slab.
 	// Stored as unsafe.Pointer so that pointer arithmetic via unsafe.Add
@@ -145,10 +145,8 @@ type GuestMemory struct {
 	// size is kept for munmap and for ZeroRange bounds checking.
 	size uint64
 
-	// sandbox selects the containing address translation:
-	//   sandbox: hostPtr = base + (addr & mask)
-	//   linear:  hostPtr = base + addr
-	sandbox bool
+	// model selects the guest-address translation.
+	model MemoryModel
 
 	// scratch is a reusable MemFault to avoid heap allocation on every fault.
 	// Only one fault is ever live at a time (caller checks, then discards).
@@ -194,17 +192,20 @@ type guestMemoryAccessOverlay interface {
 // Physical memory is demand-paged; only virtual address space is
 // reserved immediately.
 func NewGuestMemory(size uint64) (*GuestMemory, error) {
-	return newGuestMemory(size, true)
+	return NewGuestMemoryWithModel(size, MemoryModelSandbox)
 }
 
 // NewLinearGuestMemory allocates guest memory with zero-based guest virtual
 // addresses translated as hostPtr=base+addr. It omits the sandbox mask but
 // keeps normal interpreter bounds checks.
 func NewLinearGuestMemory(size uint64) (*GuestMemory, error) {
-	return newGuestMemory(size, false)
+	return NewGuestMemoryWithModel(size, MemoryModelLinear)
 }
 
-func newGuestMemory(size uint64, sandbox bool) (*GuestMemory, error) {
+func NewGuestMemoryWithModel(size uint64, model MemoryModel) (*GuestMemory, error) {
+	if err := model.Validate(); err != nil {
+		return nil, err
+	}
 	if size == 0 || size&(size-1) != 0 {
 		return nil, fmt.Errorf("guestmem: size must be a non-zero power of two, got %d", size)
 	}
@@ -218,18 +219,18 @@ func newGuestMemory(size uint64, sandbox bool) (*GuestMemory, error) {
 	}
 
 	m := &GuestMemory{
-		base:    unsafe.Pointer(ptr),
-		mask:    size - 1,
-		size:    size,
-		sandbox: sandbox,
+		base:  unsafe.Pointer(ptr),
+		mask:  size - 1,
+		size:  size,
+		model: model,
 	}
 
 	// Install guard pages (PROT_NONE):
 	//   1. Midpoint: divides heap (grows up) from stack (grows down)
 	//   2. Between sandbox stack and register file: catches stack underflow
 	// Page 0 is NOT guarded — riscv-tests ELFs load code at VA 0x0000.
-	// The mask already contains all guest accesses, so a guest null
-	// dereference just hits offset 0 of the mmap (harmless to the host).
+	// Sandbox memory relies on mask containment here; linear memory relies
+	// on the caller's checks and lets native JIT code use raw base+addr.
 	pg := uintptr(GuestPageSize)
 	//guestGuard(ptr, GuestPageSize)
 	//guestGuard(unsafe.Pointer(uintptr(ptr)+uintptr(size/2)), GuestPageSize)             // midpoint
@@ -285,7 +286,7 @@ func (m *GuestMemory) CowClone() (*GuestMemory, error) {
 		base:               newBase,
 		mask:               m.mask,
 		size:               m.size,
-		sandbox:            m.sandbox,
+		model:              m.model,
 		execRegions:        execRegionsCopy,
 		loadedELFSize:      m.loadedELFSize,
 		loadedELFImageSize: m.loadedELFImageSize,
@@ -299,26 +300,9 @@ func (m *GuestMemory) LoadedELFSize() uint64 { return m.loadedELFSize }
 
 func (m *GuestMemory) LoadedELFImageSize() uint64 { return m.loadedELFImageSize }
 
-func (m *GuestMemory) Sandbox() bool { return m.sandbox }
+func (m *GuestMemory) MemoryModel() MemoryModel { return m.model }
 
-func (m *GuestMemory) GuestStart() uint64 {
-	return 0
-}
-
-func (m *GuestMemory) GuestEnd() uint64 {
-	return m.GuestStart() + m.size
-}
-
-func (m *GuestMemory) GuestAddr(offset uint64) uint64 {
-	return offset
-}
-
-func (m *GuestMemory) GuestOffset(addr uint64) (uint64, bool) {
-	if addr >= m.size {
-		return 0, false
-	}
-	return addr, true
-}
+func (m *GuestMemory) Sandbox() bool { return m.model == MemoryModelSandbox }
 
 func (m *GuestMemory) guestRangeOffset(addr, length uint64) (uint64, bool) {
 	if length == 0 {
@@ -412,7 +396,7 @@ func (m *GuestMemory) check(addr, width uint64) uint64 {
 // This detects addresses that would segfault on real hardware but silently
 // wrap in the emulator.
 func (m *GuestMemory) checkSandboxEscape(addr, width uint64, kind FaultKind) *MemFault {
-	if !m.sandbox {
+	if m.model != MemoryModelSandbox {
 		return nil
 	}
 	if CheckSandboxBounds && (addr & ^m.mask) != 0 {
@@ -428,17 +412,18 @@ func (m *GuestMemory) checkAccessOverlay(addr, width uint64, kind FaultKind) *Me
 	return m.accessOverlay.CheckGuestAccess(addr, width, kind, m.size)
 }
 
-// hostPtr returns a host pointer to guest address addr. In sandbox mode,
-// the mask guarantees the result is always within [base, base+size):
+// hostPtr returns a host pointer to guest address addr. In sandbox mode, the
+// mask guarantees the result is always within [base, base+size):
 //
 //	addr & mask ∈ [0, size-1]  →  base + (addr&mask) ∈ [base, base+size-1]
 //
-// Callers must have verified check(addr, width)==0 before dereferencing.
+// In linear mode this returns base+addr. Callers must have verified
+// check(addr, width)==0 before dereferencing.
 // unsafe.Add from an unsafe.Pointer satisfies Go's pointer rule #3.
 //
 //go:nosplit
 func (m *GuestMemory) hostPtr(addr uint64) unsafe.Pointer {
-	if m.sandbox {
+	if m.model == MemoryModelSandbox {
 		return unsafe.Add(m.base, addr&m.mask)
 	}
 	return unsafe.Add(m.base, uintptr(addr))

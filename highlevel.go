@@ -14,7 +14,9 @@ const JitOKJalrMiss = 6
 // reads/writes) and then continues JIT dispatch from the next PC.
 const JitMisalign = 7
 
-// MaskedLoad performs a bounds-checked guest memory load:
+// MaskedLoad performs a guest memory load. In linear mode it emits a direct
+// base+addr host load. In sandbox mode it emits the bounds branch and masked
+// dereference shown below:
 //
 //	addr = base + off
 //	if (addr | (addr + width-1)) & ~mask != 0: goto faultLabel
@@ -67,7 +69,9 @@ func (e *Emitter) MaskedLoadAddr(dst, addr, memBase, mask VReg, width int, signe
 	e.Load(dst, host, 0, t, signed)
 }
 
-// GuestStore performs a bounds-checked guest memory store:
+// GuestStore performs a guest memory store. In linear mode it emits a direct
+// base+addr host store. In sandbox mode it emits the bounds branch and masked
+// dereference shown below:
 //
 //	addr = base + off
 //	if (addr | (addr + width-1)) & ~mask != 0: goto faultLabel

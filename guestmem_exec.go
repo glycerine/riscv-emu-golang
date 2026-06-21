@@ -11,9 +11,9 @@ package riscv
 // PC (yes → exec region exists) or fall through to lazy compile (no →
 // target is in data/bss/unmapped).
 //
-// No host-side mprotect is performed here. The flat guest mmap retains
-// its sandboxing invariant (hostPtr = base + (addr & mask)); this table
-// is purely guest-VA metadata.
+// No host-side mprotect is performed here. This table is purely guest-VA
+// metadata; MemoryModel selects whether compiled memory references use
+// base+addr or the sandboxed base+(addr&mask) path.
 
 // ExecRegion represents a guest-VA range that holds executable code.
 //
