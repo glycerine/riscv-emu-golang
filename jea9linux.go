@@ -767,10 +767,12 @@ type jea9LinuxAuxEntry struct {
 }
 
 type jea9LinuxVM struct {
-	pages    map[uint64]uint64
-	brk      uint64
-	minBrk   uint64
-	mmapNext uint64
+	pages     map[uint64]uint64
+	guestBase uint64
+	guestSize uint64
+	brk       uint64
+	minBrk    uint64
+	mmapNext  uint64
 }
 
 type jea9LinuxContextState uint8
@@ -1572,16 +1574,21 @@ func (jos *Jea9Linux) randomBlock(label string, counter uint64) [32]byte {
 	return out
 }
 
-func newJea9LinuxVM(memSize uint64) *jea9LinuxVM {
-	brk := jea9LinuxAlignUp(Size1MB * 2)
-	if brk >= memSize {
-		brk = jea9LinuxAlignUp(memSize / 4)
+func newJea9LinuxVM(mem *GuestMemory) *jea9LinuxVM {
+	memSize := mem.Size()
+	base := mem.GuestStart()
+	brkOff := jea9LinuxAlignUp(Size1MB * 2)
+	if brkOff >= memSize {
+		brkOff = jea9LinuxAlignUp(memSize / 4)
 	}
+	brk := base + brkOff
 	return &jea9LinuxVM{
-		pages:    make(map[uint64]uint64),
-		brk:      brk,
-		minBrk:   brk,
-		mmapNext: jea9LinuxDefaultMmapBase(memSize),
+		pages:     make(map[uint64]uint64),
+		guestBase: base,
+		guestSize: memSize,
+		brk:       brk,
+		minBrk:    brk,
+		mmapNext:  base + jea9LinuxDefaultMmapBase(memSize),
 	}
 }
 
@@ -1598,7 +1605,7 @@ func jea9LinuxDefaultMmapBase(memSize uint64) uint64 {
 
 func (jos *Jea9Linux) ensureVM(cpu *CPU) *jea9LinuxVM {
 	if jos.vm == nil {
-		jos.vm = newJea9LinuxVM(cpu.mem.Size())
+		jos.vm = newJea9LinuxVM(&cpu.mem)
 	}
 	(&cpu.mem).setAccessOverlay(jos.vm)
 	return jos.vm
@@ -2123,18 +2130,20 @@ func (jos *Jea9Linux) removeFutexWaiter(addr, tid uint64) {
 }
 
 func (vm *jea9LinuxVM) CheckGuestAccess(addr, width uint64, kind FaultKind, size uint64) *MemFault {
+	_ = size
 	if width == 0 {
 		return nil
 	}
 	end := addr + width
-	if end < addr || end > size {
+	guestEnd := vm.guestBase + vm.guestSize
+	if end < addr || addr < vm.guestBase || end > guestEnd {
 		return &MemFault{Addr: addr, Width: width, Kind: kind}
 	}
 	startPage := addr / GuestPageSize
 	endPage := (end - 1) / GuestPageSize
 	for page := startPage; page <= endPage; page++ {
 		prot := jea9LinuxProtRead | jea9LinuxProtWrite | jea9LinuxProtExec
-		if page == 0 {
+		if vm.guestBase == 0 && page == 0 {
 			prot = 0
 		} else if p, ok := vm.pages[page]; ok {
 			if p&jea9LinuxPageMapped == 0 {
@@ -2169,17 +2178,18 @@ func jea9LinuxAlignUp(v uint64) uint64 {
 	return (v + GuestPageSize - 1) &^ (GuestPageSize - 1)
 }
 
-func jea9LinuxPageRange(addr, length, memSize uint64) (begin, end uint64, ok bool) {
+func jea9LinuxPageRange(addr, length, base, memSize uint64) (begin, end uint64, ok bool) {
 	if length == 0 {
 		return 0, 0, false
 	}
 	rawEnd := addr + length
-	if rawEnd < addr || rawEnd > memSize {
+	memEnd := base + memSize
+	if rawEnd < addr || addr < base || rawEnd > memEnd {
 		return 0, 0, false
 	}
 	begin = jea9LinuxAlignDown(addr)
 	end = jea9LinuxAlignUp(rawEnd)
-	if end < begin || end > memSize {
+	if end < begin || begin < base || end > memEnd {
 		return 0, 0, false
 	}
 	return begin, end, true
@@ -2286,11 +2296,11 @@ func (vm *jea9LinuxVM) rangeFree(addr, length uint64) bool {
 	return true
 }
 
-func (vm *jea9LinuxVM) allocRange(memSize, length uint64) (uint64, bool) {
-	limit := jea9LinuxAlignDown(memSize - 2*GuestPageSize)
+func (vm *jea9LinuxVM) allocRange(length uint64) (uint64, bool) {
+	limit := jea9LinuxAlignDown(vm.guestBase + vm.guestSize - 2*GuestPageSize)
 	addr := jea9LinuxAlignUp(vm.mmapNext)
 	for addr+length >= addr && addr+length <= limit {
-		if addr >= GuestPageSize && vm.rangeFree(addr, length) {
+		if addr >= vm.guestBase && (vm.guestBase != 0 || addr >= GuestPageSize) && vm.rangeFree(addr, length) {
 			vm.mmapNext = addr + length
 			return addr, true
 		}
@@ -2311,7 +2321,7 @@ func (vm *jea9LinuxVM) updateExecMetadata(mem *GuestMemory, addr, length, prot u
 
 func newJea9LinuxStackBuilder(cpu *CPU, stackTop uint64) jea9LinuxStackBuilder {
 	if stackTop == 0 {
-		stackTop = cpu.mem.Size() - Size1MB
+		stackTop = cpu.mem.GuestAddr(cpu.mem.Size() - Size1MB)
 	}
 	return jea9LinuxStackBuilder{cpu: cpu, sp: stackTop &^ 15}
 }
@@ -2416,7 +2426,7 @@ func (jos *Jea9Linux) InitELFStack(cpu *CPU, ef *ELF, opts Jea9LinuxStartOptions
 
 	stackTop := opts.StackTop
 	if stackTop == 0 {
-		stackTop = cpu.mem.Size() - Size1MB
+		stackTop = cpu.mem.GuestAddr(cpu.mem.Size() - Size1MB)
 	}
 	stackTop &^= 15
 	stack := newJea9LinuxStackBuilder(cpu, stackTop)
@@ -2456,10 +2466,14 @@ func (jos *Jea9Linux) InitELFStack(cpu *CPU, ef *ELF, opts Jea9LinuxStartOptions
 
 func (jos *Jea9Linux) reserveInitialStackMapping(cpu *CPU, vm *jea9LinuxVM, stackTop, vector uint64) {
 	top := jea9LinuxAlignUp(stackTop)
-	if top > cpu.mem.Size() {
-		top = cpu.mem.Size()
+	memEnd := cpu.mem.GuestEnd()
+	if top > memEnd {
+		top = memEnd
 	}
-	bottom := uint64(GuestPageSize)
+	bottom := cpu.mem.GuestStart()
+	if bottom == 0 {
+		bottom = GuestPageSize
+	}
 	if stackTop > defaultJea9LinuxStackReserve {
 		bottom = stackTop - defaultJea9LinuxStackReserve
 	}
@@ -2467,8 +2481,12 @@ func (jos *Jea9Linux) reserveInitialStackMapping(cpu *CPU, vm *jea9LinuxVM, stac
 		bottom = vector
 	}
 	bottom = jea9LinuxAlignDown(bottom)
-	if bottom < GuestPageSize {
-		bottom = GuestPageSize
+	minBottom := cpu.mem.GuestStart()
+	if minBottom == 0 {
+		minBottom = GuestPageSize
+	}
+	if bottom < minBottom {
+		bottom = minBottom
 	}
 	if top <= bottom {
 		return
@@ -2519,7 +2537,7 @@ func elfProgramHeaderVA(ef *ELF) uint64 {
 			continue
 		}
 		if tableOff >= ph.Offset && tableEnd <= ph.Offset+ph.FileSz {
-			return ph.VAddr + (tableOff - ph.Offset)
+			return ef.LoadBias + ph.VAddr + (tableOff - ph.Offset)
 		}
 	}
 	return 0
@@ -2542,7 +2560,7 @@ func elfProgramBreak(ef *ELF) uint64 {
 		if ph.Type != ptLoad {
 			continue
 		}
-		end := ph.VAddr + ph.MemSz
+		end := ef.LoadBias + ph.VAddr + ph.MemSz
 		if end > maxEnd {
 			maxEnd = end
 		}
@@ -3843,7 +3861,7 @@ func (jos *Jea9Linux) ensureSignalRestorer(cpu *CPU) (uint64, int64) {
 		return jos.signalRestorer, 0
 	}
 	vm := jos.ensureVM(cpu)
-	addr, ok := vm.allocRange(cpu.mem.Size(), GuestPageSize)
+	addr, ok := vm.allocRange(GuestPageSize)
 	if !ok {
 		return 0, jea9LinuxErrENOMEM
 	}
@@ -3900,9 +3918,9 @@ func (jos *Jea9Linux) writeSignalFrame(cpu *CPU, ctx *jea9LinuxContext, snap jea
 
 func defaultJea9LinuxSignalStackTop(cpu *CPU) uint64 {
 	if cpu.mem.Size() <= Size1MB+GuestPageSize {
-		return cpu.mem.Size()
+		return cpu.mem.GuestEnd()
 	}
-	return cpu.mem.Size() - Size1MB
+	return cpu.mem.GuestAddr(cpu.mem.Size() - Size1MB)
 }
 
 func storeJea9LinuxSignalUContext(cpu *CPU, addr uint64, snap jea9LinuxCPUSnapshot, mask uint64) int64 {
@@ -5177,7 +5195,7 @@ func (jos *Jea9Linux) sysBrk(cpu *CPU, addr uint64) uint64 {
 	if addr == 0 {
 		return vm.brk
 	}
-	if addr < vm.minBrk || addr >= cpu.mem.Size()-2*GuestPageSize {
+	if addr < vm.minBrk || addr >= vm.guestBase+vm.guestSize-2*GuestPageSize {
 		return vm.brk
 	}
 	old := vm.brk
@@ -5217,13 +5235,13 @@ func (jos *Jea9Linux) sysMmap(cpu *CPU, addr, length, prot, flags, fd, off uint6
 		if addr == 0 || addr%GuestPageSize != 0 {
 			return jea9LinuxErrEINVAL
 		}
-		if _, _, ok := jea9LinuxPageRange(addr, length, cpu.mem.Size()); !ok {
+		if _, _, ok := jea9LinuxPageRange(addr, length, vm.guestBase, vm.guestSize); !ok {
 			return jea9LinuxErrEINVAL
 		}
 		chosen = addr
 	} else {
 		var ok bool
-		chosen, ok = vm.allocRange(cpu.mem.Size(), length)
+		chosen, ok = vm.allocRange(length)
 		if !ok {
 			return jea9LinuxErrENOMEM
 		}
@@ -5244,7 +5262,7 @@ func (jos *Jea9Linux) sysMunmap(cpu *CPU, addr, length uint64) int64 {
 	if addr%GuestPageSize != 0 {
 		return jea9LinuxErrEINVAL
 	}
-	begin, end, ok := jea9LinuxPageRange(addr, length, cpu.mem.Size())
+	begin, end, ok := jea9LinuxPageRange(addr, length, vm.guestBase, vm.guestSize)
 	if !ok {
 		return jea9LinuxErrEINVAL
 	}
@@ -5258,7 +5276,7 @@ func (jos *Jea9Linux) sysMprotect(cpu *CPU, addr, length, prot uint64) int64 {
 	if addr%GuestPageSize != 0 || prot&^(jea9LinuxProtRead|jea9LinuxProtWrite|jea9LinuxProtExec) != 0 {
 		return jea9LinuxErrEINVAL
 	}
-	begin, end, ok := jea9LinuxPageRange(addr, length, cpu.mem.Size())
+	begin, end, ok := jea9LinuxPageRange(addr, length, vm.guestBase, vm.guestSize)
 	if !ok {
 		return jea9LinuxErrEINVAL
 	}
@@ -5280,7 +5298,7 @@ func (jos *Jea9Linux) sysMincore(cpu *CPU, addr, length, vecAddr uint64) int64 {
 	if addr%GuestPageSize != 0 {
 		return jea9LinuxErrEINVAL
 	}
-	begin, end, ok := jea9LinuxPageRange(addr, length, cpu.mem.Size())
+	begin, end, ok := jea9LinuxPageRange(addr, length, vm.guestBase, vm.guestSize)
 	if !ok {
 		return jea9LinuxErrEINVAL
 	}
@@ -5299,11 +5317,11 @@ func (jos *Jea9Linux) sysMincore(cpu *CPU, addr, length, vecAddr uint64) int64 {
 }
 
 func (jos *Jea9Linux) sysMadvise(cpu *CPU, addr, length, advice uint64) int64 {
-	_, _ = jos.ensureVM(cpu), advice
+	vm, _ := jos.ensureVM(cpu), advice
 	if length == 0 {
 		return 0
 	}
-	if _, _, ok := jea9LinuxPageRange(addr, length, cpu.mem.Size()); !ok {
+	if _, _, ok := jea9LinuxPageRange(addr, length, vm.guestBase, vm.guestSize); !ok {
 		return jea9LinuxErrEINVAL
 	}
 	return 0

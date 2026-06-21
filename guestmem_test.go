@@ -77,6 +77,41 @@ func TestNewGuestMemory_AcceptsMaximum(t *testing.T) {
 	m.Free()
 }
 
+func TestNewLinearGuestMemory_UsesGuestOffsets(t *testing.T) {
+	m, err := NewLinearGuestMemory(Size1MB)
+	if err != nil {
+		t.Fatalf("NewLinearGuestMemory: %v", err)
+	}
+	t.Cleanup(m.Free)
+
+	if m.Sandbox() {
+		t.Fatal("Sandbox() = true, want false")
+	}
+	if m.GuestStart() != 0 {
+		t.Fatalf("GuestStart() = 0x%x, want 0", m.GuestStart())
+	}
+	addr := m.GuestAddr(0x1000)
+	if off, ok := m.GuestOffset(addr); !ok || off != 0x1000 {
+		t.Fatalf("GuestOffset(GuestAddr(0x1000)) = 0x%x, %v; want 0x1000, true", off, ok)
+	}
+	if f := m.Store64(addr, 0x1122334455667788); f != nil {
+		t.Fatalf("Store64 linear addr: %v", f)
+	}
+	got, f := m.Load64(addr)
+	if f != nil {
+		t.Fatalf("Load64 linear addr: %v", f)
+	}
+	if got != 0x1122334455667788 {
+		t.Fatalf("Load64 linear addr = 0x%x", got)
+	}
+	if f := m.Store8(0, 0xab); f != nil {
+		t.Fatalf("Store8(0) in linear memory: %v", f)
+	}
+	if got, f := m.Load8(0); f != nil || got != 0xab {
+		t.Fatalf("Load8(0) in linear memory = 0x%x, %v; want 0xab, nil", got, f)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Store8 / Load8
 // ---------------------------------------------------------------------------
@@ -280,10 +315,10 @@ func TestLoad64_Misaligned(t *testing.T) {
 func TestLoad64_OutOfBounds(t *testing.T) {
 	m := newTestMem(t)
 	oob := []uint64{
-		m.Size(),           // exactly at end
-		m.Size() + 8,       // past end
-		^uint64(0) - 7,     // near max uint64 — tests wraparound
-		^uint64(0) &^ 7,    // aligned near max
+		m.Size(),        // exactly at end
+		m.Size() + 8,    // past end
+		^uint64(0) - 7,  // near max uint64 — tests wraparound
+		^uint64(0) &^ 7, // aligned near max
 	}
 	for _, addr := range oob {
 		_, f := m.Load64(addr)
@@ -475,10 +510,10 @@ func TestContainment_ExtremeAddresses(t *testing.T) {
 	// Addresses that would escape a naive emulator but must wrap here.
 	// All of these, after masking, land within [0, size).
 	extreme := []uint64{
-		m.Size(),           // first OOB — wraps to 0
-		m.Size() * 2,       // wraps to 0
-		^uint64(0) &^ 7,    // near-max aligned — wraps to (^0 & mask) & ^7
-		^uint64(0) - 15,    // another near-max
+		m.Size(),        // first OOB — wraps to 0
+		m.Size() * 2,    // wraps to 0
+		^uint64(0) &^ 7, // near-max aligned — wraps to (^0 & mask) & ^7
+		^uint64(0) - 15, // another near-max
 	}
 
 	for _, addr := range extreme {

@@ -13,8 +13,8 @@ const (
 	elfMagic     = "\x7fELF"
 	elfClass64   = 2
 	elfDataLE    = 1 // little-endian
-	elfTypeExec  = 2   // ET_EXEC
-	elfTypeDyn   = 3   // ET_DYN (also static-pie)
+	elfTypeExec  = 2 // ET_EXEC
+	elfTypeDyn   = 3 // ET_DYN (also static-pie)
 	elfMachRISCV = 0xF3
 	ptLoad       = 1 // PT_LOAD
 	shtSymtab    = 2 // SHT_SYMTAB
@@ -89,6 +89,7 @@ type Elf64Phdr struct {
 // ELF holds a parsed ELF64 RISC-V executable.
 type ELF struct {
 	Entry      uint64       // copy of Header.Entry (always valid, 0 if no header)
+	LoadBias   uint64       // runtime address added to ELF p_vaddr/symbol values
 	TohostAddr uint64       // address of "tohost" symbol (0 if not found)
 	Header     *Elf64Header // parsed file header
 	Shdrs      []*Elf64Shdr // parsed section headers
@@ -137,9 +138,9 @@ func loadELFReader(mem *GuestMemory, r io.ReadSeeker, data []byte) (*ELF, error)
 	// True shared libraries are also ET_DYN but have no fixed runtime address;
 	// we treat everything as static-pie here since the emulator only runs
 	// bare-metal firmware and kernels, not userspace dynamic linking.
-	pieBase := uint64(0)
+	loadBias := uint64(0)
 	if hdr.Type == elfTypeDyn {
-		pieBase = staticPieBase
+		loadBias = staticPieBase
 	}
 	if hdr.Machine != elfMachRISCV {
 		return nil, fmt.Errorf("elf: not RISC-V (machine 0x%x)", hdr.Machine)
@@ -173,6 +174,10 @@ func loadELFReader(mem *GuestMemory, r io.ReadSeeker, data []byte) (*ELF, error)
 			return nil, fmt.Errorf("elf: PT_LOAD image size overflow")
 		}
 		loadedImageSize += ph.MemSz
+		if ph.VAddr > ^uint64(0)-loadBias {
+			return nil, fmt.Errorf("elf: segment %d address overflow", i)
+		}
+		segAddr := ph.VAddr + loadBias
 
 		// Copy file bytes into guest memory.
 		if ph.FileSz > 0 {
@@ -183,15 +188,18 @@ func loadELFReader(mem *GuestMemory, r io.ReadSeeker, data []byte) (*ELF, error)
 			if _, err := io.ReadFull(r, buf); err != nil {
 				return nil, fmt.Errorf("elf: read segment %d: %w", i, err)
 			}
-			if f := mem.WriteBytes(ph.VAddr+pieBase, buf); f != nil {
+			if f := mem.WriteBytes(segAddr, buf); f != nil {
 				return nil, fmt.Errorf("elf: write segment %d to 0x%x: %v",
-					i, ph.VAddr+pieBase, f)
+					i, segAddr, f)
 			}
 		}
 
 		// Zero-fill BSS (MemSz > FileSz)
 		if ph.MemSz > ph.FileSz {
-			bssStart := ph.VAddr + ph.FileSz + pieBase
+			if segAddr > ^uint64(0)-ph.FileSz {
+				return nil, fmt.Errorf("elf: segment %d BSS address overflow", i)
+			}
+			bssStart := segAddr + ph.FileSz
 			bssSize := ph.MemSz - ph.FileSz
 			if f := mem.ZeroRange(bssStart, bssSize); f != nil {
 				return nil, fmt.Errorf("elf: zero BSS for segment %d: %v", i, f)
@@ -200,7 +208,10 @@ func loadELFReader(mem *GuestMemory, r io.ReadSeeker, data []byte) (*ELF, error)
 
 		// Record executable extents.
 		if ph.Flags&pfX != 0 {
-			mem.AddExecRegion(ph.VAddr+pieBase, ph.VAddr+ph.MemSz+pieBase, ph.Flags&pfW != 0)
+			if segAddr > ^uint64(0)-ph.MemSz {
+				return nil, fmt.Errorf("elf: segment %d executable range overflow", i)
+			}
+			mem.AddExecRegion(segAddr, segAddr+ph.MemSz, ph.Flags&pfW != 0)
 		}
 
 		loaded++
@@ -220,9 +231,9 @@ func loadELFReader(mem *GuestMemory, r io.ReadSeeker, data []byte) (*ELF, error)
 	// A normal dynamic linker would do this; we do it here since the emulator
 	// has no dynamic linker. Each entry is 24 bytes: r_offset (8), r_info (8),
 	// r_addend (8). For R_RISCV_RELATIVE (type 3):
-	//   *( pieBase + r_offset ) = pieBase + r_addend
-	if pieBase != 0 && data != nil {
-		if err := applyRelaRelocations(mem, data, pieBase); err != nil {
+	//   *( loadBias + r_offset ) = loadBias + r_addend
+	if hdr.Type == elfTypeDyn && data != nil {
+		if err := applyRelaRelocations(mem, data, loadBias); err != nil {
 			return nil, fmt.Errorf("elf: RELA relocations: %w", err)
 		}
 	}
@@ -244,10 +255,11 @@ func loadELFReader(mem *GuestMemory, r io.ReadSeeker, data []byte) (*ELF, error)
 	}
 
 	ef := &ELF{
-		Entry:  hdr.Entry + pieBase,
-		Header: &hdr,
-		Shdrs:  shdrs,
-		Data:   data,
+		Entry:    hdr.Entry + loadBias,
+		LoadBias: loadBias,
+		Header:   &hdr,
+		Shdrs:    shdrs,
+		Data:     data,
 	}
 
 	// Auto-detect tohost symbol.
@@ -266,7 +278,7 @@ func loadELFReader(mem *GuestMemory, r io.ReadSeeker, data []byte) (*ELF, error)
 //
 // Only R_RISCV_RELATIVE (type 3) is handled. Any other relocation type causes
 // an error — static-pie firmware should never have symbol-dependent relocations.
-func applyRelaRelocations(mem *GuestMemory, data []byte, pieBase uint64) error {
+func applyRelaRelocations(mem *GuestMemory, data []byte, loadBias uint64) error {
 	le := binary.LittleEndian
 
 	if len(data) < 64 {
@@ -371,9 +383,9 @@ doneDyn:
 			return fmt.Errorf("unsupported relocation type %d at entry %d", relocType, i)
 		}
 
-		// *( pieBase + r_offset ) = pieBase + r_addend
-		target := pieBase + rOffset
-		value := pieBase + rAddend // int64 addend; pieBase dominates for firmware
+		// *( loadBias + r_offset ) = loadBias + r_addend
+		target := loadBias + rOffset
+		value := loadBias + rAddend // int64 addend; loadBias dominates for firmware
 
 		var buf [8]byte
 		le.PutUint64(buf[:], value)
@@ -440,7 +452,7 @@ func (ef *ELF) FindSymbolAddr(name string) (uint64, bool) {
 			end++
 		}
 		if string(strData[nameOff:end]) == name {
-			return sym.Value, true
+			return ef.LoadBias + sym.Value, true
 		}
 	}
 	return 0, false

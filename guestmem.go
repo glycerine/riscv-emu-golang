@@ -1,13 +1,14 @@
-// Package riscv implements a sandboxed RISC-V RV64IMAC emulator.
+// Package riscv implements a RISC-V RV64IMAC emulator.
 // This file defines GuestMemory: the fixed-size, mmap-backed memory
 // slab that forms the address space of a single guest process.
 //
-// Security invariant
-// ==================
+// Sandbox invariant
+// =================
 // hostPtr(addr) is always within [base, base+size), regardless of addr,
-// because (addr & mask) ∈ [0, size-1] by construction. This holds even
-// if the bounds-check logic in check() has a bug — the mask is an
-// absolute arithmetic containment guarantee independent of the check.
+// when sandbox mode is enabled, because (addr & mask) is in [0, size-1]
+// by construction. This holds even if the bounds-check logic in check()
+// has a bug: the mask is an absolute arithmetic containment guarantee
+// independent of the check.
 //
 // GC invariant
 // ============
@@ -124,10 +125,9 @@ func (f *MemFault) Error() string {
 // for a single guest. It is safe to use from multiple goroutines only if
 // the caller enforces its own synchronization (the scheduler does this).
 //
-// All loads and stores are:
-//   - bounds-checked (one branch, near-never taken)
-//   - alignment-checked (folded into the same expression)
-//   - sandboxed (hostPtr cannot escape [base, base+size) by construction)
+// Interpreter loads and stores are bounds-checked and alignment-checked.
+// In sandbox mode, hostPtr cannot escape [base, base+size) by construction.
+// In linear mode, hostPtr is base+addr after the normal bounds check.
 type GuestMemory struct {
 	// base is the host address of the first byte of the guest memory slab.
 	// Stored as unsafe.Pointer so that pointer arithmetic via unsafe.Add
@@ -144,6 +144,11 @@ type GuestMemory struct {
 
 	// size is kept for munmap and for ZeroRange bounds checking.
 	size uint64
+
+	// sandbox selects the containing address translation:
+	//   sandbox: hostPtr = base + (addr & mask)
+	//   linear:  hostPtr = base + addr
+	sandbox bool
 
 	// scratch is a reusable MemFault to avoid heap allocation on every fault.
 	// Only one fault is ever live at a time (caller checks, then discards).
@@ -189,6 +194,17 @@ type guestMemoryAccessOverlay interface {
 // Physical memory is demand-paged; only virtual address space is
 // reserved immediately.
 func NewGuestMemory(size uint64) (*GuestMemory, error) {
+	return newGuestMemory(size, true)
+}
+
+// NewLinearGuestMemory allocates guest memory with zero-based guest virtual
+// addresses translated as hostPtr=base+addr. It omits the sandbox mask but
+// keeps normal interpreter bounds checks.
+func NewLinearGuestMemory(size uint64) (*GuestMemory, error) {
+	return newGuestMemory(size, false)
+}
+
+func newGuestMemory(size uint64, sandbox bool) (*GuestMemory, error) {
 	if size == 0 || size&(size-1) != 0 {
 		return nil, fmt.Errorf("guestmem: size must be a non-zero power of two, got %d", size)
 	}
@@ -202,9 +218,10 @@ func NewGuestMemory(size uint64) (*GuestMemory, error) {
 	}
 
 	m := &GuestMemory{
-		base: unsafe.Pointer(ptr),
-		mask: size - 1,
-		size: size,
+		base:    unsafe.Pointer(ptr),
+		mask:    size - 1,
+		size:    size,
+		sandbox: sandbox,
 	}
 
 	// Install guard pages (PROT_NONE):
@@ -268,6 +285,7 @@ func (m *GuestMemory) CowClone() (*GuestMemory, error) {
 		base:               newBase,
 		mask:               m.mask,
 		size:               m.size,
+		sandbox:            m.sandbox,
 		execRegions:        execRegionsCopy,
 		loadedELFSize:      m.loadedELFSize,
 		loadedELFImageSize: m.loadedELFImageSize,
@@ -280,6 +298,41 @@ func (m *GuestMemory) Size() uint64 { return m.size }
 func (m *GuestMemory) LoadedELFSize() uint64 { return m.loadedELFSize }
 
 func (m *GuestMemory) LoadedELFImageSize() uint64 { return m.loadedELFImageSize }
+
+func (m *GuestMemory) Sandbox() bool { return m.sandbox }
+
+func (m *GuestMemory) GuestStart() uint64 {
+	return 0
+}
+
+func (m *GuestMemory) GuestEnd() uint64 {
+	return m.GuestStart() + m.size
+}
+
+func (m *GuestMemory) GuestAddr(offset uint64) uint64 {
+	return offset
+}
+
+func (m *GuestMemory) GuestOffset(addr uint64) (uint64, bool) {
+	if addr >= m.size {
+		return 0, false
+	}
+	return addr, true
+}
+
+func (m *GuestMemory) guestRangeOffset(addr, length uint64) (uint64, bool) {
+	if length == 0 {
+		return 0, true
+	}
+	end := addr + length
+	if end < addr {
+		return 0, false
+	}
+	if end > m.size {
+		return 0, false
+	}
+	return addr, true
+}
 
 // Mask returns size-1. ANDing any uint64 address with Mask() produces a
 // valid in-bounds guest address by construction — the same guarantee the
@@ -319,11 +372,11 @@ func (m *GuestMemory) RawSlice() []byte {
 // Virtual address space is retained. Use to reclaim RAM after a guest
 // process exits without reallocating the address space for reuse.
 func (m *GuestMemory) ZeroRange(addr, length uint64) *MemFault {
-	end := addr + length
-	if end > m.size || end < addr { // second condition catches wraparound
+	off, ok := m.guestRangeOffset(addr, length)
+	if !ok {
 		return &MemFault{addr, length, FaultStore}
 	}
-	_ = guestZeroRange(unsafe.Add(m.base, uintptr(addr)), length)
+	_ = guestZeroRange(unsafe.Add(m.base, uintptr(off)), length)
 	return nil
 }
 
@@ -359,6 +412,9 @@ func (m *GuestMemory) check(addr, width uint64) uint64 {
 // This detects addresses that would segfault on real hardware but silently
 // wrap in the emulator.
 func (m *GuestMemory) checkSandboxEscape(addr, width uint64, kind FaultKind) *MemFault {
+	if !m.sandbox {
+		return nil
+	}
 	if CheckSandboxBounds && (addr & ^m.mask) != 0 {
 		return &MemFault{Addr: addr, Width: width, Kind: FaultSandboxEscape}
 	}
@@ -372,8 +428,8 @@ func (m *GuestMemory) checkAccessOverlay(addr, width uint64, kind FaultKind) *Me
 	return m.accessOverlay.CheckGuestAccess(addr, width, kind, m.size)
 }
 
-// hostPtr returns a host pointer to guest address addr.
-// The mask guarantees the result is always within [base, base+size):
+// hostPtr returns a host pointer to guest address addr. In sandbox mode,
+// the mask guarantees the result is always within [base, base+size):
 //
 //	addr & mask ∈ [0, size-1]  →  base + (addr&mask) ∈ [base, base+size-1]
 //
@@ -382,7 +438,10 @@ func (m *GuestMemory) checkAccessOverlay(addr, width uint64, kind FaultKind) *Me
 //
 //go:nosplit
 func (m *GuestMemory) hostPtr(addr uint64) unsafe.Pointer {
-	return unsafe.Add(m.base, addr&m.mask)
+	if m.sandbox {
+		return unsafe.Add(m.base, addr&m.mask)
+	}
+	return unsafe.Add(m.base, uintptr(addr))
 }
 
 // fault constructs a MemFault, distinguishing misalignment from OOB.
@@ -713,8 +772,7 @@ func (m *GuestMemory) ReadBytes(addr uint64, dst []byte) *MemFault {
 	if f := m.checkAccessOverlay(addr, length, FaultLoad); f != nil {
 		return f
 	}
-	end := addr + length
-	if end > m.size || end < addr { // end < addr catches uint64 wraparound
+	if _, ok := m.guestRangeOffset(addr, length); !ok {
 		return &MemFault{addr, length, FaultLoad}
 	}
 	// src is a slice header pointing into C memory.
@@ -734,8 +792,7 @@ func (m *GuestMemory) WriteBytes(addr uint64, src []byte) *MemFault {
 	if f := m.checkAccessOverlay(addr, length, FaultStore); f != nil {
 		return f
 	}
-	end := addr + length
-	if end > m.size || end < addr {
+	if _, ok := m.guestRangeOffset(addr, length); !ok {
 		return &MemFault{addr, length, FaultStore}
 	}
 	dst := unsafe.Slice((*byte)(m.hostPtr(addr)), length)
@@ -749,8 +806,7 @@ func (m *GuestMemory) Zero(addr, length uint64) *MemFault {
 	if length == 0 {
 		return nil
 	}
-	end := addr + length
-	if end > m.size || end < addr {
+	if _, ok := m.guestRangeOffset(addr, length); !ok {
 		return &MemFault{addr, length, FaultStore}
 	}
 	dst := unsafe.Slice((*byte)(m.hostPtr(addr)), length)

@@ -299,9 +299,9 @@ type JIT struct {
 	HotRegionsCompiled uint64
 	hotRegionCounts    map[uint64]uint32
 
-	// SandboxMem keeps guest memory references on the current base+mask
-	// path. When false, jea9linux direct-memory JIT emissions may treat
-	// guest register values as raw host pointers.
+	// SandboxMem keeps guest memory references on the base+(addr&mask)
+	// path. When false, jea9linux JIT emissions use linear base+addr
+	// references without the sandbox mask or bounds branch.
 	SandboxMem bool
 
 	irAlloc    RegAllocator

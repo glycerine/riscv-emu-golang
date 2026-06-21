@@ -37,6 +37,14 @@ func (e *Emitter) MaskedLoad(dst, base, memBase, mask VReg, off int64, width int
 // addr=base+off for fault-tail reporting via allocFaultLabel — avoids
 // an otherwise-duplicate AddImm (and its spill+reload in host code).
 func (e *Emitter) MaskedLoadAddr(dst, addr, memBase, mask VReg, width int, signed bool, faultLabel Label) {
+	if e.LinearMem() {
+		host := e.Tmp()
+		e.Add(host, memBase, addr)
+		t := WidthToType(width)
+		e.Load(dst, host, 0, t, signed)
+		return
+	}
+
 	// OOB check: (addr | (addr + width-1)) & ~mask != 0
 	endAddr := addr
 	if width > 1 {
@@ -75,6 +83,14 @@ func (e *Emitter) GuestStore(base, memBase, mask VReg, off int64, src VReg, widt
 // GuestStoreAddr is GuestStore with the address VReg pre-computed —
 // see MaskedLoadAddr for the rationale.
 func (e *Emitter) GuestStoreAddr(addr, memBase, mask, src VReg, width int, faultLabel Label) {
+	if e.LinearMem() {
+		host := e.Tmp()
+		e.Add(host, memBase, addr)
+		t := WidthToType(width)
+		e.Store(host, 0, src, t)
+		return
+	}
+
 	// OOB check.
 	endAddr := addr
 	if width > 1 {

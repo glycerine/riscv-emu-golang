@@ -2387,7 +2387,7 @@ func (e *emitter) emitLoad(rd, rs1 uint32, imm int64, funct3 uint32) {
 		// intentionally emits bytewise accesses because compatibility tests
 		// rely on permissive misaligned scalar loads.
 		// OOB check for misaligned path (same as MaskedLoadAddr does for aligned).
-		if CheckSandboxBounds {
+		if CheckSandboxBounds && e.irEm.SandboxMem() {
 			e.emitOOBCheck(addr, width, faultLabel)
 		}
 		t := WidthToType(width)
@@ -2412,6 +2412,9 @@ func (e *emitter) emitLoad(rd, rs1 uint32, imm int64, funct3 uint32) {
 // emitOOBCheck emits (addr | (addr+width-1)) & ~mask != 0 → goto faultLabel.
 // Only emitted when CheckSandboxBounds is on; the fast path skips this.
 func (e *emitter) emitOOBCheck(addr VReg, width int, faultLabel Label) {
+	if e.irEm.LinearMem() {
+		return
+	}
 	mask := e.irEm.MemMask()
 	endAddr := addr
 	if width > 1 {
@@ -2437,6 +2440,20 @@ func (e *emitter) staticPageZeroFault(rs1 uint32, imm int64, width int) bool {
 // addr is a VReg holding the guest virtual address (already computed).
 // faultLabel is the per-call-site fault tail (already registered with addr).
 func (e *emitter) emitMisalignedLoad(dst VReg, addr VReg, width int, signed bool, faultLabel Label) {
+	if e.irEm.LinearMem() {
+		t := WidthToType(width)
+		e.irEm.MisalignedLoad(dst, addr, t)
+		if signed {
+			switch width {
+			case 2:
+				e.irEm.Sext(dst, dst, I16)
+			case 4:
+				e.irEm.Sext(dst, dst, I32)
+			}
+		}
+		return
+	}
+
 	memBase := e.irEm.MemBase()
 	mask := e.irEm.MemMask()
 
@@ -2509,7 +2526,7 @@ func (e *emitter) emitStore(rs1, rs2 uint32, imm int64, funct3 uint32) {
 		e.irEm.Branch(alignBits, VRegZero, EQ, alignedLabel)
 		// Strict Spike-style behavior would return jitMisalign here. The
 		// bytewise store path is intentionally kept for compatibility.
-		if CheckSandboxBounds {
+		if CheckSandboxBounds && e.irEm.SandboxMem() {
 			e.emitOOBCheck(addr, width, faultLabel)
 		}
 		t := WidthToType(width)
@@ -2526,6 +2543,12 @@ func (e *emitter) emitStore(rs1, rs2 uint32, imm int64, funct3 uint32) {
 // emitMisalignedStore emits byte-by-byte stores for a misaligned address.
 // faultLabel is the per-call-site fault tail (already registered with addr).
 func (e *emitter) emitMisalignedStore(addr, src VReg, width int, faultLabel Label) {
+	if e.irEm.LinearMem() {
+		t := WidthToType(width)
+		e.irEm.MisalignedStore(addr, src, t)
+		return
+	}
+
 	memBase := e.irEm.MemBase()
 	mask := e.irEm.MemMask()
 
@@ -2586,7 +2609,7 @@ func (e *emitter) emitFPLoad(rd, rs1 uint32, imm int64, funct3 uint32) {
 	e.irEm.Branch(alignBits, VRegZero, EQ, alignedLabel)
 
 	// Misaligned path: OOB check, then byte-by-byte load, then NaN-box if FLW.
-	if CheckSandboxBounds {
+	if CheckSandboxBounds && e.irEm.SandboxMem() {
 		e.emitOOBCheck(addr, width, faultLabel)
 	}
 	t := WidthToType(width)
@@ -2651,7 +2674,7 @@ func (e *emitter) emitFPStore(rs1, rs2 uint32, imm int64, funct3 uint32) {
 	e.irEm.Branch(alignBits, VRegZero, EQ, alignedLabel)
 
 	// Misaligned path: OOB check first.
-	if CheckSandboxBounds {
+	if CheckSandboxBounds && e.irEm.SandboxMem() {
 		e.emitOOBCheck(addr, width, faultLabel)
 	}
 	t := WidthToType(width)

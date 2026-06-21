@@ -88,6 +88,10 @@ func (e *Emitter) MemBase() VReg { return e.memBase }
 // MemMask returns the VReg holding the guest memory mask.
 func (e *Emitter) MemMask() VReg { return e.memMask }
 
+func (e *Emitter) SandboxMem() bool { return e.j == nil || e.j.SandboxMem }
+
+func (e *Emitter) LinearMem() bool { return !e.SandboxMem() }
+
 // SRetBase returns the VReg holding the RV8 sret metadata pointer.
 func (e *Emitter) SRetBase() VReg { return e.sretBase }
 
@@ -251,13 +255,60 @@ func (e *Emitter) Call(sym string, addr uintptr) int {
 // MisalignedLoad emits a byte-by-byte load for a misaligned guest address.
 // The lowerer expands inline using [RBP+520]/[RBP+528] for memBase/memMask.
 func (e *Emitter) MisalignedLoad(dst, addr VReg, t Type) {
+	if e.LinearMem() {
+		e.linearMisalignedLoad(dst, addr, t)
+		return
+	}
 	e.emit(IRInstr{Op: IRMisalignLoad, T: t, Dst: dst, A: addr})
 	e.MarkDirty(dst)
 }
 
 // MisalignedStore emits a byte-by-byte store for a misaligned guest address.
 func (e *Emitter) MisalignedStore(addr, value VReg, t Type) {
+	if e.LinearMem() {
+		e.linearMisalignedStore(addr, value, t)
+		return
+	}
 	e.emit(IRInstr{Op: IRMisalignStore, T: t, A: addr, B: value})
+}
+
+func (e *Emitter) linearMisalignedLoad(dst, addr VReg, t Type) {
+	width := t.Size()
+	host0 := e.Tmp()
+	e.Add(host0, e.MemBase(), addr)
+	e.Load(dst, host0, 0, I8, false)
+	for i := 1; i < width; i++ {
+		ai := e.Tmp()
+		e.AddImm(ai, addr, int64(i))
+		hi := e.Tmp()
+		e.Add(hi, e.MemBase(), ai)
+		bi := e.Tmp()
+		e.Load(bi, hi, 0, I8, false)
+		shifted := e.Tmp()
+		e.ShlImm(shifted, bi, int64(i*8))
+		e.Or(dst, dst, shifted)
+	}
+}
+
+func (e *Emitter) linearMisalignedStore(addr, value VReg, t Type) {
+	width := t.Size()
+	for i := 0; i < width; i++ {
+		ai := addr
+		if i > 0 {
+			ai = e.Tmp()
+			e.AddImm(ai, addr, int64(i))
+		}
+		hi := e.Tmp()
+		e.Add(hi, e.MemBase(), ai)
+		bi := e.Tmp()
+		if i == 0 {
+			e.AndImm(bi, value, 0xff)
+		} else {
+			e.ShrImm(bi, value, int64(i*8))
+			e.AndImm(bi, bi, 0xff)
+		}
+		e.Store(hi, 0, bi, I8)
+	}
 }
 
 // Ret emits a block return: {pc=pc, status=status, faultAddr=faultAddr}.

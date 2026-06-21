@@ -55,6 +55,44 @@ func TestMaskedLoad_Basic(t *testing.T) {
 	}
 }
 
+func TestLinearLoadStore_AddsMemBaseWithoutMask(t *testing.T) {
+	j := NewJIT()
+	defer j.Close()
+	e := NewEmitter(j)
+	faultLabel := e.NewLabel()
+	addr := VReg(10)
+
+	e.MaskedLoadAddr(VReg(5), addr, e.MemBase(), e.MemMask(), 8, false, faultLabel)
+	e.GuestStoreAddr(addr, e.MemBase(), e.MemMask(), VReg(5), 8, faultLabel)
+
+	var loadHost, storeHost VReg
+	for _, ins := range e.Block.Instrs {
+		switch ins.Op {
+		case IRBranch, IRAnd:
+			t.Fatalf("linear memory emitted sandbox op: %+v", ins)
+		case IRAdd:
+			if ins.A == e.MemBase() && ins.B == addr {
+				if loadHost == VRegZero {
+					loadHost = ins.Dst
+				} else {
+					storeHost = ins.Dst
+				}
+			}
+		case IRLoad:
+			if loadHost == VRegZero || ins.A != loadHost {
+				t.Fatalf("linear load base = %v, want host temp %v", ins.A, loadHost)
+			}
+		case IRStore:
+			if storeHost == VRegZero || ins.A != storeHost {
+				t.Fatalf("linear store base = %v, want host temp %v", ins.A, storeHost)
+			}
+		}
+	}
+	if loadHost == VRegZero || storeHost == VRegZero {
+		t.Fatalf("linear memory did not add MemBase to guest address before load/store")
+	}
+}
+
 func TestMaskedLoad_Unsigned(t *testing.T) {
 	e := NewEmitter(nil)
 	faultLabel := e.NewLabel()

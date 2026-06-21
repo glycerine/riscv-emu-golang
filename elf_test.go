@@ -87,6 +87,49 @@ func TestLoadELF_Errors(t *testing.T) {
 	}
 }
 
+func TestLoadELF_LinearMemoryKeepsGuestVAs(t *testing.T) {
+	mem, err := NewLinearGuestMemory(Size64MB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(mem.Free)
+
+	data := BuildELF(0x10000, []uint32{0x00000073}) // ECALL
+	ef, err := LoadELFBytes(mem, data)
+	if err != nil {
+		t.Fatalf("LoadELFBytes linear: %v", err)
+	}
+	if ef.LoadBias != 0 {
+		t.Fatalf("LoadBias = 0x%x, want 0", ef.LoadBias)
+	}
+	if ef.Entry != 0x10000 {
+		t.Fatalf("Entry = 0x%x, want 0x10000", ef.Entry)
+	}
+	insn, f := mem.Fetch32U(ef.Entry)
+	if f != nil {
+		t.Fatalf("Fetch32U at linear entry: %v", f)
+	}
+	if insn != 0x00000073 {
+		t.Fatalf("entry instruction = 0x%08x, want ECALL", insn)
+	}
+}
+
+func TestLoadELF_LinearMemoryAllowsLowExec(t *testing.T) {
+	mem, err := NewLinearGuestMemory(Size64MB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(mem.Free)
+
+	ef, err := LoadELFBytes(mem, BuildELF(0, []uint32{0x00000073}))
+	if err != nil {
+		t.Fatalf("LoadELFBytes linear low ET_EXEC: %v", err)
+	}
+	if ef.Entry != 0 {
+		t.Fatalf("Entry = 0x%x, want 0", ef.Entry)
+	}
+}
+
 func TestFindSymbolAddr(t *testing.T) {
 	data, err := os.ReadFile("riscv-elf-tests/rv64ui-p-add")
 	if err != nil {

@@ -76,7 +76,12 @@ func RunEmu(cfg *EmuConfig) (int, error) {
 		return 0, err
 	}
 
-	mem, err := NewGuestMemory(cfg.MemorySize)
+	var mem *GuestMemory
+	if cfg.SandboxMem {
+		mem, err = NewGuestMemory(cfg.MemorySize)
+	} else {
+		mem, err = NewLinearGuestMemory(cfg.MemorySize)
+	}
 	if err != nil {
 		return 0, err
 	}

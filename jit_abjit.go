@@ -52,7 +52,11 @@ func abjitDispatch(
 	s.F = cpu.f
 	s.FCSR = cpu.fcsr
 	s.MemBase = cpu.mem.Base()
-	s.MemMask = cpu.mem.Mask()
+	if j.SandboxMem {
+		s.MemMask = cpu.mem.Mask()
+	} else {
+		s.MemMask = ^uint64(0)
+	}
 	if debugJIT {
 		fmt.Fprintf(os.Stderr, "ABJIT_STATE memBase=0x%x memMask=0x%x pc=0x%x fn=0x%x\n",
 			s.MemBase, s.MemMask, cpu.pc, blk.fn)
