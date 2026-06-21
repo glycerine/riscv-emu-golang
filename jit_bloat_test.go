@@ -79,7 +79,7 @@ func TestBloat_BenchGuest_0x10de(t *testing.T) {
 	}
 
 	// Emit IR for the block.
-	j := NewJIT()
+	j := NewSandboxJIT()
 	res := j.emitBlock(mem, blockEntryPC)
 	if res == nil || res.block == nil || res.numInsns == 0 {
 		t.Fatalf("emitBlock(0x%x) returned nil/empty", blockEntryPC)

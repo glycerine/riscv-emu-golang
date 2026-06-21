@@ -14,7 +14,7 @@ func compileIR(t *testing.T, b *Block) (uintptr, []byte) {
 	t.Helper()
 	pool := RV8Pool(b)
 	pinned := RV8Pinned()
-	j := NewJIT()
+	j := NewSandboxJIT()
 	alloc := j.irAlloc.Allocate(b, pool, pinned, nil)
 
 	ctx := goasm.New(goasm.AMD64)
@@ -61,7 +61,7 @@ func TestRV8_RandomBlocks(t *testing.T) {
 	}
 	defer mem.Free()
 
-	j := NewJIT()
+	j := NewSandboxJIT()
 	j.SetRegPolicy(PolicyRV8)
 	for i := 0; i < numBlocks; i++ {
 		n := rng.Intn(maxInsns) + 1

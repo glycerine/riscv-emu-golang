@@ -429,7 +429,7 @@ func TestJea9Linux_SchedulerDecisionAdvancesEvent_LazyJIT(t *testing.T) {
 		LowPriorityDenominator: 10,
 	}
 	os.normalizeSchedulerConfig()
-	jit := NewJIT()
+	jit := NewSandboxJIT()
 	defer jit.Close()
 
 	parent := os.ensureScheduler(cpu)
@@ -460,7 +460,7 @@ func TestJITStepBlockBudget_ExpiresAtExactInstructionCount(t *testing.T) {
 	cpu, mem, _ := testLoopCPU(t, 5)
 	defer mem.Free()
 
-	j := NewJIT()
+	j := NewSandboxJIT()
 	defer j.Close()
 
 	res, err := j.StepBlockBudget(cpu, 5)
@@ -485,7 +485,7 @@ func TestJITStepBlockRetiredBudget_ExpiresAtRetiredCount(t *testing.T) {
 	cpu, mem, _ := testLoopCPU(t, 0)
 	defer mem.Free()
 
-	j := NewJIT()
+	j := NewSandboxJIT()
 	defer j.Close()
 
 	res, err := j.StepBlockRetiredBudget(cpu, 5)
@@ -513,7 +513,7 @@ func TestJITStepBlockRetiredBudget_ZeroBudgetExpiresImmediately(t *testing.T) {
 	cpu, mem, _ := testLoopCPU(t, 0)
 	defer mem.Free()
 
-	j := NewJIT()
+	j := NewSandboxJIT()
 	defer j.Close()
 
 	res, err := j.StepBlockRetiredBudget(cpu, 0)
@@ -535,7 +535,7 @@ func TestJITStepBlockDualBudget_ReportsAttemptLimit(t *testing.T) {
 	cpu, mem, _ := testLoopCPU(t, 0)
 	defer mem.Free()
 
-	j := NewJIT()
+	j := NewSandboxJIT()
 	defer j.Close()
 
 	res, limit, err := j.StepBlockDualBudget(cpu, 3, 5)
@@ -557,7 +557,7 @@ func TestJITStepBlockBudget_UsesCumulativeInstructionCounter(t *testing.T) {
 	cpu, mem, _ := testLoopCPU(t, 5)
 	defer mem.Free()
 
-	j := NewJIT()
+	j := NewSandboxJIT()
 	defer j.Close()
 
 	for slice := 1; slice <= 2; slice++ {
@@ -595,7 +595,7 @@ func TestJITStepBlockBudget_ChangingBudgetDoesNotRecompile(t *testing.T) {
 	cpu, mem, _ := testLoopCPU(t, 10)
 	defer mem.Free()
 
-	j := NewJIT()
+	j := NewSandboxJIT()
 	defer j.Close()
 
 	res, err := j.StepBlockBudget(cpu, 4)
@@ -639,7 +639,7 @@ func TestJITStepBlockBudget_FusedPairTooSmallFallsBackOneInstruction(t *testing.
 	})
 	defer mem.Free()
 
-	j := NewJIT()
+	j := NewSandboxJIT()
 	defer j.Close()
 
 	res, err := j.StepBlockBudget(cpu, 1)
@@ -668,7 +668,7 @@ func TestJITStepBlockBudget_FusedPairRunsWhenBudgetFits(t *testing.T) {
 	})
 	defer mem.Free()
 
-	j := NewJIT()
+	j := NewSandboxJIT()
 	defer j.Close()
 
 	res, err := j.StepBlockBudget(cpu, 2)
@@ -700,7 +700,7 @@ func TestJITStepBlockBudget_FusedTripleTooSmallFallsBackOneInstruction(t *testin
 	defer mem.Free()
 	cpu.SetReg(10, 1)
 
-	j := NewJIT()
+	j := NewSandboxJIT()
 	defer j.Close()
 
 	res, err := j.StepBlockBudget(cpu, 2)
@@ -732,7 +732,7 @@ func TestJITStepBlockBudget_FusedTripleRunsWhenBudgetFits(t *testing.T) {
 	defer mem.Free()
 	cpu.SetReg(10, 1)
 
-	j := NewJIT()
+	j := NewSandboxJIT()
 	defer j.Close()
 
 	res, err := j.StepBlockBudget(cpu, 3)

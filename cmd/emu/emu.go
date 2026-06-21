@@ -80,6 +80,7 @@ func defineFlags(fs *flag.FlagSet, c *riscv.EmuConfig) {
 	fs.Uint64Var(&c.Seed, "seed", 0, "pseudo random number generator seed")
 	fs.StringVar(&c.Memory, "mem", "", "guest memory size as bytes or KB/MB/GB/TB; with -bios this is RAM advertised to Linux")
 	fs.StringVar(&c.Budget, "budget", "", "scheduler/run budget as an instruction count, duration, or max; defaults to "+defaultEmuRunBudgetDescription+" for -run and max for -bios")
+	fs.BoolVar(&c.SandboxMem, "sandbox", false, "use sandboxed guest memory for -run instead of direct host-address memory")
 	fs.BoolVar(&c.JITLazy, "jitlazy", false, "run with the native lazy JIT instead of the interpreter")
 	fs.BoolVar(&c.JITAOT, "jitaot", false, "run with explicit AOT JIT instead of the interpreter")
 	fs.BoolVar(&c.Hermit, "hermit", false, "disable host filesystem passthrough and networking for determinism. conflicts with -bios and -net")

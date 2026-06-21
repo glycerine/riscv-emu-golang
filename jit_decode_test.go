@@ -116,7 +116,7 @@ func TestInlineEcall_HelloEndToEnd(t *testing.T) {
 	cleanup := InstallLinuxOS(cpu, &out)
 	defer cleanup()
 
-	j := NewJIT()
+	j := NewSandboxJIT()
 	runErr := j.RunJIT(cpu)
 	if runErr != nil {
 		if _, ok := runErr.(*ExitError); !ok {
@@ -162,7 +162,7 @@ func TestInlineEcall_TinyLinuxWrite(t *testing.T) {
 	cleanup := InstallLinuxOS(cpu, &out)
 	defer cleanup()
 
-	j := NewJIT()
+	j := NewSandboxJIT()
 	err := j.RunJIT(cpu)
 	if err != nil {
 		if exit, ok := err.(*ExitError); !ok || exit.Code != 0 {

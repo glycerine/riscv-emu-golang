@@ -274,7 +274,7 @@ func TestJITInstructionCounterMode_Emission(t *testing.T) {
 	mem := newICModeTestMem(t)
 	defer mem.Free()
 
-	j := NewJIT()
+	j := NewSandboxJIT()
 	if got := j.InstructionCounterMode(); got != JITICPrecise {
 		t.Fatalf("new JIT IC mode = %s, want %s", got, JITICPrecise)
 	}
@@ -321,7 +321,7 @@ func TestJITInstructionCounterMode_ReservePredicate(t *testing.T) {
 	mem := newICModeTestMem(t)
 	defer mem.Free()
 
-	j := NewJIT()
+	j := NewSandboxJIT()
 	j.SetInstructionCounterMode(JITICNone)
 	res := j.emitBlock(mem, 0x1000)
 	if res == nil {
@@ -350,7 +350,7 @@ func TestMixedExecution_Block2_Compile(t *testing.T) {
 	mem.Store32(0x1010, renc(opOP, 0, 0x00, 5, 1, 2)) // ADD x5, x1, x2
 	mem.Store32(0x1014, instrECALL)
 
-	j := NewJIT()
+	j := NewSandboxJIT()
 	res := j.emitBlock(mem, 0x100C)
 	if res == nil {
 		t.Fatal("emitBlock returned nil")
@@ -400,7 +400,7 @@ func TestMixedExecution_Block1_Dump(t *testing.T) {
 	mem.Store32(0x1004, ienc(opOPIMM, 0, 2, 0, 20))
 	mem.Store32(0x1008, csrrs)
 
-	j := NewJIT()
+	j := NewSandboxJIT()
 	res := j.emitBlock(mem, 0x1000)
 	if res == nil {
 		t.Fatal("emitBlock returned nil")
@@ -441,7 +441,7 @@ func TestMixedExecution_FullSequence(t *testing.T) {
 	defer mem.Free()
 	cpu.Notes.Push(ecallStop)
 
-	jit := NewJIT()
+	jit := NewSandboxJIT()
 
 	// Step 1: compile and run block 1 (ADDI x1; ADDI x2; bail at CSR)
 	//t.Log("Step 1: first block")
@@ -477,7 +477,7 @@ func TestSrc1EqDest(t *testing.T) {
 	defer mem.Free()
 	cpu.Notes.Push(ecallStop)
 
-	jit := NewJIT()
+	jit := NewSandboxJIT()
 	jit.RunJIT(cpu)
 
 	if cpu.Reg(1) != 2 {
@@ -521,7 +521,7 @@ func TestSubELF_Block39(t *testing.T) {
 	cpu.SetWatchAddr(elf.TohostAddr)
 	cpu.Notes.Push(ecallStop)
 
-	jit := NewJIT()
+	jit := NewSandboxJIT()
 	// Run blocks 0-38
 	for block := 0; block < 39; block++ {
 		pc := cpu.PC()
@@ -592,7 +592,7 @@ func TestCLI_NoCorruption(t *testing.T) {
 	cpu.SetReg(12, 999)
 	cpu.Notes.Push(ecallStop)
 
-	jit := NewJIT()
+	jit := NewSandboxJIT()
 	jit.RunJIT(cpu)
 
 	if cpu.Reg(7) != 3 {
@@ -623,7 +623,7 @@ func TestSLLW_ShiftZero(t *testing.T) {
 	cpu.SetReg(12, ^uint64(31)) // 0xFFFFFFFFFFFFFFE0 = -32, & 31 = 0
 	cpu.Notes.Push(ecallStop)
 
-	jit := NewJIT()
+	jit := NewSandboxJIT()
 	jit.RunJIT(cpu)
 
 	want := uint64(0x21212121)
@@ -643,7 +643,7 @@ func TestSLL_Src1EqDest(t *testing.T) {
 	cpu.SetReg(12, 13)
 	cpu.Notes.Push(ecallStop)
 
-	jit := NewJIT()
+	jit := NewSandboxJIT()
 	jit.RunJIT(cpu)
 
 	want := uint64(2 << 13) // 16384
@@ -663,7 +663,7 @@ func TestSRL_Src1EqDest(t *testing.T) {
 	cpu.SetReg(2, 7)
 	cpu.Notes.Push(ecallStop)
 
-	jit := NewJIT()
+	jit := NewSandboxJIT()
 	jit.RunJIT(cpu)
 
 	want := uint64(0x80000000 >> 7)
@@ -689,7 +689,7 @@ func TestLW_ELF_Block39(t *testing.T) {
 	cpu.SetPC(elf.Entry)
 	cpu.SetWatchAddr(elf.TohostAddr)
 	cpu.Notes.Push(ecallStop)
-	jit := NewJIT()
+	jit := NewSandboxJIT()
 	// jit.trace = true // uncomment to debug
 
 	for block := 0; block < 50; block++ {
@@ -714,7 +714,7 @@ func TestSRL_ZeroSrc(t *testing.T) {
 	cpu.SetReg(1, 31)
 	cpu.Notes.Push(ecallStop)
 
-	jit := NewJIT()
+	jit := NewSandboxJIT()
 	jit.RunJIT(cpu)
 
 	if cpu.Reg(2) != 0 {
@@ -744,7 +744,7 @@ func TestLUI_SRLI_TwoInsn(t *testing.T) {
 	cpu := NewCPU(*mem)
 	cpu.SetPC(pc)
 
-	jit := NewJIT()
+	jit := NewSandboxJIT()
 	_, jitErr := jit.StepBlock(cpu)
 	_ = jitErr
 
@@ -778,7 +778,7 @@ func TestSRL_LargeValue_Block(t *testing.T) {
 	cpu := NewCPU(*mem)
 	cpu.SetPC(pc)
 
-	jit := NewJIT()
+	jit := NewSandboxJIT()
 	_, _ = jit.StepBlock(cpu)
 
 	want := uint64(0xFFFFFFFF80000000)
@@ -815,7 +815,7 @@ func TestSRL_CrossBlock_Writeback(t *testing.T) {
 	cpu := NewCPU(*mem)
 	cpu.SetPC(pc)
 
-	jit := NewJIT()
+	jit := NewSandboxJIT()
 
 	// Block 1
 	_, err1 := jit.StepBlock(cpu)
@@ -890,7 +890,7 @@ func TestSRL_ExactIR(t *testing.T) {
 
 	// Compile and execute
 	blk := e.Block
-	j := NewJIT()
+	j := NewSandboxJIT()
 	compiled, cerr := j.jitCompile(&emitResult{block: blk, numInsns: 3})
 	if cerr != nil {
 		t.Fatalf("compile: %v", cerr)
@@ -945,7 +945,7 @@ func TestSRL_ExactIR_V2(t *testing.T) {
 	e.Ret(0x592, 0, VRegZero)
 
 	blk := e.Block
-	j := NewJIT()
+	j := NewSandboxJIT()
 	compiled, cerr := j.jitCompile(&emitResult{block: blk, numInsns: 3})
 	if cerr != nil {
 		t.Fatalf("compile: %v", cerr)
@@ -993,7 +993,7 @@ func TestSRL_ExactIR_DumpAlloc(t *testing.T) {
 	blk := e.Block
 	pool := RV8Pool(blk)
 	pinned := RV8Pinned()
-	j := NewJIT()
+	j := NewSandboxJIT()
 	alloc := j.irAlloc.Allocate(blk, pool, pinned, nil)
 
 	//t.Logf("StackSlots=%d", alloc.StackSlots)
@@ -1104,7 +1104,7 @@ func TestSRL_Block61_V1vV2(t *testing.T) {
 	x2v = x1v
 
 	// V1
-	j := NewJIT()
+	j := NewSandboxJIT()
 	c1, err := j.jitCompile(&emitResult{block: blk, numInsns: 9})
 	if err != nil {
 		t.Fatalf("V1 compile: %v", err)
@@ -1212,7 +1212,7 @@ func TestSRL_Block61_V1vV2b(t *testing.T) {
 	setup(&xv1)
 	setup(&xv2)
 
-	j := NewJIT()
+	j := NewSandboxJIT()
 	c1, err := j.jitCompile(&emitResult{block: blk, numInsns: 9})
 	if err != nil {
 		t.Fatalf("V1 compile: %v", err)
@@ -1277,8 +1277,8 @@ func TestSRL_RealBlock_V1vV2(t *testing.T) {
 
 	watchAddr := ef.TohostAddr
 
-	jitV1 := NewJIT()
-	jitV2 := NewJIT()
+	jitV1 := NewSandboxJIT()
+	jitV2 := NewSandboxJIT()
 
 	for block := 0; block < 200; block++ {
 		if cpu1.pc != cpu2.pc {
@@ -1330,7 +1330,7 @@ func TestSRL_Block39_Alloc(t *testing.T) {
 	cpu.SetWatchAddr(ef.TohostAddr)
 	cpu.SetPC(0)
 	cpu.Notes.Push(func(c *CPU, n Note) NoteDisposition { return NoteHandled })
-	jit := NewJIT()
+	jit := NewSandboxJIT()
 	for i := 0; i < 39; i++ {
 		jit.StepBlock(cpu)
 	}
@@ -1385,7 +1385,7 @@ func TestDebugV1V2_SRL(t *testing.T) {
 
 	watchAddr := ef.TohostAddr
 
-	jit := NewJIT()
+	jit := NewSandboxJIT()
 
 	defer func() {
 		if r := recover(); r != nil {
@@ -1417,7 +1417,7 @@ func TestDebugV1V2_SRL_DumpAlloc(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	j := NewJIT()
+	j := NewSandboxJIT()
 	_ = j
 
 	// The failing block is at pc=0x322. But emitBlock starts at a block
@@ -1426,7 +1426,7 @@ func TestDebugV1V2_SRL_DumpAlloc(t *testing.T) {
 	cpu.SetWatchAddr(ef.TohostAddr)
 	cpu.SetPC(0)
 	cpu.Notes.Push(func(c *CPU, n Note) NoteDisposition { return NoteHandled })
-	jit := NewJIT()
+	jit := NewSandboxJIT()
 	for i := 0; i < 500; i++ {
 		if cpu.pc == 0x322 || (cpu.pc < 0x322 && cpu.pc+0x400 > 0x322) {
 			res := jit.emitBlock(&cpu.mem, cpu.pc)
@@ -1471,7 +1471,7 @@ func TestMetaIterOrder_SRL(t *testing.T) {
 			cpu.SetWatchAddr(ef.TohostAddr)
 			cpu.SetPC(0)
 			cpu.Notes.Push(func(c *CPU, n Note) NoteDisposition { return NoteHandled })
-			jit := NewJIT()
+			jit := NewSandboxJIT()
 			defer func() {
 				if r := recover(); r != nil {
 					t.Fatalf("V1/V2 mismatch at iterStart=%d: %v", offset, r)
@@ -1517,7 +1517,7 @@ func TestMetaIterOrder_AllUI(t *testing.T) {
 					cpu.SetWatchAddr(ef.TohostAddr)
 					cpu.SetPC(0)
 					cpu.Notes.Push(func(c *CPU, n Note) NoteDisposition { return NoteHandled })
-					jit := NewJIT()
+					jit := NewSandboxJIT()
 					defer func() {
 						if r := recover(); r != nil {
 							t.Fatalf("V1/V2 mismatch at iterStart=%d: %v", offset, r)
@@ -1552,7 +1552,7 @@ func TestDumpBlock_ld_st_0x1a0(t *testing.T) {
 	}
 	_ = ef
 
-	jit := NewJIT()
+	jit := NewSandboxJIT()
 	jit.watchAddr = ef.TohostAddr
 
 	// Try to find a block covering 0x1a0.
@@ -1600,7 +1600,7 @@ func TestDumpBlock_ld_st_0x1a0(t *testing.T) {
 	//t.Logf("jumps=%d branches=%d budgetChecks=%d", jumps, branches, budgetChecks)
 
 	// Also dump the Prog listing.
-	j := NewJIT()
+	j := NewSandboxJIT()
 	_, dbg, cerr := j.jitCompileDebug(res)
 	if cerr != nil {
 		t.Fatalf("V1 compile: %v", cerr)
@@ -1647,7 +1647,7 @@ func TestDispatchTrace_sraw(t *testing.T) {
 		}
 		return NoteForward
 	})
-	jit := NewJIT()
+	jit := NewSandboxJIT()
 	maxCycles := 200
 	for i := 0; i < maxCycles; i++ {
 		pc := cpu.pc
@@ -1692,7 +1692,7 @@ func testNativeTraceW(t *testing.T, elfPath string, targetBlock int) {
 	cpu.SetWatchAddr(ef.TohostAddr)
 	cpu.SetPC(0)
 	cpu.Notes.Push(func(c *CPU, note Note) NoteDisposition { return NoteHandled })
-	jit := NewJIT()
+	jit := NewSandboxJIT()
 	var lastPC uint64
 	_ = lastPC
 	for i := 0; i < targetBlock; i++ {
@@ -1812,7 +1812,7 @@ func TestFusion_SLLI_SRLI_ZextW(t *testing.T) {
 		instrECALL,
 	}
 
-	jit := NewJIT()
+	jit := NewSandboxJIT()
 
 	mem, err := NewGuestMemory(Size1MB)
 	if err != nil {
@@ -1871,7 +1871,7 @@ func TestFusion_ADDIW_SLLI_SRLI_Addiwz(t *testing.T) {
 	defer mem.Free()
 	storeInsns(mem, 0x1000, insns)
 
-	jit := NewJIT()
+	jit := NewSandboxJIT()
 	res := jit.emitBlock(mem, 0x1000)
 	if res == nil {
 		t.Fatal("emitBlock returned nil")
@@ -1925,7 +1925,7 @@ func TestFusion_ADDIW_SLLI_SRLI_Imm0(t *testing.T) {
 	defer mem.Free()
 	cpu.SetReg(10, 0x00000000_80000001) // high bits set, bit 31 set
 	cpu.Notes.Push(ecallStop)
-	jit := NewJIT()
+	jit := NewSandboxJIT()
 	jit.RunJIT(cpu)
 
 	got := cpu.Reg(10)

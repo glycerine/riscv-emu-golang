@@ -15,7 +15,7 @@ func runJITAMOProgramWithJIT(t *testing.T, insns []uint32, setup func(*CPU, *Gue
 	if setup != nil {
 		setup(cpu, mem)
 	}
-	jit := NewJIT()
+	jit := NewSandboxJIT()
 	if configure != nil {
 		configure(jit)
 	}
@@ -358,7 +358,7 @@ func TestJIT_LRSCFusionIRShape(t *testing.T) {
 	_, mem := newTestCPU(t, Size1MB, codeVA, insns)
 	defer mem.Free()
 
-	jit := NewJIT()
+	jit := NewSandboxJIT()
 	defer jit.Close()
 	res := jit.emitBlock(mem, codeVA)
 	if res == nil {
@@ -407,7 +407,7 @@ func TestJIT_LRSCFusionGuardsIRShape(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			_, mem := newTestCPU(t, Size1MB, codeVA, tt.insns)
 			defer mem.Free()
-			jit := NewJIT()
+			jit := NewSandboxJIT()
 			defer jit.Close()
 			res := jit.emitBlock(mem, codeVA)
 			if res == nil {

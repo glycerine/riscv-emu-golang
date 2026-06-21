@@ -122,7 +122,7 @@ func runJITWithOS(cpu *CPU) (exitCode int, err error) {
 	cpu.Notes.Push(o.Handle)
 	defer cpu.Notes.Pop()
 
-	jit := NewJIT()
+	jit := NewSandboxJIT()
 	err = jit.RunJIT(cpu)
 	if ex, ok := err.(*ExitError); ok {
 		return ex.Code, nil
@@ -152,7 +152,7 @@ func newTestCPU(t *testing.T, memSize uint64, codeVA uint64, insns []uint32) (*C
 }
 
 func TestJIT_LazyBlockMapSurvivesDirectCacheCollision(t *testing.T) {
-	jit := NewJIT()
+	jit := NewSandboxJIT()
 	pc1 := uint64(0x1000)
 	pc2 := pc1 + blockCacheSize*2
 	if cacheIdx(pc1) != cacheIdx(pc2) {
@@ -190,7 +190,7 @@ func TestJIT_InlineEcallExitCountsInstructionAttempts(t *testing.T) {
 	cpu.Notes.Push(o.Handle)
 	defer cpu.Notes.Pop()
 
-	jit := NewJIT()
+	jit := NewSandboxJIT()
 	err := jit.RunJIT(cpu)
 	if ex, ok := err.(*ExitError); !ok || ex.Code != 0 {
 		t.Fatalf("RunJIT err = %v, want exit 0", err)
@@ -268,7 +268,7 @@ func TestJIT_ADD(t *testing.T) {
 	cpu.SetReg(2, 100)
 	cpu.SetReg(3, 42)
 
-	jit := NewJIT()
+	jit := NewSandboxJIT()
 	cpu.Notes.Push(ecallStop)
 	jit.RunJIT(cpu)
 
@@ -375,7 +375,7 @@ func TestJIT_MulHighAndPopcount(t *testing.T) {
 			cpu.SetReg(3, tt.x3)
 			cpu.Notes.Push(ecallStop)
 
-			jit := NewJIT()
+			jit := NewSandboxJIT()
 			_ = jit.RunJIT(cpu)
 			if jit.DispatchCompile == 0 {
 				t.Fatalf("DispatchCompile = 0, block did not JIT")
@@ -417,7 +417,7 @@ func TestJIT_Fib(t *testing.T) {
 	cpu.SetReg(13, 20)
 
 	cpu.Notes.Push(ecallStop)
-	jit := NewJIT()
+	jit := NewSandboxJIT()
 	jit.RunJIT(cpu)
 
 	got := cpu.Reg(10)
@@ -438,7 +438,7 @@ func TestJIT_BlockReentry(t *testing.T) {
 	defer mem.Free()
 	cpu.Notes.Push(ecallStop)
 
-	jit := NewJIT()
+	jit := NewSandboxJIT()
 
 	// First run: x1 = 0 → 1
 	jit.RunJIT(cpu)
@@ -469,7 +469,7 @@ func TestJIT_CycleCount(t *testing.T) {
 	defer mem.Free()
 	cpu.Notes.Push(ecallStop)
 
-	jit := NewJIT()
+	jit := NewSandboxJIT()
 	jit.RunJIT(cpu)
 
 	// IC removed — JIT no longer tracks per-instruction cycle counts.
@@ -509,7 +509,7 @@ func TestJIT_CycleCount_Loop(t *testing.T) {
 	defer mem2.Free()
 	initRegs(cpu2)
 	cpu2.Notes.Push(ecallStop)
-	jit := NewJIT()
+	jit := NewSandboxJIT()
 	jit.RunJIT(cpu2)
 
 	// IC removed — JIT no longer tracks cycles. Verify result correctness.
@@ -532,7 +532,7 @@ func TestJIT_LoadStore(t *testing.T) {
 	defer mem.Free()
 	cpu.Notes.Push(ecallStop)
 
-	jit := NewJIT()
+	jit := NewSandboxJIT()
 	jit.RunJIT(cpu)
 
 	// x12 should contain 42 (store then load)
@@ -578,7 +578,7 @@ func TestJIT_LoadStore_AllWidths(t *testing.T) {
 			defer mem.Free()
 			cpu.Notes.Push(ecallStop)
 
-			jit := NewJIT()
+			jit := NewSandboxJIT()
 			jit.RunJIT(cpu)
 
 			if cpu.Reg(12) != tc.want {
@@ -606,7 +606,7 @@ func TestJIT_LoadFault(t *testing.T) {
 		return NoteForward
 	})
 
-	jit := NewJIT()
+	jit := NewSandboxJIT()
 	jit.RunJIT(cpu)
 
 	if !gotFault {
@@ -632,7 +632,7 @@ func TestJIT_StoreFault(t *testing.T) {
 		return NoteForward
 	})
 
-	jit := NewJIT()
+	jit := NewSandboxJIT()
 	jit.RunJIT(cpu)
 
 	if !gotFault {
@@ -716,7 +716,7 @@ func TestJIT_vs_Interp_Registers(t *testing.T) {
 				tc.init(cpu2)
 			}
 			cpu2.Notes.Push(ecallStop)
-			jit := NewJIT()
+			jit := NewSandboxJIT()
 			jit.RunJIT(cpu2)
 			snap2 := takeCPUSnapshot(cpu2)
 
@@ -743,7 +743,7 @@ func TestJIT_EBREAK(t *testing.T) {
 		return NoteForward
 	})
 
-	jit := NewJIT()
+	jit := NewSandboxJIT()
 	jit.RunJIT(cpu)
 
 	if !gotBreak {
@@ -777,7 +777,7 @@ func TestJIT_MemConsistency_Interp_to_JIT(t *testing.T) {
 	cpu.SetPC(0x1000)
 	cpu.Notes.Push(ecallStop)
 
-	jit := NewJIT()
+	jit := NewSandboxJIT()
 	jit.RunJIT(cpu)
 
 	// LW sign-extends: 0xCAFEBABE → 0xFFFFFFFFCAFEBABE
@@ -803,7 +803,7 @@ func TestJIT_MemConsistency_JIT_to_Interp(t *testing.T) {
 	defer mem.Free()
 	cpu.Notes.Push(ecallStop)
 
-	jit := NewJIT()
+	jit := NewSandboxJIT()
 	jit.RunJIT(cpu)
 
 	if cpu.Reg(12) != 42 {
@@ -827,7 +827,7 @@ func TestJIT_MixedExecution(t *testing.T) {
 	defer mem.Free()
 	cpu.Notes.Push(ecallStop)
 
-	jit := NewJIT()
+	jit := NewSandboxJIT()
 	jit.RunJIT(cpu)
 
 	if cpu.Reg(1) != 10 {
@@ -858,7 +858,7 @@ func TestJIT_ForwardBranch(t *testing.T) {
 	defer mem.Free()
 	cpu.Notes.Push(ecallStop)
 
-	jit := NewJIT()
+	jit := NewSandboxJIT()
 	jit.RunJIT(cpu)
 
 	if cpu.Reg(1) != 1 {
@@ -883,7 +883,7 @@ func TestJIT_ForwardBranch_NotTaken(t *testing.T) {
 	defer mem.Free()
 	cpu.Notes.Push(ecallStop)
 
-	jit := NewJIT()
+	jit := NewSandboxJIT()
 	jit.RunJIT(cpu)
 
 	if cpu.Reg(3) != 42 {
@@ -905,7 +905,7 @@ func TestJIT_J_Forward(t *testing.T) {
 	defer mem.Free()
 	cpu.Notes.Push(ecallStop)
 
-	jit := NewJIT()
+	jit := NewSandboxJIT()
 	jit.RunJIT(cpu)
 
 	if cpu.Reg(1) != 1 {
@@ -935,7 +935,7 @@ func TestJIT_TwoBlockDispatch(t *testing.T) {
 	defer mem.Free()
 	cpu.Notes.Push(ecallStop)
 
-	jit := NewJIT()
+	jit := NewSandboxJIT()
 	jit.RunJIT(cpu)
 
 	// x1 = return address = 0x1008 (PC after the JAL)
@@ -968,7 +968,7 @@ func TestJIT_JALR_IndirectJump(t *testing.T) {
 	defer mem.Free()
 	cpu.Notes.Push(ecallStop)
 
-	jit := NewJIT()
+	jit := NewSandboxJIT()
 	jit.RunJIT(cpu)
 
 	if cpu.Reg(1) != 10 {
@@ -993,7 +993,7 @@ func TestJIT_AUIPCJALRFusionPreservesAUIPCDestWhenJALRDoesNotLink(t *testing.T) 
 	defer mem.Free()
 	cpu.Notes.Push(ecallStop)
 
-	jit := NewJIT()
+	jit := NewSandboxJIT()
 	_ = jit.RunJIT(cpu)
 
 	if got := cpu.Reg(31); got != entryPC {
@@ -1013,7 +1013,7 @@ func TestJIT_TranslationFailure(t *testing.T) {
 	defer mem.Free()
 	cpu.Notes.Push(ecallStop)
 
-	jit := NewJIT()
+	jit := NewSandboxJIT()
 	jit.RunJIT(cpu)
 
 	// CSR instructions are now handled by creating a 1-instruction block
@@ -1041,7 +1041,7 @@ func TestJIT_BailLabel(t *testing.T) {
 	defer mem.Free()
 	cpu.Notes.Push(ecallStop)
 
-	jit := NewJIT()
+	jit := NewSandboxJIT()
 	jit.RunJIT(cpu)
 
 	if cpu.Reg(1) != 1 {
@@ -1064,7 +1064,7 @@ func TestJIT_LastBlockCache(t *testing.T) {
 	defer mem.Free()
 	cpu.Notes.Push(ecallStop)
 
-	jit := NewJIT()
+	jit := NewSandboxJIT()
 
 	for i := 0; i < 3; i++ {
 		cpu.SetPC(0x1000)
@@ -1104,7 +1104,7 @@ func TestJIT_InstructionBudget(t *testing.T) {
 	cpu.SetReg(2, 100000)
 	cpu.Notes.Push(ecallStop)
 
-	jit := NewJIT()
+	jit := NewSandboxJIT()
 	jit.RunJIT(cpu)
 
 	if cpu.Reg(1) != 100000 {
@@ -1134,7 +1134,7 @@ func TestJIT_InstructionBudget_JForward_Loop(t *testing.T) {
 	cpu.SetReg(2, 50000)
 	cpu.Notes.Push(ecallStop)
 
-	jit := NewJIT()
+	jit := NewSandboxJIT()
 	jit.RunJIT(cpu)
 
 	if cpu.Reg(1) != 50000 {
@@ -1160,7 +1160,7 @@ func TestJIT_StopperPage_InfiniteLoop(t *testing.T) {
 	defer mem.Free()
 	cpu.SetReg(1, 0)
 
-	jit := NewJIT()
+	jit := NewSandboxJIT()
 
 	// Arm the stopper page after 50ms from a separate goroutine.
 	done := make(chan struct{})
@@ -1226,7 +1226,7 @@ func TestJIT_FaultAddress(t *testing.T) {
 		return NoteForward
 	})
 
-	jit := NewJIT()
+	jit := NewSandboxJIT()
 	_ = jit.RunJIT(cpu)
 
 	if gotCause != CauseLoadFault {
@@ -1278,7 +1278,7 @@ func TestJIT_StoreFaultAddress(t *testing.T) {
 		return NoteForward
 	})
 
-	jit := NewJIT()
+	jit := NewSandboxJIT()
 	_ = jit.RunJIT(cpu)
 
 	if gotCause != CauseStoreFault {
@@ -1327,7 +1327,7 @@ func TestJIT_FLW_Misaligned(t *testing.T) {
 		return NoteFatal
 	})
 
-	jit := NewJIT()
+	jit := NewSandboxJIT()
 	_ = jit.RunJIT(cpu)
 
 	got := cpu.FReg(1)
@@ -1369,7 +1369,7 @@ func TestJIT_FLD_Misaligned(t *testing.T) {
 		return NoteFatal
 	})
 
-	jit := NewJIT()
+	jit := NewSandboxJIT()
 	_ = jit.RunJIT(cpu)
 
 	got := cpu.FReg(1)
@@ -1410,7 +1410,7 @@ func TestJIT_FSD_Misaligned(t *testing.T) {
 		return NoteFatal
 	})
 
-	jit := NewJIT()
+	jit := NewSandboxJIT()
 	_ = jit.RunJIT(cpu)
 
 	got := make([]byte, 8)
@@ -1481,7 +1481,7 @@ func TestJIT_NaNBoxF32_Roundtrip(t *testing.T) {
 		return NoteFatal
 	})
 
-	jit := NewJIT()
+	jit := NewSandboxJIT()
 	_ = jit.RunJIT(cpu)
 
 	if jit.DispatchCompile == 0 {

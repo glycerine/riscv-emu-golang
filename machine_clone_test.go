@@ -38,7 +38,7 @@ func buildExitMachine(t *testing.T) *Machine {
 	cpu := NewCPU(*mem)
 	cpu.SetPC(entry)
 
-	jit := NewJIT()
+	jit := NewSandboxJIT()
 	if err := jit.InstallAOT(mem, data); err != nil {
 		mem.Free()
 		t.Fatalf("InstallAOT: %v", err)
@@ -367,7 +367,7 @@ func TestMachineClone_LazyBlocksNotShared(t *testing.T) {
 	}
 	cpu := NewCPU(*mem)
 	cpu.SetPC(entry)
-	jit := NewJIT()
+	jit := NewSandboxJIT()
 	// (no InstallAOT)
 	parent := NewMachine(cpu, jit)
 	t.Cleanup(parent.Close)

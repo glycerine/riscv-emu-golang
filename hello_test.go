@@ -80,7 +80,7 @@ func TestHelloGoCPU_JITWithLinuxOS(t *testing.T) {
 	cleanup := InstallLinuxOS(cpu, &out)
 	defer cleanup()
 
-	j := NewJIT()
+	j := NewSandboxJIT()
 	runErr := j.RunJIT(cpu)
 	if runErr != nil {
 		if _, ok := runErr.(*ExitError); !ok {

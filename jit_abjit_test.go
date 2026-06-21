@@ -36,7 +36,7 @@ func TestABJITDispatchCopiesFPStateForNonFPEntryBlock(t *testing.T) {
 
 	cpu := NewCPU(*mem)
 	cpu.f[1] = inF1
-	j := NewJIT()
+	j := NewSandboxJIT()
 	defer j.Close()
 
 	blk := &compiledBlock{fn: cb.Addr(), hasFP: false}

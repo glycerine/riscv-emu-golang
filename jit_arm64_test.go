@@ -33,7 +33,7 @@ func TestARM64_RV8IC_MatchesInterpreter(t *testing.T) {
 	o.HandleEcall(RiscvTestsEcall)
 	jitCPU.Notes.Push(o.Handle)
 
-	jit := NewJIT()
+	jit := NewSandboxJIT()
 	jit.SetRegPolicy(PolicyRV8)
 
 	err = jit.RunJIT(jitCPU)

@@ -159,7 +159,7 @@ func runJITLRSCReservationContextSwitch(t *testing.T, configure func(*JIT)) {
 	})
 
 	cpu := NewCPU(*mem)
-	jit := NewJIT()
+	jit := NewSandboxJIT()
 	defer jit.Close()
 	if configure != nil {
 		configure(jit)

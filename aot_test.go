@@ -105,7 +105,7 @@ func TestAOTEmitBlockLinear_Dhrystone(t *testing.T) {
 	textBase, textSize, _ := FindTextSection(data)
 	ranges := enumerateBlockRanges(mem, textBase, textSize)
 
-	j := NewJIT()
+	j := NewSandboxJIT()
 
 	ok, nilCount, totalInsns := 0, 0, 0
 	for _, r := range ranges {
@@ -156,7 +156,7 @@ func TestAOTCompile_Dhrystone(t *testing.T) {
 	}
 	ranges := enumerateBlockRanges(mem, textBase, textSize)
 
-	j := NewJIT()
+	j := NewSandboxJIT()
 	seg, err := j.jitCompileAOTSegment(mem, ranges, textBase, textBase+textSize)
 	if err != nil {
 		t.Fatalf("jitCompileAOTSegment: %v", err)
@@ -271,7 +271,7 @@ func TestAOTInstall_RunDhrystone(t *testing.T) {
 	o.HandleSyscall(96, func(_ *CPU, _ SyscallArgs) (int64, bool, bool, error) { return 1, true, false, nil })
 	cpu.Notes.Push(o.Handle)
 
-	j := NewJIT()
+	j := NewSandboxJIT()
 	if err := j.InstallAOT(mem, data); err != nil {
 		t.Fatalf("InstallAOT: %v", err)
 	}
@@ -357,7 +357,7 @@ func runDhrystoneCollectCounters(t *testing.T, data []byte, aot bool) (dispatchO
 	o.HandleSyscall(96, func(_ *CPU, _ SyscallArgs) (int64, bool, bool, error) { return 1, true, false, nil })
 	cpu.Notes.Push(o.Handle)
 
-	j := NewJIT()
+	j := NewSandboxJIT()
 	if aot {
 		if err := j.InstallAOT(mem, data); err != nil {
 			t.Fatal(err)
@@ -387,7 +387,7 @@ func TestAOTCompile_Coremark(t *testing.T) {
 	}
 	textBase, textSize, _ := FindTextSection(data)
 	ranges := enumerateBlockRanges(mem, textBase, textSize)
-	j := NewJIT()
+	j := NewSandboxJIT()
 	seg, err := j.jitCompileAOTSegment(mem, ranges, textBase, textBase+textSize)
 	if err != nil {
 		t.Fatalf("jitCompileAOTSegment: %v", err)
@@ -564,7 +564,7 @@ func TestAOT_MultiSegment_Install(t *testing.T) {
 		t.Fatalf("entry = 0x%x, want 0x%x", elf.Entry, segAVA)
 	}
 
-	j := NewJIT()
+	j := NewSandboxJIT()
 	if err := j.InstallAOT(mem, data); err != nil {
 		t.Fatalf("InstallAOT: %v", err)
 	}
@@ -657,7 +657,7 @@ func TestAOT_CrossSegmentJALR_Runs(t *testing.T) {
 	o.HandleSyscall(93, LinuxExit)
 	cpu.Notes.Push(o.Handle)
 
-	j := NewJIT()
+	j := NewSandboxJIT()
 	if err := j.InstallAOT(mem, data); err != nil {
 		t.Fatalf("InstallAOT: %v", err)
 	}
@@ -699,7 +699,7 @@ func TestAOT_SegmentCloseReleasesOwnedMmaps(t *testing.T) {
 		t.Fatalf("LoadELFBytes: %v", err)
 	}
 
-	j := NewJIT()
+	j := NewSandboxJIT()
 	if err := j.InstallAOT(mem, data); err != nil {
 		t.Fatalf("InstallAOT: %v", err)
 	}
@@ -747,7 +747,7 @@ func TestAOT_MutableDecoderCachePublishesLazyBlock(t *testing.T) {
 		t.Fatalf("LoadELFBytes: %v", err)
 	}
 
-	j := NewJIT()
+	j := NewSandboxJIT()
 	defer j.Close()
 	if err := j.InstallAOT(mem, data); err != nil {
 		t.Fatalf("InstallAOT: %v", err)
@@ -807,7 +807,7 @@ func TestAOT_AMO_LRSC_BlockCoverageAndRun(t *testing.T) {
 	}
 	mustStore64AMO(t, mem, dataVA, 10)
 
-	j := NewJIT()
+	j := NewSandboxJIT()
 	defer j.Close()
 	if err := j.InstallAOT(mem, data); err != nil {
 		t.Fatalf("InstallAOT: %v", err)
@@ -885,7 +885,7 @@ func TestAOT_RV8_AMO_LRSC_Run(t *testing.T) {
 	}
 	mustStore64AMO(t, mem, dataVA, 10)
 
-	j := NewJIT()
+	j := NewSandboxJIT()
 	defer j.Close()
 	j.SetRegPolicy(PolicyRV8)
 	if err := j.InstallAOT(mem, data); err != nil {
@@ -980,7 +980,7 @@ func TestAOT_DynamicSegmentCreate(t *testing.T) {
 	o.HandleSyscall(93, LinuxExit)
 	cpu.Notes.Push(o.Handle)
 
-	j := NewJIT()
+	j := NewSandboxJIT()
 	defer j.Close()
 	j.AutoAOT = true
 	if err := j.InstallAOT(mem, data); err != nil {
@@ -1041,7 +1041,7 @@ func TestAOT_InvalidateSegment_Roundtrip(t *testing.T) {
 		t.Fatalf("LoadELFBytes: %v", err)
 	}
 
-	j := NewJIT()
+	j := NewSandboxJIT()
 	defer j.Close()
 	j.AutoAOT = true
 	if err := j.InstallAOT(mem, data); err != nil {
@@ -1113,7 +1113,7 @@ func TestAOT_InvalidateExecRegion_Bulk(t *testing.T) {
 		t.Fatalf("LoadELFBytes: %v", err)
 	}
 
-	j := NewJIT()
+	j := NewSandboxJIT()
 	defer j.Close()
 	if err := j.InstallAOT(mem, data); err != nil {
 		t.Fatalf("InstallAOT: %v", err)

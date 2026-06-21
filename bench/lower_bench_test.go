@@ -40,7 +40,7 @@ func collectIRBlocks(tb testing.TB, elfData []byte, maxBlocks int) ([]*riscv.Emi
 	pc := elf.Entry
 	seen := make(map[uint64]bool)
 
-	jit := riscv.NewJIT()
+	jit := riscv.NewSandboxJIT()
 	for len(results) < maxBlocks && pc < elf.Entry+0x1000000 {
 		if seen[pc] {
 			pc += 4
@@ -171,7 +171,7 @@ func BenchmarkExec_V1(b *testing.B) {
 	totalInsns := uint64(0)
 	for i := 0; i < b.N; i++ {
 		cpu, mem := newBenchCPU(b, elfData)
-		jit := riscv.NewJIT()
+		jit := riscv.NewSandboxJIT()
 		// V1 is the default
 		_, insns := runJITBenchGuestWith(cpu, jit)
 		totalInsns += insns
@@ -191,7 +191,7 @@ func BenchmarkExec_V2(b *testing.B) {
 	totalInsns := uint64(0)
 	for i := 0; i < b.N; i++ {
 		cpu, mem := newBenchCPU(b, elfData)
-		jit := riscv.NewJIT()
+		jit := riscv.NewSandboxJIT()
 		_, insns := runJITBenchGuestWith(cpu, jit)
 		totalInsns += insns
 		mem.Free()

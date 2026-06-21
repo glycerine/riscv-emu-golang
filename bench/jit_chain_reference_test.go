@@ -36,7 +36,7 @@ func runChainReferenceMode(t *testing.T, elfData []byte, workload string, aot bo
 	cpu, mem := newBenchCPU(t, elfData)
 	defer mem.Free()
 
-	jit := riscv.NewJIT()
+	jit := riscv.NewSandboxJIT()
 	jit.SetAllocStrategy("fixed") // production path
 
 	if aot {

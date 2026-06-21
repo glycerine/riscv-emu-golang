@@ -42,7 +42,7 @@ func runSimpleLoopJIT(t *testing.T, iters uint64) (*CPU, *JIT) {
 	cpu.SetReg(12, 0)
 	cpu.SetReg(13, iters)
 	cpu.Notes.Push(ecallStop)
-	jit := NewJIT() // Fixed Static Mapping by default.
+	jit := NewSandboxJIT()
 	jit.RunJIT(cpu)
 	return cpu, jit
 }
@@ -59,7 +59,7 @@ func TestChaining_ChainExitsPopulated_OnCompiledBlock(t *testing.T) {
 	cpu, mem := newTestCPU(t, Size64MB, 0x1000, insns)
 	defer mem.Free()
 	cpu.Notes.Push(ecallStop)
-	jit := NewJIT()
+	jit := NewSandboxJIT()
 	jit.RunJIT(cpu)
 
 	blk := jit.lookupBlock(0x1000)
@@ -87,7 +87,7 @@ func TestChaining_PatchPointsAtImm64_OfMovABS(t *testing.T) {
 	cpu, mem := newTestCPU(t, Size64MB, 0x1000, insns)
 	defer mem.Free()
 	cpu.Notes.Push(ecallStop)
-	jit := NewJIT()
+	jit := NewSandboxJIT()
 	jit.RunJIT(cpu)
 
 	blk := jit.lookupBlock(0x1000)
@@ -162,7 +162,7 @@ func TestChaining_PatchedJumpReachesChainEntry(t *testing.T) {
 	cpu.SetReg(12, 0)
 	cpu.SetReg(13, 4) // 4 iterations — enough to exercise warm-up + patch
 	cpu.Notes.Push(ecallStop)
-	jit := NewJIT()
+	jit := NewSandboxJIT()
 	jit.RunJIT(cpu)
 
 	blkA := jit.lookupBlock(0x1000)
@@ -211,7 +211,7 @@ func TestChaining_SlowExitPatchesActualChainedSource(t *testing.T) {
 	}
 	cpu, mem := newTestCPU(t, Size64MB, base, insns)
 	defer mem.Free()
-	jit := NewJIT()
+	jit := NewSandboxJIT()
 
 	// Compile B first while C is absent, so B's chain exit remains on its
 	// slow stub. Then compile C, and compile+patch A to B.
@@ -260,7 +260,7 @@ func TestChaining_SlowExitPatchesExactDuplicateTargetExit(t *testing.T) {
 	binary.LittleEndian.PutUint64(code[0:], 0x1111111111111111)
 	binary.LittleEndian.PutUint64(code[8:], 0x2222222222222222)
 
-	jit := NewJIT()
+	jit := NewSandboxJIT()
 	target := &compiledBlock{chainEntry: targetEntry}
 	jit.insertBlock(targetPC, target)
 
@@ -337,7 +337,7 @@ func TestChaining_FaultExitsWritebackIC(t *testing.T) {
 	cpu, mem := newTestCPU(t, Size64MB, 0x1000, insns)
 	defer mem.Free()
 	cpu.Notes.Push(func(c *CPU, n Note) NoteDisposition { return NoteFatal })
-	jit := NewJIT()
+	jit := NewSandboxJIT()
 	_ = jit.RunJIT(cpu) // expected non-nil error (load fault)
 
 		// Expected: LUI is attempted (IC=1), LW's body runs and jumps to the
@@ -366,7 +366,7 @@ func TestChaining_IndirectBranch_NoChain(t *testing.T) {
 	cpu, mem := newTestCPU(t, Size64MB, 0x1000, insns)
 	defer mem.Free()
 	cpu.Notes.Push(ecallStop)
-	jit := NewJIT()
+	jit := NewSandboxJIT()
 	jit.RunJIT(cpu)
 
 	blkA := jit.lookupBlock(0x1000)
@@ -421,7 +421,7 @@ func TestRAS_InlinesCalleeAndPredictsReturn(t *testing.T) {
 		mem.Store32(0x1000+uint64(i)*4, insn)
 	}
 	mem.AddExecRegion(0x1000, 0x1000+uint64(len(insns))*4, false)
-	j := NewJIT()
+	j := NewSandboxJIT()
 	res := j.emitBlock(mem, 0x1000)
 	if res == nil {
 		t.Fatal("emitBlock returned nil")
@@ -451,7 +451,7 @@ func TestRAS_InlinesCalleeAndPredictsReturn(t *testing.T) {
 	mem2.AddExecRegion(0x1000, 0x1000+uint64(len(insns))*4, false)
 	cpu.mem.AddExecRegion(0x1000, 0x1000+uint64(len(insns))*4, false)
 	cpu.Notes.Push(ecallStop)
-	jit := NewJIT()
+	jit := NewSandboxJIT()
 	jit.RunJIT(cpu)
 
 	if cpu.Reg(10) != 43 {
@@ -487,7 +487,7 @@ func TestRAS_MismatchFallsBackToJalrIC(t *testing.T) {
 	mem.Store32(0x50, instrECALL)
 
 	cpu.Notes.Push(ecallStop)
-	jit := NewJIT()
+	jit := NewSandboxJIT()
 	jit.RunJIT(cpu)
 
 	// The callee overwrites ra with 0x50, so the return goes to 0x50
@@ -531,7 +531,7 @@ func TestLazyJIT_JALR_NoGoRoundTrip(t *testing.T) {
 	cpu.SetReg(13, loopCount)
 	cpu.Notes.Push(ecallStop)
 
-	jit := NewJIT()
+	jit := NewSandboxJIT()
 
 	jit.RunJIT(cpu)
 

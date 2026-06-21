@@ -396,7 +396,7 @@ func runRISCVTestJITLazy(t *testing.T, elfPath string) {
 	cpu.Notes.Push(o.Handle)
 	defer cpu.Notes.Pop()
 
-	jit := NewJIT()
+	jit := NewSandboxJIT()
 
 	err = jit.RunJIT(cpu)
 	if ex, ok := err.(*ExitError); ok {
@@ -508,7 +508,7 @@ func TestJITIC_MatchesInterpreter(t *testing.T) {
 	o.HandleEcall(RiscvTestsEcall)
 	jitCPU.Notes.Push(o.Handle)
 
-	jit := NewJIT()
+	jit := NewSandboxJIT()
 
 	_ = jit.RunJIT(jitCPU)
 	jitIC := jitCPU.RiscvInstrBegun()
@@ -597,7 +597,7 @@ func runLockstepWithAutoAOT(t *testing.T, elfPath string, autoAOT bool) {
 
 	//t.Logf("jitMem base=%#x interpMem base=%#x size=%#x", jitMem.Base(), interpMem.Base(), jitMem.Size())
 
-	jit := NewJIT()
+	jit := NewSandboxJIT()
 	// not optional. the whole point of runLockstep():
 	jit.DebugOneBlockLockstepMode = true
 

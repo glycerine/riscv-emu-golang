@@ -53,6 +53,7 @@ type EmuConfig struct {
 	BiosRAMSize         uint64
 	Budget              string
 	InstructionBudget   uint64
+	SandboxMem          bool
 	JITLazy             bool
 	JITAOT              bool
 	Hermit              bool

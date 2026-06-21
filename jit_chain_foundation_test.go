@@ -39,7 +39,7 @@ func TestJITChain_Foundation_StubBackpatched(t *testing.T) {
 	const targetPC uint64 = 0xDEAD0000BEEF1234
 
 	blk := buildChainExitOnlyBlock(targetPC)
-	j := NewJIT() // Fixed Static Mapping by default.
+	j := NewSandboxJIT()
 	compiled, err := j.jitCompile(&emitResult{block: blk, numInsns: 0})
 	if err != nil {
 		t.Fatalf("jitCompile: %v", err)
@@ -109,7 +109,7 @@ func TestJITChain_Foundation_PatchTargetRoundtrip(t *testing.T) {
 	const testTarget uintptr = 0xCAFEBABE12345678
 
 	blk := buildChainExitOnlyBlock(targetPC)
-	j := NewJIT()
+	j := NewSandboxJIT()
 	compiled, err := j.jitCompile(&emitResult{block: blk, numInsns: 0})
 	if err != nil {
 		t.Fatalf("jitCompile: %v", err)

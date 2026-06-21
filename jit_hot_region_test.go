@@ -18,7 +18,7 @@ func TestHotRegionThresholdPromotesLazyRegion(t *testing.T) {
 		t.Fatalf("LoadELFBytes: %v", err)
 	}
 
-	j := NewJIT()
+	j := NewSandboxJIT()
 	defer j.Close()
 
 	j.SetHotRegionThreshold(2)

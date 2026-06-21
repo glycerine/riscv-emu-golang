@@ -23,7 +23,7 @@ func benchAotJITELF(b *testing.B, elfData []byte) {
 	var totalAOTSetup time.Duration
 	for i := 0; i < b.N; i++ {
 		cpu, mem := newBenchCPU(b, elfData)
-		jit := riscv.NewJIT()
+		jit := riscv.NewSandboxJIT()
 		jit.SetAllocStrategy("fixed")
 		setupStart := time.Now()
 		if err := jit.InstallAOT(mem, elfData); err != nil {
@@ -71,7 +71,7 @@ func benchLazyJITELF(b *testing.B, elfData []byte) {
 	var totalStats jitBenchStats
 	for i := 0; i < b.N; i++ {
 		cpu, mem := newBenchCPU(b, elfData)
-		jit := riscv.NewJIT()
+		jit := riscv.NewSandboxJIT()
 		b.StartTimer()
 		_, insns := runJITBenchGuestWith(cpu, jit)
 		b.StopTimer()
@@ -347,7 +347,7 @@ func benchRVTestUILazyJITPolicy(b *testing.B, name string, policy riscv.RegPolic
 	totalInsns := uint64(0)
 	for i := 0; i < b.N; i++ {
 		cpu, mem := newRVTestCPU(b, e.data)
-		jit := riscv.NewJIT()
+		jit := riscv.NewSandboxJIT()
 		jit.SetRegPolicy(policy)
 		code, insns := runJITBenchGuestWith(cpu, jit)
 		mem.Free()
@@ -363,7 +363,7 @@ func benchRVTestUILazyJITPolicy(b *testing.B, name string, policy riscv.RegPolic
 
 func benchRVTestUILazyJITHotPolicy(b *testing.B, name string, policy riscv.RegPolicy) {
 	e := loadRVTestELF(b, name)
-	jit := riscv.NewJIT()
+	jit := riscv.NewSandboxJIT()
 	jit.SetRegPolicy(policy)
 
 	warmCPU, warmMem := newRVTestCPU(b, e.data)
@@ -421,7 +421,7 @@ func benchRVTestUIRunOnlyHotJITPolicy(b *testing.B, name string, policy riscv.Re
 	mem, entry, tohost := newRVTestLoaded(b, e.data)
 	defer mem.Free()
 
-	jit := riscv.NewJIT()
+	jit := riscv.NewSandboxJIT()
 	jit.SetRegPolicy(policy)
 
 	resetRVTestTohost(b, mem, tohost)
@@ -459,7 +459,7 @@ func benchRVTestUIAotJIT(b *testing.B, name string) {
 	totalInsns := uint64(0)
 	for i := 0; i < b.N; i++ {
 		cpu, mem := newRVTestCPU(b, e.data)
-		jit := riscv.NewJIT()
+		jit := riscv.NewSandboxJIT()
 		if err := jit.InstallAOT(mem, e.data); err != nil {
 			mem.Free()
 			b.Fatalf("InstallAOT rv64ui-p-%s: %v", name, err)
@@ -485,7 +485,7 @@ func BenchmarkRVTests_UI_AotJIT(b *testing.B) {
 		for j, e := range elfs {
 			t0 := time.Now()
 			cpu, mem := newRVTestCPU(b, e.data)
-			jit := riscv.NewJIT()
+			jit := riscv.NewSandboxJIT()
 			vv("jit.InstallAOT: %v", e.name)
 			if err := jit.InstallAOT(mem, e.data); err != nil {
 				b.Fatalf("InstallAOT: %v", err)
@@ -508,7 +508,7 @@ func BenchmarkRVTests_UI_LazyJIT(b *testing.B) {
 		for j, e := range elfs {
 			t0 := time.Now()
 			cpu, mem := newRVTestCPU(b, e.data)
-			jit := riscv.NewJIT()
+			jit := riscv.NewSandboxJIT()
 			runJITBenchGuestWith(cpu, jit)
 			mem.Free()
 			fmt.Fprintf(os.Stderr, "  LazyJIT [%2d/%d] %-12s %v\n", j+1, len(elfs), e.name, time.Since(t0))

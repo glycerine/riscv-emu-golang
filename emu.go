@@ -126,6 +126,7 @@ func RunEmu(cfg *EmuConfig) (int, error) {
 		jit := NewJIT()
 		defer jit.Close()
 
+		jit.SandboxMem = cfg.SandboxMem
 		jit.AutoAOT = cfg.JITAOT
 		if jit.AutoAOT {
 			if err := jit.InstallAOTFromMem(mem); err != nil {

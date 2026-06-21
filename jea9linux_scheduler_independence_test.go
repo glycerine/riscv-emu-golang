@@ -70,7 +70,7 @@ func runJea9LinuxSchedulerTraceLoop(t *testing.T, useJIT bool, hostBudget uint64
 
 	var jit *JIT
 	if useJIT {
-		jit = NewJIT()
+		jit = NewSandboxJIT()
 		defer jit.Close()
 	}
 	for len(j.TraceSnapshot().Schedule) < events {
@@ -109,7 +109,7 @@ func runJea9LinuxEcallRetiredQuantum(t *testing.T, useJIT bool) {
 
 	var err error
 	if useJIT {
-		jit := NewJIT()
+		jit := NewSandboxJIT()
 		defer jit.Close()
 		cleanup := InstallJea9LinuxJIT(cpu, jit, j)
 		defer cleanup()

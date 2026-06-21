@@ -10,7 +10,7 @@ import (
 const benchGuestInsAttempts = uint64(2524935201)
 
 func runJITBenchGuest(cpu *riscv.CPU) (exitCode int, insns uint64) {
-	return runJITBenchGuestWith(cpu, riscv.NewJIT())
+	return runJITBenchGuestWith(cpu, riscv.NewSandboxJIT())
 }
 
 func TestJIT_BenchGuest_Smoke(t *testing.T) {
@@ -31,7 +31,7 @@ func TestJIT_DispatchStats(t *testing.T) {
 	cpu, mem := newBenchCPU(t, elfData)
 	defer mem.Free()
 
-	jit := riscv.NewJIT()
+	jit := riscv.NewSandboxJIT()
 	exitCode, insns := runJITBenchGuestWith(cpu, jit)
 	t.Logf("attempted %d instructions, exit code %d", insns, exitCode)
 	t.Logf("Dispatch stats:")
@@ -71,7 +71,7 @@ func benchJITBenchGuestNoIC(b *testing.B, policy riscv.RegPolicy, strategy strin
 	totalInsns := uint64(0)
 	for i := 0; i < b.N; i++ {
 		cpu, mem := newBenchCPU(b, elfData)
-		jit := riscv.NewJIT()
+		jit := riscv.NewSandboxJIT()
 		jit.SetRegPolicy(policy)
 		if strategy != "" {
 			jit.SetAllocStrategy(strategy)
@@ -105,7 +105,7 @@ func benchJITELFWithPolicy(b *testing.B, elfData []byte, policy riscv.RegPolicy)
 	totalInsns := uint64(0)
 	for i := 0; i < b.N; i++ {
 		cpu, mem := newBenchCPU(b, elfData)
-		jit := riscv.NewJIT()
+		jit := riscv.NewSandboxJIT()
 		jit.SetRegPolicy(policy)
 		t0 := time.Now()
 		_, insns := runJITBenchGuestWith(cpu, jit)
@@ -161,7 +161,7 @@ func benchJITELF(b *testing.B, elfData []byte, strategy string) {
 	totalInsns := uint64(0)
 	for i := 0; i < b.N; i++ {
 		cpu, mem := newBenchCPU(b, elfData)
-		jit := riscv.NewJIT()
+		jit := riscv.NewSandboxJIT()
 		jit.SetRegPolicy(riscv.PolicyRV8)
 		jit.SetAllocStrategy(strategy)
 		t0 := time.Now()

@@ -299,6 +299,11 @@ type JIT struct {
 	HotRegionsCompiled uint64
 	hotRegionCounts    map[uint64]uint32
 
+	// SandboxMem keeps guest memory references on the current base+mask
+	// path. When false, jea9linux direct-memory JIT emissions may treat
+	// guest register values as raw host pointers.
+	SandboxMem bool
+
 	irAlloc    RegAllocator
 	regPolicy  RegPolicy
 	useABJIT   bool
@@ -378,6 +383,15 @@ func NewJIT() *JIT {
 	if err := j.initStopperPage(); err != nil {
 		panic("NewJIT: " + err.Error())
 	}
+	return j
+}
+
+// NewSandboxJIT creates a JIT that preserves the historical guest-memory
+// sandbox path. Tests and bare-metal low-address harnesses use this while
+// emu's jea9linux path can opt into direct memory through EmuConfig.
+func NewSandboxJIT() *JIT {
+	j := NewJIT()
+	j.SandboxMem = true
 	return j
 }
 
@@ -750,6 +764,7 @@ func (j *JIT) CloneConfig() *JIT {
 	child.InterpOnly = j.InterpOnly
 	child.AutoAOT = j.AutoAOT
 	child.HotRegionThreshold = j.HotRegionThreshold
+	child.SandboxMem = j.SandboxMem
 	child.UseR15InstructionCounter = j.UseR15InstructionCounter
 	child.DebugOneBlockLockstepMode = j.DebugOneBlockLockstepMode
 	child.LockstepModeBudget = j.LockstepModeBudget

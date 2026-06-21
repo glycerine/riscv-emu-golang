@@ -350,7 +350,7 @@ func newZygoLockstepSide(t *testing.T, name string, elfData []byte, useJIT bool,
 		t.Fatalf("%s InitELFStack: %v", name, err)
 	}
 	if useJIT {
-		side.jit = NewJIT()
+		side.jit = NewSandboxJIT()
 		side.jit.AutoAOT = false
 		side.cleanup = InstallJea9LinuxJIT(cpu, side.jit, side.os)
 	} else {

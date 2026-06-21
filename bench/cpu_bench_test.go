@@ -304,7 +304,7 @@ func BenchmarkCPU_ZygoFib10_LazyJIT(b *testing.B) {
 	var totalStats jitBenchStats
 	for i := 0; i < b.N; i++ {
 		cpu, mem, jlinux := newZygoJea9LinuxCPU(b, elfData)
-		jit := riscv.NewJIT()
+		jit := riscv.NewSandboxJIT()
 		jit.AutoAOT = false
 		if traceFallbacks {
 			jit.EnableFallbackTrace()

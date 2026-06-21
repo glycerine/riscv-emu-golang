@@ -16,7 +16,7 @@ type jea9LinuxELFRunResult struct {
 }
 
 func runJITWithJea9Linux(cpu *CPU, j *Jea9Linux) (int, error) {
-	jit := NewJIT()
+	jit := NewSandboxJIT()
 	defer jit.Close()
 	cleanup := InstallJea9LinuxJIT(cpu, jit, j)
 	defer cleanup()
@@ -55,7 +55,7 @@ func runJea9LinuxELFFixture(t *testing.T, path string, useJIT bool, opts Jea9Lin
 	}
 	var code int
 	if useJIT {
-		jit := NewJIT()
+		jit := NewSandboxJIT()
 		defer jit.Close()
 		cleanup := InstallJea9LinuxJIT(cpu, jit, j)
 		defer cleanup()
@@ -253,7 +253,7 @@ func TestJea9Linux_JITBudgetReturnPreservesState(t *testing.T) {
 	cpu, mem, _ := testLoopCPU(t, 5)
 	defer mem.Free()
 
-	jit := NewJIT()
+	jit := NewSandboxJIT()
 	defer jit.Close()
 
 	res, err := jit.StepBlockBudget(cpu, 5)
@@ -354,7 +354,7 @@ func TestJea9Linux_JITEcallTrapBoundaryRunsThroughOS(t *testing.T) {
 	cpu, mem := newTestCPU(t, Size64MB, codeVA, insns)
 	defer mem.Free()
 
-	jit := NewJIT()
+	jit := NewSandboxJIT()
 	j := NewJea9Linux(Jea9LinuxOptions{PID: 19, TID: 19})
 	cleanup := InstallJea9LinuxJIT(cpu, jit, j)
 	defer cleanup()

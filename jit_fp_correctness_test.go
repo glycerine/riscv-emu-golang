@@ -42,7 +42,7 @@ func runJITFP(t *testing.T, code []uint32, fregs map[uint8]uint64) *CPU {
 		cpu.SetFReg(r, v)
 	}
 
-	jit := NewJIT()
+	jit := NewSandboxJIT()
 	t.Cleanup(jit.Close)
 	for i := 0; i < 100; i++ {
 		if _, err := jit.StepBlock(cpu); err != nil {
@@ -89,7 +89,7 @@ func runJITFPWithSetup(t *testing.T, code []uint32, setup func(*CPU)) *CPU {
 		setup(cpu)
 	}
 
-	jit := NewJIT()
+	jit := NewSandboxJIT()
 	t.Cleanup(jit.Close)
 	for i := 0; i < 100; i++ {
 		if _, err := jit.StepBlock(cpu); err != nil {

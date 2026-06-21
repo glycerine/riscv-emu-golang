@@ -29,7 +29,7 @@ func TestJIT_Close_FreesLazyArena(t *testing.T) {
 
 	cpu := NewCPU(*mem)
 	cpu.SetPC(va)
-	j := NewJIT()
+	j := NewSandboxJIT()
 	// No InstallAOT → pure lazy path.
 
 	// Step the block once; this lazy-compiles the entry block and
