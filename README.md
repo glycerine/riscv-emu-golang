@@ -5,7 +5,16 @@ emu_net: RISCV64 emulator and network in Golang (Go)
 
 * News 2026 June 21:
 
-Added windoze support. Tested and working using msys2 for the cgo.
+The emu command now builds on Windows. Tested and working using msys2 for the cgo.
+
+Installing emu with "make" now also installs emul, short for
+"emu linux". This does the same thing that the "make linux"
+target does, but embeds the kernel in the command line binary
+and sets all the flags for you. There are no flags to emul.
+You can `go install github.com/glycerine/riscv-emu-golang/cmd/emul@latest`
+and type just `emul` to boot a linux guest running inside
+your Go process. See cmd/emul/emul.go. This also serves as
+a simple example of how to invoke guest Linux programatically.
 
 * News 2026 June 19:
 
