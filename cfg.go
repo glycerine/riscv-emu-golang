@@ -74,7 +74,14 @@ type EmuConfig struct {
 	Stdout              io.Writer
 	Stderr              io.Writer
 	JITStats            *EmuJITStats
-	Bootables           *embed.FS
+
+	// Bootables lets the kernel, initramfs, and bios
+	// be packed into the emul command line tool for
+	// exteme portability; they are embedded into
+	// the binary and read from the it internally if
+	// this is not nil. The field BiosPath, KernelPath,
+	// and InitrdPath above must be valid embedded paths.
+	Bootables *embed.FS
 }
 
 type EmuJITStats struct {
