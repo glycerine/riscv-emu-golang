@@ -172,6 +172,7 @@ BENCH_FLAGS := \
 
 all: help
 	go install ./cmd/emu
+	go install ./cmd/emul
 
 help:
 	@echo ""

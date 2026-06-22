@@ -147,7 +147,12 @@ func (c *EmuConfig) ValidateConfig() error {
 		path = c.BiosPath
 	}
 	if !fileExists(path) {
-		return fmt.Errorf("%s path '%v' does not exist", pathFlag, path)
+		if c.Bootables == nil {
+			return fmt.Errorf("%s path '%v' does not exist", pathFlag, path)
+		}
+		if err := embeddedAvail(c.Bootables, path); err != nil {
+			return fmt.Errorf("%s path '%v' does not exist in embedded filesystem: %v", pathFlag, path, err)
+		}
 	}
 	if c.RunPath != "" {
 		switch {
@@ -170,10 +175,21 @@ func (c *EmuConfig) ValidateConfig() error {
 		}
 	}
 	if c.KernelPath != "" && !fileExists(c.KernelPath) {
-		return fmt.Errorf("-kernel path '%v' does not exist", c.KernelPath)
+		if c.Bootables == nil {
+			return fmt.Errorf("-kernel path '%v' does not exist", c.KernelPath)
+		}
+		if err := embeddedAvail(c.Bootables, c.KernelPath); err != nil {
+			return fmt.Errorf("-kernel path '%v' does not exist in embedded filesystem: %v", c.KernelPath, err)
+		}
 	}
 	if c.InitrdPath != "" && !fileExists(c.InitrdPath) {
-		return fmt.Errorf("-initrd path '%v' does not exist", c.InitrdPath)
+		if c.Bootables == nil {
+			return fmt.Errorf("-initrd path '%v' does not exist", c.InitrdPath)
+		}
+		if err := embeddedAvail(c.Bootables, c.InitrdPath); err != nil {
+			return fmt.Errorf("-initrd path '%v' does not exist in embedded filesystem: %v", c.InitrdPath, err)
+		}
+
 	}
 	if c.DTBPath != "" && !fileExists(c.DTBPath) {
 		return fmt.Errorf("-dtb path '%v' does not exist", c.DTBPath)
@@ -590,6 +606,19 @@ func validateOptionalIPv4Flag(name, value string) error {
 			err = fmt.Errorf("not an IPv4 address")
 		}
 		return fmt.Errorf("%s must be an IPv4 address, got %q: %w", name, value, err)
+	}
+	return nil
+}
+
+func embeddedAvail(e *embed.FS, path string) error {
+	fd, err := e.Open(path)
+	if err != nil {
+		return err
+	}
+	defer fd.Close()
+	_, err = fd.Stat()
+	if err != nil {
+		return err
 	}
 	return nil
 }

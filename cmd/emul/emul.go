@@ -14,6 +14,26 @@ import (
 var bootables embed.FS
 
 func main() {
+	biosPath := "fw_dynamic.elf"
+	bios0, err := bootables.Open(biosPath)
+	panicOn(err)
+	bios, err := bios0.Stat()
+	kernelPath := "Image"
+	panicOn(err)
+	kernel0, err := bootables.Open(kernelPath)
+	panicOn(err)
+	kernel, err := kernel0.Stat()
+	panicOn(err)
+	ramfsPath := "initramfs.cpio.gz"
+	ramfs0, err := bootables.Open(ramfsPath)
+	panicOn(err)
+	ramfs, err := ramfs0.Stat()
+	panicOn(err)
+
+	fmt.Printf("embedded size of   bios: %v path: '%v'\n", bios.Size(), biosPath)
+	fmt.Printf("embedded size of  ramfs: %v path: '%v'\n", ramfs.Size(), ramfsPath)
+	fmt.Printf("embedded size of kernel: %v path: '%v'\n", kernel.Size(), kernelPath)
+
 	cfg := &riscv.EmuConfig{
 		Bootables:         &bootables,
 		Idle:              "1s",
@@ -43,4 +63,10 @@ func main() {
 		os.Exit(1)
 	}
 	os.Exit(code)
+}
+
+func panicOn(err error) {
+	if err != nil {
+		panic(err)
+	}
 }
