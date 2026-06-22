@@ -20,3 +20,4 @@ vizjit_debug_dir/
 *.o
 *.a
 xendor/go1.26.4.linux-riscv64
+cmd/emul/emul
