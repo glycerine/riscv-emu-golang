@@ -1,6 +1,7 @@
 package riscv
 
 import (
+	"embed"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -97,9 +98,15 @@ type ELF struct {
 }
 
 // LoadELF reads an ELF64 RISC-V executable from path, loads all PT_LOAD
-// segments into mem, and returns the parsed ELF.
-func LoadELF(mem *GuestMemory, path string) (*ELF, error) {
-	data, err := os.ReadFile(path)
+// segments into mem, and returns the parsed ELF. If embedded != nil
+// then we will load from embedded.ReadFile(path)
+func LoadELF(mem *GuestMemory, path string, embedded *embed.FS) (e *ELF, err error) {
+	var data []byte
+	if embedded != nil {
+		data, err = embedded.ReadFile(path)
+	} else {
+		data, err = os.ReadFile(path)
+	}
 	if err != nil {
 		return nil, err
 	}

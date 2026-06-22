@@ -25,7 +25,7 @@ func TestDiagRPC25519HangLog5(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mem.Free()
-	elf, err := LoadELF(mem, elfPath)
+	elf, err := LoadELF(mem, elfPath, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

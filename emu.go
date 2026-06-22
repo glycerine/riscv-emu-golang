@@ -82,7 +82,7 @@ func RunEmu(cfg *EmuConfig) (int, error) {
 	}
 	defer mem.Free()
 
-	elf, err := LoadELF(mem, cfg.RunPath)
+	elf, err := LoadELF(mem, cfg.RunPath, cfg.Bootables)
 	if err != nil {
 		return 0, err
 	}

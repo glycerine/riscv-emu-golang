@@ -511,7 +511,7 @@ func TestSubELF_Block39(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mem.Free()
-	elf, err := LoadELF(mem, "riscv-elf-tests/rv64ui-p-sub")
+	elf, err := LoadELF(mem, "riscv-elf-tests/rv64ui-p-sub", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -679,7 +679,7 @@ func TestLW_ELF_Block39(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mem.Free()
-	elf, err := LoadELF(mem, "riscv-elf-tests/rv64ui-p-lw")
+	elf, err := LoadELF(mem, "riscv-elf-tests/rv64ui-p-lw", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1319,7 +1319,7 @@ func TestSRL_Block39_Alloc(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mem.Free()
-	ef, err := LoadELF(mem, "riscv-elf-tests/rv64ui-p-srl")
+	ef, err := LoadELF(mem, "riscv-elf-tests/rv64ui-p-srl", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1412,7 +1412,7 @@ func TestDebugV1V2_SRL_DumpAlloc(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mem.Free()
-	ef, err := LoadELF(mem, "riscv-elf-tests/rv64ui-p-srl")
+	ef, err := LoadELF(mem, "riscv-elf-tests/rv64ui-p-srl", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1459,7 +1459,7 @@ func TestMetaIterOrder_SRL(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mem.Free()
-	ef, err := LoadELF(mem, "riscv-elf-tests/rv64ui-p-srl")
+	ef, err := LoadELF(mem, "riscv-elf-tests/rv64ui-p-srl", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1546,7 +1546,7 @@ func TestDumpBlock_ld_st_0x1a0(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mem.Free()
-	ef, err := LoadELF(mem, "riscv-elf-tests/rv64ui-p-ld_st")
+	ef, err := LoadELF(mem, "riscv-elf-tests/rv64ui-p-ld_st", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1682,7 +1682,7 @@ func testNativeTraceW(t *testing.T, elfPath string, targetBlock int) {
 		t.Fatal(err)
 	}
 	defer mem.Free()
-	ef, err := LoadELF(mem, elfPath)
+	ef, err := LoadELF(mem, elfPath, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

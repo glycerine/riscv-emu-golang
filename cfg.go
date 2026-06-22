@@ -3,6 +3,7 @@ package riscv
 // configuration of an emu command line run or RunEmu (emu.go)
 
 import (
+	"embed"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -73,6 +74,7 @@ type EmuConfig struct {
 	Stdout              io.Writer
 	Stderr              io.Writer
 	JITStats            *EmuJITStats
+	Bootables           *embed.FS
 }
 
 type EmuJITStats struct {

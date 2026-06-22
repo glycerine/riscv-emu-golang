@@ -145,7 +145,7 @@ func prepareBiosGuestWithReset(cfg *EmuConfig, onSystemReset func()) (*biosGuest
 	if err != nil {
 		return nil, err
 	}
-	elf, err := LoadELF(mem, cfg.BiosPath)
+	elf, err := LoadELF(mem, cfg.BiosPath, cfg.Bootables)
 	if err != nil {
 		mem.Free()
 		return nil, err
@@ -248,11 +248,16 @@ type biosBlob struct {
 	elf    bool
 }
 
-func loadBiosKernel(mem *GuestMemory, cfg *EmuConfig) (biosBlob, error) {
+func loadBiosKernel(mem *GuestMemory, cfg *EmuConfig) (bb biosBlob, err error) {
 	if cfg.KernelPath == "" {
 		return biosBlob{}, nil
 	}
-	data, err := os.ReadFile(cfg.KernelPath)
+	var data []byte
+	if cfg.Bootables != nil {
+		data, err = cfg.Bootables.ReadFile(cfg.KernelPath)
+	} else {
+		data, err = os.ReadFile(cfg.KernelPath)
+	}
 	if err != nil {
 		return biosBlob{}, err
 	}
@@ -289,11 +294,16 @@ func loadBiosKernel(mem *GuestMemory, cfg *EmuConfig) (biosBlob, error) {
 	}, nil
 }
 
-func loadBiosInitrd(mem *GuestMemory, cfg *EmuConfig, kernel biosBlob) (biosBlob, error) {
+func loadBiosInitrd(mem *GuestMemory, cfg *EmuConfig, kernel biosBlob) (bb biosBlob, err error) {
 	if cfg.InitrdPath == "" {
 		return biosBlob{}, nil
 	}
-	data, err := os.ReadFile(cfg.InitrdPath)
+	var data []byte
+	if cfg.Bootables != nil {
+		data, err = cfg.Bootables.ReadFile(cfg.InitrdPath)
+	} else {
+		data, err = os.ReadFile(cfg.InitrdPath)
+	}
 	if err != nil {
 		return biosBlob{}, err
 	}
