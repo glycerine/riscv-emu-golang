@@ -20,13 +20,13 @@ const (
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
-		fmt.Fprintf(os.Stderr, "repack: %v\n", err)
+		fmt.Fprintf(os.Stderr, "rekey: %v\n", err)
 		os.Exit(1)
 	}
 }
 
 func run(args []string) error {
-	fs := flag.NewFlagSet("repack", flag.ContinueOnError)
+	fs := flag.NewFlagSet("rekey", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 
 	var repoRoot string
@@ -65,10 +65,10 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stderr, "repack: wrote %s\n", res.InitramfsPath)
-	fmt.Fprintf(os.Stderr, "repack: wrote host login key %s\n", res.UserPrivateKeyPath)
+	fmt.Fprintf(os.Stderr, "rekey: wrote %s\n", res.InitramfsPath)
+	fmt.Fprintf(os.Stderr, "rekey: wrote host login key %s\n", res.UserPrivateKeyPath)
 
-	fmt.Fprintf(os.Stderr, "repack: go install ./cmd/emul\n")
+	fmt.Fprintf(os.Stderr, "rekey: go install ./cmd/emul\n")
 	if err := goInstallEmul(root); err != nil {
 		return err
 	}
@@ -77,7 +77,7 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stderr, "repack: exec %s\n", emulPath)
+	fmt.Fprintf(os.Stderr, "rekey: exec %s\n", emulPath)
 	return execEmul(emulPath, append([]string{emulPath}, fs.Args()...))
 }
 

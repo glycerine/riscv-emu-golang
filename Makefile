@@ -173,7 +173,7 @@ BENCH_FLAGS := \
 all: help
 	go install ./cmd/emu
 	go install ./cmd/emul
-	go install ./cmd/repack
+	go install ./cmd/rekey
 
 help:
 	@echo ""
