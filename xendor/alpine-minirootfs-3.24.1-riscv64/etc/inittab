@@ -3,8 +3,8 @@
 # This image intentionally does not install OpenRC. BusyBox init is PID 1:
 # it starts a few one-shot services and respawns serial shells.
 
-::sysinit:/sbin/syslogd
-::once:/bin/sh -c '/usr/sbin/sshd -t && /usr/sbin/sshd || echo "warning: sshd failed to start" >/dev/console'
+::sysinit:/sbin/syslogd -O /var/log/messages
+::once:/bin/sh /sbin/start-sshd
 
 # Respawn login-free serial consoles. BusyBox init opens /dev/<id> for these
 # entries, so the shell is attached to the serial device without being PID 1.
