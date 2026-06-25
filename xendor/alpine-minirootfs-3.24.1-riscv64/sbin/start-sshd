@@ -16,6 +16,32 @@ log_output() {
 	: > "$log_file"
 }
 
+prepare_privsep_dir() {
+	if [ -e /var/empty ] && [ ! -d /var/empty ]; then
+		log_msg "refusing non-directory /var/empty"
+		return 1
+	fi
+
+	if ! mkdir -p /var/empty; then
+		log_msg "failed to create /var/empty"
+		return 1
+	fi
+
+	chown root:root /var /var/empty 2>/dev/null || chown 0:0 /var /var/empty 2>/dev/null || {
+		log_msg "failed to chown /var/empty"
+		return 1
+	}
+	chmod 0755 /var 2>/dev/null || {
+		log_msg "failed to chmod /var"
+		return 1
+	}
+	chmod 0555 /var/empty 2>/dev/null || {
+		log_msg "failed to chmod /var/empty"
+		return 1
+	}
+	return 0
+}
+
 require_ed25519_host_key() {
 	if [ ! -r "$cfgfile" ]; then
 		log_msg "missing sshd config: $cfgfile"
@@ -56,6 +82,11 @@ command_args=
 
 mkdir -p /run/sshd /tmp /var/log
 : > "$log_file" || exit 0
+
+if ! prepare_privsep_dir; then
+	rm -f "$log_file"
+	exit 0
+fi
 
 if ! require_ed25519_host_key; then
 	rm -f "$log_file"
