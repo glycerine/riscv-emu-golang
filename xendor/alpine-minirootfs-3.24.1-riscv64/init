@@ -1,11 +1,14 @@
 #!/bin/sh
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-mkdir -p /proc /sys /dev /host /tmp /run
+mkdir -p /proc /sys /dev /host /tmp /run /run/sshd
 
 mount -t proc none /proc 2>/dev/null || true
 mount -t sysfs none /sys 2>/dev/null || true
 mount -t devtmpfs none /dev 2>/dev/null || true
+
+mkdir -p /dev/pts
+mount -t devpts devpts /dev/pts 2>/dev/null || true
 
 chmod 1777 /tmp
 mount -t hostfs none /host -o /

@@ -1093,7 +1093,7 @@ build-slim-linux-amd64:
 	cp -p ~/linux/.config $(OUR_LINUX_AMD64)/dot.config && \
 	cp -p ~/linux/defconfig $(OUR_LINUX_AMD64)/defconfig
 
-repack-initramfs:
+repack:
 	cd $(INITRAMFS_DIR) && find . -print0 | \
 	cpio --null --create --format=newc --owner=root | \
 	gzip -9 > $(INITRAMFS_CPIO)
