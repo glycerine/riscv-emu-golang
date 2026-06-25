@@ -43,7 +43,7 @@ require (
 	github.com/glycerine/one_tree_rwmut v1.0.0 // indirect
 	github.com/glycerine/rate v0.0.1 // indirect
 	github.com/glycerine/zygomys/v9 v9.6.2 // indirect
-	github.com/go-json-experiment/json v0.0.0-20250813024750-ebf49471dced // indirect
+	github.com/go-json-experiment/json v0.0.0-20260623181947-01eb4420fa68 // indirect
 	github.com/godbus/dbus/v5 v5.1.1-0.20230522191255-76236955d466 // indirect
 	github.com/golang/groupcache v0.0.0-20241129210726-2c02b8208cf8 // indirect
 	github.com/google/btree v1.1.3 // indirect
