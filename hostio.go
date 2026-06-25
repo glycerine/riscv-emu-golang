@@ -662,6 +662,9 @@ func hostIOErrno(err error) uint32 {
 	if err == nil || errors.Is(err, io.EOF) {
 		return 0
 	}
+	if errno, ok := hostIOPlatformErrno(err); ok {
+		return errno
+	}
 	switch {
 	case errors.Is(err, os.ErrNotExist):
 		return hostIOErrENOENT
@@ -671,9 +674,6 @@ func hostIOErrno(err error) uint32 {
 		return hostIOErrEEXIST
 	case errors.Is(err, os.ErrInvalid):
 		return hostIOErrEINVAL
-	}
-	if errno, ok := hostIOPlatformErrno(err); ok {
-		return errno
 	}
 	return hostIOErrEIO
 }
