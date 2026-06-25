@@ -52,27 +52,7 @@ fi
 echo ""
 echo "=== RISC-V Alpine initramfs booted ==="
 echo ""
-if [ -e /dev/ttyS1 ]; then
-	(
-		while [ -e /dev/ttyS1 ]; do
-			setsid /bin/sh -c 'exec /bin/sh -i </dev/ttyS1 >/dev/ttyS1 2>&1'
-		done
-	) &
-fi
 
-# Start syslogd in the background so sshd can log to /var/log/messages.
-/sbin/syslogd
-
-# Start sshd in daemon mode. Validate first so failures are visible on ttyS0
-# instead of only disappearing into syslog.
-if /usr/sbin/sshd -t; then
-	/usr/sbin/sshd || echo "warning: sshd failed to start"
-else
-	echo "warning: sshd configuration check failed"
-fi
-
-# Keep tini as PID 1, but let setsid run before the shell opens ttyS0.
-# Opening ttyS0 after setsid lets the shell acquire it as its controlling tty;
-# opening it before setsid makes ash see an unusable interactive console and
-# exit, which kills PID 1.
-exec /sbin/tini -- /usr/bin/setsid /bin/sh -c 'exec /bin/sh -i </dev/ttyS0 >/dev/ttyS0 2>&1'
+# Hand PID 1 to BusyBox init. It reads /etc/inittab, starts one-shot daemons,
+# and respawns console shells without tying PID 1 to an interactive session.
+exec /sbin/init
