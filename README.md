@@ -44,6 +44,10 @@ emul so you can still start with just a single "emul" afterwards.
 The entire container image (bios, kernel, and initramfs.cpio.gz)
 is embedded in the emul binary, so it is very portable.
 
+Use "reboot" to exit the guest OS. Since we run
+the Alpine /sbin/init to manage sshd, it no longer
+suffices to simply exit the guest shell.
+
 * News 2026 June 21:
 
 The emu command now builds on Windows. Tested and working using msys2 for the cgo.
