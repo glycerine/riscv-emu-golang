@@ -48,6 +48,20 @@ Use "reboot" to exit the guest OS. Since we run
 the Alpine /sbin/init to manage sshd, it no longer
 suffices to simply exit the guest shell.
 
+When adding packages with "apk add", you should refer to the 
+host files from within the guest, so that the updates
+persist and can be repacked into the initramfs and 
+seen on the next reboot. Here is what I use (from within the guest). Of course you
+must change the paths below to where-ever your riscv-emu-golang
+directory was cloned.
+
+~~~
+ROOT=/host/Users/jaten/go/src/github.com/glycerine/riscv-emu-golang/xendor/alpine-minirootfs-3.24.1-riscv64
+APKDIR=/host/Users/jaten/go/src/github.com/glycerine/riscv-emu-golang/xendor/linux/alpine-nettools/apks
+# then this can work, for instance (although already done now):
+apk add --root "$ROOT" openssh
+~~~
+
 * News 2026 June 21:
 
 The emu command now builds on Windows. Tested and working using msys2 for the cgo.
