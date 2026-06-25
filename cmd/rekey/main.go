@@ -34,7 +34,9 @@ func run(args []string) error {
 	var initramfsPath string
 	var keyName string
 	var userKeyDir string
+	var stopEarlyNoBoot bool
 
+	fs.BoolVar(&stopEarlyNoBoot, "stop", false, "stop early: do not boot emul after re-building it")
 	fs.StringVar(&repoRoot, "repo-root", "", "riscv-emu-golang checkout root; empty searches from the current directory")
 	fs.StringVar(&rootDir, "root", "", "unpacked initramfs root; empty uses xendor/alpine-minirootfs-3.24.1-riscv64 under repo-root")
 	fs.StringVar(&initramfsPath, "initramfs", "", "initramfs cpio.gz to write; empty uses xendor/linux/initramfs.cpio.gz under repo-root")
@@ -76,6 +78,10 @@ func run(args []string) error {
 	emulPath, err := installedEmulPath(root)
 	if err != nil {
 		return err
+	}
+	if stopEarlyNoBoot {
+		fmt.Fprintf(os.Stderr, "rekey: -stop means we do not now boot the new emul: %v\n", emulPath)
+		return nil
 	}
 	fmt.Fprintf(os.Stderr, "rekey: exec %s\n", emulPath)
 	return execEmul(emulPath, append([]string{emulPath}, fs.Args()...))
