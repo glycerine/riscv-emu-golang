@@ -4,6 +4,7 @@
 # it starts a few one-shot services and respawns serial shells.
 
 ::sysinit:/sbin/syslogd -O /var/log/messages
+::sysinit:/sbin/klogd
 ::once:/bin/sh /sbin/start-sshd
 
 # Respawn login-free serial consoles. BusyBox init opens /dev/<id> for these

@@ -53,6 +53,10 @@ echo ""
 echo "=== RISC-V Alpine initramfs booted ==="
 echo ""
 
+# Keep late kernel notices from overwriting the interactive shell. They remain
+# available via dmesg, and BusyBox klogd records them after init starts.
+dmesg -n 1 2>/dev/null || true
+
 # Hand PID 1 to BusyBox init. It reads /etc/inittab, starts one-shot daemons,
 # and respawns console shells without tying PID 1 to an interactive session.
 exec /sbin/init

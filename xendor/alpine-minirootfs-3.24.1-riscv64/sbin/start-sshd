@@ -1,0 +1,93 @@
+#!/bin/sh
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+tag=sshd
+log_file=/tmp/sshd-start.log
+
+log_msg() {
+	logger -t "$tag" "$*" >/dev/null 2>&1 || true
+}
+
+log_output() {
+	[ -s "$log_file" ] || return 0
+	while IFS= read -r line; do
+		[ -n "$line" ] && log_msg "$line"
+	done < "$log_file"
+	: > "$log_file"
+}
+
+key_type_from_path() {
+	case "$1" in
+	*ssh_host_ed25519_key) printf '%s\n' ed25519 ;;
+	*ssh_host_ecdsa_key) printf '%s\n' ecdsa ;;
+	*ssh_host_rsa_key) printf '%s\n' rsa ;;
+	*) return 1 ;;
+	esac
+}
+
+generate_configured_host_keys() {
+	[ "$sshd_disable_keygen" != yes ] || return 0
+	[ -x /usr/bin/ssh-keygen ] || return 0
+	[ -r "$cfgfile" ] || return 0
+
+	while read -r keyword path rest; do
+		[ "$keyword" = HostKey ] || continue
+		[ -n "$path" ] || continue
+		[ -f "$path" ] && continue
+
+		key_type="$(key_type_from_path "$path" || true)"
+		if [ -z "$key_type" ]; then
+			log_msg "configured host key is missing: $path"
+			continue
+		fi
+
+		if ! /usr/bin/ssh-keygen -q -f "$path" -N "" -t "$key_type" >"$log_file" 2>&1; then
+			log_msg "host key generation failed: $path"
+			log_output
+			return 1
+		fi
+		log_msg "generated $key_type host key: $path"
+		log_output
+	done < "$cfgfile"
+}
+
+cfgfile=/etc/ssh/sshd_config
+command=/usr/sbin/sshd
+command_args=
+sshd_disable_keygen=no
+
+[ -r /etc/conf.d/sshd ] && . /etc/conf.d/sshd
+
+: "${sshd_disable_keygen:=${SSHD_DISABLE_KEYGEN:-no}}"
+: "${cfgfile:=${SSHD_CONFIG:-${SSHD_CONFDIR:-/etc/ssh}/sshd_config}}"
+: "${command:=${SSHD_BINARY:-/usr/sbin/sshd}}"
+: "${command_args:=${SSHD_OPTS:-}}"
+
+mkdir -p /run/sshd /tmp /var/log
+: > "$log_file" || exit 0
+
+if ! generate_configured_host_keys; then
+	rm -f "$log_file"
+	exit 0
+fi
+
+# Intentionally allow word splitting in command_args, matching OpenRC's script.
+# shellcheck disable=SC2086
+if ! "$command" -t -f "$cfgfile" $command_args >"$log_file" 2>&1; then
+	log_msg "configuration check failed"
+	log_output
+	rm -f "$log_file"
+	exit 0
+fi
+
+# shellcheck disable=SC2086
+if ! "$command" -f "$cfgfile" $command_args >"$log_file" 2>&1; then
+	log_msg "failed to start"
+	log_output
+	rm -f "$log_file"
+	exit 0
+fi
+
+log_output
+rm -f "$log_file"
+exit 0
