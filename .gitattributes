@@ -1,0 +1,16 @@
+* text=auto eol=lf
+
+*.sh text eol=lf
+*.go text eol=lf
+Makefile text eol=lf
+
+*.elf binary
+*.apk binary
+*.gz binary
+*.png binary
+Image binary
+fw_dynamic.elf binary
+initramfs.cpio.gz binary
+
+/xendor/alpine-minirootfs-3.24.1-riscv64/init text eol=lf
+/xendor/alpine-minirootfs-3.24.1-riscv64/etc/apk/* text eol=lf
