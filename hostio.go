@@ -5,7 +5,6 @@ import (
 	"errors"
 	"io"
 	"os"
-	"syscall"
 )
 
 const (
@@ -67,6 +66,34 @@ const (
 	hostIODirentHeaderSize = 32
 	hostIOMaxPath          = 64 << 10
 	hostIOMaxCopy          = 64 << 20
+)
+
+// hostio errno values are part of the guest Linux ABI. Keep them as Linux
+// numbers even when the emulator is running on a non-Linux host.
+const (
+	hostIOErrEPERM        = uint32(1)
+	hostIOErrENOENT       = uint32(2)
+	hostIOErrEIO          = uint32(5)
+	hostIOErrEBADF        = uint32(9)
+	hostIOErrENOMEM       = uint32(12)
+	hostIOErrEACCES       = uint32(13)
+	hostIOErrEFAULT       = uint32(14)
+	hostIOErrEEXIST       = uint32(17)
+	hostIOErrENOTDIR      = uint32(20)
+	hostIOErrEINVAL       = uint32(22)
+	hostIOErrEFBIG        = uint32(27)
+	hostIOErrENOSPC       = uint32(28)
+	hostIOErrESPIPE       = uint32(29)
+	hostIOErrEROFS        = uint32(30)
+	hostIOErrEPIPE        = uint32(32)
+	hostIOErrENAMETOOLONG = uint32(36)
+	hostIOErrENOSYS       = uint32(38)
+	hostIOErrENOTEMPTY    = uint32(39)
+	hostIOErrELOOP        = uint32(40)
+	hostIOErrEMFILE       = uint32(24)
+	hostIOErrEXDEV        = uint32(18)
+	hostIOErrEOPNOTSUPP   = uint32(95)
+	hostIOErrENOBUFS      = uint32(105)
 )
 
 type hostIODevice struct {
@@ -178,11 +205,11 @@ func writeHostIOReg(old, width, value uint64, high bool) uint64 {
 func (d *hostIODevice) submit() *MemFault {
 	cmd, fault, ok := d.readCommand()
 	if fault != nil {
-		d.setStatus(hostIOStatusBadCommand, uint32(syscall.EFAULT), -1)
+		d.setStatus(hostIOStatusBadCommand, hostIOErrEFAULT, -1)
 		return fault
 	}
 	if !ok {
-		d.setStatus(hostIOStatusBadCommand, uint32(syscall.EINVAL), -1)
+		d.setStatus(hostIOStatusBadCommand, hostIOErrEINVAL, -1)
 		return nil
 	}
 	result, errno := d.execute(cmd)
@@ -286,13 +313,13 @@ func (d *hostIODevice) execute(cmd *hostIOCommand) (int64, uint32) {
 			return -1, errno
 		}
 		if cmd.Len > hostIOMaxCopy {
-			return -1, uint32(syscall.ENOMEM)
+			return -1, hostIOErrENOMEM
 		}
 		buf := make([]byte, int(cmd.Len))
 		n, err := f.Read(buf)
 		if n > 0 {
 			if fault := d.mem.WriteBytes(cmd.Buf, buf[:n]); fault != nil {
-				return -1, uint32(syscall.EFAULT)
+				return -1, hostIOErrEFAULT
 			}
 		}
 		if err != nil && !errors.Is(err, io.EOF) {
@@ -354,10 +381,10 @@ func (d *hostIODevice) execute(cmd *hostIOCommand) (int64, uint32) {
 			return -1, hostIOErrno(err)
 		}
 		if uint64(len(data)) > cmd.Len {
-			return int64(len(data)), uint32(syscall.ENOBUFS)
+			return int64(len(data)), hostIOErrENOBUFS
 		}
 		if fault := d.mem.WriteBytes(cmd.Buf, data); fault != nil {
-			return -1, uint32(syscall.EFAULT)
+			return -1, hostIOErrEFAULT
 		}
 		return int64(len(data)), 0
 	case hostIOOpWriteFile:
@@ -451,13 +478,13 @@ func (d *hostIODevice) execute(cmd *hostIOCommand) (int64, uint32) {
 		}
 		need := uint64(len(target)) + 1
 		if need > cmd.Len {
-			return int64(need), uint32(syscall.ENOBUFS)
+			return int64(need), hostIOErrENOBUFS
 		}
 		if fault := d.mem.WriteBytes(cmd.Buf, []byte(target)); fault != nil {
-			return -1, uint32(syscall.EFAULT)
+			return -1, hostIOErrEFAULT
 		}
 		if fault := d.mem.WriteBytes(cmd.Buf+uint64(len(target)), []byte{0}); fault != nil {
-			return -1, uint32(syscall.EFAULT)
+			return -1, hostIOErrEFAULT
 		}
 		return int64(len(target)), 0
 	case hostIOOpSymlink:
@@ -476,7 +503,7 @@ func (d *hostIODevice) execute(cmd *hostIOCommand) (int64, uint32) {
 	case hostIOOpChmod:
 		return d.pathModeOp(cmd, os.Chmod)
 	default:
-		return -1, uint32(syscall.ENOSYS)
+		return -1, hostIOErrENOSYS
 	}
 }
 
@@ -499,7 +526,7 @@ func (d *hostIODevice) registerFile(f *os.File) uint64 {
 func (d *hostIODevice) file(handle uint64) (*os.File, uint32) {
 	f := d.files[handle]
 	if f == nil {
-		return nil, uint32(syscall.EBADF)
+		return nil, hostIOErrEBADF
 	}
 	return f, 0
 }
@@ -528,32 +555,32 @@ func (d *hostIODevice) pathModeOp(cmd *hostIOCommand, fn func(string, os.FileMod
 
 func (d *hostIODevice) readPath(addr, length uint64) (string, uint32) {
 	if length == 0 || length > hostIOMaxPath {
-		return "", uint32(syscall.ENAMETOOLONG)
+		return "", hostIOErrENAMETOOLONG
 	}
 	buf := make([]byte, int(length))
 	if fault := d.mem.ReadBytes(addr, buf); fault != nil {
-		return "", uint32(syscall.EFAULT)
+		return "", hostIOErrEFAULT
 	}
-	return string(buf), 0
+	return hostIONormalizePath(string(buf)), 0
 }
 
 func (d *hostIODevice) readGuestBuffer(addr, length uint64) ([]byte, uint32) {
 	if length > hostIOMaxCopy {
-		return nil, uint32(syscall.ENOMEM)
+		return nil, hostIOErrENOMEM
 	}
 	if length > uint64(int(^uint(0)>>1)) {
-		return nil, uint32(syscall.ENOMEM)
+		return nil, hostIOErrENOMEM
 	}
 	buf := make([]byte, int(length))
 	if fault := d.mem.ReadBytes(addr, buf); fault != nil {
-		return nil, uint32(syscall.EFAULT)
+		return nil, hostIOErrEFAULT
 	}
 	return buf, 0
 }
 
 func (d *hostIODevice) writeStat(addr, length uint64, info os.FileInfo) (int64, uint32) {
 	if length < hostIOStatSize {
-		return hostIOStatSize, uint32(syscall.ENOBUFS)
+		return hostIOStatSize, hostIOErrENOBUFS
 	}
 	var raw [hostIOStatSize]byte
 	binary.LittleEndian.PutUint64(raw[0:], uint64(info.Size()))
@@ -563,24 +590,24 @@ func (d *hostIODevice) writeStat(addr, length uint64, info os.FileInfo) (int64, 
 		binary.LittleEndian.PutUint64(raw[24:], 1)
 	}
 	if fault := d.mem.WriteBytes(addr, raw[:]); fault != nil {
-		return -1, uint32(syscall.EFAULT)
+		return -1, hostIOErrEFAULT
 	}
 	return hostIOStatSize, 0
 }
 
 func (d *hostIODevice) writeDirents(addr, length uint64, entries []os.DirEntry) (int64, uint32) {
 	if length > hostIOMaxCopy {
-		return -1, uint32(syscall.ENOMEM)
+		return -1, hostIOErrENOMEM
 	}
 	if length > uint64(int(^uint(0)>>1)) {
-		return -1, uint32(syscall.ENOMEM)
+		return -1, hostIOErrENOMEM
 	}
 	out := make([]byte, 0, int(length))
 	for _, entry := range entries {
 		name := entry.Name()
 		need := hostIODirentHeaderSize + len(name)
 		if need > int(length)-len(out) {
-			return int64(len(out) + need), uint32(syscall.ENOBUFS)
+			return int64(len(out) + need), hostIOErrENOBUFS
 		}
 		info, err := entry.Info()
 		if err != nil {
@@ -598,7 +625,7 @@ func (d *hostIODevice) writeDirents(addr, length uint64, entries []os.DirEntry) 
 		out = append(out, name...)
 	}
 	if fault := d.mem.WriteBytes(addr, out); fault != nil {
-		return -1, uint32(syscall.EFAULT)
+		return -1, hostIOErrEFAULT
 	}
 	return int64(len(out)), 0
 }
@@ -635,9 +662,18 @@ func hostIOErrno(err error) uint32 {
 	if err == nil || errors.Is(err, io.EOF) {
 		return 0
 	}
-	var errno syscall.Errno
-	if errors.As(err, &errno) {
-		return uint32(errno)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		return hostIOErrENOENT
+	case errors.Is(err, os.ErrPermission):
+		return hostIOErrEACCES
+	case errors.Is(err, os.ErrExist):
+		return hostIOErrEEXIST
+	case errors.Is(err, os.ErrInvalid):
+		return hostIOErrEINVAL
 	}
-	return uint32(syscall.EIO)
+	if errno, ok := hostIOPlatformErrno(err); ok {
+		return errno
+	}
+	return hostIOErrEIO
 }

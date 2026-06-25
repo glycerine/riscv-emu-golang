@@ -15,7 +15,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 )
@@ -954,7 +953,7 @@ func TestBiosHostIOReadlinkRequiresSpaceForTerminator(t *testing.T) {
 	if got.Status != hostIOStatusErr {
 		t.Fatalf("readlink status = %d errno=%d result=%d, want error", got.Status, got.Errno, got.Result)
 	}
-	if got.Errno != uint32(syscall.ENOBUFS) {
+	if got.Errno != hostIOErrENOBUFS {
 		t.Fatalf("readlink errno = %d, want ENOBUFS", got.Errno)
 	}
 	if got.Result != int64(len(target)+1) {
