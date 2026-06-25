@@ -17,6 +17,13 @@ initramfs directory; we 3) create a cpio archive and
 gzip it into place, ready to boot from (emu) or
 embed (emul).
 
+ed25519 key generation will be done using my
+~/go/src/github.com/glycerine/rpc25519/selfcert/
+library, which is imported as "github.com/glycerine/rpc25519/selfcert".
+The command line utility 'selfy' (which we will not use here,
+because we do not want to shell out on Windows),
+demonstrates use: ~/go/src/github.com/glycerine/rpc25519/cmd/selfy/selfy.go
+
 1. generate a fresh ed25519 keypair with no passord to be the
 host key for sshd, and add it to the sshd /etc/ssh/ssh_host_ed25519_key
 file.
