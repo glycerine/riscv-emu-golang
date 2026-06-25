@@ -136,7 +136,9 @@ func goInstallEmul(repoRoot string) error {
 }
 
 func installedEmulPath(repoRoot string) (string, error) {
-	gobin, gopath, goexe, err := goEnv(repoRoot)
+	gobin := os.Getenv("GOBIN")
+	gopath := os.Getenv("GOPATH")
+	goexe, err := goEnv(repoRoot)
 	if err != nil {
 		return "", err
 	}
@@ -153,20 +155,20 @@ func installedEmulPath(repoRoot string) (string, error) {
 	return filepath.Join(gobin, "emul"+goexe), nil
 }
 
-func goEnv(repoRoot string) (gobin, gopath, goexe string, err error) {
-	cmd := exec.Command("go", "env", "GOBIN", "GOPATH", "GOEXE")
+func goEnv(repoRoot string) (goexe string, err error) {
+	cmd := exec.Command("go", "env", "GOEXE")
 	cmd.Dir = repoRoot
 	out, err := cmd.Output()
 	if err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
-			return "", "", "", fmt.Errorf("go env failed: %s", strings.TrimSpace(string(exitErr.Stderr)))
+			return "", fmt.Errorf("go env failed: %s", strings.TrimSpace(string(exitErr.Stderr)))
 		}
-		return "", "", "", fmt.Errorf("go env: %w", err)
+		return "", fmt.Errorf("go env: %w", err)
 	}
 	lines := strings.Split(strings.TrimRight(string(out), "\r\n"), "\n")
-	if len(lines) != 3 {
-		return "", "", "", fmt.Errorf("go env returned %d lines; want 3", len(lines))
+	if len(lines) != 1 {
+		return "", fmt.Errorf("go env returned %d lines; want 1", len(lines))
 	}
-	return strings.TrimSpace(lines[0]), strings.TrimSpace(lines[1]), strings.TrimSpace(lines[2]), nil
+	return strings.TrimSpace(lines[0]), nil
 }
