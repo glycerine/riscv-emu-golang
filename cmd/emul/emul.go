@@ -1,31 +1,33 @@
 package main
 
 import (
-	"embed"
 	"fmt"
 	"os"
 
 	riscv "github.com/glycerine/riscv-emu-golang"
+
+	// embeds the bootables into our binary.
+	"github.com/glycerine/riscv-emu-golang/xendor"
 )
 
-//go:embed fw_dynamic.elf
-//go:embed Image
-//go:embed initramfs.cpio.gz
-var bootables embed.FS
-
 func main() {
-	biosPath := "fw_dynamic.elf"
-	bios0, err := bootables.Open(biosPath)
+	//biosPath := "fw_dynamic.elf"
+	biosPath := "opensbi/build/platform/generic/firmware/fw_dynamic.elf"
+	bios0, err := xendor.Bootables.Open(biosPath)
 	panicOn(err)
 	bios, err := bios0.Stat()
-	kernelPath := "Image"
+
+	//kernelPath := "Image"
+	kernelPath := "linux-6.17-hand-built/Image"
 	panicOn(err)
-	kernel0, err := bootables.Open(kernelPath)
+	kernel0, err := xendor.Bootables.Open(kernelPath)
 	panicOn(err)
 	kernel, err := kernel0.Stat()
 	panicOn(err)
-	ramfsPath := "initramfs.cpio.gz"
-	ramfs0, err := bootables.Open(ramfsPath)
+
+	//ramfsPath := "initramfs.cpio.gz"
+	ramfsPath := "linux/initramfs.cpio.gz"
+	ramfs0, err := xendor.Bootables.Open(ramfsPath)
 	panicOn(err)
 	ramfs, err := ramfs0.Stat()
 	panicOn(err)
@@ -35,11 +37,11 @@ func main() {
 	fmt.Printf("embedded size of kernel: %v path: '%v'\n", kernel.Size(), kernelPath)
 
 	cfg := &riscv.EmuConfig{
-		Bootables:         &bootables,
+		Bootables:         &xendor.Bootables,
 		Idle:              "1s",
-		BiosPath:          "fw_dynamic.elf",
-		KernelPath:        "Image",
-		InitrdPath:        "initramfs.cpio.gz",
+		BiosPath:          biosPath,   // "fw_dynamic.elf",
+		KernelPath:        kernelPath, // "Image",
+		InitrdPath:        ramfsPath,  //"initramfs.cpio.gz",
 		Net:               true,
 		HostIO:            true,
 		Append:            "console=ttyS0,115200 earlycon=uart8250,mmio,0x10000000 rdinit=/init panic=1 reboot=t init_on_alloc=0 init_on_free=0 audit=0 lsm=capability cma=0 numa=off slub_debug=- lpj=XXXXX",
