@@ -9,7 +9,9 @@ require (
 	github.com/glycerine/rpc25519 v1.44.13
 	github.com/tailscale/wireguard-go v0.0.0-20260427181203-e3ac4a0afb4e
 	github.com/tetratelabs/wazero v1.11.0
+	github.com/u-root/u-root v0.14.0
 	golang.org/x/arch v0.26.0
+	golang.org/x/crypto v0.51.0
 	golang.org/x/sys v0.45.0
 	tailscale.com v1.98.5
 )
@@ -27,6 +29,7 @@ require (
 	github.com/creachadair/msync v0.7.1 // indirect
 	github.com/cristalhq/base64 v0.1.2 // indirect
 	github.com/dblohm7/wingoes v0.0.0-20240119213807-a09d6be7affa // indirect
+	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/fxamacker/cbor/v2 v2.9.0 // indirect
 	github.com/gaissmai/bart v0.26.1 // indirect
 	github.com/glycerine/base58 v0.24.2 // indirect
@@ -67,12 +70,12 @@ require (
 	github.com/tailscale/peercred v0.0.0-20250107143737-35a0c7bd7edc // indirect
 	github.com/tailscale/web-client-prebuilt v0.0.0-20250124233751-d4cd19a26976 // indirect
 	github.com/tinylib/msgp v1.1.2 // indirect
+	github.com/u-root/uio v0.0.0-20240224005618-d2acac8f3701 // indirect
 	github.com/ugorji/go/codec v1.2.12 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
 	go.yaml.in/yaml/v2 v2.4.4 // indirect
 	go4.org/mem v0.0.0-20240501181205-ae6ca9944745 // indirect
 	go4.org/netipx v0.0.0-20231129151722-fdeea329fbba // indirect
-	golang.org/x/crypto v0.51.0 // indirect
 	golang.org/x/exp v0.0.0-20260508232706-74f9aab9d74a // indirect
 	golang.org/x/net v0.55.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
