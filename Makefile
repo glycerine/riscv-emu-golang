@@ -171,9 +171,9 @@ BENCH_FLAGS := \
 # ── top-level ──────────────────────────────────────────────────────────────
 
 all: help
-	go install ./cmd/emu
-	go install ./cmd/emul
-	go install ./cmd/rekey
+	GOEXPERIMENT=nojsonv2 go install ./cmd/emu
+	GOEXPERIMENT=nojsonv2 go install ./cmd/emul
+	GOEXPERIMENT=nojsonv2 go install ./cmd/rkey
 
 help:
 	@echo ""
@@ -1027,6 +1027,7 @@ standard:
 # real network (non-deterministic) mode is active: we 
 # aggressively yield time to the host when we don't need it.
 EMU_IDLE ?= -idle 1s
+
 # Go 1.27rc1 defaults github.com/go-json-experiment/json onto the
 # stdlib jsonv2 alias path. That compiles with the bumped dependency, but
 # tsnet stalls before reaching AuthLoop/IP-ready in -net-direct mode. Keep
@@ -1035,7 +1036,7 @@ EMU_IDLE ?= -idle 1s
 EMU_GOEXPERIMENT ?= nojsonv2
 
 linux:
-	GOEXPERIMENT=$(EMU_GOEXPERIMENT) go install ./cmd/emu
+	GOEXPERIMENT=nojsonv2 go install ./cmd/emu
 	@# Older reference Ubuntu kernel, kept for comparison:
 	@# emu -mem 256MB -bios xendor/opensbi/build/platform/generic/firmware/fw_dynamic.elf -kernel xendor/linux/boot/vmlinuz-6.17.0-35-generic -initrd $(INITRAMFS_CPIO) -append "console=ttyS0,115200 earlycon=uart8250,mmio,0x10000000 rdinit=/init panic=1 reboot=t init_on_alloc=0 init_on_free=0 audit=0 lsm=capability cma=0 numa=off slub_debug=- lpj=XXXXX"
 		@# Slim in-tree Image with built-in hostfs plus virtio-net MMIO.
