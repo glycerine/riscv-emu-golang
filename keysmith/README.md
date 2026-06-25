@@ -24,7 +24,7 @@ The command line utility 'selfy' (which we will not use here,
 because we do not want to shell out on Windows),
 demonstrates use: ~/go/src/github.com/glycerine/rpc25519/cmd/selfy/selfy.go
 
-1. generate a fresh ed25519 keypair with no passord to be the
+1. generate a fresh ed25519 keypair with no password to be the
 host key for sshd, and add it to the sshd /etc/ssh/ssh_host_ed25519_key
 file.
 
@@ -36,9 +36,10 @@ The equivalent of:
 
 2. create fresh ed25519 keypair to be the user login over ssh keys,
 and put the public key into the guest image "$ROOT/root/.ssh/
+This also has no password.
 
 selfy -nopass -k emunet -ssh
- public-key replaces entirely the $ROOT/root/ssh/authorized_keys
+ public-key replaces entirely the $ROOT/root/.ssh/authorized_keys
  to prevent stale/lost keys from still allowing login.
 
 3. The moral equivalent of "make repack" but entirely in 
