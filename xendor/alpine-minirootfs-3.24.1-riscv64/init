@@ -60,16 +60,19 @@ if [ -e /dev/ttyS1 ]; then
 	) &
 fi
 
-## pre-tini, pid 1 was simply /bin/sh
-##exec setsid /bin/sh -c 'exec /bin/sh -i </dev/ttyS0 >/dev/ttyS0 2>&1'
-
-# with tini (tiny init) so sshd can start on demand
-# 1. Start syslogd in the background so sshd can log to /var/log/messages
+# Start syslogd in the background so sshd can log to /var/log/messages.
 /sbin/syslogd
 
-# 2. Hand over PID 1 to Tini. 
-# Tini will spawn sshd in the background and leave you with an interactive shell on ttyS0.
-exec /sbin/tini -- /bin/sh -c "
-    /usr/sbin/sshd
-    exec setsid /bin/sh -i </dev/ttyS0 >/dev/ttyS0 2>&1
-"
+# Start sshd in daemon mode. Validate first so failures are visible on ttyS0
+# instead of only disappearing into syslog.
+if /usr/sbin/sshd -t; then
+	/usr/sbin/sshd || echo "warning: sshd failed to start"
+else
+	echo "warning: sshd configuration check failed"
+fi
+
+# Keep tini as PID 1, but let setsid run before the shell opens ttyS0.
+# Opening ttyS0 after setsid lets the shell acquire it as its controlling tty;
+# opening it before setsid makes ash see an unusable interactive console and
+# exit, which kills PID 1.
+exec /sbin/tini -- /usr/bin/setsid /bin/sh -c 'exec /bin/sh -i </dev/ttyS0 >/dev/ttyS0 2>&1'
