@@ -641,9 +641,7 @@ func (s *tsnetVirtioStack) waitTsnetUp(ctx context.Context) {
 		}
 		return
 	}
-	if !s.directTailnetGuest {
-		s.configureEmunetLeaderTsnetPrefs(ctx)
-	}
+	s.configureTsnetExitNodePrefs(ctx)
 	appendTsnetOpLog("authorized ips=%v state_dir=%q", status.TailscaleIPs, s.stateDir)
 	have4 := false
 	have6 := false
@@ -667,13 +665,13 @@ func (s *tsnetVirtioStack) waitTsnetUp(ctx context.Context) {
 	}
 }
 
-func (s *tsnetVirtioStack) configureEmunetLeaderTsnetPrefs(ctx context.Context) {
+func (s *tsnetVirtioStack) configureTsnetExitNodePrefs(ctx context.Context) {
 	lc, err := s.srv.LocalClient()
 	if err != nil {
 		appendTsnetOpLog("prefs_error routeall=true auto_exit_node=%q error=%q", ipn.AnyExitNode, err)
 		return
 	}
-	prefs, err := lc.EditPrefs(ctx, emunetLeaderTsnetPrefs())
+	prefs, err := lc.EditPrefs(ctx, tsnetExitNodePrefs())
 	if err != nil {
 		appendTsnetOpLog("prefs_error routeall=true auto_exit_node=%q error=%q", ipn.AnyExitNode, err)
 		return
@@ -681,7 +679,7 @@ func (s *tsnetVirtioStack) configureEmunetLeaderTsnetPrefs(ctx context.Context) 
 	appendTsnetOpLog("prefs routeall=%t auto_exit_node=%q exit_node_id=%q exit_node_ip=%s", prefs.RouteAll, prefs.AutoExitNode, prefs.ExitNodeID, prefs.ExitNodeIP)
 }
 
-func emunetLeaderTsnetPrefs() *ipn.MaskedPrefs {
+func tsnetExitNodePrefs() *ipn.MaskedPrefs {
 	return &ipn.MaskedPrefs{
 		RouteAllSet:     true,
 		AutoExitNodeSet: true,

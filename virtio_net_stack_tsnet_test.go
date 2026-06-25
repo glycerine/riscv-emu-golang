@@ -1154,8 +1154,8 @@ func TestTsnetUserLogfAppendsUserVisibleLinesToOpLog(t *testing.T) {
 	}
 }
 
-func TestEmunetLeaderTsnetPrefsEnableRoutesAndAutoExitNode(t *testing.T) {
-	prefs := emunetLeaderTsnetPrefs()
+func TestTsnetExitNodePrefsEnableRoutesAndAutoExitNode(t *testing.T) {
+	prefs := tsnetExitNodePrefs()
 	if !prefs.RouteAllSet || !prefs.Prefs.RouteAll {
 		t.Fatalf("RouteAll prefs = set:%t value:%t, want true/true", prefs.RouteAllSet, prefs.Prefs.RouteAll)
 	}
