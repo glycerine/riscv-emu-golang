@@ -1,0 +1,85 @@
+
+Running `apk update --root /host/Users/jaten/go/src/github.com/glycerine/riscv-emu-golang/xendor/alpine-minirootfs-3.24.1-riscv64` at 1970-01-01 00:06:29
+apk-tools 3.0.6-r0, compiled for riscv64.
+WARNING: updating and opening https://dl-cdn.alpinelinux.org/alpine/v3.24/main/riscv64/APKINDEX.tar.gz: TLS: server certificate not trusted
+WARNING: updating and opening https://dl-cdn.alpinelinux.org/alpine/v3.24/community/riscv64/APKINDEX.tar.gz: TLS: server certificate not trusted
+2 unavailable, 0 stale; 21 distinct packages available
+
+Running `apk update --root /host/Users/jaten/go/src/github.com/glycerine/riscv-emu-golang/xendor/alpine-minirootfs-3.24.1-riscv64` at 1970-01-01 00:45:05
+apk-tools 3.0.6-r0, compiled for riscv64.
+WARNING: updating and opening https://dl-cdn.alpinelinux.org/alpine/v3.24/main/riscv64/APKINDEX.tar.gz: TLS: server certificate not trusted
+WARNING: updating and opening https://dl-cdn.alpinelinux.org/alpine/v3.24/community/riscv64/APKINDEX.tar.gz: TLS: server certificate not trusted
+2 unavailable, 0 stale; 21 distinct packages available
+
+Running `apk add --root /host/Users/jaten/go/src/github.com/glycerine/riscv-emu-golang/xendor/alpine-minirootfs-3.24.1-riscv64 openssh openssh-server-common-openrc` at 1970-01-01 00:45:26
+apk-tools 3.0.6-r0, compiled for riscv64.
+WARNING: updating and opening https://dl-cdn.alpinelinux.org/alpine/v3.24/main/riscv64/APKINDEX.tar.gz: TLS: server certificate not trusted
+WARNING: updating and opening https://dl-cdn.alpinelinux.org/alpine/v3.24/community/riscv64/APKINDEX.tar.gz: TLS: server certificate not trusted
+ERROR: unable to select packages:
+  openssh (no such package):
+    required by: world[openssh]
+  openssh-server-common-openrc (no such package):
+    required by: world[openssh-server-common-openrc]
+
+Running `apk update --root /host/Users/jaten/go/src/github.com/glycerine/riscv-emu-golang/xendor/alpine-minirootfs-3.24.1-riscv64 --no-check-certificate` at 1970-01-01 00:49:08
+apk-tools 3.0.6-r0, compiled for riscv64.
+v3.24.1-53-g60120d98d0a [https://dl-cdn.alpinelinux.org/alpine/v3.24/main]
+v3.24.1-54-gc76823d19da [https://dl-cdn.alpinelinux.org/alpine/v3.24/community]
+OK: 26778 distinct packages available
+
+Running `apk update --root /host/Users/jaten/go/src/github.com/glycerine/riscv-emu-golang/xendor/alpine-minirootfs-3.24.1-riscv64 --no-check-certificate` at 1970-01-01 00:53:11
+apk-tools 3.0.6-r0, compiled for riscv64.
+
+Running `apk add --root /host/Users/jaten/go/src/github.com/glycerine/riscv-emu-golang/xendor/alpine-minirootfs-3.24.1-riscv64 openssh openssh-server-common-openrc` at 1970-01-01 00:53:29
+apk-tools 3.0.6-r0, compiled for riscv64.
+( 1/11) Installing openssh-keygen (10.3_p1-r0)
+ERROR: openssh-keygen-10.3_p1-r0: TLS: server certificate not trusted
+( 2/11) Installing ncurses-terminfo-base (6.6_p20260516-r0)
+ERROR: ncurses-terminfo-base-6.6_p20260516-r0: TLS: server certificate not trusted
+( 3/11) Installing libncursesw (6.6_p20260516-r0)
+ERROR: libncursesw-6.6_p20260516-r0: TLS: server certificate not trusted
+( 4/11) Installing libedit (20260508.3.1-r1)
+ERROR: libedit-20260508.3.1-r1: TLS: server certificate not trusted
+( 5/11) Installing openssh-client-common (10.3_p1-r0)
+ERROR: openssh-client-common-10.3_p1-r0: TLS: server certificate not trusted
+( 6/11) Installing openssh-client-default (10.3_p1-r0)
+ERROR: openssh-client-default-10.3_p1-r0: TLS: server certificate not trusted
+( 7/11) Installing openssh-sftp-server (10.3_p1-r0)
+ERROR: openssh-sftp-server-10.3_p1-r0: TLS: server certificate not trusted
+( 8/11) Installing openssh-server-common (10.3_p1-r0)
+ERROR: openssh-server-common-10.3_p1-r0: TLS: server certificate not trusted
+( 9/11) Installing openssh-server (10.3_p1-r0)
+ERROR: openssh-server-10.3_p1-r0: TLS: server certificate not trusted
+(10/11) Installing openssh (10.3_p1-r0)
+ERROR: openssh-10.3_p1-r0: TLS: server certificate not trusted
+(11/11) Installing openssh-server-common-openrc (10.3_p1-r0)
+ERROR: openssh-server-common-openrc-10.3_p1-r0: TLS: server certificate not trusted
+11 errors; 8342 KiB in 21 packages
+
+Running `apk update --root /host/Users/jaten/go/src/github.com/glycerine/riscv-emu-golang/xendor/alpine-minirootfs-3.24.1-riscv64 --no-check-certificate` at 1970-01-01 00:02:11
+apk-tools 3.0.6-r0, compiled for riscv64.
+v3.24.1-53-g60120d98d0a [https://dl-cdn.alpinelinux.org/alpine/v3.24/main]
+v3.24.1-54-gc76823d19da [https://dl-cdn.alpinelinux.org/alpine/v3.24/community]
+OK: 26778 distinct packages available
+
+Running `apk add --root /host/Users/jaten/go/src/github.com/glycerine/riscv-emu-golang/xendor/alpine-minirootfs-3.24.1-riscv64 --no-check-certificate openssh openssh-server-common-openrc` at 1970-01-01 00:06:16
+apk-tools 3.0.6-r0, compiled for riscv64.
+( 1/11) Installing openssh-keygen (10.3_p1-r0)
+( 2/11) Installing ncurses-terminfo-base (6.6_p20260516-r0)
+( 3/11) Installing libncursesw (6.6_p20260516-r0)
+( 4/11) Installing libedit (20260508.3.1-r1)
+( 5/11) Installing openssh-client-common (10.3_p1-r0)
+( 6/11) Installing openssh-client-default (10.3_p1-r0)
+( 7/11) Installing openssh-sftp-server (10.3_p1-r0)
+( 8/11) Installing openssh-server-common (10.3_p1-r0)
+( 9/11) Installing openssh-server (10.3_p1-r0)
+(10/11) Installing openssh (10.3_p1-r0)
+(11/11) Installing openssh-server-common-openrc (10.3_p1-r0)
+Executing busybox-1.37.0-r31.trigger
+OK: 13.5 MiB in 32 packages
+
+Running `apk update --root /host/Users/jaten/go/src/github.com/glycerine/riscv-emu-golang/xendor/alpine-minirootfs-3.24.1-riscv64` at 2026-06-25 12:00:43
+apk-tools 3.0.6-r0, compiled for riscv64.
+v3.24.1-53-g60120d98d0a [https://dl-cdn.alpinelinux.org/alpine/v3.24/main]
+v3.24.1-54-gc76823d19da [https://dl-cdn.alpinelinux.org/alpine/v3.24/community]
+OK: 26778 distinct packages available
