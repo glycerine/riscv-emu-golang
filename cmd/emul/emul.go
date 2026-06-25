@@ -43,6 +43,7 @@ func main() {
 		KernelPath:        kernelPath, // "Image",
 		InitrdPath:        ramfsPath,  //"initramfs.cpio.gz",
 		Net:               true,
+		NetDirectTailnet:  true,
 		HostIO:            true,
 		Append:            "console=ttyS0,115200 earlycon=uart8250,mmio,0x10000000 rdinit=/init panic=1 reboot=t init_on_alloc=0 init_on_free=0 audit=0 lsm=capability cma=0 numa=off slub_debug=- lpj=XXXXX",
 		Machine:           "virt",
