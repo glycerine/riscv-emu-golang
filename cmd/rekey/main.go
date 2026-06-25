@@ -135,6 +135,7 @@ func goInstallEmul(repoRoot string) error {
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+	cmd.Env = os.Environ()
 	cmd.Env = append(cmd.Env, "GOEXPERIMENT=nojsonv2")
 
 	if err := cmd.Run(); err != nil {
