@@ -3,6 +3,41 @@ emu_net: RISCV64 emulator and network in Golang (Go)
 
 ![emu_net](emunet_grid2.png)
 
+* News 2026 June 25: sshd on by default, new rekey utility
+
+The "make linux" guest Alpine Linux OS now starts sshd automatically.
+
+We now work on go1.27rc1 after working around a 
+tailscale bug by turning off jsonv2. 
+That means doing `GOEXPERIMENT=nojsonv2 go install ./cmd/emu` to build.
+https://github.com/tailscale/tailscale/issues/20254 was filed.
+
+The default Makefile target builds a new utility called 'rekey'.
+Invoking rekey from the host command line will generate fresh 
+keys for the host and ssh login. The ssh into the container,
+you would append the following to your host ~/.ssh/config file,
+changing the IP address to the IP of the booted node. That is
+replacing 100.99.208.124 with whatever tailnet 100. IP the
+node says it has after it boots up; do "ifconfig" at the shell to see.
+
+~~~
+# addition for your ~/.ssh/config file:
+Host emu 100.99.208.124
+   Hostname 100.99.208.124
+   User root
+   IdentityFile ~/.ssh/id_ed25519_emunet
+~~~
+
+The rekey binary also allows you to repack the initramfs on windows
+without needing a working cpio archive set of tools (which cygwin
+_might_ have, but windows does not). It generates new host and
+user keys, writes them into the guest filesystem and to 
+your host ~/.ssh/id_ed25519_emunet file, re-packs
+the file system initial ramdisk into a initramfs.cpio.gz, then re-builds
+emul so you can still start with just a single "emul" afterwards.
+The entire container image (bios, kernel, and initramfs.cpio.gz)
+is embedded in the emul binary, so it is very portable.
+
 * News 2026 June 21:
 
 The emu command now builds on Windows. Tested and working using msys2 for the cgo.
