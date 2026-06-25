@@ -59,4 +59,17 @@ if [ -e /dev/ttyS1 ]; then
 		done
 	) &
 fi
-exec setsid /bin/sh -c 'exec /bin/sh -i </dev/ttyS0 >/dev/ttyS0 2>&1'
+
+## pre-tini, pid 1 was simply /bin/sh
+##exec setsid /bin/sh -c 'exec /bin/sh -i </dev/ttyS0 >/dev/ttyS0 2>&1'
+
+# with tini (tiny init) so sshd can start on demand
+# 1. Start syslogd in the background so sshd can log to /var/log/messages
+/usr/sbin/syslogd
+
+# 2. Hand over PID 1 to Tini. 
+# Tini will spawn sshd in the background and leave you with an interactive shell on ttyS0.
+exec /sbin/tini -- /bin/sh -c "
+    /usr/sbin/sshd
+    exec setsid /bin/sh -i </dev/ttyS0 >/dev/ttyS0 2>&1
+"
