@@ -14,11 +14,12 @@ https://github.com/tailscale/tailscale/issues/20254 was filed.
 
 The default Makefile target builds a new utility called 'rekey'.
 Invoking rekey from the host command line will generate fresh 
-keys for the host and ssh login. The ssh into the container,
+keys for the host and ssh login. To ssh into the container,
 you would append the following to your host ~/.ssh/config file,
 changing the IP address to the IP of the booted node. That is
-replacing 100.99.208.124 with whatever tailnet 100. IP the
-node says it has after it boots up; do "ifconfig" at the shell to see.
+replacing 100.99.208.124 below with whatever tailnet 100.x.y.z IP the
+node says it has after it boots up; do "ifconfig" at the guest
+shell to see.
 
 ~~~
 # addition for your ~/.ssh/config file:
@@ -30,8 +31,13 @@ Host emu 100.99.208.124
 
 The rekey binary also allows you to repack the initramfs on windows
 without needing a working cpio archive set of tools (which cygwin
-_might_ have, but windows does not). It generates new host and
-user keys, writes them into the guest filesystem and to 
+_might_ have, but windows does not). This helps if you ever
+want to "apk add" to install other apk Alpine packages. 
+You need to either "make repack" (on darwin or linux) or 
+run rekey to repack on Windows.
+
+The repack will generate new host and user keys. It
+writes them into the guest filesystem and to 
 your host ~/.ssh/id_ed25519_emunet file, re-packs
 the file system initial ramdisk into a initramfs.cpio.gz, then re-builds
 emul so you can still start with just a single "emul" afterwards.
