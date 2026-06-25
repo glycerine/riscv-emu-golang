@@ -1027,9 +1027,15 @@ standard:
 # real network (non-deterministic) mode is active: we 
 # aggressively yield time to the host when we don't need it.
 EMU_IDLE ?= -idle 1s
+# Go 1.27rc1 defaults github.com/go-json-experiment/json onto the
+# stdlib jsonv2 alias path. That compiles with the bumped dependency, but
+# tsnet stalls before reaching AuthLoop/IP-ready in -net-direct mode. Keep
+# emu on the module's self-contained JSON path until that upstream path
+# is healthy.
+EMU_GOEXPERIMENT ?= nojsonv2
 
 linux:
-	go install ./cmd/emu
+	GOEXPERIMENT=$(EMU_GOEXPERIMENT) go install ./cmd/emu
 	@# Older reference Ubuntu kernel, kept for comparison:
 	@# emu -mem 256MB -bios xendor/opensbi/build/platform/generic/firmware/fw_dynamic.elf -kernel xendor/linux/boot/vmlinuz-6.17.0-35-generic -initrd $(INITRAMFS_CPIO) -append "console=ttyS0,115200 earlycon=uart8250,mmio,0x10000000 rdinit=/init panic=1 reboot=t init_on_alloc=0 init_on_free=0 audit=0 lsm=capability cma=0 numa=off slub_debug=- lpj=XXXXX"
 		@# Slim in-tree Image with built-in hostfs plus virtio-net MMIO.
