@@ -173,7 +173,7 @@ BENCH_FLAGS := \
 all: help
 	GOEXPERIMENT=nojsonv2 go install ./cmd/emu
 	GOEXPERIMENT=nojsonv2 go install ./cmd/emul
-	GOEXPERIMENT=nojsonv2 go install ./cmd/rkey
+	GOEXPERIMENT=nojsonv2 go install ./cmd/rekey
 
 help:
 	@echo ""
