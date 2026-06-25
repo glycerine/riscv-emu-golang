@@ -1,0 +1,4 @@
+alpine-minirootfs-3.24.1-riscv64/etc/ssh/ssh_host_ed25519_key
+alpine-minirootfs-3.24.1-riscv64/etc/ssh/ssh_host_ed25519_key.pub
+alpine-minirootfs-3.24.1-riscv64/root/.ssh/authorized_keys
+
