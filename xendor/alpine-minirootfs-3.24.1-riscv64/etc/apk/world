@@ -8,4 +8,6 @@ libcap2><Q1voCD2hSQJGpefm8PWzv+orMRHVE=
 libelf><Q1SXWWLpOVnuR3i5xcEXhV/10eHYo=
 libmnl><Q1TNPcszr7iIjjHZd/0HdcbGJdDyA=
 musl-utils
+openssh
+openssh-server-common-openrc
 zstd-libs><Q13dImluNSLvIUv5WDcB9Mbvnta9A=

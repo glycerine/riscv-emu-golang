@@ -534,3 +534,11 @@ after that, on host, repack; this is archived in git repo.
 ~~~
 cd ~/ris && make repack-initramfs
 ~~~
+
+## windows notes
+
+in guest linux, to use DNS 1.1.1.1 instead of 100.100.100.100
+which is the tailscale dns that was having trouble with IPV6 AAAA lookups, try:
+~~~
+# printf 'nameserver 1.1.1.1\n' > /etc/resolv.conf
+~~~
