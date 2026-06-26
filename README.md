@@ -89,10 +89,15 @@ outside (really this of minor value, since you are already
 on a Wireguard VPN), but it also means that processes cannot talk from
 machine to machine over tsnet. What it does do -- its advantage --
 is allow hundreds of local processes to all share a single tailscale
-network stack.
+network stack. All local machine processes can talk to each
+other over th 10.77.x.y addresses, and they can initiate
+connections to the internet (assuming you have an exit node
+configured), but they cannot by default talk to remote
+nodes that are participating in your tsnet. 
 
 To allow local processes to talk over tsnet (the Tailscale network) 
-to any other node in the emu_net, you
+to any other node in the emu_net (including remote ones on a
+different machine), you
 must use -net-direct. We have set the default in emul
 and 'make linux' to be -net-direct now, which means you
 can ssh into any process in your `emu_net`. The counter point
