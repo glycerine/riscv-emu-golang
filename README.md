@@ -90,7 +90,7 @@ on a Wireguard VPN), but it also means that processes cannot talk from
 machine to machine over tsnet. What it does do -- its advantage --
 is allow hundreds of local processes to all share a single tailscale
 network stack. All local machine processes can talk to each
-other over th 10.77.x.y addresses, and they can initiate
+other over the 10.77.x.y addresses, and they can initiate
 connections to the internet (assuming you have an exit node
 configured), but they cannot by default talk to remote
 nodes that are participating in your tsnet. 
