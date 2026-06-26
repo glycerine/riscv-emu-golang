@@ -62,6 +62,32 @@ APKDIR=/host/Users/jaten/go/src/github.com/glycerine/riscv-emu-golang/xendor/lin
 apk add --root "$ROOT" openssh
 ~~~
 
+The default is now -net-direct. To explain what this means,
+here is a quick `emu_net` networking primer. 
+
+Networking on emu is enabled with '-net'. Once '-net' is used then
+there is a choice of '-net-direct' with sets the EmuConfig.NetDirectTailnet
+flag. When emu -net-direct is given, then the emu process uses
+the tailscale network stack directly, and thus has a tailscale
+100.x.y.z IP address. When -net-direct is off (false), then
+the first emu process creates one tailscale stack that runs
+NAT/DHCP and hands out 10.77.x.y addresses to its guest Linus
+and to all other emu processes that are started afterwards
+without -net-direct on the same machine. The first is
+chosen or elected by being the first to grab port specified
+by EmuConfig.EmunetAddr, which defaults to port 7557.
+
+The non-leader emu processes communicate over this port to the leader
+emu and thus share a single tsnet (Tailscale network) stack
+on that local machine. This has the advantage of NAT protecting
+all processes on the machine from being reached from the
+outside, but it also means that processes cannot talk from
+machine to machine over tsnet. The allow local processes
+to talk over tsnet to any other node in the emu_net, you
+must use -net-direct. We have set the default in emul
+and 'make linux' to be -net-direct now, which means you
+can ssh into any process in your `emu_net`. 
+
 * News 2026 June 21:
 
 The emu command now builds on Windows. Tested and working using msys2 for the cgo.
