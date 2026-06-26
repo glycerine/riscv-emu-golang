@@ -66,8 +66,8 @@ The default is now -net-direct. To explain what this means,
 here is a quick `emu_net` networking primer. 
 
 Networking on emu is enabled with '-net'. Once '-net' is used then
-there is a choice of '-net-direct' with sets the EmuConfig.NetDirectTailnet
-flag. When emu -net-direct is given, then the emu process uses
+there is a choice of using '-net-direct' (which sets the EmuConfig.NetDirectTailnet
+flag) or not. When emu -net-direct is given, then the emu process uses
 the tailscale network stack directly, and thus has a tailscale
 100.x.y.z IP address. When -net-direct is off (false), then
 the first emu process creates one tailscale stack that runs
