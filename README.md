@@ -71,22 +71,33 @@ flag. When emu -net-direct is given, then the emu process uses
 the tailscale network stack directly, and thus has a tailscale
 100.x.y.z IP address. When -net-direct is off (false), then
 the first emu process creates one tailscale stack that runs
-NAT/DHCP and hands out 10.77.x.y addresses to its guest Linus
+NAT/DHCP and hands out 10.77.x.y addresses to its own guest Linux
 and to all other emu processes that are started afterwards
 without -net-direct on the same machine. The first is
 chosen or elected by being the first to grab port specified
-by EmuConfig.EmunetAddr, which defaults to port 7557.
+by EmuConfig.EmunetAddr, which defaults to the pre-established
+well-known-by-convention local port 127.0.0.1:7557. If
+the leader process dies while other follower processes remain,
+they will contend to become leader. Whoever binds port
+7557 first wins and becomes the new leader.
 
-The non-leader emu processes communicate over this port to the leader
+The non-leader emu processes communicate over port 7557 to the leader
 emu and thus share a single tsnet (Tailscale network) stack
 on that local machine. This has the advantage of NAT protecting
 all processes on the machine from being reached from the
-outside, but it also means that processes cannot talk from
-machine to machine over tsnet. The allow local processes
-to talk over tsnet to any other node in the emu_net, you
+outside (really this of minor value, since you are already
+on a Wireguard VPN), but it also means that processes cannot talk from
+machine to machine over tsnet. What it does do -- its advantage --
+is allow hundreds of local processes to all share a single tailscale
+network stack.
+
+To allow local processes to talk over tsnet (the Tailscale network) 
+to any other node in the emu_net, you
 must use -net-direct. We have set the default in emul
 and 'make linux' to be -net-direct now, which means you
-can ssh into any process in your `emu_net`. 
+can ssh into any process in your `emu_net`. The counter point
+is that each consumes a Tailscale node in your Tailscale network,
+and on the free plan there is a limit of 100 or so nodes.
 
 * News 2026 June 21:
 
