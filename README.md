@@ -7,6 +7,15 @@ emu_net: RISCV64 emulator and network in Golang (Go)
 
 The "make linux" guest Alpine Linux OS now starts sshd automatically.
 
+However you must run the new 'rekey' before you can ssh
+into your guest. Running rekey generates a fresh user ssh keys
+for you (since we don't ship a private key, you won't be
+able to ssh to the guest until you rekey). At the same time,
+rekey will give the guest host a new server key. If you
+only want to rekey without launching emul after rebuilding it,
+you can do 'rekey -stop' to stop before launching emul. See
+the further explanation below.
+
 We now work on go1.27rc1 after working around a 
 tailscale bug by turning off jsonv2. 
 That means doing `GOEXPERIMENT=nojsonv2 go install ./cmd/emu` to build.
@@ -19,7 +28,7 @@ you would append the following to your host ~/.ssh/config file,
 changing the IP address to the IP of the booted node. That is
 replacing 100.99.208.124 below with whatever tailnet 100.x.y.z IP the
 node says it has after it boots up; do "ifconfig" at the guest
-shell to see.
+shell to see. Assuming you want to call your guest 'emu':
 
 ~~~
 # addition for your ~/.ssh/config file:
