@@ -171,9 +171,12 @@ BENCH_FLAGS := \
 # ── top-level ──────────────────────────────────────────────────────────────
 
 all: help
-	GOEXPERIMENT=nojsonv2 go install ./cmd/emu
-	GOEXPERIMENT=nojsonv2 go install ./cmd/emul
-	GOEXPERIMENT=nojsonv2 go install ./cmd/rekey
+	#GOEXPERIMENT=nojsonv2 go install ./cmd/emu
+	#GOEXPERIMENT=nojsonv2 go install ./cmd/emul
+	#GOEXPERIMENT=nojsonv2 go install ./cmd/rekey
+	go install ./cmd/emu
+	go install ./cmd/emul
+	go install ./cmd/rekey
 
 help:
 	@echo ""
