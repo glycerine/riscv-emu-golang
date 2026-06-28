@@ -1,3 +1,5 @@
+//go:build cgo && amd64 && !windows
+
 #include "jit_sandbox.h"
 #include <string.h>
 

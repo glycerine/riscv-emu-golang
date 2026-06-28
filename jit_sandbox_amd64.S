@@ -1,3 +1,5 @@
+//go:build cgo && amd64 && !windows
+
 /*
  * jit_trampoline_asm — switches RSP to the sandbox stack (C mmap),
  * calls a JIT-compiled native block, then switches back.
