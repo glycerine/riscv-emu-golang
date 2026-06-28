@@ -7,7 +7,7 @@ emu_net: RISCV64 emulator and network in Golang (Go)
 
 The "make linux" guest Alpine Linux OS now starts sshd automatically.
 
-However you must run the new 'rekey' before you can ssh
+However you must run the new 'rekey' (on host, not guest) before you can ssh
 into your guest. Running rekey generates a fresh user ssh keys
 for you (since we don't ship a private key, you won't be
 able to ssh to the guest until you rekey). At the same time,
