@@ -191,6 +191,17 @@ func TestReparseDataLinkTargetSkipsBinaryPrefix(t *testing.T) {
 	}
 }
 
+func TestReparseDataLinkTargetAcceptsRelativeBasename(t *testing.T) {
+	raw := append([]byte{0, 0, 0, 0}, []byte("vt220")...)
+	got, ok := reparseDataLinkTarget(raw)
+	if !ok {
+		t.Fatalf("reparseDataLinkTarget returned ok=false")
+	}
+	if got != "vt220" {
+		t.Fatalf("reparseDataLinkTarget = %q; want vt220", got)
+	}
+}
+
 func assertPrivatePublicPair(t *testing.T, privatePath, publicPath string) {
 	t.Helper()
 	privateBytes, err := os.ReadFile(privatePath)

@@ -26,7 +26,7 @@ func reparseDataLinkTarget(raw []byte) (string, bool) {
 		limit = 16
 	}
 	for off := 0; off < limit; off++ {
-		if target, ok := decodeLinkTargetBytes(raw[off:], true); ok {
+		if target, ok := decodeLinkTargetBytes(raw[off:], false); ok {
 			return target, true
 		}
 	}
