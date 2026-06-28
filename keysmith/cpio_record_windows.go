@@ -35,7 +35,7 @@ func (r *cpioRecorder) record(path, name string) (cpioRecord, error) {
 	}
 	r.inumber++
 
-	if target, err := os.Readlink(path); err == nil {
+	if target, ok := windowsLinkTarget(path); ok {
 		info.Mode = cpioSIFLNK | 0o777
 		return cpioRecord{
 			cpioInfo: info,
@@ -52,9 +52,23 @@ func (r *cpioRecorder) record(path, name string) (cpioRecord, error) {
 	case cpioSIFCHR, cpioSIFBLK, cpioSIFIFO, cpioSIFSOCK:
 		rec.FileSize = 0
 	default:
-		return cpioRecord{}, fmt.Errorf("unsupported file type mode %#o", info.Mode&cpioSIFMT)
+		return cpioRecord{}, fmt.Errorf("unsupported file type mode %#o from host mode %v size %d", info.Mode&cpioSIFMT, fi.Mode(), fi.Size())
 	}
 	return rec, nil
+}
+
+func windowsLinkTarget(path string) (string, bool) {
+	if target, err := os.Readlink(path); err == nil {
+		return target, true
+	}
+	if target, ok := windowsReparseLinkTarget(path); ok {
+		return target, true
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return "", false
+	}
+	return cygwinSymlinkTarget(raw)
 }
 
 func windowsCPIOMode(name string, mode os.FileMode) uint64 {

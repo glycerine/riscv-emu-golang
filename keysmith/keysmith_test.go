@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strconv"
 	"testing"
+	"unicode/utf16"
 
 	"golang.org/x/crypto/ssh"
 )
@@ -147,6 +148,46 @@ func TestRepackRejectsOutputInsideRoot(t *testing.T) {
 	err := RepackInitramfs(root, filepath.Join(root, "initramfs.cpio.gz"))
 	if err == nil {
 		t.Fatalf("expected error for output inside root")
+	}
+}
+
+func TestCygwinSymlinkTarget(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		raw  []byte
+		want string
+	}{
+		{
+			name: "utf8",
+			raw:  append(append([]byte(nil), cygwinSymlinkMagic...), []byte("/bin/busybox\x00")...),
+			want: "/bin/busybox",
+		},
+		{
+			name: "utf16le",
+			raw:  append(append([]byte(nil), cygwinSymlinkMagic...), append([]byte{0xff, 0xfe}, utf16LEBytes("/bin/busybox")...)...),
+			want: "/bin/busybox",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := cygwinSymlinkTarget(tt.raw)
+			if !ok {
+				t.Fatalf("cygwinSymlinkTarget returned ok=false")
+			}
+			if got != tt.want {
+				t.Fatalf("cygwinSymlinkTarget = %q; want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestReparseDataLinkTargetSkipsBinaryPrefix(t *testing.T) {
+	raw := append([]byte{0, 0, 0, 0}, []byte("/bin/busybox")...)
+	got, ok := reparseDataLinkTarget(raw)
+	if !ok {
+		t.Fatalf("reparseDataLinkTarget returned ok=false")
+	}
+	if got != "/bin/busybox" {
+		t.Fatalf("reparseDataLinkTarget = %q; want /bin/busybox", got)
 	}
 }
 
@@ -316,4 +357,13 @@ func mustWriteFile(t *testing.T, path string, content []byte, mode os.FileMode) 
 	if err := os.Chmod(path, mode); err != nil {
 		t.Fatalf("Chmod(%q) failed: %v", path, err)
 	}
+}
+
+func utf16LEBytes(s string) []byte {
+	u16 := utf16.Encode([]rune(s))
+	out := make([]byte, 0, len(u16)*2+2)
+	for _, v := range u16 {
+		out = append(out, byte(v), byte(v>>8))
+	}
+	return append(out, 0, 0)
 }
