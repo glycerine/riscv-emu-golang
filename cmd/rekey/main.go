@@ -130,12 +130,12 @@ func validateRepoRoot(root string) error {
 }
 
 func goInstallEmul(repoRoot string) error {
-	cmd := exec.Command("go", "install", "./cmd/emul")
+	cmd := exec.Command(hostExecutable("go"), "install", "./cmd/emul")
 	cmd.Dir = repoRoot
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	cmd.Env = os.Environ()
+	cmd.Env = hostEnv()
 	cmd.Env = append(cmd.Env, "GOEXPERIMENT=nojsonv2")
 
 	if err := cmd.Run(); err != nil {
@@ -145,8 +145,8 @@ func goInstallEmul(repoRoot string) error {
 }
 
 func installedEmulPath(repoRoot string) (string, error) {
-	gobin := os.Getenv("GOBIN")
-	gopath := os.Getenv("GOPATH")
+	gobin := hostPathEnv("GOBIN")
+	gopath := hostPathListEnv("GOPATH")
 	goexe, err := goEnv(repoRoot)
 	if err != nil {
 		return "", err
@@ -165,8 +165,9 @@ func installedEmulPath(repoRoot string) (string, error) {
 }
 
 func goEnv(repoRoot string) (goexe string, err error) {
-	cmd := exec.Command("go", "env", "GOEXE")
+	cmd := exec.Command(hostExecutable("go"), "env", "GOEXE")
 	cmd.Dir = repoRoot
+	cmd.Env = hostEnv()
 	out, err := cmd.Output()
 	if err != nil {
 		var exitErr *exec.ExitError

@@ -59,7 +59,7 @@ And these are the operations we need to code up in Go
 to allow us to, on Windows, repack the initial ram filesystem for booting Linux.
 
 "compress/gzip" is in the Go standard library.
-"github.com/u-root/u-root/pkg/cpio" reads and writes cpio archives.
+keysmith writes the newc cpio archive directly.
 
 for the "find . -print0" equivalent in Go:
 path/filepath.WalkDir is the recommended approach to walk a directory

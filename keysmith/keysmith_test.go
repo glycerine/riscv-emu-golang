@@ -7,9 +7,9 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"testing"
 
-	"github.com/u-root/u-root/pkg/cpio"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -24,6 +24,9 @@ func TestPrepareWritesFreshKeysAndArchive(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		if err := os.Symlink("binfile", filepath.Join(root, "link-to-binfile")); err != nil {
 			t.Fatalf("Symlink failed: %v", err)
+		}
+		if err := os.Symlink("/guest/absolute-target", filepath.Join(root, "absolute-link")); err != nil {
+			t.Fatalf("absolute Symlink failed: %v", err)
 		}
 	}
 
@@ -77,11 +80,18 @@ func TestPrepareWritesFreshKeysAndArchive(t *testing.T) {
 
 	if runtime.GOOS != "windows" {
 		linkRec := requireRecord(t, records, "link-to-binfile")
-		if got := linkRec.Mode & cpio.S_IFMT; got != cpio.S_IFLNK {
+		if got := linkRec.Mode & cpioSIFMT; got != cpioSIFLNK {
 			t.Fatalf("symlink archive mode type = %#o; want symlink", got)
 		}
 		if got := string(recordBytes(t, linkRec)); got != "binfile" {
 			t.Fatalf("symlink target = %q; want binfile", got)
+		}
+		absoluteLinkRec := requireRecord(t, records, "absolute-link")
+		if got := absoluteLinkRec.Mode & cpioSIFMT; got != cpioSIFLNK {
+			t.Fatalf("absolute symlink archive mode type = %#o; want symlink", got)
+		}
+		if got := string(recordBytes(t, absoluteLinkRec)); got != "/guest/absolute-target" {
+			t.Fatalf("absolute symlink target = %q; want /guest/absolute-target", got)
 		}
 	}
 }
@@ -166,7 +176,7 @@ func assertPrivatePublicPair(t *testing.T, privatePath, publicPath string) {
 	}
 }
 
-func readArchive(t *testing.T, path string) map[string]cpio.Record {
+func readArchive(t *testing.T, path string) map[string]cpioRecord {
 	t.Helper()
 	compressed, err := os.ReadFile(path)
 	if err != nil {
@@ -182,18 +192,85 @@ func readArchive(t *testing.T, path string) map[string]cpio.Record {
 		t.Fatalf("ReadAll gzip %q failed: %v", path, err)
 	}
 
-	records := make(map[string]cpio.Record)
-	reader := cpio.Newc.Reader(bytes.NewReader(raw))
-	if err := cpio.ForEachRecord(reader, func(rec cpio.Record) error {
+	records := make(map[string]cpioRecord)
+	for off := 0; ; {
+		rec, next, ok := readNewcRecord(t, raw, off)
+		if !ok {
+			break
+		}
+		if rec.Name == cpioTrailer {
+			break
+		}
 		records[rec.Name] = rec
-		return nil
-	}); err != nil {
-		t.Fatalf("read cpio records from %q failed: %v", path, err)
+		off = next
 	}
 	return records
 }
 
-func requireRecord(t *testing.T, records map[string]cpio.Record, name string) cpio.Record {
+func readNewcRecord(t *testing.T, raw []byte, off int) (cpioRecord, int, bool) {
+	t.Helper()
+	if off == len(raw) {
+		return cpioRecord{}, off, false
+	}
+	if off+110 > len(raw) {
+		t.Fatalf("truncated cpio header at offset %d", off)
+	}
+	if magic := string(raw[off : off+6]); magic != cpioNewcMagic {
+		t.Fatalf("cpio magic at offset %d = %q; want %q", off, magic, cpioNewcMagic)
+	}
+	var fields [13]uint64
+	pos := off + 6
+	for i := range fields {
+		v, err := strconv.ParseUint(string(raw[pos:pos+8]), 16, 64)
+		if err != nil {
+			t.Fatalf("parse cpio field %d at offset %d: %v", i, pos, err)
+		}
+		fields[i] = v
+		pos += 8
+	}
+	nameLen := int(fields[11])
+	if nameLen <= 0 {
+		t.Fatalf("cpio record at offset %d has invalid name length %d", off, nameLen)
+	}
+	nameStart := off + 110
+	nameEnd := nameStart + nameLen
+	if nameEnd > len(raw) {
+		t.Fatalf("cpio record at offset %d has truncated name", off)
+	}
+	if raw[nameEnd-1] != 0 {
+		t.Fatalf("cpio record at offset %d name is not NUL-terminated", off)
+	}
+	dataStart := roundUp4(nameEnd)
+	fileSize := int(fields[6])
+	dataEnd := dataStart + fileSize
+	if dataEnd > len(raw) {
+		t.Fatalf("cpio record at offset %d has truncated data", off)
+	}
+	rec := cpioRecord{
+		cpioInfo: cpioInfo{
+			Ino:      fields[0],
+			Mode:     fields[1],
+			UID:      fields[2],
+			GID:      fields[3],
+			NLink:    fields[4],
+			MTime:    fields[5],
+			FileSize: fields[6],
+			Major:    fields[7],
+			Minor:    fields[8],
+			Rmajor:   fields[9],
+			Rminor:   fields[10],
+			Name:     string(raw[nameStart : nameEnd-1]),
+		},
+		data: append([]byte(nil), raw[dataStart:dataEnd]...),
+	}
+	return rec, roundUp4(dataEnd), true
+}
+
+func roundUp4(n int) int {
+	return (n + 3) &^ 3
+}
+
+func requireRecord(t *testing.T, records map[string]cpioRecord, name string) cpioRecord {
 	t.Helper()
 	rec, ok := records[name]
 	if !ok {
@@ -202,17 +279,9 @@ func requireRecord(t *testing.T, records map[string]cpio.Record, name string) cp
 	return rec
 }
 
-func recordBytes(t *testing.T, rec cpio.Record) []byte {
+func recordBytes(t *testing.T, rec cpioRecord) []byte {
 	t.Helper()
-	if rec.ReaderAt == nil {
-		return nil
-	}
-	buf := make([]byte, rec.FileSize)
-	n, err := rec.ReaderAt.ReadAt(buf, 0)
-	if err != nil && err != io.EOF {
-		t.Fatalf("ReadAt(%q) failed: %v", rec.Name, err)
-	}
-	return buf[:n]
+	return rec.data
 }
 
 func assertMode(t *testing.T, path string, want os.FileMode) {

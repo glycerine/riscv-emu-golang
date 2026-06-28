@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/glycerine/rpc25519/selfcert"
-	"github.com/u-root/u-root/pkg/cpio"
 )
 
 const (
@@ -168,15 +167,14 @@ func RepackInitramfs(rootDir, initramfsPath string) error {
 		return fmt.Errorf("create gzip writer: %w", err)
 	}
 	gw.ModTime = time.Unix(0, 0).UTC()
-	cw := cpio.Newc.Writer(gw)
 	for _, rec := range records {
-		if err := cw.WriteRecord(rec); err != nil {
+		if err := writeNewcRecord(gw, rec); err != nil {
 			_ = gw.Close()
 			_ = tmp.Close()
 			return fmt.Errorf("write cpio record %q: %w", rec.Name, err)
 		}
 	}
-	if err := cpio.WriteTrailer(cw); err != nil {
+	if err := writeNewcTrailer(gw); err != nil {
 		_ = gw.Close()
 		_ = tmp.Close()
 		return fmt.Errorf("write cpio trailer: %w", err)
@@ -255,36 +253,6 @@ func writeAuthorizedKeys(rootDir string, publicKey []byte) (string, error) {
 		return "", fmt.Errorf("chmod guest authorized_keys: %w", err)
 	}
 	return path, nil
-}
-
-func cpioRecords(rootDir string) ([]cpio.Record, error) {
-	recorder := cpio.NewRecorder()
-	var records []cpio.Record
-	err := filepath.WalkDir(rootDir, func(path string, _ os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		rec, err := recorder.GetRecord(path)
-		if err != nil {
-			return fmt.Errorf("record %q: %w", path, err)
-		}
-		name, err := archiveName(rootDir, path)
-		if err != nil {
-			return err
-		}
-		rec.Name = name
-		rec.UID = 0
-		rec.GID = 0
-		rec.Dev = 0
-		rec.Major = 0
-		rec.Minor = 0
-		records = append(records, rec)
-		return nil
-	})
-	if err != nil {
-		return nil, fmt.Errorf("walk initramfs root %q: %w", rootDir, err)
-	}
-	return records, nil
 }
 
 func archiveName(rootDir, path string) (string, error) {

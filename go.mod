@@ -9,7 +9,6 @@ require (
 	github.com/glycerine/rpc25519 v1.44.13
 	github.com/tailscale/wireguard-go v0.0.0-20260427181203-e3ac4a0afb4e
 	github.com/tetratelabs/wazero v1.11.0
-	github.com/u-root/u-root v0.14.0
 	golang.org/x/arch v0.26.0
 	golang.org/x/crypto v0.51.0
 	golang.org/x/sys v0.45.0
@@ -70,7 +69,6 @@ require (
 	github.com/tailscale/peercred v0.0.0-20250107143737-35a0c7bd7edc // indirect
 	github.com/tailscale/web-client-prebuilt v0.0.0-20250124233751-d4cd19a26976 // indirect
 	github.com/tinylib/msgp v1.1.2 // indirect
-	github.com/u-root/uio v0.0.0-20240224005618-d2acac8f3701 // indirect
 	github.com/ugorji/go/codec v1.2.12 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
 	go.yaml.in/yaml/v2 v2.4.4 // indirect
