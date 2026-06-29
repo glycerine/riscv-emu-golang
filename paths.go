@@ -3,6 +3,7 @@ package riscv
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 )
 
 const defaultEmunetSubdir = ".emunet"
@@ -16,6 +17,14 @@ func emunetDir() string {
 	}
 	if home := os.Getenv("HOME"); home != "" {
 		return filepath.Join(home, defaultEmunetSubdir)
+	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		return filepath.Join(home, defaultEmunetSubdir)
+	}
+	if runtime.GOOS == "windows" {
+		if profile := os.Getenv("USERPROFILE"); profile != "" {
+			return filepath.Join(profile, defaultEmunetSubdir)
+		}
 	}
 	return filepath.Join(os.TempDir(), defaultEmunetSubdir)
 }
