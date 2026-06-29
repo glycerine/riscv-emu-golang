@@ -118,11 +118,19 @@ func newTsnetVirtioStack(cfg *EmuConfig, directTailnetGuest bool) (*tsnetVirtioS
 	}
 	stack.tun = newVirtioNetMemoryTUN(stack.handleTsnetPacket)
 	stateDir := tsnetDir(cfg)
+	stateFile := filepath.Join(stateDir, "tailscaled.state")
+	stateInfo, stateErr := os.Stat(stateFile)
+	previousStateFound := stateErr == nil && !stateInfo.IsDir() && stateInfo.Size() > 0
+	previousStateSize := int64(0)
+	if stateErr == nil {
+		previousStateSize = stateInfo.Size()
+	}
 	hostname := tsnetHostname(cfg)
 	ephemeral := cfg.TsnetEphemeral
 	stack.stateDir = stateDir
+	fmt.Fprintf(os.Stderr, "tsnet: previous_state_found=%t state_file=%q size=%d stat_error=%v\n", previousStateFound, stateFile, previousStateSize, stateErr)
 	appendTsnetOpLog("start state_dir=%q state_file=%q hostname=%q ephemeral=%t authkey_set=%t",
-		stateDir, filepath.Join(stateDir, "tailscaled.state"), hostname, ephemeral, cfg.TsnetAuthKey != "")
+		stateDir, stateFile, hostname, ephemeral, cfg.TsnetAuthKey != "")
 	stack.srv = &tsnet.Server{
 		Dir:       stateDir,
 		Hostname:  hostname,
