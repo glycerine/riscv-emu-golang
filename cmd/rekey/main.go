@@ -35,8 +35,10 @@ func run(args []string) error {
 	var keyName string
 	var userKeyDir string
 	var stopEarlyNoBoot bool
+	var repackOnly bool
 
 	fs.BoolVar(&stopEarlyNoBoot, "stop", false, "stop early: do not boot emul after re-building it")
+	fs.BoolVar(&repackOnly, "repack", false, "repack only: skip generating new keys, just repack the initramfs")
 	fs.StringVar(&repoRoot, "repo-root", "", "riscv-emu-golang checkout root; empty searches from the current directory")
 	fs.StringVar(&rootDir, "root", "", "unpacked initramfs root; empty uses xendor/alpine-minirootfs-3.24.1-riscv64 under repo-root")
 	fs.StringVar(&initramfsPath, "initramfs", "", "initramfs cpio.gz to write; empty uses xendor/linux/initramfs.cpio.gz under repo-root")
@@ -63,11 +65,15 @@ func run(args []string) error {
 		InitramfsPath: initramfsPath,
 		KeyName:       keyName,
 		UserKeyDir:    userKeyDir,
+		RepackOnly:    repackOnly, // change no keys?
 	})
 	if err != nil {
 		return err
 	}
 	fmt.Fprintf(os.Stderr, "rekey: wrote %s\n", res.InitramfsPath)
+	if !repackOnly {
+		return nil // skip boot of emul too.
+	}
 	fmt.Fprintf(os.Stderr, "rekey: wrote host login key %s\n", res.UserPrivateKeyPath)
 
 	fmt.Fprintf(os.Stderr, "rekey: go install ./cmd/emul\n")

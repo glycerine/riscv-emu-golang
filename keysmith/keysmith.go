@@ -42,6 +42,9 @@ type Config struct {
 
 	// HomeDir overrides $HOME for default UserKeyDir selection. It is mostly useful in tests.
 	HomeDir string
+
+	// RepackOnly true means we change no keys
+	RepackOnly bool
 }
 
 // Result reports the files written by Prepare.
@@ -60,54 +63,56 @@ type Result struct {
 
 // Prepare generates fresh Ed25519 SSH keys, installs the public login key in the
 // guest root account, and repacks the initramfs as a deterministic newc cpio.gz.
-func Prepare(cfg Config) (Result, error) {
-	cfg, err := cfg.withDefaults()
+func Prepare(cfg Config) (r Result, err error) {
+	cfg, err = cfg.withDefaults()
 	if err != nil {
-		return Result{}, err
+		return
 	}
+	r.KeyName = cfg.KeyName
+	r.InitramfsPath = cfg.InitramfsPath
 
-	hostPriv, err := freshPrivateKey()
-	if err != nil {
-		return Result{}, fmt.Errorf("generate guest ssh host key: %w", err)
-	}
-	hostDir := filepath.Join(cfg.RootDir, "etc", "ssh")
-	if err := selfcert.PrivateToSSHKeyPair(hostPriv, cfg.KeyName+"-host", hostKeyFile, hostDir); err != nil {
-		return Result{}, fmt.Errorf("write guest ssh host key: %w", err)
-	}
+	if !cfg.RepackOnly {
+		hostPriv, err := freshPrivateKey()
+		if err != nil {
+			return Result{}, fmt.Errorf("generate guest ssh host key: %w", err)
+		}
+		hostDir := filepath.Join(cfg.RootDir, "etc", "ssh")
+		if err := selfcert.PrivateToSSHKeyPair(hostPriv, cfg.KeyName+"-host", hostKeyFile, hostDir); err != nil {
+			return Result{}, fmt.Errorf("write guest ssh host key: %w", err)
+		}
+		r.HostPrivateKeyPath = filepath.Join(hostDir, hostKeyFile)
+		r.HostPublicKeyPath = filepath.Join(hostDir, hostKeyFile+".pub")
 
-	userPriv, err := freshPrivateKey()
-	if err != nil {
-		return Result{}, fmt.Errorf("generate host user ssh key: %w", err)
-	}
-	userKeyFile := userPrivateKeyFile(cfg.KeyName)
-	if err := selfcert.PrivateToSSHKeyPair(userPriv, cfg.KeyName, userKeyFile, cfg.UserKeyDir); err != nil {
-		return Result{}, fmt.Errorf("write host user ssh key: %w", err)
-	}
+		userPriv, err := freshPrivateKey()
+		if err != nil {
+			return Result{}, fmt.Errorf("generate host user ssh key: %w", err)
+		}
+		userKeyFile := userPrivateKeyFile(cfg.KeyName)
+		if err := selfcert.PrivateToSSHKeyPair(userPriv, cfg.KeyName, userKeyFile, cfg.UserKeyDir); err != nil {
+			return Result{}, fmt.Errorf("write host user ssh key: %w", err)
+		}
 
-	userPublicPath := filepath.Join(cfg.UserKeyDir, userKeyFile+".pub")
-	userPublicKey, err := os.ReadFile(userPublicPath)
-	if err != nil {
-		return Result{}, fmt.Errorf("read host user ssh public key %q: %w", userPublicPath, err)
-	}
+		userPublicPath := filepath.Join(cfg.UserKeyDir, userKeyFile+".pub")
+		userPublicKey, err := os.ReadFile(userPublicPath)
+		if err != nil {
+			return Result{}, fmt.Errorf("read host user ssh public key %q: %w", userPublicPath, err)
+		}
 
-	authorizedKeysPath, err := writeAuthorizedKeys(cfg.RootDir, userPublicKey)
-	if err != nil {
-		return Result{}, err
-	}
+		r.UserPrivateKeyPath = filepath.Join(cfg.UserKeyDir, userKeyFile)
+		r.UserPublicKeyPath = userPublicPath
+
+		authorizedKeysPath, err := writeAuthorizedKeys(cfg.RootDir, userPublicKey)
+		if err != nil {
+			return Result{}, err
+		}
+		r.AuthorizedKeysPath = authorizedKeysPath
+
+	} // end if !cfg.RepackOnly
 
 	if err := RepackInitramfs(cfg.RootDir, cfg.InitramfsPath); err != nil {
 		return Result{}, err
 	}
-
-	return Result{
-		KeyName:            cfg.KeyName,
-		HostPrivateKeyPath: filepath.Join(hostDir, hostKeyFile),
-		HostPublicKeyPath:  filepath.Join(hostDir, hostKeyFile+".pub"),
-		UserPrivateKeyPath: filepath.Join(cfg.UserKeyDir, userKeyFile),
-		UserPublicKeyPath:  userPublicPath,
-		AuthorizedKeysPath: authorizedKeysPath,
-		InitramfsPath:      cfg.InitramfsPath,
-	}, nil
+	return
 }
 
 // RepackInitramfs writes rootDir as a gzip-compressed newc cpio archive. It
