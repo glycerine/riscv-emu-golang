@@ -64,7 +64,7 @@ type Result struct {
 // Prepare generates fresh Ed25519 SSH keys, installs the public login key in the
 // guest root account, and repacks the initramfs as a deterministic newc cpio.gz.
 func Prepare(cfg Config) (r Result, err error) {
-	cfg, err = cfg.withDefaults()
+	err = cfg.setDefaults()
 	if err != nil {
 		return
 	}
@@ -202,34 +202,33 @@ func RepackInitramfs(rootDir, initramfsPath string) error {
 	return nil
 }
 
-func (cfg Config) withDefaults() (Config, error) {
+func (cfg *Config) setDefaults() (err error) {
 	if cfg.RootDir == "" {
-		return Config{}, fmt.Errorf("RootDir cannot be empty")
+		return fmt.Errorf("RootDir cannot be empty")
 	}
 	if cfg.InitramfsPath == "" {
-		return Config{}, fmt.Errorf("InitramfsPath cannot be empty")
+		return fmt.Errorf("InitramfsPath cannot be empty")
 	}
 	if cfg.KeyName == "" {
 		cfg.KeyName = DefaultKeyName
 	}
 	if strings.ContainsAny(cfg.KeyName, `/\`) {
-		return Config{}, fmt.Errorf("KeyName cannot contain path separators: %q", cfg.KeyName)
+		return fmt.Errorf("KeyName cannot contain path separators: %q", cfg.KeyName)
 	}
 	if cfg.UserKeyDir == "" {
 		home := cfg.HomeDir
 		if home == "" {
-			var err error
 			home, err = os.UserHomeDir()
 			if err != nil {
-				return Config{}, fmt.Errorf("find user home directory: %w", err)
+				return fmt.Errorf("find user home directory: %w", err)
 			}
 		}
 		if home == "" {
-			return Config{}, fmt.Errorf("HomeDir cannot be empty when UserKeyDir is empty")
+			return fmt.Errorf("HomeDir cannot be empty when UserKeyDir is empty")
 		}
 		cfg.UserKeyDir = filepath.Join(home, ".ssh")
 	}
-	return cfg, nil
+	return nil
 }
 
 func freshPrivateKey() (ed25519.PrivateKey, error) {
