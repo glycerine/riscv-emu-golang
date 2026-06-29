@@ -21,3 +21,5 @@ vizjit_debug_dir/
 *.a
 xendor/go1.26.4.linux-riscv64
 cmd/emul/emul
+xendor/linux/initramfs.cpio
+xendor/linux/initramfs.cpio.gz
