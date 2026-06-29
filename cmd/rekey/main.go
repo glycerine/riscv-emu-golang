@@ -71,7 +71,7 @@ func run(args []string) error {
 		return err
 	}
 	fmt.Fprintf(os.Stderr, "rekey: wrote %s\n", res.InitramfsPath)
-	if !repackOnly {
+	if repackOnly {
 		return nil // skip boot of emul too.
 	}
 	fmt.Fprintf(os.Stderr, "rekey: wrote host login key %s\n", res.UserPrivateKeyPath)
