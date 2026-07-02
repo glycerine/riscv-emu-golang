@@ -6,7 +6,7 @@ require (
 	4d63.com/tz v1.2.0
 	github.com/glycerine/greenpack v0.541.0
 	github.com/glycerine/rbtree v0.2.1
-	github.com/glycerine/rpc25519 v1.44.14
+	github.com/glycerine/rpc25519 v1.44.17
 	github.com/tailscale/wireguard-go v0.0.0-20260427181203-e3ac4a0afb4e
 	github.com/tetratelabs/wazero v1.11.0
 	golang.org/x/arch v0.26.0
