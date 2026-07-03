@@ -176,9 +176,10 @@ and bitmanip extensions Zba/Zbb/Zbc/Zbs.
 
 The A, F, D, C, and B-family extensions are implemented for RV64; RV128 is not supported.
 
-Zicsr is implemented for the CSRs this emulator cares about, 
-not as a full privileged-architecture model. The atomics are processed but
-are no-ops.
+This profile suffices to let us run the Go toolchain, for example.
+
+Zicsr implements the full privileged-architecture model now, allowing linux
+to boot and run as a quality control check if not more.
 
 --------
 Author: Jason E. Aten, Ph.D.
@@ -186,6 +187,8 @@ Author: Jason E. Aten, Ph.D.
 License: BSD 3-Clause, same as Go.
 
 ---------
+A closeup of the emu, our mascot:
+
 ![the emu!](emu_head_small.png)
 
 ## notes
