@@ -89,7 +89,7 @@ func defineFlags(fs *flag.FlagSet, c *riscv.EmuConfig) {
 	fs.BoolVar(&c.Chaos, "chaos", false, "use deterministic chaos scheduling")
 	fs.Int64Var(&c.RealtimeOffsetNS, "init", defaultEmuRealtimeStartNS, "initial realtime clock value in nanoseconds since Unix epoch; default is 2000-01-01T00:00:00Z")
 	fs.StringVar(&c.Idle, "idle", "100ms", "BIOS/Linux WFI host sleep cap as a duration")
-	fs.StringVar(&c.Breadcrumb.Path, "breadcrumb", "", "write interpreted PC breadcrumb trace to this path; requires -tags breadcrumb")
+	fs.StringVar(&c.Breadcrumb.Path, "breadcrumb", riscv.BreadcrumbDefaultPath, "write interpreted PC breadcrumb trace to this path; requires -tags breadcrumb")
 	fs.Uint64Var(&c.Breadcrumb.Interval, "breadcrumb-interval", 0, "breadcrumb checkpoint interval in hashed PCs; default 1000")
 	fs.Uint64Var(&c.Breadcrumb.StartAt, "breadcrumb-start", 0, "start hashing at this breadcrumb sequence number")
 	fs.Uint64Var(&c.Breadcrumb.StopAt, "breadcrumb-stop", 0, "stop hashing after this breadcrumb sequence number")

@@ -9,6 +9,8 @@ import (
 
 const breadcrumbEnabled = false
 
+var BreadcrumbDefaultPath string = ""
+
 var ErrBreadcrumbDisabled = errors.New("riscv: breadcrumb tracing requires building with -tags breadcrumb")
 
 type BreadcrumbTracer struct{}

@@ -175,6 +175,11 @@ all: help
 	go install ./cmd/emul
 	go install ./cmd/rekey
 
+bread:
+	go install -tags breadcrumb ./cmd/emu
+	go install -tags breadcrumb ./cmd/emul
+
+
 #GOEXPERIMENT=nojsonv2 go install ./cmd/emu
 #GOEXPERIMENT=nojsonv2 go install ./cmd/emul
 #GOEXPERIMENT=nojsonv2 go install ./cmd/rekey

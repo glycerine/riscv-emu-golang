@@ -20,6 +20,8 @@ var ErrBreadcrumbConfig = errors.New("riscv: invalid breadcrumb configuration")
 
 var breadcrumbTracers sync.Map // map[*CPU]*BreadcrumbTracer
 
+var BreadcrumbDefaultPath string = "crumbs.txt"
+
 type breadcrumbControl uint32
 
 const (
