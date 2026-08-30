@@ -75,6 +75,9 @@ const (
 	breadcrumbRegTripHitSeq     = uint64(0x50)
 	breadcrumbRegTripHitAttempt = uint64(0x58)
 	breadcrumbRegTripHitPC      = uint64(0x60)
+	breadcrumbRegTargetPID      = uint64(0x68)
+	breadcrumbRegTargetSATP     = uint64(0x70)
+	breadcrumbRegTargetStatus   = uint64(0x78)
 )
 
 const (

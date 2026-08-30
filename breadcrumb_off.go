@@ -54,11 +54,11 @@ func prepareBreadcrumbTracer(_ *EmuConfig, _ bool) (*BreadcrumbTracer, error) {
 	return nil, nil
 }
 
-func breadcrumbRecordPC(_ *CPU, _, _, _ uint64, _ PrivilegeMode) error {
+func breadcrumbRecordPC(_ *CPU, _, _, _, _ uint64, _ PrivilegeMode) error {
 	return nil
 }
 
-func breadcrumbAfterAttempt(_ *CPU, _, _, _ uint64, _ PrivilegeMode) error {
+func breadcrumbAfterAttempt(_ *CPU, _, _, _, _ uint64, _ PrivilegeMode) error {
 	return nil
 }
 

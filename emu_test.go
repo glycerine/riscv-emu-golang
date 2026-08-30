@@ -2283,6 +2283,8 @@ func runBiosUntilOutputWithin(cfg *EmuConfig, marker string, maxInstructions uin
 	defer guest.mmio.closeUARTOutput()
 	defer guest.mmio.closeHostIO()
 	defer guest.mmio.closeVirtioNet()
+	defer guest.cpu.SetBreadcrumbTracer(nil)
+	defer guest.mmio.closeBreadcrumb()
 
 	const chunk = uint64(100_000)
 	start := time.Now()

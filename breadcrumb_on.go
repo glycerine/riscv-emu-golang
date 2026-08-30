@@ -29,6 +29,8 @@ const (
 	breadcrumbControlFlush             breadcrumbControl = 4
 	breadcrumbControlArmNextUserReset  breadcrumbControl = 5
 	breadcrumbControlArmNextUserResume breadcrumbControl = 6
+	breadcrumbControlArmNextASReset    breadcrumbControl = 7
+	breadcrumbControlArmNextASResume   breadcrumbControl = 8
 	breadcrumbControlPendingNone       breadcrumbControl = 0
 	breadcrumbStatusIdle               uint32            = 0
 	breadcrumbStatusActive             uint32            = 1
@@ -36,43 +38,50 @@ const (
 	breadcrumbStatusError              uint32            = 3
 	breadcrumbArmNone                  uint8             = 0
 	breadcrumbArmNextUser              uint8             = 1
+	breadcrumbArmNextAddressSpace      uint8             = 2
 )
 
 type BreadcrumbTracer struct {
-	w                 *bufio.Writer
-	outfile           *os.File
-	path              string
-	h                 *blake3.Hasher
-	ownOutfile        bool
-	interval          uint64
-	startAt           uint64
-	stopAt            uint64
-	afterAt           uint64
-	afterInterval     uint64
-	nextCheckpoint    uint64
-	lastPC            uint64
-	active            bool
-	guestControl      bool
-	includePrivileged bool
-	seq               uint64
-	eligibleSeq       uint64
-	epoch             uint64
-	pendingControl    breadcrumbControl
-	armMode           uint8
-	armSawPrivileged  bool
-	tripMode          uint32
-	tripSeq           uint64
-	tripAttempt       uint64
-	tripSignal        uint32
-	tripPID           uint32
-	tripPending       bool
-	tripHitSeq        uint64
-	tripHitAttempt    uint64
-	tripHitPC         uint64
-	tripNotify        func()
-	closed            bool
-	lastErr           error
-	buf               [8]byte
+	w                  *bufio.Writer
+	outfile            *os.File
+	path               string
+	h                  *blake3.Hasher
+	ownOutfile         bool
+	interval           uint64
+	startAt            uint64
+	stopAt             uint64
+	afterAt            uint64
+	afterInterval      uint64
+	nextCheckpoint     uint64
+	lastPC             uint64
+	active             bool
+	guestControl       bool
+	includePrivileged  bool
+	filterAddressSpace bool
+	targetSATP         uint64
+	targetSATPValid    bool
+	targetPID          uint32
+	seq                uint64
+	eligibleSeq        uint64
+	epoch              uint64
+	pendingControl     breadcrumbControl
+	armMode            uint8
+	armSawPrivileged   bool
+	armSourceSATP      uint64
+	armSourceSATPValid bool
+	tripMode           uint32
+	tripSeq            uint64
+	tripAttempt        uint64
+	tripSignal         uint32
+	tripPID            uint32
+	tripPending        bool
+	tripHitSeq         uint64
+	tripHitAttempt     uint64
+	tripHitPC          uint64
+	tripNotify         func()
+	closed             bool
+	lastErr            error
+	buf                [8]byte
 }
 
 type breadcrumbIODevice struct {
@@ -108,21 +117,22 @@ func NewBreadcrumbTracer(cfg BreadcrumbConfig) (*BreadcrumbTracer, error) {
 	}
 
 	b := &BreadcrumbTracer{
-		w:                 bufio.NewWriter(out),
-		outfile:           out,
-		path:              cfg.Path,
-		h:                 blake3.New(32, nil),
-		ownOutfile:        own,
-		interval:          cfg.Interval,
-		startAt:           cfg.StartAt,
-		stopAt:            cfg.StopAt,
-		afterAt:           cfg.AfterAt,
-		afterInterval:     cfg.AfterInterval,
-		nextCheckpoint:    firstBreadcrumbCheckpoint(cfg.Interval, cfg.AfterAt, cfg.AfterInterval),
-		active:            !cfg.StartPaused && !cfg.GuestControl,
-		guestControl:      cfg.GuestControl,
-		includePrivileged: cfg.IncludePrivileged,
-		tripSignal:        3, // Linux SIGQUIT: Go prints goroutine stacks by default.
+		w:                  bufio.NewWriter(out),
+		outfile:            out,
+		path:               cfg.Path,
+		h:                  blake3.New(32, nil),
+		ownOutfile:         own,
+		interval:           cfg.Interval,
+		startAt:            cfg.StartAt,
+		stopAt:             cfg.StopAt,
+		afterAt:            cfg.AfterAt,
+		afterInterval:      cfg.AfterInterval,
+		nextCheckpoint:     firstBreadcrumbCheckpoint(cfg.Interval, cfg.AfterAt, cfg.AfterInterval),
+		active:             !cfg.StartPaused && !cfg.GuestControl,
+		guestControl:       cfg.GuestControl,
+		includePrivileged:  cfg.IncludePrivileged,
+		filterAddressSpace: cfg.GuestControl,
+		tripSignal:         3, // Linux SIGQUIT: Go prints goroutine stacks by default.
 	}
 	if err := b.writeHeader(); err != nil {
 		if own {
@@ -182,20 +192,20 @@ func (c *CPU) BreadcrumbTracer() *BreadcrumbTracer {
 	return b
 }
 
-func breadcrumbRecordPC(cpu *CPU, attempt, retired, pc uint64, priv PrivilegeMode) error {
+func breadcrumbRecordPC(cpu *CPU, attempt, retired, pc, satp uint64, priv PrivilegeMode) error {
 	b := cpu.BreadcrumbTracer()
 	if b == nil {
 		return nil
 	}
-	return b.RecordPC(attempt, retired, pc, priv)
+	return b.recordPC(attempt, retired, pc, priv, satp)
 }
 
-func breadcrumbAfterAttempt(cpu *CPU, attempt, retired, pc uint64, priv PrivilegeMode) error {
+func breadcrumbAfterAttempt(cpu *CPU, attempt, retired, pc, satp uint64, priv PrivilegeMode) error {
 	b := cpu.BreadcrumbTracer()
 	if b == nil {
 		return nil
 	}
-	return b.afterAttempt(attempt, retired, pc, priv, cpu.priv)
+	return b.afterAttempt(attempt, retired, pc, priv, satp, cpu.priv, cpu.satp)
 }
 
 func breadcrumbFlush(cpu *CPU) error {
@@ -207,6 +217,10 @@ func breadcrumbFlush(cpu *CPU) error {
 }
 
 func (b *BreadcrumbTracer) RecordPC(attempt, retired, pc uint64, priv PrivilegeMode) error {
+	return b.recordPC(attempt, retired, pc, priv, 0)
+}
+
+func (b *BreadcrumbTracer) recordPC(attempt, retired, pc uint64, priv PrivilegeMode, satp uint64) error {
 	if b == nil || b.closed {
 		return nil
 	}
@@ -214,7 +228,10 @@ func (b *BreadcrumbTracer) RecordPC(attempt, retired, pc uint64, priv PrivilegeM
 		return nil
 	}
 	if !b.includePrivileged && priv != PrivUser {
-		return b.maybeTrip(attempt, retired, pc)
+		return nil
+	}
+	if !b.addressSpaceAllowed(priv, satp) {
+		return nil
 	}
 	b.eligibleSeq++
 	if b.startAt != 0 && b.eligibleSeq < b.startAt {
@@ -231,14 +248,18 @@ func (b *BreadcrumbTracer) RecordPC(attempt, retired, pc uint64, priv PrivilegeM
 	b.seq++
 	b.lastPC = pc
 	if b.seq >= b.nextCheckpoint {
-		if err := b.writeCheckpoint(attempt, retired, pc, priv); err != nil {
+		if err := b.writeCheckpoint(attempt, retired, pc, priv, satp); err != nil {
 			return err
 		}
 	}
-	return b.maybeTrip(attempt, retired, pc)
+	return b.maybeTrip(attempt, retired, pc, satp)
 }
 
 func (b *BreadcrumbTracer) Activate(attempt, retired, pc uint64, reset bool) error {
+	return b.activate(attempt, retired, pc, 0, PrivUser, reset)
+}
+
+func (b *BreadcrumbTracer) activate(attempt, retired, pc, satp uint64, postPriv PrivilegeMode, reset bool) error {
 	if b == nil || b.closed {
 		return nil
 	}
@@ -247,10 +268,13 @@ func (b *BreadcrumbTracer) Activate(attempt, retired, pc uint64, reset bool) err
 		b.resetEpoch()
 		mode = "mode=reset"
 	}
+	if postPriv == PrivUser {
+		b.captureTargetAddressSpace(satp)
+	}
 	b.active = true
 	b.armMode = breadcrumbArmNone
 	b.armSawPrivileged = false
-	return b.writeEvent("activation", attempt, retired, pc, mode)
+	return b.writeEvent("activation", attempt, retired, pc, b.withTargetExtra(mode))
 }
 
 func (b *BreadcrumbTracer) Pause(attempt, retired, pc uint64) error {
@@ -289,17 +313,17 @@ func (b *BreadcrumbTracer) Close() error {
 	return err
 }
 
-func (b *BreadcrumbTracer) afterAttempt(attempt, retired, pc uint64, priv, postPriv PrivilegeMode) error {
-	if err := b.RecordPC(attempt, retired, pc, priv); err != nil {
+func (b *BreadcrumbTracer) afterAttempt(attempt, retired, pc uint64, priv PrivilegeMode, satp uint64, postPriv PrivilegeMode, postSATP uint64) error {
+	if err := b.recordPC(attempt, retired, pc, priv, satp); err != nil {
 		return err
 	}
-	if err := b.applyPendingControl(attempt, retired, pc, postPriv); err != nil {
+	if err := b.applyPendingControl(attempt, retired, pc, satp, postPriv, postSATP); err != nil {
 		return err
 	}
-	return b.observePostPriv(attempt, retired, pc, postPriv)
+	return b.observePostPriv(attempt, retired, pc, postPriv, postSATP)
 }
 
-func (b *BreadcrumbTracer) applyPendingControl(attempt, retired, pc uint64, postPriv PrivilegeMode) error {
+func (b *BreadcrumbTracer) applyPendingControl(attempt, retired, pc, satp uint64, postPriv PrivilegeMode, postSATP uint64) error {
 	cmd := b.pendingControl
 	if cmd == breadcrumbControlPendingNone {
 		return nil
@@ -307,17 +331,21 @@ func (b *BreadcrumbTracer) applyPendingControl(attempt, retired, pc uint64, post
 	b.pendingControl = breadcrumbControlPendingNone
 	switch cmd {
 	case breadcrumbControlStart:
-		return b.Activate(attempt, retired, pc, false)
+		return b.activate(attempt, retired, pc, postSATP, postPriv, false)
 	case breadcrumbControlPause:
 		return b.Pause(attempt, retired, pc)
 	case breadcrumbControlResetStart:
-		return b.Activate(attempt, retired, pc, true)
+		return b.activate(attempt, retired, pc, postSATP, postPriv, true)
 	case breadcrumbControlFlush:
 		return b.Flush()
 	case breadcrumbControlArmNextUserReset:
 		return b.armNextUser(attempt, retired, pc, postPriv, true)
 	case breadcrumbControlArmNextUserResume:
 		return b.armNextUser(attempt, retired, pc, postPriv, false)
+	case breadcrumbControlArmNextASReset:
+		return b.armNextAddressSpace(attempt, retired, pc, satp, postPriv, true)
+	case breadcrumbControlArmNextASResume:
+		return b.armNextAddressSpace(attempt, retired, pc, satp, postPriv, false)
 	default:
 		b.lastErr = fmt.Errorf("%w: unknown breadcrumb control %d", ErrBreadcrumbConfig, cmd)
 		return nil
@@ -338,8 +366,25 @@ func (b *BreadcrumbTracer) armNextUser(attempt, retired, pc uint64, postPriv Pri
 	return b.writeEvent("armed-next-user", attempt, retired, pc, mode)
 }
 
-func (b *BreadcrumbTracer) observePostPriv(attempt, retired, pc uint64, postPriv PrivilegeMode) error {
-	if b == nil || b.armMode != breadcrumbArmNextUser {
+func (b *BreadcrumbTracer) armNextAddressSpace(attempt, retired, pc, sourceSATP uint64, postPriv PrivilegeMode, reset bool) error {
+	if reset {
+		b.resetEpoch()
+	}
+	b.active = false
+	b.armMode = breadcrumbArmNextAddressSpace
+	b.armSawPrivileged = postPriv != PrivUser
+	b.armSourceSATP = sourceSATP
+	b.armSourceSATPValid = true
+	mode := "mode=resume"
+	if reset {
+		mode = "mode=reset"
+	}
+	return b.writeEvent("armed-next-address-space", attempt, retired, pc,
+		fmt.Sprintf("%s source_satp=0x%016x", mode, sourceSATP))
+}
+
+func (b *BreadcrumbTracer) observePostPriv(attempt, retired, pc uint64, postPriv PrivilegeMode, postSATP uint64) error {
+	if b == nil || b.armMode == breadcrumbArmNone {
 		return nil
 	}
 	if postPriv != PrivUser {
@@ -349,10 +394,20 @@ func (b *BreadcrumbTracer) observePostPriv(attempt, retired, pc uint64, postPriv
 	if !b.armSawPrivileged {
 		return nil
 	}
+	if b.armMode == breadcrumbArmNextAddressSpace && b.armSourceSATPValid && postSATP == b.armSourceSATP {
+		return nil
+	}
+	mode := "mode=armed-next-user"
+	if b.armMode == breadcrumbArmNextAddressSpace {
+		mode = "mode=armed-next-address-space"
+	}
 	b.active = true
 	b.armMode = breadcrumbArmNone
 	b.armSawPrivileged = false
-	return b.writeEvent("activation", attempt, retired, pc, "mode=armed-next-user")
+	b.armSourceSATP = 0
+	b.armSourceSATPValid = false
+	b.captureTargetAddressSpace(postSATP)
+	return b.writeEvent("activation", attempt, retired, pc, b.withTargetExtra(mode))
 }
 
 func (b *BreadcrumbTracer) queueControl(cmd breadcrumbControl) {
@@ -417,6 +472,10 @@ func (b *BreadcrumbTracer) resetEpoch() {
 	b.eligibleSeq = 0
 	b.nextCheckpoint = firstBreadcrumbCheckpoint(b.interval, b.afterAt, b.afterInterval)
 	b.epoch++
+	b.targetSATP = 0
+	b.targetSATPValid = false
+	b.armSourceSATP = 0
+	b.armSourceSATPValid = false
 	b.tripPending = false
 	b.tripHitSeq = 0
 	b.tripHitAttempt = 0
@@ -428,8 +487,8 @@ func (b *BreadcrumbTracer) writeHeader() error {
 	if b.includePrivileged {
 		scope = "all"
 	}
-	_, err := fmt.Fprintf(b.w, "# riscv-breadcrumb-v1 kind=pc-hash digest=blake3-256 endian=little scope=%s interval=%d start_at=%d stop_at=%d after_at=%d after_interval=%d guest_control=%t\n",
-		scope, b.interval, b.startAt, b.stopAt, b.afterAt, b.afterInterval, b.guestControl)
+	_, err := fmt.Fprintf(b.w, "# riscv-breadcrumb-v1 kind=pc-hash digest=blake3-256 endian=little scope=%s interval=%d start_at=%d stop_at=%d after_at=%d after_interval=%d guest_control=%t filter_address_space=%t\n",
+		scope, b.interval, b.startAt, b.stopAt, b.afterAt, b.afterInterval, b.guestControl, b.filterAddressSpace)
 	if err != nil {
 		b.lastErr = err
 	}
@@ -448,10 +507,10 @@ func (b *BreadcrumbTracer) writeEvent(name string, attempt, retired, pc uint64, 
 	return err
 }
 
-func (b *BreadcrumbTracer) writeCheckpoint(attempt, retired, pc uint64, priv PrivilegeMode) error {
+func (b *BreadcrumbTracer) writeCheckpoint(attempt, retired, pc uint64, priv PrivilegeMode, satp uint64) error {
 	digest := b.h.Sum(nil)
-	_, err := fmt.Fprintf(b.w, "seq=%d attempt=%d retired=%d epoch=%d priv=%s pc=0x%016x hash=%s\n",
-		b.seq, attempt, retired, b.epoch, breadcrumbPrivName(priv), pc, hex.EncodeToString(digest))
+	_, err := fmt.Fprintf(b.w, "seq=%d attempt=%d retired=%d epoch=%d priv=%s pc=0x%016x satp=0x%016x hash=%s\n",
+		b.seq, attempt, retired, b.epoch, breadcrumbPrivName(priv), pc, satp, hex.EncodeToString(digest))
 	if err != nil {
 		b.lastErr = err
 		return err
@@ -462,7 +521,7 @@ func (b *BreadcrumbTracer) writeCheckpoint(attempt, retired, pc uint64, priv Pri
 	return nil
 }
 
-func (b *BreadcrumbTracer) maybeTrip(attempt, retired, pc uint64) error {
+func (b *BreadcrumbTracer) maybeTrip(attempt, retired, pc, satp uint64) error {
 	if b == nil || b.tripMode == 0 || b.tripPending {
 		return nil
 	}
@@ -483,13 +542,47 @@ func (b *BreadcrumbTracer) maybeTrip(attempt, retired, pc uint64) error {
 	b.tripHitAttempt = attempt
 	b.tripHitPC = pc
 	b.tripMode = 0
-	if err := b.writeEvent("trip", attempt, retired, pc, fmt.Sprintf("signal=%d pid=%d", b.tripSignal, b.tripPID)); err != nil {
+	if err := b.writeEvent("trip", attempt, retired, pc, b.withTargetExtra(fmt.Sprintf("signal=%d pid=%d satp=0x%016x", b.tripSignal, b.tripPID, satp))); err != nil {
 		return err
 	}
 	if b.tripNotify != nil {
 		b.tripNotify()
 	}
 	return nil
+}
+
+func (b *BreadcrumbTracer) addressSpaceAllowed(priv PrivilegeMode, satp uint64) bool {
+	if !b.filterAddressSpace || priv != PrivUser {
+		return true
+	}
+	if !b.targetSATPValid {
+		b.captureTargetAddressSpace(satp)
+		return true
+	}
+	return satp == b.targetSATP
+}
+
+func (b *BreadcrumbTracer) captureTargetAddressSpace(satp uint64) {
+	if b == nil || !b.filterAddressSpace || b.targetSATPValid {
+		return
+	}
+	b.targetSATP = satp
+	b.targetSATPValid = true
+}
+
+func (b *BreadcrumbTracer) withTargetExtra(extra string) string {
+	if b == nil || !b.filterAddressSpace {
+		return extra
+	}
+	valid := 0
+	if b.targetSATPValid {
+		valid = 1
+	}
+	suffix := fmt.Sprintf(" target_satp_valid=%d target_satp=0x%016x target_pid=%d", valid, b.targetSATP, b.targetPID)
+	if extra == "" {
+		return suffix[1:]
+	}
+	return extra + suffix
 }
 
 func (b *BreadcrumbTracer) nextInterval() uint64 {
@@ -584,6 +677,19 @@ func (d *breadcrumbIODevice) Load(off, width uint64) uint64 {
 		return d.tracer.tripHitAttempt
 	case breadcrumbRegTripHitPC:
 		return d.tracer.tripHitPC
+	case breadcrumbRegTargetPID:
+		return uint64(d.tracer.targetPID)
+	case breadcrumbRegTargetSATP:
+		return d.tracer.targetSATP
+	case breadcrumbRegTargetStatus:
+		var status uint32
+		if d.tracer.filterAddressSpace {
+			status |= 1
+		}
+		if d.tracer.targetSATPValid {
+			status |= 2
+		}
+		return uint64(status)
 	default:
 		return 0
 	}
@@ -615,6 +721,16 @@ func (d *breadcrumbIODevice) Store(off, width, value uint64) *MemFault {
 	case breadcrumbRegIRQStatus:
 		if value&1 != 0 {
 			d.tracer.tripPending = false
+		}
+	case breadcrumbRegTargetPID:
+		d.tracer.targetPID = uint32(value)
+	case breadcrumbRegTargetSATP:
+		d.tracer.targetSATP = value
+		d.tracer.targetSATPValid = true
+	case breadcrumbRegTargetStatus:
+		d.tracer.filterAddressSpace = value&1 != 0
+		if value&2 == 0 {
+			d.tracer.targetSATPValid = false
 		}
 	}
 	return nil

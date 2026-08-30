@@ -72,11 +72,11 @@ breadcrumb_off.go  //go:build !breadcrumb
 ```go
 const breadcrumbEnabled = false
 
-func breadcrumbRecordPC(_ *CPU, _, _, _ uint64, _ PrivilegeMode) error {
+func breadcrumbRecordPC(_ *CPU, _, _, _, _ uint64, _ PrivilegeMode) error {
 	return nil
 }
 
-func breadcrumbAfterAttempt(_ *CPU, _, _, _ uint64, _ PrivilegeMode) error {
+func breadcrumbAfterAttempt(_ *CPU, _, _, _, _ uint64, _ PrivilegeMode) error {
 	return nil
 }
 
@@ -95,7 +95,7 @@ Then hot loops use a compile-time guard:
 
 ```go
 if breadcrumbEnabled {
-	if err := breadcrumbRecordPC(cpu, attempt, retired, pc, priv); err != nil {
+	if err := breadcrumbRecordPC(cpu, attempt, retired, pc, satp, priv); err != nil {
 		return err
 	}
 }
@@ -142,6 +142,10 @@ type BreadcrumbTracer struct {
 	active        bool
 	guestControl  bool
 	includePrivileged bool
+	filterAddressSpace bool
+	targetSATP    uint64
+	targetSATPValid bool
+	targetPID     uint32
 	seq           uint64
 	epoch         uint64
 	buf           [8]byte
@@ -155,6 +159,8 @@ type BreadcrumbTracer struct {
 `StartPaused` creates the tracer but does not hash PCs until activation. In breadcrumb builds, this should be the default for guest Linux: host flags configure the output path, cadence, and sequence window, but the tracer waits for guest MMIO activation before hashing anything. `GuestControl` exposes a guest-visible control path for BIOS/Linux runs so userspace inside the guest can start, stop, and reset breadcrumbs after boot.
 
 `IncludePrivileged` opt-ins to hashing all privilege modes. Leave it false for guest Linux program tracing so random kernel timer ticks and scheduler work do not affect the breadcrumb stream.
+
+In guest-control mode, target address-space filtering is enabled by default. The emulator cannot infer a Linux PID from architectural CPU state without guest-kernel cooperation, so the MMIO `target_pid` register is guest-provided metadata for logs and future driver signaling. The tracer captures `satp` when it activates in user mode, then hashes only future user-mode attempted PCs with the same pre-instruction `satp`. That keeps unrelated guest user processes out of the hash when Linux schedules them during target sleeps, syscalls, or timeslice gaps. Threads that share an address space also share `satp`; exact per-thread or per-PID filtering belongs in a guest kernel driver/helper.
 
 Keep the first implementation simple:
 
@@ -197,7 +203,7 @@ Suggested registers:
 0x00 magic       read  u32 "BCR1"
 0x04 version     read  u32 1
 0x08 status      read  u32 0=idle 1=active 2=paused 3=error
-0x10 control     write u32 1=start/resume, 2=pause, 3=reset-and-start, 4=flush, 5=arm-next-user-reset, 6=arm-next-user-resume
+0x10 control     write u32 1=start/resume, 2=pause, 3=reset-and-start, 4=flush, 5=arm-next-user-reset, 6=arm-next-user-resume, 7=arm-next-address-space-reset, 8=arm-next-address-space-resume
 0x18 interval    read/write u64 checkpoint interval
 0x20 after_at    read/write u64 dynamic interval switch point
 0x28 after_int   read/write u64 dynamic interval after after_at
@@ -210,6 +216,9 @@ Suggested registers:
 0x50 hit_seq     read  u64 breadcrumb seq that tripped
 0x58 hit_attempt read  u64 absolute attempted instruction count that tripped
 0x60 hit_pc      read  u64 attempted PC that tripped
+0x68 target_pid  read/write u32 guest-provided target PID for logs/driver signaling
+0x70 target_satp read/write u64 captured or guest-overridden target address space
+0x78 target_status read/write u32 bit 0=filter enabled, bit 1=target_satp valid
 ```
 
 The guest should not choose the host output path. The host should still provide `BreadcrumbConfig.Path` or `Outfile` at emulator startup. The host also configures interval, start/stop sequence bounds, and privilege filtering. The guest controls only when the already-configured tracer becomes active.
@@ -221,7 +230,7 @@ Default guest-Linux behavior:
 3. The MMIO device is exposed in the generated FDT.
 4. No PCs are hashed during OpenSBI, Linux boot, init, shell setup, or any other pre-test work.
 5. A guest write to the MMIO control register activates or arms the tracer.
-6. For exact program launch, `arm-next-user-reset` waits for the next kernel-to-user transition before the first PC is hashed.
+6. For a launcher that arms and then `execve`s a program, prefer `arm-next-address-space-reset`; it waits for a privileged interlude and then the first user-mode return whose `satp` differs from the arming process.
 
 Activation should take effect after the MMIO store instruction completes. That gives intuitive guest code:
 
@@ -244,28 +253,34 @@ This isolates the program-under-test from nondeterministic Linux boot and setup.
 
 ## Exact Program-Start Activation
 
-Starting breadcrumbs from a guest helper with `start; execve(program)` is still fuzzy: the trace includes the guest kernel's `execve` implementation, page faults, loader setup, and return-to-user path. If the goal is "start when this guest program begins running", add an armed activation mode instead of immediate activation.
+Starting breadcrumbs from a guest helper with `start; execve(program)` is still fuzzy: the helper can execute user instructions after arming, and a guest timer interrupt can return to the helper before it reaches the `execve` trap. If the goal is "start when this guest program begins running", use an armed activation mode instead of immediate activation.
 
-Recommended first version: `arm-next-user-reset`.
+Recommended launcher mode: `arm-next-address-space-reset`.
 
 Semantics:
 
-1. Guest writes `control=5` to the breadcrumb MMIO page.
+1. Guest writes its PID to `target_pid`, then writes `control=7` to the breadcrumb MMIO page.
 2. The tracer resets its hash, increments `epoch`, and becomes armed but inactive.
-3. The emulator waits until the CPU has entered privileged mode after the arm request.
-4. The emulator activates only after a later transition back to `PrivUser`.
-5. The first hashed PC is the next attempted instruction, which should be the user PC after the kernel returns from `execve`.
+3. The emulator remembers the arming process's current `satp`.
+4. The emulator waits until the CPU has entered privileged mode after the arm request.
+5. Returns to the same user `satp` are ignored, which covers timer interrupts landing between the MMIO write and the `execve` trap.
+6. The emulator activates only after a later transition back to `PrivUser` with a different `satp`.
+7. The first hashed PC is the next attempted instruction in that newly installed address space.
 
 This enables a tiny guest launcher:
 
 ```c
-breadcrumb_arm_next_user_reset();
+breadcrumb_arm_next_address_space_reset();
 raw_execve("/path/to/test-program", argv, envp);
 ```
 
-The launcher should make the MMIO write and then issue the raw `execve` syscall directly, with no libc calls in between. If `execve` succeeds, it never returns to the launcher; the next user-mode instruction belongs to the launched image. If `execve` fails, the tracer will arm on the return to the launcher, which is useful because the trace will show the failure path rather than silently doing nothing.
+The launcher should make the MMIO write and then issue the raw `execve` syscall directly. If `execve` succeeds, it never returns to the launcher; the next different user address space should be the launched image. If `execve` fails and execution returns to the launcher's original address space, the tracer stays armed instead of capturing the launcher failure path.
 
 This does not require a Linux kernel patch. It does require a tiny guest helper binary or shell builtin that can map the breadcrumb MMIO page, write the control register, and then immediately perform `execve`.
+
+The repository includes `cmd/breadcrumbexec` as this launcher. Build it for the guest with `GOOS=linux GOARCH=riscv64 CGO_ENABLED=0 go build ./cmd/breadcrumbexec`, place it somewhere reachable by the guest, and run `breadcrumbexec program [args...]`.
+
+`arm-next-user-reset` remains useful when the guest can guarantee there is no user-mode return to the arming process before the target starts. In practice, the address-space-change variant is more robust against guest timer interrupts and scheduler activity.
 
 ## Exact Divergence Tripwire
 
@@ -284,7 +299,7 @@ interrupts = <12>
 
 On interrupt, the driver reads `irq_status`, `trip_pid`, `trip_signal`, and the hit registers, sends the requested signal to the PID (or the interrupted current task if the driver chooses that policy), writes `irq_status=1` to acknowledge, and completes the PLIC interrupt. This keeps the exact trigger in the emulator while leaving process signaling in the guest kernel where it belongs.
 
-For an even more exact kernel-owned boundary, a guest Linux patch or module could write the breadcrumb MMIO register from the exec path after the kernel has committed the new image and installed the new user PC. That is cleaner conceptually, but it ties the mechanism to guest kernel internals. The `arm-next-user-reset` launcher is less invasive and should be good enough for deterministic testing.
+For an even more exact kernel-owned boundary, a guest Linux patch or module could write the breadcrumb MMIO register from the exec path after the kernel has committed the new image and installed the new user PC. That is cleaner conceptually, but it ties the mechanism to guest kernel internals. The `arm-next-address-space-reset` launcher is less invasive and should be good enough for deterministic testing where `execve` creates the target address space.
 
 Implementation detail:
 
@@ -301,8 +316,8 @@ This activation mode is mainly for `cmd/emul` / `cmd/emu -bios`. It should be th
 Start with a stable, line-oriented text format:
 
 ```text
-# riscv-breadcrumb-v1 kind=pc-hash digest=blake3-256 endian=little scope=user
-seq=1000 attempt=123456 retired=123100 epoch=1 priv=user pc=0x00000000000123f0 hash=0123...
+# riscv-breadcrumb-v1 kind=pc-hash digest=blake3-256 endian=little scope=user guest_control=true filter_address_space=true
+seq=1000 attempt=123456 retired=123100 epoch=1 priv=user pc=0x00000000000123f0 satp=0x8000000000012345 hash=0123...
 ```
 
 Reasons to prefer text first:
@@ -320,6 +335,7 @@ The first line should identify the format and hash scheme. Each checkpoint line 
 - `epoch`: activation/reset generation.
 - `priv`: privilege mode before the hashed instruction, normally `user`.
 - `pc`: the pre-execution PC just hashed.
+- `satp`: the pre-execution address-space register for the hashed instruction.
 - `hash`: hex-encoded BLAKE3-256 digest of all hashed PCs through `seq`.
 
 ## Instrumentation Points
@@ -330,11 +346,12 @@ In `RunWithChain`, record `cpu.pc` before `cpu.step()`:
 
 ```go
 attemptPC := cpu.pc
+attemptSATP := cpu.satp
 attemptPriv := cpu.priv
 err := cpu.step()
 cpu.riscvInstrBegun++
 if breadcrumbEnabled {
-	if berr := breadcrumbRecordPC(cpu, cpu.riscvInstrBegun, cpu.riscvInstrRetired, attemptPC, attemptPriv); berr != nil {
+	if berr := breadcrumbAfterAttempt(cpu, cpu.riscvInstrBegun, cpu.riscvInstrRetired, attemptPC, attemptSATP, attemptPriv); berr != nil {
 		return berr
 	}
 }
@@ -350,6 +367,7 @@ At the bottom of the inner dispatch loop, before advancing to the next slot, com
 
 ```go
 attemptPC := pcBeforeThisInstruction
+attemptSATP := satpBeforeThisInstruction
 attemptPriv := privBeforeThisInstruction
 logicalAttempt := cpu.riscvInstrBegun + instrBegun + 1
 logicalRetired := cpu.riscvInstrRetired + instrRetired
@@ -362,7 +380,7 @@ Then call:
 
 ```go
 if breadcrumbEnabled {
-	if berr := breadcrumbRecordPC(cpu, logicalAttempt, logicalRetired, attemptPC, attemptPriv); berr != nil {
+	if berr := breadcrumbAfterAttempt(cpu, logicalAttempt, logicalRetired, attemptPC, attemptSATP, attemptPriv); berr != nil {
 		cpu.riscvInstrBegun += instrBegun
 		cpu.riscvInstrRetired += instrRetired
 		cpu.pc = pc
@@ -375,9 +393,11 @@ To make this work, save the pre-instruction PC at the start of each inner-loop i
 
 ```go
 var attemptPC uint64
+var attemptSATP uint64
 var attemptPriv PrivilegeMode
 if breadcrumbEnabled {
 	attemptPC = pc
+	attemptSATP = cpu.satp
 	attemptPriv = cpu.priv
 }
 ```
@@ -392,11 +412,12 @@ In `runMachineBudget`, record `cpu.pc` before `cpu.Step()` exactly like `RunWith
 
 ```go
 attemptPC := cpu.pc
+attemptSATP := cpu.satp
 attemptPriv := cpu.priv
 err := cpu.Step()
 cpu.riscvInstrBegun++
 if breadcrumbEnabled {
-	if berr := breadcrumbAfterAttempt(cpu, cpu.riscvInstrBegun, cpu.riscvInstrRetired, attemptPC, attemptPriv); berr != nil {
+	if berr := breadcrumbAfterAttempt(cpu, cpu.riscvInstrBegun, cpu.riscvInstrRetired, attemptPC, attemptSATP, attemptPriv); berr != nil {
 		return RunBudgetContinue, berr
 	}
 }
@@ -443,7 +464,7 @@ Semantics:
 
 For `emu -run`, there is no guest Linux kernel and no guest MMIO control device. The tracer attaches after ELF stack setup and starts hashing immediately when `RunWithJea9LinuxInterp` begins executing the guest program. This is the preferred first debugging mode when the goal is to avoid real guest-kernel timer ticks and scheduler work.
 
-For `emu -bios` guest Linux, these flags set up the tracer parameters ahead of time and expose the MMIO control page. The tracer remains inactive until the guest writes the MMIO control register. For exact program launch, the guest should use `arm-next-user-reset`; only after the next kernel-to-user transition do `-breadcrumb-interval`, `-breadcrumb-start`, `-breadcrumb-stop`, and the hash stream begin to matter.
+For `emu -bios` guest Linux, these flags set up the tracer parameters ahead of time and expose the MMIO control page. The tracer remains inactive until the guest writes the MMIO control register. For launcher-driven program tracing, the guest should use `arm-next-address-space-reset`; only after the next kernel-to-user transition into a different address space do `-breadcrumb-interval`, `-breadcrumb-start`, `-breadcrumb-stop`, and the hash stream begin to matter. For a process that can call the MMIO helper itself at the exact point of interest, use `start/resume`; the first hashed PC is the next user instruction in that same address space.
 
 If CLI flags are present in a non-breadcrumb build, fail fast with an explicit error such as:
 
@@ -504,6 +525,8 @@ Suggested test cases:
 - `TestBreadcrumbGuestControlMMIO`: BIOS MMIO control write sets a pending activation command; the first hashed PC is the instruction after the control write.
 - `TestBreadcrumbArmNextUser`: a supervisor-mode sequence arms breadcrumbs, executes an `sret` to a user PC, and verifies the first hashed PC is the user instruction, not the MMIO store or `sret`.
 - `TestBreadcrumbArmNextUserRequiresPrivilegedInterlude`: arming while already in `PrivUser` does not activate on the next user instruction until the CPU first leaves user mode and returns.
+- `TestBreadcrumbGuestControlCapturesTargetAddressSpace`: guest-control mode captures target `satp`, records guest-provided `target_pid`, ignores returns to the arming address space, and refuses to hash a different user process's PCs.
+- `TestBreadcrumbHandBuiltLinuxSleepTraceDeterministic`: under the hand-built guest Linux fixture, build a tiny self-arming RISC-V process, run it twice while a background user process is available to pollute the stream, include a real guest `nanosleep`, and verify the same target-only hash trace is produced.
 - `TestBreadcrumbUserModeOnly`: when `IncludePrivileged` is false, user-mode PCs are hashed and S/M-mode PCs are ignored.
 - `TestBreadcrumbIncludePrivileged`: when `IncludePrivileged` is true, privileged PCs enter the same hash stream.
 - `TestBreadcrumbInterval`: interval 2 emits only sequence numbers 2, 4, ...
@@ -539,4 +562,4 @@ For guest Linux, changes in privileged-mode interrupt/scheduler work must not af
 - Should the default build expose the public breadcrumb API as no-op stubs? Recommendation: avoid this unless an external caller needs source compatibility. Silent no-op tracing is dangerous; explicit build-tag failure is better.
 - Is a compile-time constant guard enough to avoid perturbing the cached interpreter? Recommendation: start there, then confirm with objdump and the cached interpreter benchmark. If the giant `runCached` function still regresses, consider a generated/tagged duplicate for the breadcrumb build, keeping the default source path completely unchanged.
 - Should guest `pause` include or exclude the pause MMIO store instruction? Recommendation: start commands take effect after the current instruction, and pause commands also take effect after the current instruction. This gives simple instruction-boundary semantics and avoids changing CPU state mid-instruction.
-- Should `-breadcrumb` start hashing immediately? Recommendation: no for guest Linux. It should only configure the inactive tracer and expose the MMIO device. Hashing starts only after guest activation, normally `arm-next-user-reset` plus the next kernel-to-user transition.
+- Should `-breadcrumb` start hashing immediately? Recommendation: no for guest Linux. It should only configure the inactive tracer and expose the MMIO device. Hashing starts only after guest activation, either `start/resume` from inside the target process or `arm-next-address-space-reset` from a launcher that immediately `execve`s the target.

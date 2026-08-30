@@ -291,11 +291,12 @@ func (nc *NoteChain) Deliver(cpu *CPU, n Note) NoteDisposition {
 func RunWithChain(cpu *CPU, nc *NoteChain) error {
 	for {
 		attemptPC := cpu.pc
+		attemptSATP := cpu.satp
 		attemptPriv := cpu.priv
 		err := cpu.step()
 		cpu.riscvInstrBegun++
 		if breadcrumbEnabled {
-			if berr := breadcrumbAfterAttempt(cpu, cpu.riscvInstrBegun, cpu.riscvInstrRetired, attemptPC, attemptPriv); berr != nil {
+			if berr := breadcrumbAfterAttempt(cpu, cpu.riscvInstrBegun, cpu.riscvInstrRetired, attemptPC, attemptSATP, attemptPriv); berr != nil {
 				return berr
 			}
 		}

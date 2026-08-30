@@ -84,11 +84,12 @@ func runMachineBudget(cpu *CPU, nc *NoteChain, budget uint64, biosMode bool) (Ru
 			continue
 		}
 		attemptPC := cpu.pc
+		attemptSATP := cpu.satp
 		attemptPriv := cpu.priv
 		err := cpu.Step()
 		cpu.riscvInstrBegun++
 		if breadcrumbEnabled {
-			if berr := breadcrumbAfterAttempt(cpu, cpu.riscvInstrBegun, cpu.riscvInstrRetired, attemptPC, attemptPriv); berr != nil {
+			if berr := breadcrumbAfterAttempt(cpu, cpu.riscvInstrBegun, cpu.riscvInstrRetired, attemptPC, attemptSATP, attemptPriv); berr != nil {
 				return RunBudgetContinue, berr
 			}
 		}
