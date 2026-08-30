@@ -42,6 +42,8 @@ const (
 	biosUARTSize          = uint64(0x100)
 	biosHostIOBase        = uint64(0x10001000)
 	biosHostIOSize        = uint64(0x1000)
+	biosBreadcrumbBase    = uint64(0x10002000)
+	biosBreadcrumbSize    = uint64(0x1000)
 	biosVirtioNetBase     = uint64(0x10008000)
 	biosVirtioNetSize     = uint64(0x1000)
 	biosCLINTBase         = uint64(0x02000000)
@@ -49,9 +51,30 @@ const (
 	biosPLICBase          = uint64(0x0c000000)
 	biosPLICSize          = uint64(0x04000000)
 	biosVirtioNetIRQ      = uint32(1)
+	biosBreadcrumbIRQ     = uint32(12)
 	biosUARTIRQ           = uint32(10)
 	biosUART1IRQ          = uint32(11)
 	plicSContext          = uint32(1)
+)
+
+const (
+	breadcrumbMagic             = uint32(0x31524342) // "BCR1"
+	breadcrumbRegMagic          = uint64(0x00)
+	breadcrumbRegVersion        = uint64(0x04)
+	breadcrumbRegStatus         = uint64(0x08)
+	breadcrumbRegControl        = uint64(0x10)
+	breadcrumbRegInterval       = uint64(0x18)
+	breadcrumbRegAfterAt        = uint64(0x20)
+	breadcrumbRegAfterInterval  = uint64(0x28)
+	breadcrumbRegTripSeq        = uint64(0x30)
+	breadcrumbRegTripAttempt    = uint64(0x38)
+	breadcrumbRegTripSignal     = uint64(0x40)
+	breadcrumbRegTripPID        = uint64(0x44)
+	breadcrumbRegTripMode       = uint64(0x48)
+	breadcrumbRegIRQStatus      = uint64(0x4c)
+	breadcrumbRegTripHitSeq     = uint64(0x50)
+	breadcrumbRegTripHitAttempt = uint64(0x58)
+	breadcrumbRegTripHitPC      = uint64(0x60)
 )
 
 const (
@@ -111,6 +134,8 @@ func runEmuBios(cfg *EmuConfig, budget uint64) (int, error) {
 	defer guest.mmio.closeUARTOutput()
 	defer guest.mmio.closeHostIO()
 	defer guest.mmio.closeVirtioNet()
+	defer guest.cpu.SetBreadcrumbTracer(nil)
+	defer guest.mmio.closeBreadcrumb()
 
 	res, err := RunBiosMachineBudget(guest.cpu, &guest.cpu.Notes, budget)
 	if err != nil {
@@ -214,6 +239,14 @@ func prepareBiosGuestWithReset(cfg *EmuConfig, onSystemReset func()) (*biosGuest
 		}
 		mmio.enableVirtioNet(mem, stack)
 	}
+	breadcrumb, err := prepareBreadcrumbTracer(cfg, true)
+	if err != nil {
+		mem.Free()
+		return nil, err
+	}
+	if breadcrumb != nil {
+		mmio.enableBreadcrumb(breadcrumb)
+	}
 	mem.SetMMIO(mmio)
 	cpu := NewCPU(*mem)
 	cpu.EnableStrictCSR()
@@ -223,6 +256,9 @@ func prepareBiosGuestWithReset(cfg *EmuConfig, onSystemReset func()) (*biosGuest
 	cpu.SetReg(10, 0)       // a0: boot hart id
 	cpu.SetReg(11, fdtAddr) // a1: flattened device tree pointer
 	cpu.SetReg(12, dynamicAddr)
+	if breadcrumb != nil {
+		cpu.SetBreadcrumbTracer(breadcrumb)
+	}
 
 	return &biosGuest{
 		mem:         mem,
@@ -350,6 +386,7 @@ func loadBiosFDT(cfg *EmuConfig, initrd biosBlob) ([]byte, bool, error) {
 		InitrdEnd:   initrd.end,
 		HostIO:      cfg.HostIO,
 		Net:         cfg.Net,
+		Breadcrumb:  breadcrumbEnabled && cfg.Breadcrumb.requested(),
 	})
 	return fdt, false, err
 }
@@ -391,6 +428,7 @@ type biosMMIO struct {
 	uarts         [2]biosUARTPort
 	onSystemReset func()
 	hostio        *hostIODevice
+	breadcrumb    *breadcrumbIODevice
 	virtioNet     *virtioNetDevice
 	wfiWake       chan struct{}
 
@@ -540,6 +578,11 @@ func (m *biosMMIO) Load(addr, width uint64) (uint64, bool, *MemFault) {
 			return m.hostio.Load(off, width), true, nil
 		}
 	}
+	if breadcrumbEnabled && m.breadcrumb != nil {
+		if off, ok := mmioRangeOffset(addr, width, biosBreadcrumbBase, biosBreadcrumbSize); ok {
+			return m.breadcrumb.Load(off, width), true, nil
+		}
+	}
 	if m.virtioNet != nil {
 		if off, ok := mmioRangeOffset(addr, width, biosVirtioNetBase, biosVirtioNetSize); ok {
 			return m.virtioNet.Load(off, width), true, nil
@@ -554,6 +597,7 @@ func (m *biosMMIO) Load(addr, width uint64) (uint64, bool, *MemFault) {
 	if mmioRangeTouches(addr, width, biosSysconBase, biosSysconSize) ||
 		biosUARTRangeTouches(addr, width) ||
 		(m.hostio != nil && mmioRangeTouches(addr, width, biosHostIOBase, biosHostIOSize)) ||
+		(breadcrumbEnabled && m.breadcrumb != nil && mmioRangeTouches(addr, width, biosBreadcrumbBase, biosBreadcrumbSize)) ||
 		(m.virtioNet != nil && mmioRangeTouches(addr, width, biosVirtioNetBase, biosVirtioNetSize)) ||
 		mmioRangeTouches(addr, width, biosCLINTBase, biosCLINTSize) ||
 		mmioRangeTouches(addr, width, biosPLICBase, biosPLICSize) {
@@ -576,6 +620,13 @@ func (m *biosMMIO) Store(addr, width, value uint64) (bool, *MemFault) {
 			return true, m.hostio.Store(off, width, value)
 		}
 	}
+	if breadcrumbEnabled && m.breadcrumb != nil {
+		if off, ok := mmioRangeOffset(addr, width, biosBreadcrumbBase, biosBreadcrumbSize); ok {
+			fault := m.breadcrumb.Store(off, width, value)
+			m.markExternalInterruptDirty()
+			return true, fault
+		}
+	}
 	if m.virtioNet != nil {
 		if off, ok := mmioRangeOffset(addr, width, biosVirtioNetBase, biosVirtioNetSize); ok {
 			fault := m.virtioNet.Store(off, width, value)
@@ -594,6 +645,7 @@ func (m *biosMMIO) Store(addr, width, value uint64) (bool, *MemFault) {
 	if mmioRangeTouches(addr, width, biosSysconBase, biosSysconSize) ||
 		biosUARTRangeTouches(addr, width) ||
 		(m.hostio != nil && mmioRangeTouches(addr, width, biosHostIOBase, biosHostIOSize)) ||
+		(breadcrumbEnabled && m.breadcrumb != nil && mmioRangeTouches(addr, width, biosBreadcrumbBase, biosBreadcrumbSize)) ||
 		(m.virtioNet != nil && mmioRangeTouches(addr, width, biosVirtioNetBase, biosVirtioNetSize)) ||
 		mmioRangeTouches(addr, width, biosCLINTBase, biosCLINTSize) ||
 		mmioRangeTouches(addr, width, biosPLICBase, biosPLICSize) {
@@ -607,6 +659,7 @@ func (m *biosMMIO) MMIOOverlaps(addr, size uint64) bool {
 		(rangesOverlap(addr, addr+size, biosUARTBase, biosUARTBase+biosUARTSize) ||
 			rangesOverlap(addr, addr+size, biosUART1Base, biosUART1Base+biosUARTSize)) ||
 		(m.hostio != nil && rangesOverlap(addr, addr+size, biosHostIOBase, biosHostIOBase+biosHostIOSize)) ||
+		(breadcrumbEnabled && m.breadcrumb != nil && rangesOverlap(addr, addr+size, biosBreadcrumbBase, biosBreadcrumbBase+biosBreadcrumbSize)) ||
 		(m.virtioNet != nil && rangesOverlap(addr, addr+size, biosVirtioNetBase, biosVirtioNetBase+biosVirtioNetSize)) ||
 		rangesOverlap(addr, addr+size, biosCLINTBase, biosCLINTBase+biosCLINTSize) ||
 		rangesOverlap(addr, addr+size, biosPLICBase, biosPLICBase+biosPLICSize)
@@ -1012,6 +1065,9 @@ func (m *biosMMIO) plicPendingBits() uint32 {
 	if m.virtioNet != nil && m.virtioNet.InterruptPending() {
 		pending |= uint32(1) << biosVirtioNetIRQ
 	}
+	if breadcrumbEnabled && m.breadcrumb != nil && m.breadcrumb.InterruptPending() {
+		pending |= uint32(1) << biosBreadcrumbIRQ
+	}
 	return pending
 }
 
@@ -1219,6 +1275,7 @@ type virtFDTOptions struct {
 	InitrdEnd   uint64
 	HostIO      bool
 	Net         bool
+	Breadcrumb  bool
 }
 
 func buildVirtFDT(memSize uint64, opts virtFDTOptions) ([]byte, error) {
@@ -1348,6 +1405,15 @@ func buildVirtFDT(memSize uint64, opts virtFDTOptions) ([]byte, error) {
 		b.beginNode("hostio@10001000")
 		b.propString("compatible", "glycerine,riscv-hostio-v1")
 		b.propCells64("reg", biosHostIOBase, biosHostIOSize)
+		b.endNode()
+	}
+
+	if opts.Breadcrumb {
+		b.beginNode("breadcrumb@10002000")
+		b.propString("compatible", "glycerine,riscv-breadcrumb-v1")
+		b.propCells64("reg", biosBreadcrumbBase, biosBreadcrumbSize)
+		b.propCells("interrupt-parent", virtPLICPH)
+		b.propCells("interrupts", biosBreadcrumbIRQ)
 		b.endNode()
 	}
 

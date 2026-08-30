@@ -290,8 +290,15 @@ func (nc *NoteChain) Deliver(cpu *CPU, n Note) NoteDisposition {
 // Run loops forever until a note goes unhandled).
 func RunWithChain(cpu *CPU, nc *NoteChain) error {
 	for {
+		attemptPC := cpu.pc
+		attemptPriv := cpu.priv
 		err := cpu.step()
 		cpu.riscvInstrBegun++
+		if breadcrumbEnabled {
+			if berr := breadcrumbAfterAttempt(cpu, cpu.riscvInstrBegun, cpu.riscvInstrRetired, attemptPC, attemptPriv); berr != nil {
+				return berr
+			}
+		}
 		// Tohost polling: check after every instruction.
 		// When watchAddr == 0 (the common case), this is a single
 		// predicted-not-taken branch — negligible overhead.

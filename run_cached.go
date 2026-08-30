@@ -264,6 +264,8 @@ func runCachedDualBudget(cpu *CPU, cache *DecoderCache, nc *NoteChain, attemptBu
 		slot := cache.lookup(pc)
 	inner:
 		for {
+			attemptPC := pc
+			attemptPriv := cpu.priv
 			inlineRetired := true
 			switch slot.op {
 
@@ -996,6 +998,16 @@ func runCachedDualBudget(cpu *CPU, cache *DecoderCache, nc *NoteChain, attemptBu
 				retiredNow := cpu.riscvInstrRetired + instrRetired
 				if retiredNow >= retiredBase {
 					retiredUsed = retiredNow - retiredBase
+				}
+			}
+			if breadcrumbEnabled {
+				attempt := cpu.riscvInstrBegun + instrBegun
+				retired := cpu.riscvInstrRetired + instrRetired
+				if berr := breadcrumbAfterAttempt(cpu, attempt, retired, attemptPC, attemptPriv); berr != nil {
+					cpu.riscvInstrBegun += instrBegun
+					cpu.riscvInstrRetired += instrRetired
+					cpu.pc = pc
+					return RunBudgetContinue, RunBudgetLimitNone, berr
 				}
 			}
 			countdown--

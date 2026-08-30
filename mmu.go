@@ -83,8 +83,15 @@ func runMachineBudget(cpu *CPU, nc *NoteChain, budget uint64, biosMode bool) (Ru
 		if biosMode && cpu.takePendingBiosInterrupt() {
 			continue
 		}
+		attemptPC := cpu.pc
+		attemptPriv := cpu.priv
 		err := cpu.Step()
 		cpu.riscvInstrBegun++
+		if breadcrumbEnabled {
+			if berr := breadcrumbAfterAttempt(cpu, cpu.riscvInstrBegun, cpu.riscvInstrRetired, attemptPC, attemptPriv); berr != nil {
+				return RunBudgetContinue, berr
+			}
+		}
 		if cpu.watchAddr != 0 {
 			if v, _ := (&cpu.mem).Load64(cpu.watchAddr); v != 0 {
 				return RunBudgetExit, &ExitError{Code: tohostExitCode(v)}

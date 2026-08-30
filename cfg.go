@@ -63,6 +63,7 @@ type EmuConfig struct {
 	Chaos               bool
 	RealtimeOffsetNS    int64
 	Idle                string
+	Breadcrumb          BreadcrumbConfig
 	List                bool
 	Debug               bool
 	AttachPID           int
@@ -212,6 +213,9 @@ func (c *EmuConfig) ValidateConfig() error {
 	}
 	if c.JITLazy && c.JITAOT {
 		return fmt.Errorf("-jitlazy and -jitaot are mutually exclusive")
+	}
+	if err := validateBreadcrumbConfig(c); err != nil {
+		return err
 	}
 	if _, err := c.timingMode(); err != nil {
 		return err

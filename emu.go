@@ -114,6 +114,15 @@ func RunEmu(cfg *EmuConfig) (int, error) {
 	}); err != nil {
 		return 0, err
 	}
+	breadcrumb, err := prepareBreadcrumbTracer(cfg, false)
+	if err != nil {
+		return 0, err
+	}
+	if breadcrumb != nil {
+		cpu.SetBreadcrumbTracer(breadcrumb)
+		defer cpu.SetBreadcrumbTracer(nil)
+		defer breadcrumb.Close()
+	}
 	doJIT := cfg.JITLazy || cfg.JITAOT
 	if !doJIT {
 		// interpreter
