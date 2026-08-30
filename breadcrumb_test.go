@@ -355,6 +355,98 @@ func TestBreadcrumbGuestControlCapturesTargetAddressSpace(t *testing.T) {
 	}
 }
 
+func TestBreadcrumbResetArmRotatesExistingPathForFreshTrace(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "breadcrumbs.log")
+	if err := os.WriteFile(path, []byte("old trace\n"), 0644); err != nil {
+		t.Fatalf("seed old breadcrumb file: %v", err)
+	}
+
+	b, err := NewBreadcrumbTracer(BreadcrumbConfig{
+		Path:         path,
+		Interval:     1,
+		StartPaused:  true,
+		GuestControl: true,
+	})
+	if err != nil {
+		t.Fatalf("NewBreadcrumbTracer: %v", err)
+	}
+	defer b.Close()
+
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read pre-arm breadcrumb path: %v", err)
+	}
+	if string(before) != "old trace\n" {
+		t.Fatalf("guest-controlled tracer touched output before reset arm: %q", before)
+	}
+
+	m := newBiosMMIO(nil, nil, nil)
+	m.enableBreadcrumb(b)
+	attempt := uint64(10)
+	runTrace := func(pid uint32, sourceSATP, targetSATP, targetPC uint64) {
+		t.Helper()
+		if ok, fault := m.Store(biosBreadcrumbBase+breadcrumbRegTargetPID, 4, uint64(pid)); !ok || fault != nil {
+			t.Fatalf("Store target pid = (%v, %v)", ok, fault)
+		}
+		if ok, fault := m.Store(biosBreadcrumbBase+breadcrumbRegControl, 4, uint64(breadcrumbControlArmNextASReset)); !ok || fault != nil {
+			t.Fatalf("Store arm-next-address-space control = (%v, %v)", ok, fault)
+		}
+		attempt++
+		if err := b.afterAttempt(attempt, attempt-1, 0x1000+attempt, PrivUser, sourceSATP, PrivUser, sourceSATP); err != nil {
+			t.Fatalf("afterAttempt arm write: %v", err)
+		}
+		attempt++
+		if err := b.afterAttempt(attempt, attempt-1, 0x2000+attempt, PrivSupervisor, sourceSATP, PrivSupervisor, sourceSATP); err != nil {
+			t.Fatalf("afterAttempt supervisor interlude: %v", err)
+		}
+		attempt++
+		if err := b.afterAttempt(attempt, attempt-1, 0x3000+attempt, PrivSupervisor, sourceSATP, PrivUser, targetSATP); err != nil {
+			t.Fatalf("afterAttempt target activation: %v", err)
+		}
+		attempt++
+		if err := b.afterAttempt(attempt, attempt-1, targetPC, PrivUser, targetSATP, PrivUser, targetSATP); err != nil {
+			t.Fatalf("afterAttempt target PC: %v", err)
+		}
+	}
+
+	runTrace(111, 0xaaa000, 0x111000, 0x1111)
+	old, err := os.ReadFile(path + ".01")
+	if err != nil {
+		t.Fatalf("read first rotated breadcrumb path: %v", err)
+	}
+	if string(old) != "old trace\n" {
+		t.Fatalf("first rotation = %q, want old trace", old)
+	}
+
+	runTrace(222, 0xbbb000, 0x222000, 0x2222)
+	if err := b.Close(); err != nil {
+		t.Fatalf("Close breadcrumb tracer: %v", err)
+	}
+
+	firstTrace, err := os.ReadFile(path + ".02")
+	if err != nil {
+		t.Fatalf("read second rotated breadcrumb path: %v", err)
+	}
+	if !strings.Contains(string(firstTrace), "target_pid=111") ||
+		!strings.Contains(string(firstTrace), "priv=user pc=0x0000000000001111") ||
+		strings.Contains(string(firstTrace), "target_pid=222") ||
+		strings.Contains(string(firstTrace), "priv=user pc=0x0000000000002222") {
+		t.Fatalf("first run was not isolated in .02:\n%s", firstTrace)
+	}
+
+	current, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read current breadcrumb path: %v", err)
+	}
+	if !strings.Contains(string(current), "target_pid=222") ||
+		!strings.Contains(string(current), "priv=user pc=0x0000000000002222") ||
+		strings.Contains(string(current), "target_pid=111") ||
+		strings.Contains(string(current), "priv=user pc=0x0000000000001111") {
+		t.Fatalf("second run was not isolated in current trace:\n%s", current)
+	}
+}
+
 func TestBreadcrumbMMIOTripwireInterrupt(t *testing.T) {
 	b, path := newBreadcrumbTestTracer(t, BreadcrumbConfig{Interval: 10})
 	defer b.Close()

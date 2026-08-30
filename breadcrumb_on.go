@@ -107,23 +107,11 @@ func NewBreadcrumbTracer(cfg BreadcrumbConfig) (*BreadcrumbTracer, error) {
 		return nil, fmt.Errorf("%w: AfterAt requires AfterInterval", ErrBreadcrumbConfig)
 	}
 
-	out := cfg.Outfile
-	own := false
-	if out == nil {
-		var err error
-		out, err = os.Create(cfg.Path)
-		if err != nil {
-			return nil, err
-		}
-		own = true
-	}
-
 	b := &BreadcrumbTracer{
-		w:                  bufio.NewWriter(out),
-		outfile:            out,
+		outfile:            cfg.Outfile,
 		path:               cfg.Path,
 		h:                  blake3.New(32, nil),
-		ownOutfile:         own,
+		ownOutfile:         cfg.Outfile == nil,
 		interval:           cfg.Interval,
 		startAt:            cfg.StartAt,
 		stopAt:             cfg.StopAt,
@@ -136,11 +124,11 @@ func NewBreadcrumbTracer(cfg BreadcrumbConfig) (*BreadcrumbTracer, error) {
 		filterAddressSpace: cfg.GuestControl,
 		tripSignal:         3, // Linux SIGQUIT: Go prints goroutine stacks by default.
 	}
-	if err := b.writeHeader(); err != nil {
-		if own {
-			_ = out.Close()
+	if !(cfg.Outfile == nil && cfg.Path != "" && cfg.StartPaused && cfg.GuestControl) {
+		if err := b.ensureOutput(); err != nil {
+			_ = b.closeOutput()
+			return nil, err
 		}
-		return nil, err
 	}
 	return b, nil
 }
@@ -267,7 +255,9 @@ func (b *BreadcrumbTracer) activate(attempt, retired, pc, satp uint64, postPriv 
 	}
 	mode := "mode=resume"
 	if reset {
-		b.resetEpoch()
+		if err := b.beginResetTrace(); err != nil {
+			return err
+		}
 		mode = "mode=reset"
 	}
 	if postPriv == PrivUser {
@@ -291,6 +281,9 @@ func (b *BreadcrumbTracer) Flush() error {
 	if b == nil || b.closed {
 		return nil
 	}
+	if b.w == nil {
+		return nil
+	}
 	if err := b.w.Flush(); err != nil {
 		b.lastErr = err
 		return err
@@ -303,16 +296,7 @@ func (b *BreadcrumbTracer) Close() error {
 		return nil
 	}
 	b.closed = true
-	err := b.w.Flush()
-	if err != nil {
-		b.lastErr = err
-	}
-	if b.ownOutfile {
-		if closeErr := b.outfile.Close(); err == nil {
-			err = closeErr
-		}
-	}
-	return err
+	return b.closeOutput()
 }
 
 func (b *BreadcrumbTracer) afterAttempt(attempt, retired, pc uint64, priv PrivilegeMode, satp uint64, postPriv PrivilegeMode, postSATP uint64) error {
@@ -356,7 +340,9 @@ func (b *BreadcrumbTracer) applyPendingControl(attempt, retired, pc, satp uint64
 
 func (b *BreadcrumbTracer) armNextUser(attempt, retired, pc uint64, postPriv PrivilegeMode, reset bool) error {
 	if reset {
-		b.resetEpoch()
+		if err := b.beginResetTrace(); err != nil {
+			return err
+		}
 	}
 	b.active = false
 	b.armMode = breadcrumbArmNextUser
@@ -370,7 +356,9 @@ func (b *BreadcrumbTracer) armNextUser(attempt, retired, pc uint64, postPriv Pri
 
 func (b *BreadcrumbTracer) armNextAddressSpace(attempt, retired, pc, sourceSATP uint64, postPriv PrivilegeMode, reset bool) error {
 	if reset {
-		b.resetEpoch()
+		if err := b.beginResetTrace(); err != nil {
+			return err
+		}
 	}
 	b.active = false
 	b.armMode = breadcrumbArmNextAddressSpace
@@ -484,6 +472,108 @@ func (b *BreadcrumbTracer) resetEpoch() {
 	b.tripHitPC = 0
 }
 
+func (b *BreadcrumbTracer) beginResetTrace() error {
+	if b == nil || b.closed {
+		return nil
+	}
+	if err := b.reopenOutputForNewTrace(); err != nil {
+		return err
+	}
+	b.resetEpoch()
+	return nil
+}
+
+func (b *BreadcrumbTracer) reopenOutputForNewTrace() error {
+	if b == nil || !b.ownOutfile || b.path == "" {
+		return nil
+	}
+	if err := b.closeOutput(); err != nil {
+		return err
+	}
+	if err := rotateExistingBreadcrumbPath(b.path); err != nil {
+		b.lastErr = err
+		return err
+	}
+	return nil
+}
+
+func (b *BreadcrumbTracer) ensureOutput() error {
+	if b == nil || b.closed || b.w != nil {
+		return nil
+	}
+	if b.outfile == nil {
+		if b.path == "" {
+			err := fmt.Errorf("%w: Path or Outfile is required", ErrBreadcrumbConfig)
+			b.lastErr = err
+			return err
+		}
+		out, err := os.Create(b.path)
+		if err != nil {
+			b.lastErr = err
+			return err
+		}
+		b.outfile = out
+		b.ownOutfile = true
+	}
+	b.w = bufio.NewWriter(b.outfile)
+	return b.writeHeader()
+}
+
+func (b *BreadcrumbTracer) closeOutput() error {
+	if b == nil {
+		return nil
+	}
+	var err error
+	if b.w != nil {
+		if flushErr := b.w.Flush(); flushErr != nil {
+			err = flushErr
+		}
+		b.w = nil
+	}
+	if b.ownOutfile && b.outfile != nil {
+		if closeErr := b.outfile.Close(); err == nil {
+			err = closeErr
+		}
+		b.outfile = nil
+	}
+	if err != nil {
+		b.lastErr = err
+	}
+	return err
+}
+
+func rotateExistingBreadcrumbPath(path string) error {
+	if path == "" {
+		return nil
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if info.IsDir() {
+		return fmt.Errorf("%w: breadcrumb path %q is a directory", ErrBreadcrumbConfig, path)
+	}
+	for i := 1; ; i++ {
+		suffix := fmt.Sprintf("%02d", i)
+		if i > 99 {
+			suffix = fmt.Sprintf("%d", i)
+		}
+		rotated := fmt.Sprintf("%s.%s", path, suffix)
+		if _, err := os.Stat(rotated); err != nil {
+			if !os.IsNotExist(err) {
+				return err
+			}
+			if err := os.Rename(path, rotated); err != nil && !os.IsNotExist(err) {
+				return err
+			}
+			return nil
+		}
+	}
+}
+
 func (b *BreadcrumbTracer) writeHeader() error {
 	scope := "user"
 	if b.includePrivileged {
@@ -498,6 +588,12 @@ func (b *BreadcrumbTracer) writeHeader() error {
 }
 
 func (b *BreadcrumbTracer) writeEvent(name string, attempt, retired, pc uint64, extra string) error {
+	if b == nil || b.closed {
+		return nil
+	}
+	if err := b.ensureOutput(); err != nil {
+		return err
+	}
 	if extra != "" {
 		extra = " " + extra
 	}
@@ -510,6 +606,12 @@ func (b *BreadcrumbTracer) writeEvent(name string, attempt, retired, pc uint64, 
 }
 
 func (b *BreadcrumbTracer) writeCheckpoint(attempt, retired, pc uint64, priv PrivilegeMode, satp uint64) error {
+	if b == nil || b.closed {
+		return nil
+	}
+	if err := b.ensureOutput(); err != nil {
+		return err
+	}
 	digest := b.h.Sum(nil)
 	_, err := fmt.Fprintf(b.w, "seq=%d attempt=%d retired=%d epoch=%d priv=%s pc=0x%016x satp=0x%016x hash=%s\n",
 		b.seq, attempt, retired, b.epoch, breadcrumbPrivName(priv), pc, satp, hex.EncodeToString(digest))

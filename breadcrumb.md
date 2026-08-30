@@ -280,6 +280,8 @@ This does not require a Linux kernel patch. It does require a tiny guest helper 
 
 The repository includes `cmd/breadcrumbexec` as this launcher. Build it for the guest with `GOOS=linux GOARCH=riscv64 CGO_ENABLED=0 go build ./cmd/breadcrumbexec`, place it somewhere reachable by the guest, and run `breadcrumbexec program [args...]`.
 
+The launcher cannot see the host breadcrumb output path. It only writes the MMIO control registers. The emulator owns the host file lifecycle. In guest-controlled BIOS mode, the output file is not opened during Linux boot; the first reset-style arm command opens it. Each later reset-style command closes any owned open handle, rotates an existing path to the first free suffix such as `.01` or `.02`, and opens a fresh file at the configured path. If the operator has already moved the previous trace out of the way, the close still releases the old inode and the new trace is created at the original path.
+
 `arm-next-user-reset` remains useful when the guest can guarantee there is no user-mode return to the arming process before the target starts. In practice, the address-space-change variant is more robust against guest timer interrupts and scheduler activity.
 
 ## Exact Divergence Tripwire
