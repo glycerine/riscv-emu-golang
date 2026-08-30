@@ -55,6 +55,8 @@ func main() {
 		AttachConsole:     -1,
 	}
 
+	cfg.Breadcrumb.Path = riscv.BreadcrumbDefaultPath
+
 	if err := cfg.ValidateConfig(); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
