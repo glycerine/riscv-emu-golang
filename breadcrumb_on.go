@@ -613,8 +613,9 @@ func (b *BreadcrumbTracer) writeCheckpoint(attempt, retired, pc uint64, priv Pri
 		return err
 	}
 	digest := b.h.Sum(nil)
-	_, err := fmt.Fprintf(b.w, "seq=%d attempt=%d retired=%d epoch=%d priv=%s pc=0x%016x satp=0x%016x hash=%s\n",
-		b.seq, attempt, retired, b.epoch, breadcrumbPrivName(priv), pc, satp, hex.EncodeToString(digest))
+	// attempt, retired, epoch and satp are not repeatable, so omit them.
+	//_, err := fmt.Fprintf(b.w, "seq=%d attempt=%d retired=%d epoch=%d priv=%s pc=0x%016x satp=0x%016x hash=%s\n", b.seq, attempt, retired, b.epoch, breadcrumbPrivName(priv), pc, satp, hex.EncodeToString(digest))
+	_, err := fmt.Fprintf(b.w, "seq=%d pc=0x%016x hash=%s\n", b.seq, pc, hex.EncodeToString(digest))
 	if err != nil {
 		b.lastErr = err
 		return err
