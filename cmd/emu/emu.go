@@ -92,7 +92,7 @@ func defineFlags(fs *flag.FlagSet, c *riscv.EmuConfig) {
 	fs.StringVar(&c.Breadcrumb.Path, "breadcrumb", riscv.BreadcrumbDefaultPath, "write interpreted PC breadcrumb trace to this path; requires -tags breadcrumb")
 	fs.Uint64Var(&c.Breadcrumb.Interval, "breadcrumb-interval", 0, "breadcrumb checkpoint interval in hashed PCs; default 1000")
 	fs.Uint64Var(&c.Breadcrumb.StartAt, "breadcrumb-start", 0, "start hashing at this breadcrumb sequence number")
-	fs.Uint64Var(&c.Breadcrumb.StopAt, "breadcrumb-stop", 0, "stop hashing after this breadcrumb sequence number")
+	fs.Uint64Var(&c.Breadcrumb.StopAt, "breadcrumb-stop", 0, "stop hashing and inject a breadcrumb breakpoint at this breadcrumb sequence number")
 	fs.Uint64Var(&c.Breadcrumb.AfterAt, "breadcrumb-after-at", 0, "switch breadcrumb cadence at this breadcrumb sequence number")
 	fs.Uint64Var(&c.Breadcrumb.AfterInterval, "breadcrumb-after-interval", 0, "breadcrumb checkpoint interval after -breadcrumb-after-at")
 	fs.BoolVar(&c.Breadcrumb.IncludePrivileged, "breadcrumb-privileged", false, "include supervisor and machine mode PCs in breadcrumb hashing")

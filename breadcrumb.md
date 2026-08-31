@@ -25,13 +25,13 @@ This plan intentionally targets the interpreter only:
 
 Maintain a streaming BLAKE3 hash over the sequence of guest PCs attempted by the CPU. For guest Linux, hash only user-mode attempted PCs by default. Kernel, OpenSBI, interrupt, scheduler, and trap-handler PCs are ignored unless the tracer is explicitly configured to include privileged modes.
 
-At fixed breadcrumb-sequence intervals, write a checkpoint containing the number of PCs actually hashed, the absolute CPU instruction-attempt count, and the current hash digest. The checkpoint cadence must be based on the hashed sequence count, not the absolute CPU attempt count, so nondeterministic kernel bookkeeping does not shift checkpoint boundaries.
+At fixed breadcrumb-sequence intervals, write a checkpoint containing the number of PCs actually hashed, the current PC, and the current hash digest. The checkpoint cadence must be based on the hashed sequence count, not the absolute CPU attempt count, so nondeterministic kernel bookkeeping does not shift checkpoint boundaries.
 
 For a first version, hash only the pre-execution PC of each attempted instruction:
 
 ```text
-seq=1000 attempt=123456 retired=123100 priv=user pc=0x00000000000123f0 hash=...
-seq=2000 attempt=126912 retired=126550 priv=user pc=0x0000000000012458 hash=...
+seq=1000 pc=0x00000000000123f0 hash=...
+seq=2000 pc=0x0000000000012458 hash=...
 ```
 
 The pre-execution PC is important because faulting instructions, ECALL, EBREAK, illegal instructions, and page faults should still contribute the PC that caused the attempt.
@@ -74,6 +74,10 @@ const breadcrumbEnabled = false
 
 func breadcrumbRecordPC(_ *CPU, _, _, _, _ uint64, _ PrivilegeMode) error {
 	return nil
+}
+
+func breadcrumbBeforeAttempt(_ *CPU, _, _, _, _ uint64, _ PrivilegeMode) (bool, error) {
+	return false, nil
 }
 
 func breadcrumbAfterAttempt(_ *CPU, _, _, _, _ uint64, _ PrivilegeMode) error {
@@ -152,7 +156,7 @@ type BreadcrumbTracer struct {
 }
 ```
 
-`Interval` is the normal checkpoint interval, measured in hashed PCs. `StartAt` and `StopAt` allow focused runs over the hashed sequence. `AfterAt` plus `AfterInterval` allows a run to begin coarse, then automatically switch to finer checkpoints around a suspected sequence region.
+`Interval` is the normal checkpoint interval, measured in hashed PCs. `StartAt` and `StopAt` allow focused runs over the hashed sequence. `StopAt` records the target PC, flushes/syncs the trace, injects a guest breakpoint exception at that PC when running under an interpreter loop, then pauses hashing. `AfterAt` plus `AfterInterval` allows a run to begin coarse, then automatically switch to finer checkpoints around a suspected sequence region.
 
 `Path` is the requested breadcrumb output path. `Outfile` is the open file the tracer writes to. Use `*os.File`, not a generic `io.Writer`, so the implementation can own file creation, flushing, optional syncing, and close behavior explicitly. If a caller passes `Path` without `Outfile`, `NewBreadcrumbTracer` should create/truncate that file. If a caller passes `Outfile`, the tracer should write to that file and use `Path` only for diagnostics.
 
@@ -160,7 +164,7 @@ type BreadcrumbTracer struct {
 
 `IncludePrivileged` opt-ins to hashing all privilege modes. Leave it false for guest Linux program tracing so random kernel timer ticks and scheduler work do not affect the breadcrumb stream.
 
-In guest-control mode, target address-space filtering is enabled by default. The emulator cannot infer a Linux PID from architectural CPU state without guest-kernel cooperation, so the MMIO `target_pid` register is guest-provided metadata for logs and future driver signaling. The tracer captures `satp` when it activates in user mode, then hashes only future user-mode attempted PCs with the same pre-instruction `satp`. That keeps unrelated guest user processes out of the hash when Linux schedules them during target sleeps, syscalls, or timeslice gaps. Threads that share an address space also share `satp`; exact per-thread or per-PID filtering belongs in a guest kernel driver/helper.
+In guest-control mode, target address-space filtering is enabled by default. The emulator cannot infer a Linux PID from architectural CPU state without guest-kernel cooperation, so the MMIO `target_pid` register is guest-provided metadata for logs and optional tooling. The tracer captures `satp` when it activates in user mode, then hashes only future user-mode attempted PCs with the same pre-instruction `satp`. That keeps unrelated guest user processes out of the hash when Linux schedules them during target sleeps, syscalls, or timeslice gaps. Threads that share an address space also share `satp`; exact per-thread or per-PID filtering would require guest cooperation.
 
 Keep the first implementation simple:
 
@@ -209,14 +213,14 @@ Suggested registers:
 0x28 after_int   read/write u64 dynamic interval after after_at
 0x30 trip_seq    read/write u64 one-shot trip at hashed breadcrumb seq
 0x38 trip_attempt read/write u64 one-shot trip at absolute attempted instruction count
-0x40 trip_signal read/write u32 Linux signal number, default 3/SIGQUIT for Go stack dumps
-0x44 trip_pid    read/write u32 guest PID the driver should signal
+0x40 trip_signal read/write u32 signal metadata, default 3/SIGQUIT for optional tooling
+0x44 trip_pid    read/write u32 guest PID metadata; defaults to target_pid if unset
 0x48 trip_mode   read/write u32 0=disabled, 1=trip_seq, 2=trip_attempt
 0x4c irq_status  read/write u32 bit 0=pending; write 1 to acknowledge
 0x50 hit_seq     read  u64 breadcrumb seq that tripped
 0x58 hit_attempt read  u64 absolute attempted instruction count that tripped
 0x60 hit_pc      read  u64 attempted PC that tripped
-0x68 target_pid  read/write u32 guest-provided target PID for logs/driver signaling
+0x68 target_pid  read/write u32 guest-provided target PID for logs/tooling
 0x70 target_satp read/write u64 captured or guest-overridden target address space
 0x78 target_status read/write u32 bit 0=filter enabled, bit 1=target_satp valid
 ```
@@ -242,11 +246,11 @@ breadcrumb_pause();
 
 The first hashed PC is the instruction after `breadcrumb_start()`. If tracing is active, `breadcrumb_pause()` itself may be included as the final active instruction; document and test the exact boundary.
 
-On activation with reset, reset the BLAKE3 hasher and increment an `epoch`. Checkpoint lines stay in absolute instruction-attempt coordinates, but the hash only covers PCs since the most recent reset/start:
+On activation with reset, reset the BLAKE3 hasher and increment an `epoch`. Checkpoint lines stay in breadcrumb sequence coordinates, while event lines keep the absolute instruction-attempt context. The hash only covers PCs since the most recent reset/start:
 
 ```text
 # activation epoch=1 seq=0 attempt=123456 retired=123400 pc=0xffffffff8001234c mode=reset scope=user
-seq=1000 attempt=124000 retired=123944 epoch=1 priv=user pc=0xffffffff80013000 hash=...
+seq=1000 pc=0xffffffff80013000 hash=...
 ```
 
 This isolates the program-under-test from nondeterministic Linux boot and setup. Boot can vary; the breadcrumb hash begins only when the guest says the experiment starts.
@@ -259,7 +263,7 @@ Recommended launcher mode: `arm-next-address-space-reset`.
 
 Semantics:
 
-1. Guest writes its PID to `target_pid`, then writes `control=7` to the breadcrumb MMIO page.
+1. Guest writes its PID to `target_pid` and `trip_pid`, then writes `control=7` to the breadcrumb MMIO page.
 2. The tracer resets its hash, increments `epoch`, and becomes armed but inactive.
 3. The emulator remembers the arming process's current `satp`.
 4. The emulator waits until the CPU has entered privileged mode after the arm request.
@@ -286,26 +290,22 @@ The launcher cannot see the host breadcrumb output path. It only writes the MMIO
 
 ## Exact Divergence Tripwire
 
-Once two breadcrumb logs identify a divergence window, the guest should be able to re-run with a one-shot trip point. The emulator-side trip should be exact in breadcrumb coordinates; guest-side signal delivery should be conventional Linux kernel work.
+Once two breadcrumb logs identify a divergence window, the guest should be able to re-run with a one-shot trip point. The emulator-side trip should be exact in breadcrumb coordinates and should not require a custom guest kernel rebuild.
 
-Use `trip_seq` for the usual deterministic case. It is counted in hashed PCs, so ignored kernel instructions do not move the target. `trip_attempt` is also available when debugging the raw machine interpreter timeline. A trip fires after the matching attempted PC has been recorded, stores `hit_seq`, `hit_attempt`, and `hit_pc`, disables `trip_mode`, and raises the breadcrumb PLIC interrupt.
+Use `trip_seq` for the usual deterministic case. It is counted in hashed PCs, so ignored kernel instructions do not move the target. `trip_attempt` is also available when debugging the raw machine interpreter timeline. When an interpreter loop can predict that the next instruction is the configured trip point, it records that PC before executing it, stores `hit_seq`, `hit_attempt`, and `hit_pc`, disables `trip_mode`, flushes/syncs the trace file, and injects `CauseBreakpoint` at the recorded PC. Host `StopAt` behaves like an automatic `trip_seq` boundary for the trace window: it records the `StopAt` PC, injects the same breakpoint, and pauses hashing.
 
-The default signal is `SIGQUIT` (3), not `SIGKILL`, because Go prints goroutine stacks for `SIGQUIT`. `SIGKILL` cannot be caught and will not produce a Go stack dump. The guest may still write signal number 9 if hard termination is desired.
+For guest Linux, this synthetic breakpoint follows the normal RISC-V trap path. If OpenSBI delegates breakpoint exceptions to S-mode, Linux sees the breakpoint as if the target userspace instruction had been an `EBREAK`; a ptrace debugger can catch it, and without a debugger Linux should use its normal userspace breakpoint behavior. This avoids a kernel platform driver for the common workflow.
 
-The MMIO device cannot directly call into guest Linux to signal a process without violating the board/device boundary. The intended Linux side is a tiny platform driver for:
+The MMIO trip registers still expose the configured/hit sequence, attempt, PC, target PID, and signal number as metadata. The breadcrumb PLIC interrupt is still raised for diagnostics or for an optional future driver, but it is no longer required for the normal stop-at-divergence workflow.
 
-```text
-compatible = "glycerine,riscv-breadcrumb-v1"
-interrupts = <12>
-```
-
-On interrupt, the driver reads `irq_status`, `trip_pid`, `trip_signal`, and the hit registers, sends the requested signal to the PID (or the interrupted current task if the driver chooses that policy), writes `irq_status=1` to acknowledge, and completes the PLIC interrupt. This keeps the exact trigger in the emulator while leaving process signaling in the guest kernel where it belongs.
+If there is no delegated guest trap target, the synthetic breakpoint falls back to the host-visible `ErrEbreak` path, matching ordinary process-mode EBREAK behavior.
 
 For an even more exact kernel-owned boundary, a guest Linux patch or module could write the breadcrumb MMIO register from the exec path after the kernel has committed the new image and installed the new user PC. That is cleaner conceptually, but it ties the mechanism to guest kernel internals. The `arm-next-address-space-reset` launcher is less invasive and should be good enough for deterministic testing where `execve` creates the target address space.
 
 Implementation detail:
 
 - Track pending arm state in the breadcrumb MMIO/tracer side table, not in `CPU` for default builds.
+- In `runMachineBudget`, `RunWithChain`, and `runCachedDualBudget`, call a breadcrumb before-attempt hook first. It should do work only when the current attempted instruction is the exact configured trip point. In that case it records the PC, injects the breakpoint, counts one begun instruction attempt, and skips execution of the original instruction.
 - In `runMachineBudget`, call a breadcrumb after-attempt hook after `cpu.Step()` and after `cpu.riscvInstrBegun++`.
 - The hook observes the post-instruction `cpu.priv` and `cpu.pc`.
 - If armed while still in `PrivUser`, do not activate immediately. First require seeing `cpu.priv != PrivUser`.
@@ -319,7 +319,7 @@ Start with a stable, line-oriented text format:
 
 ```text
 # riscv-breadcrumb-v1 kind=pc-hash digest=blake3-256 endian=little scope=user guest_control=true filter_address_space=true
-seq=1000 attempt=123456 retired=123100 epoch=1 priv=user pc=0x00000000000123f0 satp=0x8000000000012345 hash=0123...
+seq=1000 pc=0x00000000000123f0 hash=0123...
 ```
 
 Reasons to prefer text first:
@@ -329,16 +329,13 @@ Reasons to prefer text first:
 - Easy to compare with small scripts.
 - Fast enough because only checkpoints are textual; per-instruction hashing remains binary.
 
-The first line should identify the format and hash scheme. Each checkpoint line should include:
+The first line should identify the format and hash scheme. Each checkpoint line should include only deterministic comparison fields:
 
-- `attempt`: `cpu.RiscvInstrBegun()` logical count after this attempted instruction.
-- `retired`: `cpu.RiscvInstrRetired()` logical count after this instruction if known.
 - `seq`: number of PCs actually hashed in this epoch.
-- `epoch`: activation/reset generation.
-- `priv`: privilege mode before the hashed instruction, normally `user`.
 - `pc`: the pre-execution PC just hashed.
-- `satp`: the pre-execution address-space register for the hashed instruction.
 - `hash`: hex-encoded BLAKE3-256 digest of all hashed PCs through `seq`.
+
+Event lines begin with `#` and may include nondeterministic context such as absolute attempted-instruction count, retired count, epoch, privilege scope, `satp`, target PID, and trip metadata. Comparison tools should ignore event lines unless they are explicitly debugging activation/trip behavior.
 
 ## Instrumentation Points
 
@@ -350,6 +347,16 @@ In `RunWithChain`, record `cpu.pc` before `cpu.step()`:
 attemptPC := cpu.pc
 attemptSATP := cpu.satp
 attemptPriv := cpu.priv
+if breadcrumbEnabled {
+	handled, berr := breadcrumbBeforeAttempt(cpu, cpu.riscvInstrBegun+1, cpu.riscvInstrRetired, attemptPC, attemptSATP, attemptPriv)
+	if berr != nil {
+		return berr
+	}
+	if handled {
+		cpu.riscvInstrBegun++
+		continue
+	}
+}
 err := cpu.step()
 cpu.riscvInstrBegun++
 if breadcrumbEnabled {
@@ -359,7 +366,7 @@ if breadcrumbEnabled {
 }
 ```
 
-This captures every attempted instruction, including a final ECALL/EBREAK/faulting instruction.
+The before-attempt hook is normally idle. It records and injects only exact configured trip points so the target instruction is not executed. The after-attempt hook captures ordinary attempted instructions, including a final ECALL/EBREAK/faulting instruction.
 
 ### Decoder-Cached Interpreter
 
@@ -378,7 +385,21 @@ if err == nil && inlineRetired {
 }
 ```
 
-Then call:
+The exact trip hook runs before dispatching the cached slot:
+
+```go
+if breadcrumbEnabled {
+	handled, berr := breadcrumbBeforeAttempt(cpu, logicalAttempt, logicalRetired, attemptPC, attemptSATP, attemptPriv)
+	if berr != nil {
+		// count the synthetic breakpoint attempt and return or deliver ErrEbreak
+	}
+	if handled {
+		// count the attempt, reload pc from cpu.pc, and continue at the trap vector
+	}
+}
+```
+
+After dispatching a normal instruction, call:
 
 ```go
 if breadcrumbEnabled {
@@ -416,6 +437,16 @@ In `runMachineBudget`, record `cpu.pc` before `cpu.Step()` exactly like `RunWith
 attemptPC := cpu.pc
 attemptSATP := cpu.satp
 attemptPriv := cpu.priv
+if breadcrumbEnabled {
+	handled, berr := breadcrumbBeforeAttempt(cpu, cpu.riscvInstrBegun+1, cpu.riscvInstrRetired, attemptPC, attemptSATP, attemptPriv)
+	if berr != nil {
+		return RunBudgetContinue, berr
+	}
+	if handled {
+		cpu.riscvInstrBegun++
+		continue
+	}
+}
 err := cpu.Step()
 cpu.riscvInstrBegun++
 if breadcrumbEnabled {
@@ -459,7 +490,7 @@ Semantics:
 - `-breadcrumb`: configures breadcrumb tracing and creates/truncates this output file.
 - `-breadcrumb-interval`: checkpoint cadence; default `1000`.
 - `-breadcrumb-start`: hash PCs only at or after this breadcrumb sequence count; default `0`.
-- `-breadcrumb-stop`: stop hashing after this breadcrumb sequence count; default `0` means no stop.
+- `-breadcrumb-stop`: stop hashing and inject a guest breakpoint at this breadcrumb sequence count; default `0` means no stop.
 - `-breadcrumb-after-at`: switch cadence after this breadcrumb sequence count.
 - `-breadcrumb-after-interval`: finer cadence after `-breadcrumb-after-at`.
 - `-breadcrumb-privileged`: include S-mode/M-mode PCs; default false.
@@ -491,7 +522,7 @@ Workflow:
 For exact final diagnosis, add a separate mode later that writes:
 
 ```text
-seq=123456 attempt=789012 priv=user pc=0x...
+seq=123456 pc=0x...
 ```
 
 for every accepted attempted instruction in a small bounded window. In the default user-only scope, that means every user-mode attempted instruction. Do not make full-run exact logging the default.

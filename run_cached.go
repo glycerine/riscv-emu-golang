@@ -267,6 +267,36 @@ func runCachedDualBudget(cpu *CPU, cache *DecoderCache, nc *NoteChain, attemptBu
 			attemptPC := pc
 			attemptSATP := cpu.satp
 			attemptPriv := cpu.priv
+			if breadcrumbEnabled {
+				handled, berr := breadcrumbBeforeAttempt(cpu, cpu.riscvInstrBegun+instrBegun+1, cpu.riscvInstrRetired+instrRetired, attemptPC, attemptSATP, attemptPriv)
+				if berr != nil {
+					if berr == ErrEbreak {
+						instrBegun++
+						if attemptBudget != 0 {
+							attemptsUsed++
+						}
+						pc = cpu.pc
+						err = berr
+						break inner
+					}
+					cpu.riscvInstrBegun += instrBegun
+					cpu.riscvInstrRetired += instrRetired
+					return RunBudgetContinue, RunBudgetLimitNone, berr
+				}
+				if handled {
+					instrBegun++
+					if attemptBudget != 0 {
+						attemptsUsed++
+					}
+					pc = cpu.pc
+					countdown--
+					if countdown == 0 {
+						break inner
+					}
+					slot = cache.lookup(pc)
+					continue
+				}
+			}
 			inlineRetired := true
 			switch slot.op {
 

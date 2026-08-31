@@ -13,6 +13,7 @@ const (
 	breadcrumbBase                  = uintptr(0x10002000)
 	breadcrumbSize                  = 0x1000
 	breadcrumbRegControl            = uintptr(0x10)
+	breadcrumbRegTripPID            = uintptr(0x44)
 	breadcrumbRegTargetPID          = uintptr(0x68)
 	breadcrumbControlArmNextASReset = uint32(7)
 )
@@ -50,7 +51,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	*(*uint32)(unsafe.Pointer(&page[breadcrumbRegTargetPID])) = uint32(os.Getpid())
+	pid := uint32(os.Getpid())
+	*(*uint32)(unsafe.Pointer(&page[breadcrumbRegTargetPID])) = pid
+	*(*uint32)(unsafe.Pointer(&page[breadcrumbRegTripPID])) = pid
 	*(*uint32)(unsafe.Pointer(&page[breadcrumbRegControl])) = breadcrumbControlArmNextASReset
 
 	_, _, errno := syscall.RawSyscall(

@@ -41,6 +41,10 @@ func (b *BreadcrumbTracer) Flush() error {
 	return nil
 }
 
+func (b *BreadcrumbTracer) Sync() error {
+	return nil
+}
+
 func (b *BreadcrumbTracer) Close() error {
 	return nil
 }
@@ -58,6 +62,10 @@ func prepareBreadcrumbTracer(_ *EmuConfig, _ bool) (*BreadcrumbTracer, error) {
 
 func breadcrumbRecordPC(_ *CPU, _, _, _, _ uint64, _ PrivilegeMode) error {
 	return nil
+}
+
+func breadcrumbBeforeAttempt(_ *CPU, _, _, _, _ uint64, _ PrivilegeMode) (bool, error) {
+	return false, nil
 }
 
 func breadcrumbAfterAttempt(_ *CPU, _, _, _, _ uint64, _ PrivilegeMode) error {

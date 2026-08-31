@@ -190,6 +190,23 @@ func breadcrumbRecordPC(cpu *CPU, attempt, retired, pc, satp uint64, priv Privil
 	return b.recordPC(attempt, retired, pc, priv, satp)
 }
 
+func breadcrumbBeforeAttempt(cpu *CPU, attempt, retired, pc, satp uint64, priv PrivilegeMode) (bool, error) {
+	b := cpu.BreadcrumbTracer()
+	if b == nil || !b.shouldTripBeforeAttempt(attempt, priv, satp) {
+		return false, nil
+	}
+	if err := b.recordPC(attempt, retired, pc, priv, satp); err != nil {
+		return false, err
+	}
+	if b.tripHitAttempt != attempt || b.tripHitPC != pc {
+		return false, nil
+	}
+	if err := breadcrumbInjectBreakpoint(cpu, pc); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 func breadcrumbAfterAttempt(cpu *CPU, attempt, retired, pc, satp uint64, priv PrivilegeMode) error {
 	b := cpu.BreadcrumbTracer()
 	if b == nil {
@@ -242,7 +259,16 @@ func (b *BreadcrumbTracer) recordPC(attempt, retired, pc uint64, priv PrivilegeM
 			return err
 		}
 	}
-	return b.maybeTrip(attempt, retired, pc, satp)
+	if err := b.maybeTrip(attempt, retired, pc, satp); err != nil {
+		return err
+	}
+	if b.stopAt != 0 && b.eligibleSeq == b.stopAt {
+		if err := b.fireTrip(attempt, retired, pc, satp, "stop_at"); err != nil {
+			return err
+		}
+		b.active = false
+	}
+	return nil
 }
 
 func (b *BreadcrumbTracer) Activate(attempt, retired, pc uint64, reset bool) error {
@@ -281,12 +307,29 @@ func (b *BreadcrumbTracer) Flush() error {
 	if b == nil || b.closed {
 		return nil
 	}
+	return b.flushOutput(false)
+}
+
+func (b *BreadcrumbTracer) Sync() error {
+	if b == nil || b.closed {
+		return nil
+	}
+	return b.flushOutput(true)
+}
+
+func (b *BreadcrumbTracer) flushOutput(sync bool) error {
 	if b.w == nil {
 		return nil
 	}
 	if err := b.w.Flush(); err != nil {
 		b.lastErr = err
 		return err
+	}
+	if sync && b.ownOutfile && b.outfile != nil {
+		if err := b.outfile.Sync(); err != nil {
+			b.lastErr = err
+			return err
+		}
 	}
 	return nil
 }
@@ -642,18 +685,104 @@ func (b *BreadcrumbTracer) maybeTrip(attempt, retired, pc, satp uint64) error {
 	default:
 		return nil
 	}
+	return b.fireTrip(attempt, retired, pc, satp, breadcrumbTripReason(b.tripMode))
+}
+
+func (b *BreadcrumbTracer) shouldTripBeforeAttempt(attempt uint64, priv PrivilegeMode, satp uint64) bool {
+	if b == nil || b.closed || !b.active || b.tripPending {
+		return false
+	}
+	if !b.includePrivileged && priv != PrivUser {
+		return false
+	}
+	if !b.addressSpaceWouldBeAllowed(priv, satp) {
+		return false
+	}
+	eligibleSeq := b.eligibleSeq + 1
+	if b.startAt != 0 && eligibleSeq < b.startAt {
+		return false
+	}
+	if b.stopAt != 0 && eligibleSeq > b.stopAt {
+		return false
+	}
+	if b.stopAt != 0 && eligibleSeq == b.stopAt {
+		return true
+	}
+	switch b.tripMode {
+	case 1:
+		return b.tripSeq != 0 && b.seq+1 == b.tripSeq
+	case 2:
+		return b.tripAttempt != 0 && attempt == b.tripAttempt
+	default:
+		return false
+	}
+}
+
+func (b *BreadcrumbTracer) addressSpaceWouldBeAllowed(priv PrivilegeMode, satp uint64) bool {
+	if !b.filterAddressSpace || priv != PrivUser {
+		return true
+	}
+	if !b.targetSATPValid {
+		return true
+	}
+	return satp == b.targetSATP
+}
+
+func breadcrumbInjectBreakpoint(cpu *CPU, pc uint64) error {
+	if cpu == nil {
+		return ErrEbreak
+	}
+	cpu.pc = pc
+	if cpu.trapToPrivilegedAt(pc, CauseBreakpoint, 0, 4) {
+		return nil
+	}
+	cpu.setTrap(CauseBreakpoint, 4)
+	return ErrEbreak
+}
+
+func (b *BreadcrumbTracer) fireTrip(attempt, retired, pc, satp uint64, reason string) error {
+	if b == nil || b.tripPending {
+		return nil
+	}
 	b.tripPending = true
 	b.tripHitSeq = b.seq
 	b.tripHitAttempt = attempt
 	b.tripHitPC = pc
 	b.tripMode = 0
-	if err := b.writeEvent("trip", attempt, retired, pc, b.withTargetExtra(fmt.Sprintf("signal=%d pid=%d satp=0x%016x", b.tripSignal, b.tripPID, satp))); err != nil {
+	if reason == "" {
+		reason = "manual"
+	}
+	if err := b.writeEvent("trip", attempt, retired, pc, b.withTargetExtra(fmt.Sprintf("reason=%s signal=%d pid=%d satp=0x%016x", reason, b.tripSignal, b.signalPID(), satp))); err != nil {
+		return err
+	}
+	if err := b.Sync(); err != nil {
 		return err
 	}
 	if b.tripNotify != nil {
 		b.tripNotify()
 	}
 	return nil
+}
+
+func breadcrumbTripReason(mode uint32) string {
+	switch mode {
+	case 1:
+		return "trip_seq"
+	case 2:
+		return "trip_attempt"
+	default:
+		return "manual"
+	}
+}
+
+func (b *BreadcrumbTracer) signalPID() uint32 {
+	if b == nil {
+		return 0
+	}
+	if b.tripPID != 0 {
+		return b.tripPID
+	}
+	return b.targetPID
 }
 
 func (b *BreadcrumbTracer) addressSpaceAllowed(priv PrivilegeMode, satp uint64) bool {
@@ -768,7 +897,7 @@ func (d *breadcrumbIODevice) Load(off, width uint64) uint64 {
 	case breadcrumbRegTripSignal:
 		return uint64(d.tracer.tripSignal)
 	case breadcrumbRegTripPID:
-		return uint64(d.tracer.tripPID)
+		return uint64(d.tracer.signalPID())
 	case breadcrumbRegTripMode:
 		return uint64(d.tracer.tripMode)
 	case breadcrumbRegIRQStatus:

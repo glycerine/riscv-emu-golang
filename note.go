@@ -293,6 +293,28 @@ func RunWithChain(cpu *CPU, nc *NoteChain) error {
 		attemptPC := cpu.pc
 		attemptSATP := cpu.satp
 		attemptPriv := cpu.priv
+		if breadcrumbEnabled {
+			handled, berr := breadcrumbBeforeAttempt(cpu, cpu.riscvInstrBegun+1, cpu.riscvInstrRetired, attemptPC, attemptSATP, attemptPriv)
+			if berr != nil {
+				if berr == ErrEbreak {
+					cpu.riscvInstrBegun++
+					n := noteFromCPUError(cpu, berr)
+					switch nc.Deliver(cpu, n) {
+					case NoteHandled:
+						continue
+					case NoteExit:
+						return &ExitError{Code: cpu.ExitCode}
+					default:
+						return berr
+					}
+				}
+				return berr
+			}
+			if handled {
+				cpu.riscvInstrBegun++
+				continue
+			}
+		}
 		err := cpu.step()
 		cpu.riscvInstrBegun++
 		if breadcrumbEnabled {

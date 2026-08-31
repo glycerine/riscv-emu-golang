@@ -41,6 +41,16 @@ func readClosedBreadcrumbLog(t *testing.T, b *BreadcrumbTracer, path string) str
 	return string(data)
 }
 
+func breadcrumbCheckpointHasPC(log string, pc uint64) bool {
+	needle := fmt.Sprintf("pc=0x%016x", pc)
+	for _, line := range strings.Split(log, "\n") {
+		if strings.HasPrefix(line, "seq=") && strings.Contains(line, needle) {
+			return true
+		}
+	}
+	return false
+}
+
 func TestBreadcrumbUserModeOnly(t *testing.T) {
 	b, path := newBreadcrumbTestTracer(t, BreadcrumbConfig{Interval: 1})
 
@@ -55,13 +65,13 @@ func TestBreadcrumbUserModeOnly(t *testing.T) {
 	}
 
 	log := readClosedBreadcrumbLog(t, b, path)
-	if !strings.Contains(log, "seq=1 attempt=1") || !strings.Contains(log, "pc=0x0000000000001000") {
+	if !breadcrumbCheckpointHasPC(log, 0x1000) {
 		t.Fatalf("first user PC missing from log:\n%s", log)
 	}
-	if !strings.Contains(log, "seq=2 attempt=3") || !strings.Contains(log, "pc=0x0000000000001004") {
+	if !breadcrumbCheckpointHasPC(log, 0x1004) {
 		t.Fatalf("second user PC missing from log:\n%s", log)
 	}
-	if strings.Contains(log, "pc=0x0000000000002000") {
+	if breadcrumbCheckpointHasPC(log, 0x2000) {
 		t.Fatalf("supervisor PC was hashed despite default user-only scope:\n%s", log)
 	}
 }
@@ -80,7 +90,7 @@ func TestBreadcrumbIncludePrivileged(t *testing.T) {
 	}
 
 	log := readClosedBreadcrumbLog(t, b, path)
-	if !strings.Contains(log, "priv=supervisor") || !strings.Contains(log, "pc=0x0000000000002000") {
+	if !strings.Contains(log, "scope=all") || !breadcrumbCheckpointHasPC(log, 0x2000) {
 		t.Fatalf("privileged PC missing with IncludePrivileged=true:\n%s", log)
 	}
 }
@@ -163,6 +173,116 @@ func TestBreadcrumbRunCached(t *testing.T) {
 	}
 }
 
+func TestBreadcrumbStopAtInjectsBreakpointBeforeMachineStep(t *testing.T) {
+	mem, err := NewGuestMemory(Size1MB)
+	if err != nil {
+		t.Fatalf("NewGuestMemory: %v", err)
+	}
+	defer mem.Free()
+	const (
+		code    = uint64(0x3000)
+		handler = uint64(0x4000)
+	)
+	if fault := mem.Store32(code, 0x00700293); fault != nil { // addi x5, x0, 7
+		t.Fatalf("Store32 target insn: %v", fault)
+	}
+	cpu := NewCPU(*mem)
+	cpu.SetPC(code)
+	cpu.SetPrivilegeMode(PrivUser)
+	cpu.medeleg = uint64(1) << CauseBreakpoint
+	cpu.stvec = handler
+
+	b, path := newBreadcrumbTestTracer(t, BreadcrumbConfig{
+		Interval: 1,
+		StopAt:   1,
+	})
+	cpu.SetBreadcrumbTracer(b)
+	defer cpu.SetBreadcrumbTracer(nil)
+
+	res, err := RunMachineBudget(cpu, &cpu.Notes, 1)
+	if err != nil {
+		t.Fatalf("RunMachineBudget: %v", err)
+	}
+	if res != RunBudgetExpired {
+		t.Fatalf("RunMachineBudget result = %v, want RunBudgetExpired", res)
+	}
+	if got := cpu.Reg(5); got != 0 {
+		t.Fatalf("x5 = %d, want target instruction not executed", got)
+	}
+	if cpu.PC() != handler || cpu.PrivilegeMode() != PrivSupervisor {
+		t.Fatalf("breakpoint trap landed at pc=0x%x priv=%v, want pc=0x%x supervisor", cpu.PC(), cpu.PrivilegeMode(), handler)
+	}
+	if cpu.sepc != code || cpu.scause != CauseBreakpoint || cpu.stval != 0 {
+		t.Fatalf("breakpoint trap CSRs sepc=0x%x scause=%d stval=0x%x", cpu.sepc, cpu.scause, cpu.stval)
+	}
+	if got := cpu.RiscvInstrBegun(); got != 1 {
+		t.Fatalf("RiscvInstrBegun = %d, want synthetic breakpoint counted as one attempt", got)
+	}
+	if got := cpu.RiscvInstrRetired(); got != 0 {
+		t.Fatalf("RiscvInstrRetired = %d, want synthetic breakpoint not retired", got)
+	}
+
+	log := readClosedBreadcrumbLog(t, b, path)
+	if !breadcrumbCheckpointHasPC(log, code) || !strings.Contains(log, "reason=stop_at") {
+		t.Fatalf("stop_at breakpoint trace missing target PC or trip event:\n%s", log)
+	}
+}
+
+func TestBreadcrumbStopAtInjectsBreakpointBeforeRunCached(t *testing.T) {
+	mem, err := NewGuestMemory(Size1MB)
+	if err != nil {
+		t.Fatalf("NewGuestMemory: %v", err)
+	}
+	defer mem.Free()
+	const (
+		code    = uint64(0x5000)
+		handler = uint64(0x6000)
+	)
+	if fault := mem.Store32(code, 0x00700293); fault != nil { // addi x5, x0, 7
+		t.Fatalf("Store32 target insn: %v", fault)
+	}
+	cpu := NewCPU(*mem)
+	cpu.SetPC(code)
+	cpu.SetPrivilegeMode(PrivUser)
+	cpu.medeleg = uint64(1) << CauseBreakpoint
+	cpu.stvec = handler
+
+	b, path := newBreadcrumbTestTracer(t, BreadcrumbConfig{
+		Interval: 1,
+		StopAt:   1,
+	})
+	cpu.SetBreadcrumbTracer(b)
+	defer cpu.SetBreadcrumbTracer(nil)
+
+	res, limit, err := RunDefaultDualBudget(cpu, &cpu.Notes, 1, ^uint64(0))
+	if err != nil {
+		t.Fatalf("RunDefaultDualBudget: %v", err)
+	}
+	if res != RunBudgetExpired || limit != RunBudgetLimitAttempt {
+		t.Fatalf("RunDefaultDualBudget = (%v, %v), want (%v, %v)", res, limit, RunBudgetExpired, RunBudgetLimitAttempt)
+	}
+	if got := cpu.Reg(5); got != 0 {
+		t.Fatalf("x5 = %d, want target instruction not executed", got)
+	}
+	if cpu.PC() != handler || cpu.PrivilegeMode() != PrivSupervisor {
+		t.Fatalf("breakpoint trap landed at pc=0x%x priv=%v, want pc=0x%x supervisor", cpu.PC(), cpu.PrivilegeMode(), handler)
+	}
+	if cpu.sepc != code || cpu.scause != CauseBreakpoint || cpu.stval != 0 {
+		t.Fatalf("breakpoint trap CSRs sepc=0x%x scause=%d stval=0x%x", cpu.sepc, cpu.scause, cpu.stval)
+	}
+	if got := cpu.RiscvInstrBegun(); got != 1 {
+		t.Fatalf("RiscvInstrBegun = %d, want synthetic breakpoint counted as one attempt", got)
+	}
+	if got := cpu.RiscvInstrRetired(); got != 0 {
+		t.Fatalf("RiscvInstrRetired = %d, want synthetic breakpoint not retired", got)
+	}
+
+	log := readClosedBreadcrumbLog(t, b, path)
+	if !breadcrumbCheckpointHasPC(log, code) || !strings.Contains(log, "reason=stop_at") {
+		t.Fatalf("stop_at breakpoint trace missing target PC or trip event:\n%s", log)
+	}
+}
+
 func TestBreadcrumbRunEmuRunModeStartsImmediately(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	path := filepath.Join(t.TempDir(), "run-mode-breadcrumbs.log")
@@ -200,7 +320,7 @@ func TestBreadcrumbRunEmuRunModeStartsImmediately(t *testing.T) {
 	if strings.Contains(log, "# activation") || strings.Contains(log, "mode=armed-next-user") {
 		t.Fatalf("-run breadcrumb unexpectedly waited for guest activation:\n%s", log)
 	}
-	if !strings.Contains(log, "seq=1 ") || !strings.Contains(log, "priv=user") {
+	if !strings.Contains(log, "seq=1 ") {
 		t.Fatalf("-run breadcrumb did not record user PCs immediately:\n%s", log)
 	}
 }
@@ -240,17 +360,17 @@ func TestBreadcrumbArmNextUserRequiresPrivilegedInterlude(t *testing.T) {
 	}
 
 	log := readClosedBreadcrumbLog(t, b, path)
-	for _, absent := range []string{
-		"priv=user pc=0x0000000000001111",
-		"priv=user pc=0x0000000000001115",
-		"priv=supervisor pc=0x0000000000002222",
-		"priv=supervisor pc=0x0000000000003333",
+	for _, absent := range []uint64{
+		0x1111,
+		0x1115,
+		0x2222,
+		0x3333,
 	} {
-		if strings.Contains(log, absent) {
-			t.Fatalf("pre-activation PC %s was hashed:\n%s", absent, log)
+		if breadcrumbCheckpointHasPC(log, absent) {
+			t.Fatalf("pre-activation PC 0x%016x was hashed:\n%s", absent, log)
 		}
 	}
-	if !strings.Contains(log, "mode=armed-next-user") || !strings.Contains(log, "pc=0x0000000000004444") {
+	if !strings.Contains(log, "mode=armed-next-user") || !breadcrumbCheckpointHasPC(log, 0x4444) {
 		t.Fatalf("armed activation or first user PC missing:\n%s", log)
 	}
 }
@@ -278,10 +398,10 @@ func TestBreadcrumbGuestControlStartAfterMMIOStore(t *testing.T) {
 	}
 
 	log := readClosedBreadcrumbLog(t, b, path)
-	if strings.Contains(log, "priv=user pc=0x0000000000006000") {
+	if breadcrumbCheckpointHasPC(log, 0x6000) {
 		t.Fatalf("MMIO start instruction was hashed:\n%s", log)
 	}
-	if !strings.Contains(log, "priv=user pc=0x0000000000006004") {
+	if !breadcrumbCheckpointHasPC(log, 0x6004) {
 		t.Fatalf("instruction after MMIO start was not hashed:\n%s", log)
 	}
 }
@@ -344,13 +464,13 @@ func TestBreadcrumbGuestControlCapturesTargetAddressSpace(t *testing.T) {
 	if !strings.Contains(log, "target_pid=4321") || !strings.Contains(log, "target_satp=0x0000000012345000") {
 		t.Fatalf("activation did not record target identity:\n%s", log)
 	}
-	if strings.Contains(log, "priv=user pc=0x0000000000004444") {
+	if breadcrumbCheckpointHasPC(log, 0x4444) {
 		t.Fatalf("other user address space polluted breadcrumb trace:\n%s", log)
 	}
-	if strings.Contains(log, "priv=user pc=0x0000000000002ff4") {
+	if breadcrumbCheckpointHasPC(log, 0x2ff4) {
 		t.Fatalf("arming address space polluted breadcrumb trace:\n%s", log)
 	}
-	if !strings.Contains(log, "seq=1 ") || !strings.Contains(log, "priv=user pc=0x0000000000005555") {
+	if !strings.Contains(log, "seq=1 ") || !breadcrumbCheckpointHasPC(log, 0x5555) {
 		t.Fatalf("target user address space was not hashed:\n%s", log)
 	}
 }
@@ -428,10 +548,11 @@ func TestBreadcrumbResetArmRotatesExistingPathForFreshTrace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read second rotated breadcrumb path: %v", err)
 	}
-	if !strings.Contains(string(firstTrace), "target_pid=111") ||
-		!strings.Contains(string(firstTrace), "priv=user pc=0x0000000000001111") ||
-		strings.Contains(string(firstTrace), "target_pid=222") ||
-		strings.Contains(string(firstTrace), "priv=user pc=0x0000000000002222") {
+	firstTraceLog := string(firstTrace)
+	if !strings.Contains(firstTraceLog, "target_pid=111") ||
+		!breadcrumbCheckpointHasPC(firstTraceLog, 0x1111) ||
+		strings.Contains(firstTraceLog, "target_pid=222") ||
+		breadcrumbCheckpointHasPC(firstTraceLog, 0x2222) {
 		t.Fatalf("first run was not isolated in .02:\n%s", firstTrace)
 	}
 
@@ -439,10 +560,11 @@ func TestBreadcrumbResetArmRotatesExistingPathForFreshTrace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read current breadcrumb path: %v", err)
 	}
-	if !strings.Contains(string(current), "target_pid=222") ||
-		!strings.Contains(string(current), "priv=user pc=0x0000000000002222") ||
-		strings.Contains(string(current), "target_pid=111") ||
-		strings.Contains(string(current), "priv=user pc=0x0000000000001111") {
+	currentLog := string(current)
+	if !strings.Contains(currentLog, "target_pid=222") ||
+		!breadcrumbCheckpointHasPC(currentLog, 0x2222) ||
+		strings.Contains(currentLog, "target_pid=111") ||
+		breadcrumbCheckpointHasPC(currentLog, 0x1111) {
 		t.Fatalf("second run was not isolated in current trace:\n%s", current)
 	}
 }
@@ -504,6 +626,66 @@ func TestBreadcrumbMMIOTripwireInterrupt(t *testing.T) {
 	log := readClosedBreadcrumbLog(t, b, path)
 	if !strings.Contains(log, "# trip") || !strings.Contains(log, "signal=3 pid=1234") {
 		t.Fatalf("trip event missing from log:\n%s", log)
+	}
+}
+
+func TestBreadcrumbStopAtTripsTargetPID(t *testing.T) {
+	b, path := newBreadcrumbTestTracer(t, BreadcrumbConfig{
+		Interval: 10,
+		StopAt:   2,
+	})
+	defer b.Close()
+	m := newBiosMMIO(nil, nil, nil)
+	m.enableBreadcrumb(b)
+
+	if ok, fault := m.Store(biosBreadcrumbBase+breadcrumbRegTargetPID, 4, 4321); !ok || fault != nil {
+		t.Fatalf("Store target pid = (%v, %v)", ok, fault)
+	}
+	if got, _, fault := m.Load(biosBreadcrumbBase+breadcrumbRegTripPID, 4); fault != nil || got != 4321 {
+		t.Fatalf("trip pid fallback = (%d, %v), want target pid 4321, nil", got, fault)
+	}
+	if err := b.RecordPC(1, 1, 0x5000, PrivUser); err != nil {
+		t.Fatalf("RecordPC 1: %v", err)
+	}
+	if m.breadcrumb.InterruptPending() {
+		t.Fatal("stop_at trip interrupt pending before stop_at seq")
+	}
+	if err := b.RecordPC(2, 2, 0x5004, PrivUser); err != nil {
+		t.Fatalf("RecordPC 2: %v", err)
+	}
+	if !m.breadcrumb.InterruptPending() {
+		t.Fatal("stop_at did not raise trip interrupt")
+	}
+	if b.active {
+		t.Fatal("breadcrumb tracer still active after stop_at")
+	}
+	if got, _, fault := m.Load(biosBreadcrumbBase+breadcrumbRegTripPID, 4); fault != nil || got != 4321 {
+		t.Fatalf("trip pid = (%d, %v), want target pid 4321, nil", got, fault)
+	}
+	if got, _, fault := m.Load(biosBreadcrumbBase+breadcrumbRegTripSignal, 4); fault != nil || got != 3 {
+		t.Fatalf("trip signal = (%d, %v), want SIGQUIT 3, nil", got, fault)
+	}
+	if got, _, fault := m.Load(biosBreadcrumbBase+breadcrumbRegTripHitSeq, 8); fault != nil || got != 2 {
+		t.Fatalf("trip hit seq = (%d, %v), want 2, nil", got, fault)
+	}
+	if got, _, fault := m.Load(biosBreadcrumbBase+breadcrumbRegTripHitPC, 8); fault != nil || got != 0x5004 {
+		t.Fatalf("trip hit PC = (%#x, %v), want 0x5004, nil", got, fault)
+	}
+
+	flushed, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read trace before Close after stop_at trip: %v", err)
+	}
+	if !strings.Contains(string(flushed), "reason=stop_at") ||
+		!strings.Contains(string(flushed), "signal=3 pid=4321") {
+		t.Fatalf("stop_at trip was not flushed before Close:\n%s", flushed)
+	}
+
+	log := readClosedBreadcrumbLog(t, b, path)
+	if !strings.Contains(log, "# trip") ||
+		!strings.Contains(log, "reason=stop_at") ||
+		!strings.Contains(log, "signal=3 pid=4321") {
+		t.Fatalf("stop_at trip event missing target PID:\n%s", log)
 	}
 }
 
@@ -687,13 +869,12 @@ func canonicalBreadcrumbHashTrace(log string) string {
 			continue
 		}
 		seq := breadcrumbLogField(line, "seq")
-		priv := breadcrumbLogField(line, "priv")
 		pc := breadcrumbLogField(line, "pc")
 		hash := breadcrumbLogField(line, "hash")
-		if seq == "" || priv == "" || pc == "" || hash == "" {
+		if seq == "" || pc == "" || hash == "" {
 			continue
 		}
-		fmt.Fprintf(&out, "seq=%s priv=%s pc=%s hash=%s\n", seq, priv, pc, hash)
+		fmt.Fprintf(&out, "seq=%s pc=%s hash=%s\n", seq, pc, hash)
 	}
 	return out.String()
 }
