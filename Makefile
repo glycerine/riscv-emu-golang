@@ -1122,9 +1122,12 @@ delve: # build riscv64/linux delve debugger
 	GOFLAGS='-tags=exp.linuxriscv64' \
 	GOCACHE=/private/tmp/delve-gocache \
 	GOMODCACHE=/private/tmp/delve-gomodcache \
-	go build -mod=vendor -o xendor/alpine-minirootfs-3.24.1-riscv64/bin/dlv-linux-riscv64 ./cmd/dlv
+	go build -mod=vendor -o xendor/alpine-minirootfs-3.24.1-riscv64/bin/dlv ./cmd/dlv
 
-## dlv-linux-riscv64 exec /bin/breadcrumbexec -- /host/path/to/yourprog arg1 arg2
+## dlv exec /bin/breadcrumbexec -- /host/path/to/yourprog arg1 arg2
+## e.g.
+## GODEBUG=asyncpreemptoff=1 GOMAXPROCS=1 GO_DSIM_SEED=1 dlv exec /bin/breadcrumbexec -- /host/Users/jaten/go/src/github.com/glycerine/rpc25519/tube/tube.test -test.v -test.run  101_userFuzz
+##
 ## (dlv) target follow-exec -on
 ## (dlv) continue
 

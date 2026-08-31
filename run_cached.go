@@ -968,7 +968,7 @@ func runCachedDualBudget(cpu *CPU, cache *DecoderCache, nc *NoteChain, attemptBu
 				pc += 2
 
 			case opC_EBREAK:
-				if cpu.priv != PrivUser && cpu.trapToPrivilegedAt(pc, CauseBreakpoint, 0, 2) {
+				if cpu.trapBreakpointAt(pc, 2) {
 					pc = cpu.pc
 					inlineRetired = false
 				} else {

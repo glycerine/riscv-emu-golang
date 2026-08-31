@@ -385,6 +385,10 @@ func (c *CPU) trapToPrivilegedAt(pc, cause, tval uint64, insnLen uint8) bool {
 	return c.trapToMachineAt(pc, cause, tval)
 }
 
+func (c *CPU) trapBreakpointAt(pc uint64, insnLen uint8) bool {
+	return c.trapToPrivilegedAt(pc, CauseBreakpoint, 0, insnLen)
+}
+
 func (c *CPU) shouldDelegateException(cause uint64) bool {
 	return c.priv != PrivMachine && cause < 64 && (c.medeleg&(uint64(1)<<cause)) != 0
 }
@@ -1235,7 +1239,7 @@ func (c *CPU) stepFromInsn(insn uint32) error {
 		csrAddr := insn >> 20
 		switch {
 		case insn == 0x00100073: // EBREAK
-			if c.priv != PrivUser && c.trapToPrivilegedAt(c.pc, CauseBreakpoint, 0, 4) {
+			if c.trapBreakpointAt(c.pc, 4) {
 				return nil
 			}
 			c.setTrap(CauseBreakpoint, 4)
@@ -2106,7 +2110,7 @@ func (c *CPU) stepRVC(insn uint16) error {
 				c.SetReg(rd, c.Reg(rs2))
 			} else {
 				if rd == 0 && rs2 == 0 { // C.EBREAK
-					if c.priv != PrivUser && c.trapToPrivilegedAt(c.pc, CauseBreakpoint, 0, 2) {
+					if c.trapBreakpointAt(c.pc, 2) {
 						return nil
 					}
 					c.setTrap(CauseBreakpoint, 2)

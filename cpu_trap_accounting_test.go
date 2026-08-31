@@ -120,3 +120,67 @@ func TestCPU_CEBREAKTrapPCAndRetired(t *testing.T) {
 		t.Fatalf("RiscvInstrRetired = %d, want 0", got)
 	}
 }
+
+func TestCPU_UserEBREAKDelegatesToSupervisor(t *testing.T) {
+	const (
+		codeAddr = uint64(0x5000)
+		handler  = uint64(0x6000)
+	)
+	cpu, mem := newTrapAccountingCPU(t, codeAddr, []uint32{
+		0x00100073, // ebreak
+	})
+	defer mem.Free()
+	cpu.SetPrivilegeMode(PrivUser)
+	cpu.medeleg = uint64(1) << CauseBreakpoint
+	cpu.stvec = handler
+
+	if err := cpu.Step(); err != nil {
+		t.Fatalf("Step err = %v, want guest breakpoint trap", err)
+	}
+	if cpu.PC() != handler || cpu.PrivilegeMode() != PrivSupervisor {
+		t.Fatalf("after EBREAK pc=0x%x priv=%v, want pc=0x%x priv=%v", cpu.PC(), cpu.PrivilegeMode(), handler, PrivSupervisor)
+	}
+	if cpu.sepc != codeAddr || cpu.scause != CauseBreakpoint || cpu.stval != 0 {
+		t.Fatalf("supervisor trap sepc=0x%x scause=%d stval=0x%x, want sepc=0x%x scause=%d stval=0", cpu.sepc, cpu.scause, cpu.stval, codeAddr, CauseBreakpoint)
+	}
+	if cpu.lastTrapInsnLen != 4 {
+		t.Fatalf("lastTrapInsnLen = %d, want 4", cpu.lastTrapInsnLen)
+	}
+}
+
+func TestRunCached_UserCEBREAKDelegatesToSupervisor(t *testing.T) {
+	const (
+		codeAddr = uint64(0x7000)
+		handler  = uint64(0x8000)
+	)
+	mem, err := NewGuestMemory(Size64MB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mem.Free()
+	if f := mem.Store16(codeAddr, 0x9002); f != nil {
+		t.Fatal(f)
+	}
+	cpu := NewCPU(*mem)
+	cpu.SetPC(codeAddr)
+	cpu.SetPrivilegeMode(PrivUser)
+	cpu.medeleg = uint64(1) << CauseBreakpoint
+	cpu.stvec = handler
+
+	res, limit, err := RunDefaultDualBudget(cpu, &cpu.Notes, 1, ^uint64(0))
+	if err != nil {
+		t.Fatalf("RunDefaultDualBudget err = %v, want guest breakpoint trap", err)
+	}
+	if res != RunBudgetExpired || limit != RunBudgetLimitAttempt {
+		t.Fatalf("RunDefaultDualBudget result = (%v, %v), want (%v, %v)", res, limit, RunBudgetExpired, RunBudgetLimitAttempt)
+	}
+	if cpu.PC() != handler || cpu.PrivilegeMode() != PrivSupervisor {
+		t.Fatalf("after C.EBREAK pc=0x%x priv=%v, want pc=0x%x priv=%v", cpu.PC(), cpu.PrivilegeMode(), handler, PrivSupervisor)
+	}
+	if cpu.sepc != codeAddr || cpu.scause != CauseBreakpoint || cpu.stval != 0 {
+		t.Fatalf("supervisor trap sepc=0x%x scause=%d stval=0x%x, want sepc=0x%x scause=%d stval=0", cpu.sepc, cpu.scause, cpu.stval, codeAddr, CauseBreakpoint)
+	}
+	if cpu.lastTrapInsnLen != 2 {
+		t.Fatalf("lastTrapInsnLen = %d, want 2", cpu.lastTrapInsnLen)
+	}
+}
