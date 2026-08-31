@@ -176,8 +176,10 @@ all: help
 	go install ./cmd/rekey
 
 bread:
+	GOOS=linux GOARCH=riscv64 CGO_ENABLED=0 go build -o xendor/alpine-minirootfs-3.24.1-riscv64/bin/breadcrumbexec ./cmd/breadcrumbexec
 	go install -tags breadcrumb ./cmd/emu
 	go install -tags breadcrumb ./cmd/emul
+	make repack
 
 
 #GOEXPERIMENT=nojsonv2 go install ./cmd/emu
@@ -1121,3 +1123,9 @@ delve: # build riscv64/linux delve debugger
 	GOCACHE=/private/tmp/delve-gocache \
 	GOMODCACHE=/private/tmp/delve-gomodcache \
 	go build -mod=vendor -o xendor/alpine-minirootfs-3.24.1-riscv64/bin/dlv-linux-riscv64 ./cmd/dlv
+
+## dlv-linux-riscv64 exec /bin/breadcrumbexec -- /host/path/to/yourprog arg1 arg2
+## (dlv) target follow-exec -on
+## (dlv) continue
+
+

@@ -19,17 +19,18 @@ const (
 )
 
 func main() {
-	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: breadcrumbexec program [args...]")
+	args := normalizeExecArgs(os.Args[1:])
+	if len(args) < 1 {
+		fmt.Fprintln(os.Stderr, breadcrumbexecUsage())
 		os.Exit(2)
 	}
 
-	target, err := syscall.BytePtrFromString(os.Args[1])
+	target, err := syscall.BytePtrFromString(args[0])
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "breadcrumbexec: target path: %v\n", err)
 		os.Exit(2)
 	}
-	argv, err := syscall.SlicePtrFromStrings(os.Args[1:])
+	argv, err := syscall.SlicePtrFromStrings(args)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "breadcrumbexec: argv: %v\n", err)
 		os.Exit(2)
@@ -62,6 +63,6 @@ func main() {
 		uintptr(unsafe.Pointer(&argv[0])),
 		uintptr(unsafe.Pointer(&envv[0])),
 	)
-	fmt.Fprintf(os.Stderr, "breadcrumbexec: execve %s: %v\n", os.Args[1], errno)
+	fmt.Fprintf(os.Stderr, "breadcrumbexec: execve %s: %v\n", args[0], errno)
 	os.Exit(1)
 }

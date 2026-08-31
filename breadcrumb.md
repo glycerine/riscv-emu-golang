@@ -282,7 +282,7 @@ The launcher should make the MMIO write and then issue the raw `execve` syscall 
 
 This does not require a Linux kernel patch. It does require a tiny guest helper binary or shell builtin that can map the breadcrumb MMIO page, write the control register, and then immediately perform `execve`.
 
-The repository includes `cmd/breadcrumbexec` as this launcher. Build it for the guest with `GOOS=linux GOARCH=riscv64 CGO_ENABLED=0 go build ./cmd/breadcrumbexec`, place it somewhere reachable by the guest, and run `breadcrumbexec program [args...]`.
+The repository includes `cmd/breadcrumbexec` as this launcher. Build it for the guest with `GOOS=linux GOARCH=riscv64 CGO_ENABLED=0 go build ./cmd/breadcrumbexec`, place it somewhere reachable by the guest, and run `breadcrumbexec [--] program [args...]`. The optional `--` is accepted for compatibility with tools such as Delve that use it as an argument separator.
 
 The launcher cannot see the host breadcrumb output path. It only writes the MMIO control registers. The emulator owns the host file lifecycle. In guest-controlled BIOS mode, the output file is not opened during Linux boot; the first reset-style arm command opens it. Each later reset-style command closes any owned open handle, rotates an existing path to the first free suffix such as `.01` or `.02`, and opens a fresh file at the configured path. If the operator has already moved the previous trace out of the way, the close still releases the old inode and the new trace is created at the original path.
 
