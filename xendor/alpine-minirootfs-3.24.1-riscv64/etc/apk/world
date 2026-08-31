@@ -3,6 +3,7 @@ alpine-keys
 alpine-release
 apk-tools
 busybox
+gdb
 iproute2-minimal><Q122OvQ/NC7jM38DwjGnWCv1Bw9xc=
 libcap2><Q1voCD2hSQJGpefm8PWzv+orMRHVE=
 libelf><Q1SXWWLpOVnuR3i5xcEXhV/10eHYo=
