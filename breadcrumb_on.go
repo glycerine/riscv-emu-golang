@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"sync/atomic"
 
 	"github.com/glycerine/blake3"
 )
@@ -19,6 +20,7 @@ const breadcrumbEnabled = true
 var ErrBreadcrumbConfig = errors.New("riscv: invalid breadcrumb configuration")
 
 var breadcrumbTracers sync.Map // map[*CPU]*BreadcrumbTracer
+var breadcrumbHookUsers atomic.Int64
 
 var BreadcrumbDefaultPath string = "crumbs.txt"
 
@@ -81,6 +83,7 @@ type BreadcrumbTracer struct {
 	tripHitAttempt     uint64
 	tripHitPC          uint64
 	tripNotify         func()
+	hookRegistered     bool
 	closed             bool
 	lastErr            error
 	buf                [8]byte
@@ -122,7 +125,7 @@ func NewBreadcrumbTracer(cfg BreadcrumbConfig) (*BreadcrumbTracer, error) {
 		guestControl:       cfg.GuestControl,
 		includePrivileged:  cfg.IncludePrivileged,
 		filterAddressSpace: cfg.GuestControl,
-		tripSignal:         3, // Linux SIGQUIT: Go prints goroutine stacks by default.
+		tripSignal:         19, // Linux SIGSTOP: freeze first; inspect with a debugger after.
 	}
 	if !(cfg.Outfile == nil && cfg.Path != "" && cfg.StartPaused && cfg.GuestControl) {
 		if err := b.ensureOutput(); err != nil {
@@ -130,6 +133,7 @@ func NewBreadcrumbTracer(cfg BreadcrumbConfig) (*BreadcrumbTracer, error) {
 			return nil, err
 		}
 	}
+	b.refreshInstructionHooks()
 	return b, nil
 }
 
@@ -166,11 +170,17 @@ func prepareBreadcrumbTracer(cfg *EmuConfig, bios bool) (*BreadcrumbTracer, erro
 }
 
 func (c *CPU) SetBreadcrumbTracer(b *BreadcrumbTracer) {
+	if oldv, ok := breadcrumbTracers.Load(c); ok {
+		if old, _ := oldv.(*BreadcrumbTracer); old != nil && old != b {
+			old.disableInstructionHooks()
+		}
+	}
 	if b == nil {
 		breadcrumbTracers.Delete(c)
 		return
 	}
 	breadcrumbTracers.Store(c, b)
+	b.refreshInstructionHooks()
 }
 
 func (c *CPU) BreadcrumbTracer() *BreadcrumbTracer {
@@ -183,6 +193,9 @@ func (c *CPU) BreadcrumbTracer() *BreadcrumbTracer {
 }
 
 func breadcrumbRecordPC(cpu *CPU, attempt, retired, pc, satp uint64, priv PrivilegeMode) error {
+	if !breadcrumbInstructionHooksEnabled() {
+		return nil
+	}
 	b := cpu.BreadcrumbTracer()
 	if b == nil {
 		return nil
@@ -191,23 +204,13 @@ func breadcrumbRecordPC(cpu *CPU, attempt, retired, pc, satp uint64, priv Privil
 }
 
 func breadcrumbBeforeAttempt(cpu *CPU, attempt, retired, pc, satp uint64, priv PrivilegeMode) (bool, error) {
-	b := cpu.BreadcrumbTracer()
-	if b == nil || !b.shouldTripBeforeAttempt(attempt, priv, satp) {
-		return false, nil
-	}
-	if err := b.recordPC(attempt, retired, pc, priv, satp); err != nil {
-		return false, err
-	}
-	if b.tripHitAttempt != attempt || b.tripHitPC != pc {
-		return false, nil
-	}
-	if err := breadcrumbInjectBreakpoint(cpu, pc); err != nil {
-		return false, err
-	}
-	return true, nil
+	return false, nil
 }
 
 func breadcrumbAfterAttempt(cpu *CPU, attempt, retired, pc, satp uint64, priv PrivilegeMode) error {
+	if !breadcrumbInstructionHooksEnabled() {
+		return nil
+	}
 	b := cpu.BreadcrumbTracer()
 	if b == nil {
 		return nil
@@ -267,8 +270,44 @@ func (b *BreadcrumbTracer) recordPC(attempt, retired, pc uint64, priv PrivilegeM
 			return err
 		}
 		b.active = false
+		b.refreshInstructionHooks()
 	}
 	return nil
+}
+
+func breadcrumbInstructionHooksEnabled() bool {
+	return breadcrumbHookUsers.Load() > 0
+}
+
+func (b *BreadcrumbTracer) needsInstructionHooks() bool {
+	return b != nil && !b.closed &&
+		(b.active ||
+			b.pendingControl != breadcrumbControlPendingNone ||
+			b.armMode != breadcrumbArmNone)
+}
+
+func (b *BreadcrumbTracer) refreshInstructionHooks() {
+	if b == nil {
+		return
+	}
+	needed := b.needsInstructionHooks()
+	if needed == b.hookRegistered {
+		return
+	}
+	b.hookRegistered = needed
+	if needed {
+		breadcrumbHookUsers.Add(1)
+		return
+	}
+	breadcrumbHookUsers.Add(-1)
+}
+
+func (b *BreadcrumbTracer) disableInstructionHooks() {
+	if b == nil || !b.hookRegistered {
+		return
+	}
+	b.hookRegistered = false
+	breadcrumbHookUsers.Add(-1)
 }
 
 func (b *BreadcrumbTracer) Activate(attempt, retired, pc uint64, reset bool) error {
@@ -292,6 +331,7 @@ func (b *BreadcrumbTracer) activate(attempt, retired, pc, satp uint64, postPriv 
 	b.active = true
 	b.armMode = breadcrumbArmNone
 	b.armSawPrivileged = false
+	b.refreshInstructionHooks()
 	return b.writeEvent("activation", attempt, retired, pc, b.withTargetExtra(mode))
 }
 
@@ -300,6 +340,7 @@ func (b *BreadcrumbTracer) Pause(attempt, retired, pc uint64) error {
 		return nil
 	}
 	b.active = false
+	b.refreshInstructionHooks()
 	return b.writeEvent("pause", attempt, retired, pc, "")
 }
 
@@ -339,6 +380,7 @@ func (b *BreadcrumbTracer) Close() error {
 		return nil
 	}
 	b.closed = true
+	b.disableInstructionHooks()
 	return b.closeOutput()
 }
 
@@ -358,6 +400,7 @@ func (b *BreadcrumbTracer) applyPendingControl(attempt, retired, pc, satp uint64
 		return nil
 	}
 	b.pendingControl = breadcrumbControlPendingNone
+	defer b.refreshInstructionHooks()
 	switch cmd {
 	case breadcrumbControlStart:
 		return b.activate(attempt, retired, pc, postSATP, postPriv, false)
@@ -390,6 +433,7 @@ func (b *BreadcrumbTracer) armNextUser(attempt, retired, pc uint64, postPriv Pri
 	b.active = false
 	b.armMode = breadcrumbArmNextUser
 	b.armSawPrivileged = postPriv != PrivUser
+	b.refreshInstructionHooks()
 	mode := "mode=resume"
 	if reset {
 		mode = "mode=reset"
@@ -408,6 +452,7 @@ func (b *BreadcrumbTracer) armNextAddressSpace(attempt, retired, pc, sourceSATP 
 	b.armSawPrivileged = postPriv != PrivUser
 	b.armSourceSATP = sourceSATP
 	b.armSourceSATPValid = true
+	b.refreshInstructionHooks()
 	mode := "mode=resume"
 	if reset {
 		mode = "mode=reset"
@@ -440,6 +485,7 @@ func (b *BreadcrumbTracer) observePostPriv(attempt, retired, pc uint64, postPriv
 	b.armSourceSATP = 0
 	b.armSourceSATPValid = false
 	b.captureTargetAddressSpace(postSATP)
+	b.refreshInstructionHooks()
 	return b.writeEvent("activation", attempt, retired, pc, b.withTargetExtra(mode))
 }
 
@@ -448,6 +494,7 @@ func (b *BreadcrumbTracer) queueControl(cmd breadcrumbControl) {
 		return
 	}
 	b.pendingControl = cmd
+	b.refreshInstructionHooks()
 }
 
 func (b *BreadcrumbTracer) setInterval(v uint64) {
@@ -686,58 +733,6 @@ func (b *BreadcrumbTracer) maybeTrip(attempt, retired, pc, satp uint64) error {
 		return nil
 	}
 	return b.fireTrip(attempt, retired, pc, satp, breadcrumbTripReason(b.tripMode))
-}
-
-func (b *BreadcrumbTracer) shouldTripBeforeAttempt(attempt uint64, priv PrivilegeMode, satp uint64) bool {
-	if b == nil || b.closed || !b.active || b.tripPending {
-		return false
-	}
-	if !b.includePrivileged && priv != PrivUser {
-		return false
-	}
-	if !b.addressSpaceWouldBeAllowed(priv, satp) {
-		return false
-	}
-	eligibleSeq := b.eligibleSeq + 1
-	if b.startAt != 0 && eligibleSeq < b.startAt {
-		return false
-	}
-	if b.stopAt != 0 && eligibleSeq > b.stopAt {
-		return false
-	}
-	if b.stopAt != 0 && eligibleSeq == b.stopAt {
-		return true
-	}
-	switch b.tripMode {
-	case 1:
-		return b.tripSeq != 0 && b.seq+1 == b.tripSeq
-	case 2:
-		return b.tripAttempt != 0 && attempt == b.tripAttempt
-	default:
-		return false
-	}
-}
-
-func (b *BreadcrumbTracer) addressSpaceWouldBeAllowed(priv PrivilegeMode, satp uint64) bool {
-	if !b.filterAddressSpace || priv != PrivUser {
-		return true
-	}
-	if !b.targetSATPValid {
-		return true
-	}
-	return satp == b.targetSATP
-}
-
-func breadcrumbInjectBreakpoint(cpu *CPU, pc uint64) error {
-	if cpu == nil {
-		return ErrEbreak
-	}
-	cpu.pc = pc
-	if cpu.trapToPrivilegedAt(pc, CauseBreakpoint, 0, 4) {
-		return nil
-	}
-	cpu.setTrap(CauseBreakpoint, 4)
-	return ErrEbreak
 }
 
 func (b *BreadcrumbTracer) fireTrip(attempt, retired, pc, satp uint64, reason string) error {

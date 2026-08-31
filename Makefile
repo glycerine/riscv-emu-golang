@@ -104,6 +104,7 @@ GUEST_NATIVE := $(GUEST_DIR)/bench_guest.native
 GUEST_WASM   := $(GUEST_DIR)/bench_guest.wasm
 OUR_LINUX    := $(ROOT)xendor/linux-6.17-hand-built
 OUR_LINUX_AMD64 := $(OUR_LINUX)/amd64
+LINUX_SRC ?= /Users/jaten/go/src/github.com/torvalds/linux
 INITRAMFS_DIR := $(ROOT)xendor/alpine-minirootfs-3.24.1-riscv64
 INITRAMFS_CPIO := $(ROOT)xendor/linux/initramfs.cpio.gz
 RSTRACE_BIN  := $(INITRAMFS_DIR)/bin/rstrace
@@ -176,7 +177,7 @@ all: help
 	go install ./cmd/rekey
 
 bread:
-	GOOS=linux GOARCH=riscv64 CGO_ENABLED=0 go build -onethread -o xendor/alpine-minirootfs-3.24.1-riscv64/bin/breadcrumbexec ./cmd/breadcrumbexec
+	zig cc -target riscv64-linux-musl -static -O2 -fno-stack-protector -fno-sanitize=all -o xendor/alpine-minirootfs-3.24.1-riscv64/bin/breadcrumbexec cmd/breadcrumbexec/breadcrumbexec.c
 	make repack # must be before the emul rebuild, since it embeds xendor/
 	go install -tags breadcrumb ./cmd/emu
 	go install -tags breadcrumb ./cmd/emul
@@ -1062,24 +1063,24 @@ rstrace:
 	@file $(RSTRACE_BIN) 2>/dev/null || true
 
 save-linux-config:
-	cd ~/linux && PATH=/private/tmp/linux-host-tools:/usr/local/opt/llvm/bin:/usr/local/bin:$PATH \
+	cd $(LINUX_SRC) && PATH=/private/tmp/linux-host-tools:/usr/local/opt/llvm/bin:/usr/local/bin:$$PATH \
 	gmake ARCH=riscv LLVM=1 \
 	HOSTCFLAGS=\
 	'-I/private/tmp/linux-host-elf-include -include /private/tmp/linux-host-elf-include/darwin_compat.h'\
 	savedefconfig
-	cp defconfig ~/ris/xendor/linux-6.17-hand-built/
-	cp .config ~/ris/xendor/linux-6.17-hand-built/dot.config
+	cp $(LINUX_SRC)/defconfig $(OUR_LINUX)/
+	cp $(LINUX_SRC)/.config $(OUR_LINUX)/dot.config
 
 # to setup the same kernel build again;
 # for a new Linux tree, use
 #
 # either a)
-#   cp ~/ris/xendor/linux-6.17-hand-built/dot.config ~/linux/.config
+#   cp ~/ris/xendor/linux-6.17-hand-built/dot.config $(LINUX_SRC)/.config
 #   gmake ARCH=riscv olddefconfig
 #
 # or b)
 #   if using savedefconfig:
-#   cp ~/ris/xendor/linux-6.17-hand-built/defconfig arch/riscv/configs/ris_fastboot_defconfig
+#   cp ~/ris/xendor/linux-6.17-hand-built/defconfig $(LINUX_SRC)/arch/riscv/configs/ris_fastboot_defconfig
 #   gmake ARCH=riscv ris_fastboot_defconfig
 
 build-slim-linux:
@@ -1088,29 +1089,30 @@ build-slim-linux:
 	@# The output kernel Image file is a slim 5.8MB uncompressed--nice.
 	@# leaves out alot of hardware drivers we do not need. 
 	@# Boots in < 8 seconds on the intrepreter--very nice.
-	cd ~/linux && PATH='$(OUR_LINUX)/linux-host-tools:/usr/local/opt/llvm/bin:/usr/local/bin:$(PATH)' \
+	cp -p $(OUR_LINUX)/dot.config $(LINUX_SRC)/.config
+	cd $(LINUX_SRC) && PATH='$(OUR_LINUX)/linux-host-tools:/usr/local/opt/llvm/bin:/usr/local/bin:$(PATH)' \
 	gmake -j6 ARCH=riscv LLVM=1 \
 	HOSTCFLAGS=\
 	'-I$(OUR_LINUX)/linux-host-elf-include -include $(OUR_LINUX)/linux-host-elf-include/darwin_compat.h' \
 	clean olddefconfig Image savedefconfig && \
-	cp -p ~/linux/arch/riscv/boot/Image ~/ris/xendor/linux-6.17-hand-built/ && \
-	cp -p ~/linux/.config ~/ris/xendor/linux-6.17-hand-built/dot.config && \
-	cp -p ~/linux/defconfig ~/ris/xendor/linux-6.17-hand-built/defconfig
+	cp -p $(LINUX_SRC)/arch/riscv/boot/Image $(OUR_LINUX)/ && \
+	cp -p $(LINUX_SRC)/.config $(OUR_LINUX)/dot.config && \
+	cp -p $(LINUX_SRC)/defconfig $(OUR_LINUX)/defconfig
 
 build-slim-linux-amd64:
-	@# Build the same ~/linux tree for 64-bit amd64/x86_64.
+	@# Build the same $(LINUX_SRC) tree for 64-bit amd64/x86_64.
 	@# LLVM=1 gives the target build clang/ld.lld; HOSTLD stays Darwin for host tools.
-	cd ~/linux && PATH='$(OUR_LINUX)/linux-host-tools:/usr/local/opt/coreutils/libexec/gnubin:/opt/local/libexec/gnubin:/usr/local/opt/llvm/bin:/usr/local/bin:$(PATH)' \
+	cd $(LINUX_SRC) && PATH='$(OUR_LINUX)/linux-host-tools:/usr/local/opt/coreutils/libexec/gnubin:/opt/local/libexec/gnubin:/usr/local/opt/llvm/bin:/usr/local/bin:$(PATH)' \
 	PKG_CONFIG_PATH='/opt/local/lib/pkgconfig:$(PKG_CONFIG_PATH)' \
 	gmake -j6 ARCH=x86_64 LLVM=1 \
 	HOSTLD=/usr/bin/ld \
 	HOSTCFLAGS=\
-	'-Wno-macro-redefined -I$(OUR_LINUX)/linux-host-elf-include -I$(HOME)/linux/tools/arch/x86/include/uapi -I$(HOME)/linux/arch/x86/include/generated/uapi -idirafter $(HOME)/linux/include/uapi -include $(OUR_LINUX)/linux-host-elf-include/darwin_compat.h' \
+	'-Wno-macro-redefined -I$(OUR_LINUX)/linux-host-elf-include -I$(LINUX_SRC)/tools/arch/x86/include/uapi -I$(LINUX_SRC)/arch/x86/include/generated/uapi -idirafter $(LINUX_SRC)/include/uapi -include $(OUR_LINUX)/linux-host-elf-include/darwin_compat.h' \
 	clean olddefconfig bzImage savedefconfig && \
 	mkdir -p $(OUR_LINUX_AMD64) && \
-	cp -p ~/linux/arch/x86/boot/bzImage $(OUR_LINUX_AMD64)/bzImage && \
-	cp -p ~/linux/.config $(OUR_LINUX_AMD64)/dot.config && \
-	cp -p ~/linux/defconfig $(OUR_LINUX_AMD64)/defconfig
+	cp -p $(LINUX_SRC)/arch/x86/boot/bzImage $(OUR_LINUX_AMD64)/bzImage && \
+	cp -p $(LINUX_SRC)/.config $(OUR_LINUX_AMD64)/dot.config && \
+	cp -p $(LINUX_SRC)/defconfig $(OUR_LINUX_AMD64)/defconfig
 
 repack:
 	cd $(INITRAMFS_DIR) && find . -print0 | \
@@ -1124,11 +1126,10 @@ delve: # build riscv64/linux delve debugger
 	GOMODCACHE=/private/tmp/delve-gomodcache \
 	go build -mod=vendor -o xendor/alpine-minirootfs-3.24.1-riscv64/bin/dlv ./cmd/dlv
 
-## dlv exec /bin/breadcrumbexec -- /host/path/to/yourprog arg1 arg2
+## Precision breadcrumb stop workflow:
+## 1. Boot emul/emu with -tags breadcrumb and the guest Linux breadcrumb driver.
+## 2. Inside guest Linux, launch normally through breadcrumbexec.
+## 3. When -breadcrumb-stop trips, the kernel driver sends SIGSTOP to the target.
+## 4. Attach afterward with dlv attach PID or gdb -p PID.
 ## e.g.
-## GODEBUG=asyncpreemptoff=1 GOMAXPROCS=1 GO_DSIM_SEED=1 dlv exec /bin/breadcrumbexec -- /host/Users/jaten/go/src/github.com/glycerine/rpc25519/tube/tube.test -test.v -test.run  101_userFuzz
-##
-## (dlv) target follow-exec -on
-## (dlv) continue
-
-
+## GODEBUG=asyncpreemptoff=1 GOMAXPROCS=1 GO_DSIM_SEED=1 breadcrumbexec -- /host/Users/jaten/go/src/github.com/glycerine/rpc25519/tube/tube.test -test.v -test.run 101_userFuzz

@@ -173,7 +173,7 @@ func TestBreadcrumbRunCached(t *testing.T) {
 	}
 }
 
-func TestBreadcrumbStopAtInjectsBreakpointBeforeMachineStep(t *testing.T) {
+func TestBreadcrumbStopAtRaisesIRQAfterMachineStep(t *testing.T) {
 	mem, err := NewGuestMemory(Size1MB)
 	if err != nil {
 		t.Fatalf("NewGuestMemory: %v", err)
@@ -186,66 +186,89 @@ func TestBreadcrumbStopAtInjectsBreakpointBeforeMachineStep(t *testing.T) {
 	if fault := mem.Store32(code, 0x00700293); fault != nil { // addi x5, x0, 7
 		t.Fatalf("Store32 target insn: %v", fault)
 	}
+	if fault := mem.Store32(code+4, 0x00900293); fault != nil { // addi x5, x0, 9
+		t.Fatalf("Store32 next insn: %v", fault)
+	}
+	m := newBiosMMIO(nil, nil, nil)
+	mem.SetMMIO(m)
 	cpu := NewCPU(*mem)
 	cpu.SetPC(code)
 	cpu.SetPrivilegeMode(PrivUser)
-	cpu.medeleg = uint64(1) << CauseBreakpoint
 	cpu.stvec = handler
+	cpu.mideleg = mipSEIP
+	cpu.sie = mipSEIP
 
 	b, path := newBreadcrumbTestTracer(t, BreadcrumbConfig{
 		Interval: 1,
 		StopAt:   1,
 	})
+	m.enableBreadcrumb(b)
 	cpu.SetBreadcrumbTracer(b)
 	defer cpu.SetBreadcrumbTracer(nil)
 
-	res, err := RunMachineBudget(cpu, &cpu.Notes, 1)
+	res, err := RunBiosMachineBudget(cpu, &cpu.Notes, 1)
 	if err != nil {
-		t.Fatalf("RunMachineBudget: %v", err)
+		t.Fatalf("RunBiosMachineBudget first instruction: %v", err)
 	}
 	if res != RunBudgetExpired {
-		t.Fatalf("RunMachineBudget result = %v, want RunBudgetExpired", res)
+		t.Fatalf("RunBiosMachineBudget result = %v, want RunBudgetExpired", res)
 	}
-	if got := cpu.Reg(5); got != 0 {
-		t.Fatalf("x5 = %d, want target instruction not executed", got)
+	if got := cpu.Reg(5); got != 7 {
+		t.Fatalf("x5 = %d, want target instruction executed before stop_at", got)
 	}
-	if cpu.PC() != handler || cpu.PrivilegeMode() != PrivSupervisor {
-		t.Fatalf("breakpoint trap landed at pc=0x%x priv=%v, want pc=0x%x supervisor", cpu.PC(), cpu.PrivilegeMode(), handler)
+	if cpu.PC() != code+4 || cpu.PrivilegeMode() != PrivUser {
+		t.Fatalf("after stop_at pc=0x%x priv=%v, want pc=0x%x user before IRQ delivery", cpu.PC(), cpu.PrivilegeMode(), code+4)
 	}
-	if cpu.sepc != code || cpu.scause != CauseBreakpoint || cpu.stval != 0 {
-		t.Fatalf("breakpoint trap CSRs sepc=0x%x scause=%d stval=0x%x", cpu.sepc, cpu.scause, cpu.stval)
+	if !m.breadcrumb.InterruptPending() {
+		t.Fatal("stop_at did not raise breadcrumb IRQ after target instruction")
 	}
 	if got := cpu.RiscvInstrBegun(); got != 1 {
-		t.Fatalf("RiscvInstrBegun = %d, want synthetic breakpoint counted as one attempt", got)
+		t.Fatalf("RiscvInstrBegun = %d, want one real instruction attempt", got)
 	}
-	if got := cpu.RiscvInstrRetired(); got != 0 {
-		t.Fatalf("RiscvInstrRetired = %d, want synthetic breakpoint not retired", got)
+	if got := cpu.RiscvInstrRetired(); got != 1 {
+		t.Fatalf("RiscvInstrRetired = %d, want target instruction retired", got)
+	}
+
+	m.storePLIC(4*uint64(biosBreadcrumbIRQ), 4, 1)
+	m.storePLIC(0x2000+0x80*uint64(plicSContext), 4, uint64(1)<<biosBreadcrumbIRQ)
+	m.storePLIC(0x200000+0x1000*uint64(plicSContext), 4, 0)
+
+	res, err = RunBiosMachineBudget(cpu, &cpu.Notes, 1)
+	if err != nil {
+		t.Fatalf("RunBiosMachineBudget IRQ delivery: %v", err)
+	}
+	if res != RunBudgetExpired {
+		t.Fatalf("RunBiosMachineBudget IRQ result = %v, want RunBudgetExpired", res)
+	}
+	if got := cpu.Reg(5); got != 7 {
+		t.Fatalf("x5 = %d, want no second user instruction before IRQ", got)
+	}
+	if cpu.PC() != handler || cpu.PrivilegeMode() != PrivSupervisor {
+		t.Fatalf("breadcrumb IRQ landed at pc=0x%x priv=%v, want pc=0x%x supervisor", cpu.PC(), cpu.PrivilegeMode(), handler)
+	}
+	if cpu.sepc != code+4 || cpu.scause != InterruptCauseFlag|InterruptSEIP || cpu.stval != 0 {
+		t.Fatalf("breadcrumb IRQ CSRs sepc=0x%x scause=%d stval=0x%x", cpu.sepc, cpu.scause, cpu.stval)
 	}
 
 	log := readClosedBreadcrumbLog(t, b, path)
 	if !breadcrumbCheckpointHasPC(log, code) || !strings.Contains(log, "reason=stop_at") {
-		t.Fatalf("stop_at breakpoint trace missing target PC or trip event:\n%s", log)
+		t.Fatalf("stop_at IRQ trace missing target PC or trip event:\n%s", log)
 	}
 }
 
-func TestBreadcrumbStopAtInjectsBreakpointBeforeRunCached(t *testing.T) {
+func TestBreadcrumbStopAtTripsAfterRunCachedInstruction(t *testing.T) {
 	mem, err := NewGuestMemory(Size1MB)
 	if err != nil {
 		t.Fatalf("NewGuestMemory: %v", err)
 	}
 	defer mem.Free()
-	const (
-		code    = uint64(0x5000)
-		handler = uint64(0x6000)
-	)
+	const code = uint64(0x5000)
 	if fault := mem.Store32(code, 0x00700293); fault != nil { // addi x5, x0, 7
 		t.Fatalf("Store32 target insn: %v", fault)
 	}
 	cpu := NewCPU(*mem)
 	cpu.SetPC(code)
 	cpu.SetPrivilegeMode(PrivUser)
-	cpu.medeleg = uint64(1) << CauseBreakpoint
-	cpu.stvec = handler
 
 	b, path := newBreadcrumbTestTracer(t, BreadcrumbConfig{
 		Interval: 1,
@@ -261,25 +284,25 @@ func TestBreadcrumbStopAtInjectsBreakpointBeforeRunCached(t *testing.T) {
 	if res != RunBudgetExpired || limit != RunBudgetLimitAttempt {
 		t.Fatalf("RunDefaultDualBudget = (%v, %v), want (%v, %v)", res, limit, RunBudgetExpired, RunBudgetLimitAttempt)
 	}
-	if got := cpu.Reg(5); got != 0 {
-		t.Fatalf("x5 = %d, want target instruction not executed", got)
+	if got := cpu.Reg(5); got != 7 {
+		t.Fatalf("x5 = %d, want target instruction executed before stop_at", got)
 	}
-	if cpu.PC() != handler || cpu.PrivilegeMode() != PrivSupervisor {
-		t.Fatalf("breakpoint trap landed at pc=0x%x priv=%v, want pc=0x%x supervisor", cpu.PC(), cpu.PrivilegeMode(), handler)
+	if cpu.PC() != code+4 || cpu.PrivilegeMode() != PrivUser {
+		t.Fatalf("after stop_at pc=0x%x priv=%v, want pc=0x%x user", cpu.PC(), cpu.PrivilegeMode(), code+4)
 	}
-	if cpu.sepc != code || cpu.scause != CauseBreakpoint || cpu.stval != 0 {
-		t.Fatalf("breakpoint trap CSRs sepc=0x%x scause=%d stval=0x%x", cpu.sepc, cpu.scause, cpu.stval)
+	if !b.tripPending {
+		t.Fatal("stop_at did not leave a breadcrumb trip pending")
 	}
 	if got := cpu.RiscvInstrBegun(); got != 1 {
-		t.Fatalf("RiscvInstrBegun = %d, want synthetic breakpoint counted as one attempt", got)
+		t.Fatalf("RiscvInstrBegun = %d, want one real instruction attempt", got)
 	}
-	if got := cpu.RiscvInstrRetired(); got != 0 {
-		t.Fatalf("RiscvInstrRetired = %d, want synthetic breakpoint not retired", got)
+	if got := cpu.RiscvInstrRetired(); got != 1 {
+		t.Fatalf("RiscvInstrRetired = %d, want target instruction retired", got)
 	}
 
 	log := readClosedBreadcrumbLog(t, b, path)
 	if !breadcrumbCheckpointHasPC(log, code) || !strings.Contains(log, "reason=stop_at") {
-		t.Fatalf("stop_at breakpoint trace missing target PC or trip event:\n%s", log)
+		t.Fatalf("stop_at trace missing target PC or trip event:\n%s", log)
 	}
 }
 
@@ -662,8 +685,8 @@ func TestBreadcrumbStopAtTripsTargetPID(t *testing.T) {
 	if got, _, fault := m.Load(biosBreadcrumbBase+breadcrumbRegTripPID, 4); fault != nil || got != 4321 {
 		t.Fatalf("trip pid = (%d, %v), want target pid 4321, nil", got, fault)
 	}
-	if got, _, fault := m.Load(biosBreadcrumbBase+breadcrumbRegTripSignal, 4); fault != nil || got != 3 {
-		t.Fatalf("trip signal = (%d, %v), want SIGQUIT 3, nil", got, fault)
+	if got, _, fault := m.Load(biosBreadcrumbBase+breadcrumbRegTripSignal, 4); fault != nil || got != 19 {
+		t.Fatalf("trip signal = (%d, %v), want SIGSTOP 19, nil", got, fault)
 	}
 	if got, _, fault := m.Load(biosBreadcrumbBase+breadcrumbRegTripHitSeq, 8); fault != nil || got != 2 {
 		t.Fatalf("trip hit seq = (%d, %v), want 2, nil", got, fault)
@@ -677,14 +700,14 @@ func TestBreadcrumbStopAtTripsTargetPID(t *testing.T) {
 		t.Fatalf("read trace before Close after stop_at trip: %v", err)
 	}
 	if !strings.Contains(string(flushed), "reason=stop_at") ||
-		!strings.Contains(string(flushed), "signal=3 pid=4321") {
+		!strings.Contains(string(flushed), "signal=19 pid=4321") {
 		t.Fatalf("stop_at trip was not flushed before Close:\n%s", flushed)
 	}
 
 	log := readClosedBreadcrumbLog(t, b, path)
 	if !strings.Contains(log, "# trip") ||
 		!strings.Contains(log, "reason=stop_at") ||
-		!strings.Contains(log, "signal=3 pid=4321") {
+		!strings.Contains(log, "signal=19 pid=4321") {
 		t.Fatalf("stop_at trip event missing target PID:\n%s", log)
 	}
 }
@@ -803,6 +826,7 @@ func buildBreadcrumbSleepGuest(t *testing.T, source string) string {
 
 func runLinuxBreadcrumbSleepTrace(t *testing.T, target, tracePath, doneMarker string) (string, string) {
 	t.Helper()
+	const linuxBreadcrumbSmokeWallBudget = 3 * time.Minute
 	var stdout safeStringWriter
 	var stderr bytes.Buffer
 	stdinR, stdinW := io.Pipe()
@@ -825,7 +849,7 @@ func runLinuxBreadcrumbSleepTrace(t *testing.T, target, tracePath, doneMarker st
 	}, "\n") + "\n"
 	go func() {
 		defer stdinW.Close()
-		deadline := time.Now().Add(linuxAlpineSmokeWallBudget)
+		deadline := time.Now().Add(linuxBreadcrumbSmokeWallBudget)
 		for time.Now().Before(deadline) {
 			if linuxInitramfsReady(stdout.String()) {
 				_, _ = io.WriteString(stdinW, script)
@@ -840,7 +864,7 @@ func runLinuxBreadcrumbSleepTrace(t *testing.T, target, tracePath, doneMarker st
 		KernelPath: "xendor/linux-6.17-hand-built/Image",
 		InitrdPath: "xendor/linux/initramfs.cpio.gz",
 		Append:     linuxMakeBootArgs,
-		Memory:     "256MB",
+		Memory:     "512MB",
 		HostIO:     true,
 		Stdin:      stdinR,
 		Stdout:     &stdout,
@@ -849,7 +873,7 @@ func runLinuxBreadcrumbSleepTrace(t *testing.T, target, tracePath, doneMarker st
 			Path:     tracePath,
 			Interval: 1,
 		},
-	}, doneMarker, 2_500_000_000, linuxAlpineSmokeWallBudget)
+	}, doneMarker, 5_000_000_000, linuxBreadcrumbSmokeWallBudget)
 	out := stdout.String()
 	if err != nil {
 		t.Fatalf("hand-built Linux breadcrumb sleep err: %v\nstdout tail:\n%s\nstderr:\n%s",

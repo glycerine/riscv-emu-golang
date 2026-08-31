@@ -440,10 +440,13 @@ func newTestCPUSimple(t *testing.T, memSize uint64, codeVA uint64, insns []uint3
 }
 
 func TestCSR_MtvecReadWrite(t *testing.T) {
-	// Program: li x5, 0x1000; csrw mtvec, x5; csrr x6, mtvec; ebreak
+	// Program: li x5, 0x1000; csrw mtvec, x5; csrr x6, mtvec;
+	// clear mtvec; ebreak. Clearing mtvec makes the final ebreak return
+	// to the host test instead of trapping to the just-tested vector.
 	insns := li32(5, 0x1000)
 	insns = append(insns, csrw(0x305, 5)) // csrw mtvec, x5
 	insns = append(insns, csrr(6, 0x305)) // csrr x6, mtvec
+	insns = append(insns, csrw(0x305, 0)) // clear mtvec
 	insns = append(insns, 0x00100073)     // ebreak (stop)
 
 	cpu, mem := newTestCPUSimple(t, 128*1024, 0x10000, insns)
@@ -950,12 +953,14 @@ func TestMRET_ECALL_RoundTrip(t *testing.T) {
 	//   csrr x8, mepc      # read mepc
 	//   addi x8, x8, 4     # advance past ecall
 	//   csrw mepc, x8      # write back
+	//   csrw mtvec, x0     # make the final ebreak stop the host test
 	//   mret               # return to mepc+4
 	insns = append(insns, csrr(7, 0x342)) // csrr x7, mcause
 	insns = append(insns, csrr(8, 0x341)) // csrr x8, mepc
 	// ADDI x8, x8, 4: imm=4, rs1=8, funct3=0, rd=8, opcode=0x13
 	insns = append(insns, 0x00440413)     // addi x8, x8, 4
 	insns = append(insns, csrw(0x341, 8)) // csrw mepc, x8
+	insns = append(insns, csrw(0x305, 0)) // clear mtvec
 	insns = append(insns, mretInsn)       // mret → jump to mepc (0x10010)
 
 	cpu, mem := newTestCPUSimple(t, 128*1024, codeVA, insns)
