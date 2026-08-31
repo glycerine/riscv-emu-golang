@@ -1114,3 +1114,10 @@ repack:
 	cd $(INITRAMFS_DIR) && find . -print0 | \
 	cpio --null --create --format=newc --owner=root | \
 	gzip -9 > $(INITRAMFS_CPIO)
+
+delve: # build riscv64/linux delve debugger
+	cd ~/go/src/github.com/go-delve/delve && GOOS=linux GOARCH=riscv64 CGO_ENABLED=0 \
+	GOFLAGS='-tags=exp.linuxriscv64' \
+	GOCACHE=/private/tmp/delve-gocache \
+	GOMODCACHE=/private/tmp/delve-gomodcache \
+	go build -mod=vendor -o xendor/alpine-minirootfs-3.24.1-riscv64/bin/dlv-linux-riscv64 ./cmd/dlv
