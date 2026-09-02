@@ -2891,6 +2891,7 @@ func defineEmuFlagsForTest(fs *flag.FlagSet, c *EmuConfig) {
 		c.MemorySize = defaultEmuMemorySize
 	}
 	fs.StringVar(&c.RunPath, "run", "", "path to RISCV ELF binary to run")
+	fs.StringVar(&c.Run2Path, "run2", "", "path to RISCV ELF binary to run twice in raw-step lockstep")
 	fs.StringVar(&c.BiosPath, "bios", "", "path to RISCV machine-mode BIOS/firmware ELF to boot")
 	fs.StringVar(&c.KernelPath, "kernel", "", "path to kernel or next-stage payload to load with -bios")
 	fs.Uint64Var(&c.KernelAddr, "kernel-addr", 0, "guest physical address for raw -kernel payloads; default 0x80200000")

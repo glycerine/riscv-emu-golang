@@ -67,6 +67,9 @@ func RunEmu(cfg *EmuConfig) (int, error) {
 	if cfg.BiosPath != "" {
 		return runEmuBios(cfg, budget)
 	}
+	if cfg.Run2Path != "" {
+		return runEmuRun2(cfg, budget)
+	}
 	clockPolicy, err := cfg.clockPolicy()
 	if err != nil {
 		return 0, err

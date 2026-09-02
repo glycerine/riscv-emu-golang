@@ -28,6 +28,7 @@ const (
 
 type EmuConfig struct {
 	RunPath             string
+	Run2Path            string
 	BiosPath            string
 	KernelPath          string
 	KernelAddr          uint64
@@ -110,8 +111,8 @@ func (c *EmuConfig) ValidateConfig() error {
 		if c.Debug || attachMode {
 			return fmt.Errorf("-list cannot be combined with -debug, -pid, or -console")
 		}
-		if c.RunPath != "" || c.BiosPath != "" {
-			return fmt.Errorf("-list cannot be combined with -run or -bios")
+		if c.RunPath != "" || c.Run2Path != "" || c.BiosPath != "" {
+			return fmt.Errorf("-list cannot be combined with -run, -run2, or -bios")
 		}
 		return nil
 	}
@@ -119,8 +120,8 @@ func (c *EmuConfig) ValidateConfig() error {
 		if attachMode || c.AttachConsole > 0 {
 			return fmt.Errorf("-debug cannot be combined with -pid or -console")
 		}
-		if c.RunPath != "" || c.BiosPath != "" {
-			return fmt.Errorf("-debug cannot be combined with -run or -bios")
+		if c.RunPath != "" || c.Run2Path != "" || c.BiosPath != "" {
+			return fmt.Errorf("-debug cannot be combined with -run, -run2, or -bios")
 		}
 		return nil
 	}
@@ -134,23 +135,32 @@ func (c *EmuConfig) ValidateConfig() error {
 		if c.AttachConsole < 0 {
 			return fmt.Errorf("-console must be >= 0 in attach mode")
 		}
-		if c.RunPath != "" || c.BiosPath != "" {
-			return fmt.Errorf("-pid/-console attach mode cannot be combined with -run or -bios")
+		if c.RunPath != "" || c.Run2Path != "" || c.BiosPath != "" {
+			return fmt.Errorf("-pid/-console attach mode cannot be combined with -run, -run2, or -bios")
 		}
 		return nil
 	}
-	if c.RunPath == "" && c.BiosPath == "" {
-		return fmt.Errorf("one of -run or -bios is required")
+	if c.RunPath == "" && c.Run2Path == "" && c.BiosPath == "" {
+		return fmt.Errorf("one of -run, -run2, or -bios is required")
 	}
-	if c.RunPath != "" && c.BiosPath != "" {
-		return fmt.Errorf("-run and -bios are mutually exclusive")
+	modes := 0
+	for _, path := range []string{c.RunPath, c.Run2Path, c.BiosPath} {
+		if path != "" {
+			modes++
+		}
+	}
+	if modes > 1 {
+		return fmt.Errorf("-run, -run2, and -bios are mutually exclusive")
 	}
 	if c.machine() != "virt" {
 		return fmt.Errorf("-machine %q is not supported; only \"virt\" is available", c.machine())
 	}
 	pathFlag := "-run"
 	path := c.RunPath
-	if c.BiosPath != "" {
+	if c.Run2Path != "" {
+		pathFlag = "-run2"
+		path = c.Run2Path
+	} else if c.BiosPath != "" {
 		pathFlag = "-bios"
 		path = c.BiosPath
 	}
@@ -162,7 +172,7 @@ func (c *EmuConfig) ValidateConfig() error {
 			return fmt.Errorf("%s path '%v' does not exist in embedded filesystem: %v", pathFlag, path, err)
 		}
 	}
-	if c.RunPath != "" {
+	if c.RunPath != "" || c.Run2Path != "" {
 		switch {
 		case c.KernelPath != "":
 			return fmt.Errorf("-kernel requires -bios")
@@ -217,6 +227,9 @@ func (c *EmuConfig) ValidateConfig() error {
 	if err := validateBreadcrumbConfig(c); err != nil {
 		return err
 	}
+	if err := validateRun2Config(c); err != nil {
+		return err
+	}
 	if _, err := c.timingMode(); err != nil {
 		return err
 	}
@@ -244,6 +257,9 @@ func (c *EmuConfig) ValidateConfig() error {
 func (c *EmuConfig) programPath() string {
 	if c.BiosPath != "" {
 		return c.BiosPath
+	}
+	if c.Run2Path != "" {
+		return c.Run2Path
 	}
 	return c.RunPath
 }

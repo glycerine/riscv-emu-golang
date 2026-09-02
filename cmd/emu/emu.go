@@ -57,6 +57,7 @@ func defineFlags(fs *flag.FlagSet, c *riscv.EmuConfig) {
 		c.MemorySize = riscv.Size16GB
 	}
 	fs.StringVar(&c.RunPath, "run", "", "path to RISCV ELF binary to run")
+	fs.StringVar(&c.Run2Path, "run2", "", "path to RISCV ELF binary to run twice in raw-step lockstep and report the first PC divergence; requires -tags breadcrumb")
 	fs.StringVar(&c.BiosPath, "bios", "", "path to RISCV machine-mode BIOS/firmware ELF to boot. bios mode is non-deterministic and conflicts with -hermit")
 	fs.StringVar(&c.KernelPath, "kernel", "", "path to kernel or next-stage payload to load with -bios")
 	fs.Uint64Var(&c.KernelAddr, "kernel-addr", 0, "guest physical address for raw -kernel payloads; default 0x80200000")
@@ -105,6 +106,9 @@ func defineFlags(fs *flag.FlagSet, c *riscv.EmuConfig) {
 func programPath(c *riscv.EmuConfig) string {
 	if c.BiosPath != "" {
 		return c.BiosPath
+	}
+	if c.Run2Path != "" {
+		return c.Run2Path
 	}
 	return c.RunPath
 }

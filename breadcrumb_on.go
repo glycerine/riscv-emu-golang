@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -156,6 +157,16 @@ func validateBreadcrumbConfig(c *EmuConfig) error {
 	}
 	if cfg.AfterAt != 0 && cfg.AfterInterval == 0 {
 		return fmt.Errorf("%w: -breadcrumb-after-at requires -breadcrumb-after-interval", ErrBreadcrumbConfig)
+	}
+	return nil
+}
+
+func validateRun2Config(c *EmuConfig) error {
+	if c.Run2Path == "" {
+		return nil
+	}
+	if c.JITLazy || c.JITAOT {
+		return fmt.Errorf("%w: -run2 uses raw interpreted CPU.Step; remove -jitlazy/-jitaot", ErrBreadcrumbConfig)
 	}
 	return nil
 }
@@ -979,5 +990,242 @@ func (b *BreadcrumbTracer) setTripMode(mode uint32) {
 			b.tripHitAttempt = 0
 			b.tripHitPC = 0
 		}
+	}
+}
+
+type breadcrumbRun2Outcome uint8
+
+const (
+	breadcrumbRun2Running breadcrumbRun2Outcome = iota
+	breadcrumbRun2Exited
+	breadcrumbRun2Blocked
+	breadcrumbRun2Fatal
+)
+
+func (o breadcrumbRun2Outcome) String() string {
+	switch o {
+	case breadcrumbRun2Running:
+		return "running"
+	case breadcrumbRun2Exited:
+		return "exited"
+	case breadcrumbRun2Blocked:
+		return "blocked"
+	case breadcrumbRun2Fatal:
+		return "fatal"
+	default:
+		return "unknown"
+	}
+}
+
+type breadcrumbRun2Side struct {
+	label    string
+	mem      *GuestMemory
+	cpu      *CPU
+	jos      *Jea9Linux
+	cleanup  func()
+	outcome  breadcrumbRun2Outcome
+	exitCode int
+	err      error
+}
+
+type breadcrumbRun2Step struct {
+	pcBefore uint64
+	pcAfter  uint64
+	outcome  breadcrumbRun2Outcome
+	exitCode int
+	err      error
+}
+
+func runEmuRun2(cfg *EmuConfig, budget uint64) (int, error) {
+	clockPolicy, err := cfg.clockPolicy()
+	if err != nil {
+		return 0, err
+	}
+	left, err := newBreadcrumbRun2Side(cfg, "a", clockPolicy)
+	if err != nil {
+		return 0, err
+	}
+	defer left.close()
+	right, err := newBreadcrumbRun2Side(cfg, "b", clockPolicy)
+	if err != nil {
+		return 0, err
+	}
+	defer right.close()
+
+	out := cfg.Stdout
+	if out == nil {
+		out = os.Stdout
+	}
+	if left.cpu.PC() != right.cpu.PC() {
+		fmt.Fprintf(out, "run2 divergence at instruction 0: pc a=0x%016x b=0x%016x\n", left.cpu.PC(), right.cpu.PC())
+		return 1, nil
+	}
+
+	for seq := uint64(1); ; seq++ {
+		if budget != ^uint64(0) && seq > budget {
+			fmt.Fprintf(out, "run2: no PC divergence after %d instruction attempts; pc=0x%016x status=%s\n",
+				budget, left.cpu.PC(), left.outcome)
+			return 0, nil
+		}
+		a := left.step()
+		b := right.step()
+		if a.pcAfter != b.pcAfter || !breadcrumbRun2SameOutcome(a, b) {
+			fmt.Fprintf(out, "run2 divergence at instruction %d: before a=0x%016x b=0x%016x after a=0x%016x b=0x%016x status a=%s b=%s\n",
+				seq, a.pcBefore, b.pcBefore, a.pcAfter, b.pcAfter, a.outcome, b.outcome)
+			if a.outcome == breadcrumbRun2Exited || b.outcome == breadcrumbRun2Exited {
+				fmt.Fprintf(out, "run2 exit codes: a=%d b=%d\n", a.exitCode, b.exitCode)
+			}
+			if a.err != nil || b.err != nil {
+				fmt.Fprintf(out, "run2 errors: a=%v b=%v\n", a.err, b.err)
+			}
+			return 1, nil
+		}
+		if a.outcome != breadcrumbRun2Running {
+			switch a.outcome {
+			case breadcrumbRun2Exited:
+				fmt.Fprintf(out, "run2: no PC divergence after %d instruction attempts; both exited code=%d pc=0x%016x\n",
+					seq, a.exitCode, a.pcAfter)
+			case breadcrumbRun2Blocked:
+				fmt.Fprintf(out, "run2: no PC divergence after %d instruction attempts; both blocked pc=0x%016x\n",
+					seq, a.pcAfter)
+			case breadcrumbRun2Fatal:
+				fmt.Fprintf(out, "run2: no PC divergence after %d instruction attempts; both stopped with %v pc=0x%016x\n",
+					seq, a.err, a.pcAfter)
+			}
+			return 0, nil
+		}
+	}
+}
+
+func newBreadcrumbRun2Side(cfg *EmuConfig, label string, clockPolicy ClockPolicy) (*breadcrumbRun2Side, error) {
+	mem, err := NewGuestMemoryWithModel(cfg.MemorySize, cfg.MemoryModel)
+	if err != nil {
+		return nil, err
+	}
+	side := &breadcrumbRun2Side{label: label, mem: mem}
+	ef, err := LoadELF(mem, cfg.Run2Path, cfg.Bootables)
+	if err != nil {
+		side.close()
+		return nil, err
+	}
+	cpu := NewCPU(*mem)
+	jos := NewJea9Linux(Jea9LinuxOptions{
+		EntropySeed:       seedBytes(cfg.Seed),
+		TimeMode:          cfg.timeMode(),
+		ClockMode:         Jea9ClockIdleJump,
+		ClockPolicy:       clockPolicy,
+		MonotonicStartNS:  1,
+		RealtimeOffsetNS:  cfg.RealtimeOffsetNS - 1,
+		InstructionBudget: ^uint64(0),
+		Scheduler:         Jea9LinuxSchedulerConfig{Mode: Jea9SchedulerDeadlock},
+		Stdin:             nil,
+		Stdout:            io.Discard,
+		Stderr:            io.Discard,
+		AllowAllHostFiles: !cfg.Hermit,
+	})
+	args := append([]string(nil), cfg.Args...)
+	if len(args) == 0 {
+		args = []string{cfg.Run2Path}
+	}
+	if err := jos.InitELFStack(cpu, ef, Jea9LinuxStartOptions{
+		Args:     args,
+		Env:      append([]string(nil), cfg.Env...),
+		ExecPath: args[0],
+	}); err != nil {
+		side.close()
+		return nil, err
+	}
+	side.cpu = cpu
+	side.jos = jos
+	side.cleanup = InstallJea9Linux(cpu, jos)
+	return side, nil
+}
+
+func (s *breadcrumbRun2Side) close() {
+	if s == nil {
+		return
+	}
+	if s.cleanup != nil {
+		s.cleanup()
+		s.cleanup = nil
+	}
+	if s.mem != nil {
+		s.mem.Free()
+		s.mem = nil
+	}
+}
+
+func (s *breadcrumbRun2Side) step() breadcrumbRun2Step {
+	st := breadcrumbRun2Step{
+		pcBefore: s.cpu.PC(),
+		outcome:  s.outcome,
+		exitCode: s.exitCode,
+		err:      s.err,
+	}
+	if s.outcome != breadcrumbRun2Running {
+		st.pcAfter = s.cpu.PC()
+		return st
+	}
+
+	err := s.cpu.step()
+	s.cpu.riscvInstrBegun++
+	s.jos.accountInsAttempts(1)
+
+	noteExit := false
+	if err != nil {
+		n := noteFromCPUError(s.cpu, err)
+		switch s.cpu.Notes.Deliver(s.cpu, n) {
+		case NoteHandled:
+		case NoteExit:
+			noteExit = true
+		default:
+			s.outcome = breadcrumbRun2Fatal
+			s.err = err
+		}
+	}
+	if s.outcome == breadcrumbRun2Running {
+		if s.finishOSAttempt() {
+			s.outcome = breadcrumbRun2Blocked
+		} else if noteExit {
+			s.outcome = breadcrumbRun2Exited
+			s.exitCode = s.cpu.ExitCode
+		}
+	}
+
+	st.pcAfter = s.cpu.PC()
+	st.outcome = s.outcome
+	st.exitCode = s.exitCode
+	st.err = s.err
+	return st
+}
+
+func (s *breadcrumbRun2Side) finishOSAttempt() bool {
+	wasBlocked := s.jos.blocked
+	s.jos.drainExternalEvents(s.cpu)
+	s.jos.refreshEpollReadiness(s.cpu)
+	if wasBlocked {
+		s.jos.refreshBlocked()
+		if s.jos.loadFirstRunnableAfterBlocked(s.cpu) {
+			return false
+		}
+		return s.jos.blocked
+	}
+	return s.jos.Blocked()
+}
+
+func breadcrumbRun2SameOutcome(a, b breadcrumbRun2Step) bool {
+	if a.outcome != b.outcome {
+		return false
+	}
+	switch a.outcome {
+	case breadcrumbRun2Exited:
+		return a.exitCode == b.exitCode
+	case breadcrumbRun2Fatal:
+		if a.err == nil || b.err == nil {
+			return a.err == b.err
+		}
+		return a.err.Error() == b.err.Error()
+	default:
+		return true
 	}
 }

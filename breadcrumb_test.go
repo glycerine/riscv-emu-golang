@@ -173,6 +173,81 @@ func TestBreadcrumbRunCached(t *testing.T) {
 	}
 }
 
+func TestBreadcrumbRun2DetectsPostStepPCDivergence(t *testing.T) {
+	left := newBreadcrumbRun2StepTestSide(t, []uint32{
+		0x00000463, // beq x0, x0, +8
+	})
+	defer left.close()
+	right := newBreadcrumbRun2StepTestSide(t, []uint32{
+		0x00000013, // nop
+	})
+	defer right.close()
+
+	a := left.step()
+	b := right.step()
+	if a.pcAfter == b.pcAfter {
+		t.Fatalf("run2 test sides stayed together at pc=0x%x", a.pcAfter)
+	}
+	if a.pcAfter != 0x1008 || b.pcAfter != 0x1004 {
+		t.Fatalf("post-step PCs = 0x%x/0x%x, want 0x1008/0x1004", a.pcAfter, b.pcAfter)
+	}
+	if !breadcrumbRun2SameOutcome(a, b) {
+		t.Fatalf("outcomes diverged unexpectedly: %s/%s", a.outcome, b.outcome)
+	}
+}
+
+func TestBreadcrumbRun2SameELFNoDivergence(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code, err := RunEmu(&EmuConfig{
+		Run2Path:          "testvectors/jea9linux/elf/write_stdout.elf",
+		MemorySize:        Size64MB,
+		InstructionBudget: 1 << 20,
+		Env:               []string{},
+		Stdout:            &stdout,
+		Stderr:            &stderr,
+	})
+	if err != nil {
+		t.Fatalf("RunEmu -run2: %v; stdout=%q stderr=%q", err, stdout.String(), stderr.String())
+	}
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "no PC divergence") {
+		t.Fatalf("stdout = %q, want no-divergence report; stderr=%q", stdout.String(), stderr.String())
+	}
+}
+
+func newBreadcrumbRun2StepTestSide(t *testing.T, insns []uint32) *breadcrumbRun2Side {
+	t.Helper()
+	mem, err := NewGuestMemory(Size1MB)
+	if err != nil {
+		t.Fatalf("NewGuestMemory: %v", err)
+	}
+	const code = uint64(0x1000)
+	for i, insn := range insns {
+		if fault := mem.Store32(code+uint64(i)*4, insn); fault != nil {
+			mem.Free()
+			t.Fatalf("Store32 insn %d: %v", i, fault)
+		}
+	}
+	cpu := NewCPU(*mem)
+	cpu.SetPC(code)
+	jos := NewJea9Linux(Jea9LinuxOptions{
+		TimeMode:          HermitTime,
+		ClockMode:         Jea9ClockIdleJump,
+		InstructionBudget: ^uint64(0),
+		Scheduler:         Jea9LinuxSchedulerConfig{Mode: Jea9SchedulerDeadlock},
+		Stdout:            io.Discard,
+		Stderr:            io.Discard,
+	})
+	return &breadcrumbRun2Side{
+		label: "test",
+		mem:   mem,
+		cpu:   cpu,
+		jos:   jos,
+	}
+}
+
 func TestBreadcrumbStopAtRaisesIRQAfterMachineStep(t *testing.T) {
 	mem, err := NewGuestMemory(Size1MB)
 	if err != nil {

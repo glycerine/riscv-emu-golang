@@ -56,8 +56,19 @@ func validateBreadcrumbConfig(c *EmuConfig) error {
 	return nil
 }
 
+func validateRun2Config(c *EmuConfig) error {
+	if c.Run2Path != "" {
+		return fmt.Errorf("%w", ErrBreadcrumbDisabled)
+	}
+	return nil
+}
+
 func prepareBreadcrumbTracer(_ *EmuConfig, _ bool) (*BreadcrumbTracer, error) {
 	return nil, nil
+}
+
+func runEmuRun2(_ *EmuConfig, _ uint64) (int, error) {
+	return 0, ErrBreadcrumbDisabled
 }
 
 func breadcrumbRecordPC(_ *CPU, _, _, _, _ uint64, _ PrivilegeMode) error {
