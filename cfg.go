@@ -276,7 +276,7 @@ func (c *EmuConfig) setDefaults() *EmuConfig {
 		c.MemorySize = defaultEmuMemorySize
 	}
 	if c.Budget == "" && c.InstructionBudget == 0 {
-		if c.BiosPath != "" {
+		if c.BiosPath != "" || c.Run2Path != "" {
 			c.Budget = defaultEmuBiosBudget
 		} else {
 			c.Budget = defaultEmuBudget
@@ -530,7 +530,7 @@ func (c *EmuConfig) schedulerBudget() (uint64, error) {
 		if c.InstructionBudget != 0 {
 			return c.InstructionBudget, nil
 		}
-		if c.BiosPath != "" {
+		if c.BiosPath != "" || c.Run2Path != "" {
 			return ^uint64(0), nil
 		}
 		return parseEmuBudget(defaultEmuBudget)

@@ -56,7 +56,7 @@ func main() {
 	}
 
 	cfg.Breadcrumb.Path = riscv.BreadcrumbDefaultPath
-	cfg.Breadcrumb.StopAt = 21000
+	cfg.Breadcrumb.StopAt = 4959635
 
 	if err := cfg.ValidateConfig(); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)

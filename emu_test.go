@@ -2712,6 +2712,19 @@ func TestEmuConfigDefaultsPreserveExplicitZeroClock(t *testing.T) {
 	if biosBudget != ^uint64(0) {
 		t.Fatalf("BIOS schedulerBudget = %d, want max", biosBudget)
 	}
+
+	run2Cfg := &EmuConfig{Run2Path: "testvectors/jea9linux/elf/write_stdout.elf"}
+	run2Cfg.setDefaults()
+	if run2Cfg.Budget != defaultEmuBiosBudget {
+		t.Fatalf("Run2 Budget = %q, want %q", run2Cfg.Budget, defaultEmuBiosBudget)
+	}
+	run2Budget, err := run2Cfg.schedulerBudget()
+	if err != nil {
+		t.Fatalf("Run2 schedulerBudget default: %v", err)
+	}
+	if run2Budget != ^uint64(0) {
+		t.Fatalf("Run2 schedulerBudget = %d, want max", run2Budget)
+	}
 }
 
 func TestParseEmuJITModeFlags(t *testing.T) {
