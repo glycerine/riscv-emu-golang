@@ -46,6 +46,11 @@ const (
 	breadcrumbArmNextAddressSpace      uint8             = 2
 )
 
+const (
+	breadcrumbTraceClockUnixSec    = uint64(946684800) // 2000-01-01T00:00:00Z
+	breadcrumbTraceClockTimerTicks = breadcrumbTraceClockUnixSec * biosTimerTimebaseHz
+)
+
 type BreadcrumbTracer struct {
 	w                  *bufio.Writer
 	outfile            *os.File
@@ -72,6 +77,7 @@ type BreadcrumbTracer struct {
 	pendingControl     breadcrumbControl
 	armMode            uint8
 	armSawPrivileged   bool
+	armReset           bool
 	armSourceSATP      uint64
 	armSourceSATPValid bool
 	tripMode           uint32
@@ -84,6 +90,7 @@ type BreadcrumbTracer struct {
 	tripHitAttempt     uint64
 	tripHitPC          uint64
 	tripNotify         func()
+	traceClockReset    func()
 	hookRegistered     bool
 	closed             bool
 	lastErr            error
@@ -339,11 +346,16 @@ func (b *BreadcrumbTracer) activate(attempt, retired, pc, satp uint64, postPriv 
 	if postPriv == PrivUser {
 		b.captureTargetAddressSpace(satp)
 	}
+	extra := mode
+	if clockExtra := b.resetTraceClockAtStart(reset); clockExtra != "" {
+		extra += " " + clockExtra
+	}
 	b.active = true
 	b.armMode = breadcrumbArmNone
 	b.armSawPrivileged = false
+	b.armReset = false
 	b.refreshInstructionHooks()
-	return b.writeEvent("activation", attempt, retired, pc, b.withTargetExtra(mode))
+	return b.writeEvent("activation", attempt, retired, pc, b.withTargetExtra(extra))
 }
 
 func (b *BreadcrumbTracer) Pause(attempt, retired, pc uint64) error {
@@ -444,6 +456,7 @@ func (b *BreadcrumbTracer) armNextUser(attempt, retired, pc uint64, postPriv Pri
 	b.active = false
 	b.armMode = breadcrumbArmNextUser
 	b.armSawPrivileged = postPriv != PrivUser
+	b.armReset = reset
 	b.refreshInstructionHooks()
 	mode := "mode=resume"
 	if reset {
@@ -461,6 +474,7 @@ func (b *BreadcrumbTracer) armNextAddressSpace(attempt, retired, pc, sourceSATP 
 	b.active = false
 	b.armMode = breadcrumbArmNextAddressSpace
 	b.armSawPrivileged = postPriv != PrivUser
+	b.armReset = reset
 	b.armSourceSATP = sourceSATP
 	b.armSourceSATPValid = true
 	b.refreshInstructionHooks()
@@ -490,14 +504,25 @@ func (b *BreadcrumbTracer) observePostPriv(attempt, retired, pc uint64, postPriv
 	if b.armMode == breadcrumbArmNextAddressSpace {
 		mode = "mode=armed-next-address-space"
 	}
+	reset := b.armReset
+	extra := mode
+	if reset {
+		extra += " arm_mode=reset"
+	} else {
+		extra += " arm_mode=resume"
+	}
+	if clockExtra := b.resetTraceClockAtStart(reset); clockExtra != "" {
+		extra += " " + clockExtra
+	}
 	b.active = true
 	b.armMode = breadcrumbArmNone
 	b.armSawPrivileged = false
+	b.armReset = false
 	b.armSourceSATP = 0
 	b.armSourceSATPValid = false
 	b.captureTargetAddressSpace(postSATP)
 	b.refreshInstructionHooks()
-	return b.writeEvent("activation", attempt, retired, pc, b.withTargetExtra(mode))
+	return b.writeEvent("activation", attempt, retired, pc, b.withTargetExtra(extra))
 }
 
 func (b *BreadcrumbTracer) queueControl(cmd breadcrumbControl) {
@@ -567,10 +592,19 @@ func (b *BreadcrumbTracer) resetEpoch() {
 	b.targetSATPValid = false
 	b.armSourceSATP = 0
 	b.armSourceSATPValid = false
+	b.armReset = false
 	b.tripPending = false
 	b.tripHitSeq = 0
 	b.tripHitAttempt = 0
 	b.tripHitPC = 0
+}
+
+func (b *BreadcrumbTracer) resetTraceClockAtStart(reset bool) string {
+	if b == nil || !reset || b.traceClockReset == nil {
+		return ""
+	}
+	b.traceClockReset()
+	return fmt.Sprintf("clock_reset_unix_sec=%d clock_reset_timer_ticks=%d", breadcrumbTraceClockUnixSec, breadcrumbTraceClockTimerTicks)
 }
 
 func (b *BreadcrumbTracer) beginResetTrace() error {
@@ -867,7 +901,16 @@ func (m *biosMMIO) enableBreadcrumb(b *BreadcrumbTracer) {
 		return
 	}
 	b.tripNotify = m.markExternalInterruptDirty
+	b.traceClockReset = m.resetBreadcrumbTraceClock
 	m.breadcrumb = &breadcrumbIODevice{tracer: b}
+}
+
+func (m *biosMMIO) resetBreadcrumbTraceClock() {
+	if m == nil {
+		return
+	}
+	m.mtime = breadcrumbTraceClockTimerTicks
+	m.syncCLINTTime()
 }
 
 func (m *biosMMIO) closeBreadcrumb() error {

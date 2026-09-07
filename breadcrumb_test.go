@@ -573,6 +573,54 @@ func TestBreadcrumbGuestControlCapturesTargetAddressSpace(t *testing.T) {
 	}
 }
 
+func TestBreadcrumbResetArmResetsBiosClockAtActivation(t *testing.T) {
+	b, path := newBreadcrumbTestTracer(t, BreadcrumbConfig{
+		Interval:     1,
+		StartPaused:  true,
+		GuestControl: true,
+	})
+	m := newBiosMMIO(nil, nil, nil)
+	const beforeClock = uint64(12345)
+	m.mtime = beforeClock
+	m.syncCLINTTime()
+	m.enableBreadcrumb(b)
+
+	if ok, fault := m.Store(biosBreadcrumbBase+breadcrumbRegControl, 4, uint64(breadcrumbControlArmNextASReset)); !ok || fault != nil {
+		t.Fatalf("Store arm-next-address-space reset control = (%v, %v)", ok, fault)
+	}
+	if err := b.afterAttempt(10, 9, 0x1111, PrivUser, 0xaaa000, PrivUser, 0xaaa000); err != nil {
+		t.Fatalf("afterAttempt arm write: %v", err)
+	}
+	if got := m.MachineTimerValue(); got != beforeClock {
+		t.Fatalf("BIOS clock reset at arm time: got %d want %d", got, beforeClock)
+	}
+	if err := b.afterAttempt(11, 10, 0x2222, PrivSupervisor, 0xaaa000, PrivSupervisor, 0xbbb000); err != nil {
+		t.Fatalf("afterAttempt privileged interlude: %v", err)
+	}
+	if got := m.MachineTimerValue(); got != beforeClock {
+		t.Fatalf("BIOS clock reset during privileged interlude: got %d want %d", got, beforeClock)
+	}
+	if err := b.afterAttempt(12, 11, 0x3333, PrivSupervisor, 0xbbb000, PrivUser, 0x12345000); err != nil {
+		t.Fatalf("afterAttempt target activation: %v", err)
+	}
+	if got := m.MachineTimerValue(); got != breadcrumbTraceClockTimerTicks {
+		t.Fatalf("BIOS clock after activation = %d, want %d", got, breadcrumbTraceClockTimerTicks)
+	}
+	if got := loadLittleEndian(m.clint[:], 0xbff8, 8); got != breadcrumbTraceClockTimerTicks {
+		t.Fatalf("CLINT mtime image after activation = %d, want %d", got, breadcrumbTraceClockTimerTicks)
+	}
+	if !b.active {
+		t.Fatal("breadcrumb reset arm did not activate")
+	}
+
+	log := readClosedBreadcrumbLog(t, b, path)
+	if !strings.Contains(log, "mode=armed-next-address-space") ||
+		!strings.Contains(log, "arm_mode=reset") ||
+		!strings.Contains(log, "clock_reset_unix_sec=946684800") {
+		t.Fatalf("activation did not record reset clock metadata:\n%s", log)
+	}
+}
+
 func TestBreadcrumbResetArmRotatesExistingPathForFreshTrace(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "breadcrumbs.log")
