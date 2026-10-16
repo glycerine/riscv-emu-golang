@@ -172,8 +172,16 @@ BENCH_FLAGS := \
 
 all: help
 	go install ./cmd/emu
-	go install ./cmd/emul
 	go install ./cmd/rekey
+	go install ./cmd/emul
+
+# do "make first" to setup the first run.
+first: help
+	go install ./cmd/emu
+	go install ./cmd/rekey
+	rekey # create your own new host ssh key
+	make repack # build the initial ram disk filesystem containing that new key
+	go install ./cmd/emul # embed that ramdisk into a single standalone binary.
 
 #GOEXPERIMENT=nojsonv2 go install ./cmd/emu
 #GOEXPERIMENT=nojsonv2 go install ./cmd/emul

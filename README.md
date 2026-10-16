@@ -3,6 +3,12 @@ emu_net: RISCV64 emulator and network in Golang (Go)
 
 ![emu_net](emunet_grid2.png)
 
+* 2026 Oct 16: 
+
+"make first" to get started.
+
+We build and boot on darwin/arm64.
+
 * News 2026 June 25: sshd on by default, new rekey utility
 
 The "make linux" guest Alpine Linux OS now starts sshd automatically.
