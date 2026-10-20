@@ -3,7 +3,6 @@ package riscv
 import (
 	"encoding/binary"
 	"runtime"
-	"syscall"
 	"testing"
 	"unsafe"
 )
@@ -252,13 +251,17 @@ func TestChaining_SlowExitPatchesExactDuplicateTargetExit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("allocExec: %v", err)
 	}
-	t.Cleanup(func() { _ = syscall.Munmap(code) })
+	t.Cleanup(func() { _ = freeMapped(code) })
 	sourceBase := uintptr(unsafe.Pointer(&code[0]))
 	const targetPC = 0x2000
 	const targetEntry = 0xABCDEF0123456789
 
-	binary.LittleEndian.PutUint64(code[0:], 0x1111111111111111)
-	binary.LittleEndian.PutUint64(code[8:], 0x2222222222222222)
+	// MAP_JIT memory on darwin/arm64 must be initialized under the same
+	// thread-local write protection guard used by production code patching.
+	withExecWrite(func() {
+		binary.LittleEndian.PutUint64(code[0:], 0x1111111111111111)
+		binary.LittleEndian.PutUint64(code[8:], 0x2222222222222222)
+	})
 
 	jit := NewSandboxJIT()
 	target := &compiledBlock{chainEntry: targetEntry}
