@@ -2,6 +2,7 @@ package bench
 
 import (
 	"fmt"
+	"runtime"
 	"syscall"
 	"testing"
 	"unsafe"
@@ -92,6 +93,9 @@ func buildAddLoop(base int16) []byte {
 }
 
 func benchAddImm(b *testing.B, base int16) {
+	if runtime.GOARCH != "amd64" {
+		b.Skip("RSP/RBP stack-engine benchmark executes AMD64 machine code")
+	}
 	code := buildAddLoop(base)
 	ps := syscall.Getpagesize()
 	sz := ((len(code) + ps - 1) / ps) * ps

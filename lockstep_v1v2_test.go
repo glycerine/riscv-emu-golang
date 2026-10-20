@@ -2,24 +2,27 @@ package riscv
 
 import (
 	"math/rand"
-	"syscall"
 	"testing"
 	"unsafe"
 
 	"github.com/glycerine/riscv-emu-golang/goasm"
 )
 
-// compileIR compiles an IR block using the rv8 lowerer, returns executable memory.
+// compileIR compiles an IR block using the host's RV8 backend.
 func compileIR(t *testing.T, b *Block) (uintptr, []byte) {
 	t.Helper()
-	pool := RV8Pool(b)
-	pinned := RV8Pinned()
-	j := NewSandboxJIT()
-	alloc := j.irAlloc.Allocate(b, pool, pinned, nil)
+	policy := PolicyRV8
+	if policy.Arch != goasm.HostArch() {
+		t.Fatalf("RV8 policy targets arch %d, host arch is %d", policy.Arch, goasm.HostArch())
+	}
+	pool := policy.Pool(b)
+	// Match the native JIT: the countdown register is not an allocatable temp.
+	pool.IntRegs = removeReg(pool.IntRegs, policy.InstructionCounterReg)
+	alloc := helperTestAllocate(b, pool, policy.Pinned(), nil)
 
-	ctx := goasm.New(goasm.AMD64)
+	ctx := goasm.New(policy.Arch)
 	ctx.Append(ctx.NewATEXT())
-	_, err := LowerAMD64_RV8(ctx, b, alloc)
+	_, err := policy.Lower(ctx, b, alloc)
 	if err != nil {
 		t.Fatalf("lower: %v", err)
 	}
@@ -32,19 +35,12 @@ func compileIR(t *testing.T, b *Block) (uintptr, []byte) {
 		t.Fatal("empty code")
 	}
 
-	execMem, err := allocExec(len(code))
-	if err != nil {
-		t.Fatalf("mmap: %v", err)
-	}
-	withExecWrite(func() {
-		copy(execMem, code)
-	})
-	return uintptr(unsafe.Pointer(&execMem[0])), execMem
+	return mmapCode(t, code)
 }
 
 func freeExecMem(mem []byte) {
 	if len(mem) > 0 {
-		syscall.Munmap(mem)
+		_ = freeMapped(mem)
 	}
 }
 
@@ -62,6 +58,7 @@ func TestRV8_RandomBlocks(t *testing.T) {
 	defer mem.Free()
 
 	j := NewSandboxJIT()
+	defer j.Close()
 	j.SetRegPolicy(PolicyRV8)
 	for i := 0; i < numBlocks; i++ {
 		n := rng.Intn(maxInsns) + 1
@@ -70,19 +67,7 @@ func TestRV8_RandomBlocks(t *testing.T) {
 			continue
 		}
 
-		pool := RV8Pool(blk)
-		alloc := j.irAlloc.Allocate(blk, pool, RV8Pinned(), nil)
-		ctx := goasm.New(goasm.AMD64)
-		ctx.Append(ctx.NewATEXT())
-		if _, err := LowerAMD64_RV8(ctx, blk, alloc); err != nil {
-			continue
-		}
-		code, err := ctx.Assemble()
-		if err != nil || len(code) == 0 {
-			continue
-		}
-
-		exec, back := mmapCode(t, code)
+		exec, back := compileIR(t, blk)
 
 		var x [32]uint64
 		var f [32]uint64
@@ -92,11 +77,10 @@ func TestRV8_RandomBlocks(t *testing.T) {
 		}
 
 		res := jitcallCall(j, exec, &x, &f, &fcsr, mem.Base(), mem.Mask())
+		freeExecMem(back)
 		if res.PC != 0x1000 {
 			t.Fatalf("block %d: PC=0x%x want 0x1000 (%d instrs)", i, res.PC, len(blk.Instrs))
 		}
-
-		freeExecMem(back)
 	}
 }
 
@@ -109,7 +93,10 @@ func mmapCode(t *testing.T, code []byte) (uintptr, []byte) {
 	withExecWrite(func() {
 		copy(execMem, code)
 	})
-	return uintptr(unsafe.Pointer(&execMem[0])), execMem
+	fn := uintptr(unsafe.Pointer(&execMem[0]))
+	// ARM64 instruction caches are not coherent with these data writes.
+	flushIcache(fn, len(code))
+	return fn, execMem
 }
 
 // genLockstepBlock generates a valid IR block for testing.

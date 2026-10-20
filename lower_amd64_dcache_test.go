@@ -7,7 +7,6 @@ import (
 	"testing"
 	"unsafe"
 
-	"github.com/glycerine/riscv-emu-golang/goasm"
 	"github.com/glycerine/riscv-emu-golang/internal/jitcall"
 )
 
@@ -113,7 +112,8 @@ func TestLower_RV8_JalrIC_MultipleSitesIndependent(t *testing.T) {
 
 // execJalrIC compiles and executes an IRJalrIC block via CallAOT,
 // returning the Result. The caller provides the target PC (loaded
-// into x10) and the decoder_cache parameters.
+// into x10) and the decoder_cache parameters. Execution uses the host's
+// RV8 backend; the encoding-only tests above still inspect AMD64 code.
 func execJalrIC(t *testing.T, targetPC uint64, siteIdx int,
 	dcBase uintptr, dcMask, vaddrBegin, segSize uint64) jitcall.Result {
 	t.Helper()
@@ -123,34 +123,12 @@ func execJalrIC(t *testing.T, targetPC uint64, siteIdx int,
 	e.WriteBackAll()
 	e.JalrIC(e.XReg(10), siteIdx)
 
-	pool := RV8Pool(e.Block)
-	pinned := RV8Pinned()
-	alloc := helperTestAllocate(e.Block, pool, pinned, nil)
-
-	ctx := goasm.New(goasm.AMD64)
-	ctx.Append(ctx.NewATEXT())
-	if _, err := LowerAMD64_RV8(ctx, e.Block, alloc); err != nil {
-		t.Fatalf("LowerAMD64_RV8: %v", err)
-	}
-	code, err := ctx.Assemble()
-	if err != nil {
-		t.Fatalf("Assemble: %v", err)
-	}
-
-	mem, err := allocExec(len(code))
-	if err != nil {
-		t.Fatalf("mmap: %v", err)
-	}
-	defer syscall.Munmap(mem)
-	withExecWrite(func() {
-		copy(mem, code)
-	})
+	fn, mem := compileIR(t, e.Block)
+	defer freeExecMem(mem)
 
 	var x [32]uint64
 	var f [32]uint64
 	var fcsr uint32
-	fn := uintptr(unsafe.Pointer(&mem[0]))
-
 	return jitcall.CallAOT(fn, &x, &f, &fcsr, 0, 0,
 		dcBase, dcMask, vaddrBegin, segSize, jitMaxBudget)
 }
@@ -226,8 +204,8 @@ func TestLower_RV8_JalrIC_EmptySlot_ReturnsMiss(t *testing.T) {
 
 // DC7 — Cache hit: when dcBase is set, target is in bounds, and the
 // cache slot holds a valid chainEntry address, the JALR IC jumps
-// directly to that address (no miss). We verify by planting a tiny
-// "return OK" stub at the cache slot's target.
+// directly to that address (no miss). Use a real native chainEntry so this
+// exercises both AMD64 and ARM64 calling conventions.
 func TestLower_RV8_JalrIC_CacheHit_JumpsToEntry(t *testing.T) {
 	ps := syscall.Getpagesize()
 
@@ -241,36 +219,19 @@ func TestLower_RV8_JalrIC_CacheHit_JumpsToEntry(t *testing.T) {
 	defer syscall.Munmap(dcMem)
 	dcBase := uintptr(unsafe.Pointer(&dcMem[0]))
 
-	// Allocate an executable page for the "hit stub" — a tiny chainEntry
-	// that writes a distinctive Result.PC and returns.
-	stubMem, err := allocExec(ps)
+	// Compile a target that writes a distinctive Result.PC and returns.
+	j := NewSandboxJIT()
+	defer j.Close()
+	j.SetRegPolicy(PolicyRV8)
+	e := NewEmitter(nil)
+	e.Ret(0xBEEF, 0, VRegZero)
+	target, err := j.jitCompile(&emitResult{block: e.Block, numInsns: 1})
 	if err != nil {
-		t.Fatalf("mmap stubMem: %v", err)
+		t.Fatalf("compile cache target: %v", err)
 	}
-	defer syscall.Munmap(stubMem)
-	stubAddr := uintptr(unsafe.Pointer(&stubMem[0]))
-
-	// The hit path arrives with RAX = sret pointer (from the JALR IC
-	// preamble which wrote Result.PC already), frame already deallocated,
-	// and it does JMP RDX where RDX = cached entry. We need the stub
-	// to be a valid chainEntry. A chainEntry expects:
-	//   - RSP pointing to the caller's return address (frame deallocated)
-	//   - RAX = sret pointer
-	//
-	// The simplest stub: write a sentinel to Result.PC and RET.
-	//   MOV QWORD [RAX], 0xBEEF    ; Result.PC = 0xBEEF
-	//   MOV QWORD [RAX+8], 0       ; Result.Status = 0
-	//   MOV QWORD [RAX+16], 0      ; Result.FaultAddr = 0
-	//   RET
-	stub := []byte{
-		0x48, 0xC7, 0x00, 0xEF, 0xBE, 0x00, 0x00, // MOV QWORD [RAX], 0xBEEF
-		0x48, 0xC7, 0x40, 0x08, 0x00, 0x00, 0x00, 0x00, // MOV QWORD [RAX+8], 0
-		0x48, 0xC7, 0x40, 0x10, 0x00, 0x00, 0x00, 0x00, // MOV QWORD [RAX+16], 0
-		0xC3, // RET
+	if target.chainEntry == 0 {
+		t.Fatal("cache target has no chain entry")
 	}
-	withExecWrite(func() {
-		copy(stubMem, stub)
-	})
 
 	// Segment covers [0x1000, 0x2000). Target = 0x1000.
 	// Cache index for target 0x1000 with vaddrBegin=0x1000:
@@ -278,7 +239,7 @@ func TestLower_RV8_JalrIC_CacheHit_JumpsToEntry(t *testing.T) {
 	//   byteOff = offset * 4 = 0
 	//   masked = 0 & dcMask = 0
 	// So slot 0 in dcMem holds the chainEntry pointer.
-	binary.LittleEndian.PutUint64(dcMem[0:], uint64(stubAddr))
+	binary.LittleEndian.PutUint64(dcMem[0:], uint64(target.chainEntry))
 
 	res := execJalrIC(t, 0x1000, 0, dcBase, uint64(ps-1), 0x1000, 0x1000)
 

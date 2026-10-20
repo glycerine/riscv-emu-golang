@@ -2032,7 +2032,9 @@ func (lc *lowerARM64Ctx) cmp(a, b int16) {
 }
 
 func (lc *lowerARM64Ctx) cmpImm(a int16, imm int64) {
-	if !arm64CmpImmEncodable(imm) {
+	// CMP-immediate encodes register 31 as SP, not ZR. Compare zero through
+	// the register form, which accepts ZR as its left operand.
+	if a == goasm.REG_ARM64_ZR || !arm64CmpImmEncodable(imm) {
 		tmp := a64D
 		if a == tmp {
 			tmp = a64C

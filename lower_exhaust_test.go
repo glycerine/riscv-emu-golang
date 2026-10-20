@@ -10,11 +10,8 @@ package riscv
 
 import (
 	"fmt"
-	"syscall"
 	"testing"
-	"unsafe"
 
-	"github.com/glycerine/riscv-emu-golang/goasm"
 	"github.com/glycerine/riscv-emu-golang/internal/jitcall"
 )
 
@@ -22,29 +19,11 @@ const exhaustN = 7 // guest regs x1..x7
 
 func execBlock(t *testing.T, b *Block, x *[32]uint64, _ bool) jitcall.Result {
 	t.Helper()
-	pool := RV8Pool(b)
-	alloc := helperTestAllocate(b, pool, RV8Pinned(), nil)
-	ctx := goasm.New(goasm.AMD64)
-	ctx.Append(ctx.NewATEXT())
-	_, err := LowerAMD64_RV8(ctx, b, alloc)
-	if err != nil {
-		t.Fatalf("lower: %v", err)
-	}
-	code, err := ctx.Assemble()
-	if err != nil {
-		t.Fatalf("assemble: %v", err)
-	}
-	mem, err := allocExec(len(code))
-	if err != nil {
-		t.Fatalf("mmap: %v", err)
-	}
-	defer syscall.Munmap(mem)
-	withExecWrite(func() {
-		copy(mem, code)
-	})
+	fn, mem := compileIR(t, b)
+	defer freeExecMem(mem)
 	var f [32]uint64
 	var fcsr uint32
-	return jitcall.Call(uintptr(unsafe.Pointer(&mem[0])), x, &f, &fcsr, 0, 0, jitMaxBudget)
+	return jitcall.Call(fn, x, &f, &fcsr, 0, 0, jitMaxBudget)
 }
 
 // ── Single-instruction exhaustive tests ──
