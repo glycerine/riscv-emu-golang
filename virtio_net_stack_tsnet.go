@@ -1050,7 +1050,7 @@ func (t *virtioNetMemoryTUN) InjectIPPacket(pkt []byte) {
 
 func (t *virtioNetMemoryTUN) File() *os.File { return nil }
 
-func (t *virtioNetMemoryTUN) Read(bufs [][]byte, sizes []int, offset int) (int, error) {
+func (t *virtioNetMemoryTUN) Read(slab []byte, packets []tun.ReadPacket) (int, error) {
 	select {
 	case <-t.closed:
 		return 0, io.EOF
@@ -1058,10 +1058,15 @@ func (t *virtioNetMemoryTUN) Read(bufs [][]byte, sizes []int, offset int) (int, 
 		if !ok {
 			return 0, io.EOF
 		}
-		if len(bufs) == 0 || len(sizes) == 0 {
-			return 0, nil
+		// The TUN reader reserves space before and after each packet for
+		// WireGuard's headers and padding. Never return a truncated packet.
+		if len(packets) == 0 || len(slab) < 2*tun.ReadPacketSpacing+len(pkt) {
+			return 0, tun.ErrTooManySegments
 		}
-		sizes[0] = copy(bufs[0][offset:], pkt)
+		packets[0] = tun.ReadPacket{
+			Offset: tun.ReadPacketSpacing,
+			Size:   copy(slab[tun.ReadPacketSpacing:], pkt),
+		}
 		return 1, nil
 	}
 }
